@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: jdamr_cube_description
+Version: 0.0.0
+Summary: Description package for jdamr_cube using Python setup
+Maintainer: Your Name
+Maintainer-email: your_email@todo.todo
+License: TODO: License declaration
+Requires-Dist: setuptools
+Dynamic: license
+Dynamic: maintainer
+Dynamic: maintainer-email
+Dynamic: requires-dist
+Dynamic: summary
