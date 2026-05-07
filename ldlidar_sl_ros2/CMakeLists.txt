@@ -41,7 +41,7 @@ include_directories(
 file(GLOB  LDLIDAR_DRI ${CMAKE_CURRENT_SOURCE_DIR}/ldlidar_driver/src/*.cpp)
 
 add_executable(${PROJECT_NAME}_node  
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/demo.cpp 
+  ${CMAKE_CURRENT_SOURCE_DIR}/src//demo.cpp 
   ${LDLIDAR_DRI} 
 )
 ament_target_dependencies(${PROJECT_NAME}_node rclcpp sensor_msgs geometry_msgs)
