@@ -1,2 +1,0 @@
-[console_scripts]
-jdamr_cube_node = jdamr_cube_node.jdamr_cube_node:main

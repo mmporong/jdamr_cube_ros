@@ -1,2 +1,0 @@
-[console_scripts]
-jdamr_cube_teleop = jdamr_cube_teleop.jdamr_cube_teleop:main
