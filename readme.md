@@ -154,6 +154,23 @@ occupied/free threshold)이 생성됩니다. 실제로 방(벽 4면 + 박스/원
 저장된 맵(.yaml)을 로드해서 Nav2(AMCL 로컬라이제이션 + 경로계획/추종)를 띄우고, 좌표를 주면
 그 지점까지 이동시키는 [`jdamr_cube_controller`](jdamr_cube_controller) 패키지가 있습니다.
 
+**Windows에서 배치 파일로**: 먼저 `run_gazebo_slam.bat` + `save_map.bat`으로
+`~/maps/jdamr_cube_room.yaml`을 만들어둔 상태에서,
+
+```bat
+run_navigation.bat            :: Gazebo(room.world) + Nav2 창 2개를 띄움
+goto_pose.bat 1.0 -1.8         :: (1.0, -1.8)로 이동
+goto_pose.bat 0.0 0.0 1.57     :: 원점으로, yaw=1.57rad 방향으로 이동
+```
+
+`run_navigation.bat`은 `run_gazebo_slam.bat`과 동일하게 시작 전에 남아있는 프로세스를 정리하고
+워크스페이스를 빌드한 뒤 Gazebo/Nav2를 각각 새 창으로 띄웁니다. `goto_pose.bat`은 그 상태에서
+목표 좌표만 보내는 1회성 명령이라 필요할 때마다 반복 실행하면 됩니다. 내부적으로
+[`scripts/wsl_run_navigation.sh`](scripts/wsl_run_navigation.sh),
+[`scripts/wsl_goto_pose.sh`](scripts/wsl_goto_pose.sh)를 사용합니다.
+
+수동으로 터미널을 띄워 실행할 수도 있습니다.
+
 ```bash
 # 1) Gazebo (SLAM 없이, room.world)
 source install/setup.bash
