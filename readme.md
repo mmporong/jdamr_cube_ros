@@ -13,6 +13,7 @@ JD-AMR "cube" 로봇용 ROS 2 워크스페이스. 실물 하드웨어 브링업,
 | `jdamr_cube_cartographer` | Cartographer 기반 2D SLAM |
 | `jdamr_cube_gazebo` | Gazebo 시뮬레이션 launch/월드/브릿지 설정 |
 | `jdamr_cube_navigation` | Nav2 기반 좌표 이동(`goto_pose`). 저장된 맵을 로드해 목표 좌표로 자율주행 |
+| `jdamr_cube_so101_arm` | SO-101 팔 관절 각도 제어 CLI(`joint_control`) |
 | `ldlidar_sl_ros2` | LDRobot LD14 라이다 드라이버 (C++) |
 
 ## 빌드 환경 검증 (ROS 2 Jazzy / WSL Ubuntu 24.04)
@@ -131,7 +132,7 @@ jdamr_cube 몸체 위(base_link 상단면, `arm_mount_joint`)에
 source install/setup.bash
 ros2 launch jdamr_cube_gazebo gazebo.launch.py
 
-# 다른 터미널에서 팔 이동
+# 다른 터미널에서 팔 이동 (raw 액션 호출 — 아래 jdamr_cube_so101_arm 패키지가 더 쓰기 편합니다)
 ros2 action send_goal /arm_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory "{
   trajectory: {
     joint_names: [arm_shoulder_pan, arm_shoulder_lift, arm_elbow_flex, arm_wrist_flex, arm_wrist_roll],
@@ -155,6 +156,45 @@ package URI를 그대로 넣으면 gz_ros2_control이 이를 해석하지 못하
 URDF는 xacro가 아닌 순수 XML이라 launch 시점 치환이 불가능하므로,
 `jdamr_cube_gazebo/launch/gazebo.launch.py`에서 URDF 문자열을 읽은 뒤 그 부분만
 `get_package_share_directory()`로 구한 실제 절대경로로 치환해서 로봇을 스폰하도록 고쳤습니다.
+
+### 관절 값으로 제어하기 (`jdamr_cube_so101_arm`)
+
+위 raw 액션 호출을 감싼 CLI 노드 `joint_control`이 있습니다. 원하는 관절만 골라서 값을 주면
+그 값으로 이동하고, **지정하지 않은 관절은 현재 각도를 그대로 유지**합니다(다른 관절이 0으로
+튀는 것을 방지하기 위해 이동 전에 `/joint_states`에서 현재 각도를 읽어와 병합합니다).
+
+**Windows에서 배치 파일로**: 시뮬레이터(`run_gazebo_slam.bat` 또는 `run_navigation.bat`)가
+떠 있는 상태에서,
+
+```bat
+arm_control.bat --shoulder-pan 0.5 --elbow-flex 0.4   :: 지정한 관절만 이동, 나머지는 유지
+arm_control.bat --gripper 1.0                          :: 그리퍼 열기
+arm_control.bat --gripper 0.0                           :: 그리퍼 닫기
+```
+
+수동으로 실행할 수도 있습니다.
+
+```bash
+source install/setup.bash
+ros2 run jdamr_cube_so101_arm joint_control --shoulder-pan 0.5 --elbow-flex 0.4
+ros2 run jdamr_cube_so101_arm joint_control --gripper 1.0
+ros2 run jdamr_cube_so101_arm joint_control --shoulder-pan 0 --shoulder-lift 0 --elbow-flex 0 --wrist-flex 0 --wrist-roll 0  # 홈 자세
+```
+
+옵션: `--shoulder-pan`, `--shoulder-lift`, `--elbow-flex`, `--wrist-flex`, `--wrist-roll`, `--gripper`
+(전부 rad 단위, 관절 범위는 위 표 참고), `--duration`(팔 이동 시간, 초 단위, 기본 3.0). 최소 하나는
+지정해야 하며, 아무것도 지정하지 않으면 사용법 에러(종료 코드 1)를 출력합니다.
+
+**테스트 방법** (실제로 이 순서로 검증):
+
+1. `run_gazebo_slam.bat` 또는 `ros2 launch jdamr_cube_gazebo gazebo.launch.py`로 시뮬레이터 실행
+2. `ros2 control list_controllers`로 `arm_controller`/`gripper_controller`/`joint_state_broadcaster`가
+   모두 `active`인지 확인
+3. `arm_control.bat --shoulder-pan 0.8 --wrist-roll -1.0` 실행 → 팔이 이동하고 "팔 이동 완료" 로그 출력
+4. `arm_control.bat --elbow-flex 0.6` 실행(다른 관절 값은 주지 않음) → `/joint_states`로 확인했을 때
+   `arm_shoulder_pan`이 여전히 0.8, `arm_wrist_roll`이 여전히 -1.0로 유지된 채 `arm_elbow_flex`만
+   0.6으로 바뀌는지 확인 (터미널 로그의 "팔 목표 전송:" 줄에 그대로 표시됩니다)
+5. `arm_control.bat --gripper 1.5` 실행 → "그리퍼 이동 완료" 로그와 함께 그리퍼가 열림
 
 ## Gazebo + Cartographer로 맵 생성하기
 

@@ -202,7 +202,10 @@
                     <horizontal>
                         <samples>360</samples>
                         <resolution>1</resolution>
-                        <min_angle>-3.141592</min_angle> <max_angle>3.141592</max_angle>
+                        <!-- 라이다 정후방(180도)에는 팔을 받치는 리서 마스트(arm_riser_link)가
+                             있어 완전한 360도를 스캔하면 자기 자신을 장애물로 감지한다. 실제
+                             라이다 장착 브래킷처럼 후방에 작은 사각지대(약 ±10도)를 둔다. -->
+                        <min_angle>-2.967</min_angle> <max_angle>2.967</max_angle>
                     </horizontal>
                 </scan>
                 <range>
@@ -266,10 +269,44 @@
         <color rgba="0.1 0.1 0.1 1.0"/>
     </material>
 
-    <joint name="arm_mount_joint" type="fixed">
+    <!-- SO-101 팔 어깨 조립체(arm_base_link 기준 약 +0.06m 위)가 라이다 높이(base_link 상단
+         기준 0.15, 절대 z=0.225)와 겹쳐서 라이다가 팔 자신을 장애물로 오인해 Nav2
+         collision_monitor가 주행을 막는 문제가 있었다. 라이다는 원래 자리 그대로 두고, 대신
+         팔을 몸체 위 마스트(리서)로 들어올려 팔 전체가 라이다보다 확실히 위(절대 z=0.30 이상)에
+         오도록 한다. -->
+    <joint name="arm_riser_joint" type="fixed">
         <parent link="base_link"/>
-        <child link="arm_base_link"/>
+        <child link="arm_riser_link"/>
         <origin xyz="0 0 0.075" rpy="0 0 0"/>
+    </joint>
+
+    <link name="arm_riser_link">
+        <inertial>
+            <mass value="0.05"/>
+            <origin xyz="0 0 0.075"/>
+            <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0001"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0.075" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.06 0.06 0.15"/>
+            </geometry>
+            <material name="black">
+                <color rgba="0.1 0.1 0.1 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.075" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.06 0.06 0.15"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="arm_mount_joint" type="fixed">
+        <parent link="arm_riser_link"/>
+        <child link="arm_base_link"/>
+        <origin xyz="0 0 0.15" rpy="0 0 0"/>
     </joint>
 
     <link name="arm_base_link">
@@ -517,6 +554,58 @@
             </geometry>
         </collision>
     </link>
+
+    <!-- 손목 카메라(eye-in-hand). arm_wrist_link 로컬 프레임 기준 그리퍼(arm_gripper_frame_link)
+         방향이 대략 -Y축이라 yaw -90도로 돌려서 카메라 정면(+X)이 그리퍼 쪽을 보게 함. -->
+    <joint name="arm_wrist_camera_joint" type="fixed">
+        <parent link="arm_wrist_link"/>
+        <child link="arm_wrist_camera_link"/>
+        <origin xyz="0 -0.11 0.03" rpy="0 0 -1.5708"/>
+    </joint>
+
+    <link name="arm_wrist_camera_link">
+        <inertial>
+            <mass value="0.005"/>
+            <origin xyz="0 0 0"/>
+            <inertia ixx="1e-7" ixy="0.0" ixz="0.0" iyy="1e-7" iyz="0.0" izz="1e-7"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.02 0.02 0.02"/>
+            </geometry>
+            <material name="so101_sts3215"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.02 0.02 0.02"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <gazebo reference="arm_wrist_camera_link">
+        <sensor name="wrist_camera" type="camera">
+            <pose>0 0 0 0 0 0</pose>
+            <update_rate>15</update_rate>
+            <always_on>true</always_on>
+            <visualize>true</visualize>
+            <topic>wrist_camera/image_raw</topic>
+            <gz_frame_id>arm_wrist_camera_link</gz_frame_id>
+            <camera>
+                <horizontal_fov>1.047</horizontal_fov>
+                <image>
+                    <width>640</width>
+                    <height>480</height>
+                    <format>R8G8B8</format>
+                </image>
+                <clip>
+                    <near>0.02</near>
+                    <far>10</far>
+                </clip>
+            </camera>
+        </sensor>
+    </gazebo>
 
     <joint name="arm_wrist_flex" type="revolute">
         <origin xyz="-0.1349 0.0052 3.62355e-17" rpy="4.02456e-15 8.67362e-16 -1.5708"/>

@@ -147,5 +147,35 @@
         </visual>
       </link>
     </model>
+
+    <!-- SO-101 팔 pick & place 데모용 물체(자유 강체). 팔의 짧은 리치(~0.2~0.3m)가 로봇 몸체
+         반경(섀시 0.25m + 라이다 0.325m)을 넘지 못하므로, 바닥이 아니라 로봇 상판(cube top,
+         z=0.15) 위에 바로 올려서 그 위 공간에서 집게 한다. 로봇은 (0,0,0)에 스폰되고 팔
+         shoulder_pan=0 기준 +X 방향으로 뻗는다. -->
+    <model name="pick_object">
+      <pose>0.21 0 0.165 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.02</mass>
+          <inertia>
+            <ixx>6e-6</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>6e-6</iyy><iyz>0</iyz>
+            <izz>6e-6</izz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.2</mu><mu2>1.2</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+          <material><ambient>0.9 0.1 0.6 1</ambient><diffuse>0.9 0.1 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
   </world>
 </sdf>

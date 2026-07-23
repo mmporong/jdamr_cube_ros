@@ -10,7 +10,7 @@ if [ -z "$REPO_WSL" ]; then
 fi
 
 WS="$HOME/jdamr_cube_ws"
-PACKAGES="jdamr_cube_bringup jdamr_cube_cartographer jdamr_cube_description jdamr_cube_gazebo jdamr_cube_navigation jdamr_cube_node jdamr_cube_teleop ldlidar_sl_ros2"
+PACKAGES="jdamr_cube_bringup jdamr_cube_cartographer jdamr_cube_description jdamr_cube_gazebo jdamr_cube_navigation jdamr_cube_node jdamr_cube_so101_arm jdamr_cube_teleop ldlidar_sl_ros2"
 
 mkdir -p "$WS/src"
 for p in $PACKAGES; do
