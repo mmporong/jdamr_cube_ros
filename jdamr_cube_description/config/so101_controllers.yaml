@@ -1,0 +1,41 @@
+controller_manager:
+  ros__parameters:
+    use_sim_time: true
+    update_rate: 1000  # Hz, jdamr_cube_gazebo world의 physics max_step_size(0.001s)와 동일
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    gripper_controller:
+      type: position_controllers/GripperActionController
+
+arm_controller:
+  ros__parameters:
+    use_sim_time: true
+    joints:
+      - arm_shoulder_pan
+      - arm_shoulder_lift
+      - arm_elbow_flex
+      - arm_wrist_flex
+      - arm_wrist_roll
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    open_loop_control: true
+    allow_integration_in_goal_trajectories: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+gripper_controller:
+  ros__parameters:
+    use_sim_time: true
+    joint: arm_gripper

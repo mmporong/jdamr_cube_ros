@@ -2,7 +2,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -16,6 +17,13 @@ def generate_launch_description():
     urdf_file = os.path.join(pkg_description_dir, 'urdf', 'jdamr_cube.urdf')
     with open(urdf_file, 'r') as infp:
         robot_description_content = infp.read()
+
+    # gz_ros2_control-system 플러그인은 <parameters> 안의 package:// URI를 스스로 해석하지
+    # 못하고 그대로 --params-file 인자로 넘겨 gz-sim이 죽는다. 실제 설치 경로로 치환한다.
+    so101_controllers_yaml = os.path.join(pkg_description_dir, 'config', 'so101_controllers.yaml')
+    robot_description_content = robot_description_content.replace(
+        'package://jdamr_cube_description/config/so101_controllers.yaml',
+        so101_controllers_yaml)
 
     bridge_config_file = os.path.join(pkg_gazebo_dir, 'params', 'bridge.yaml')
 
@@ -77,6 +85,28 @@ def generate_launch_description():
         arguments=['--ros-args', '-p', f'config_file:={bridge_config_file}'],
         output='screen')
 
+    # so101 팔은 gz_ros2_control(URDF의 <ros2_control>/<gazebo><plugin gz_ros2_control-system>)로
+    # 노출되는데, 스폰 전에는 controller_manager 서비스가 없어 스포너가 실패한다.
+    # spawn_entity_node가 끝난 뒤 joint_state_broadcaster -> arm_controller -> gripper_controller
+    # 순서로 로드/activate 한다.
+    load_joint_state_broadcaster = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster'],
+        output='screen')
+
+    load_arm_controller = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['arm_controller'],
+        output='screen')
+
+    load_gripper_controller = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['gripper_controller'],
+        output='screen')
+
     ld = LaunchDescription()
     ld.add_action(declare_world_cmd)
     ld.add_action(declare_use_sim_time_cmd)
@@ -87,4 +117,10 @@ def generate_launch_description():
     ld.add_action(robot_state_publisher_node)
     ld.add_action(spawn_entity_node)
     ld.add_action(bridge_node)
+    ld.add_action(RegisterEventHandler(
+        OnProcessExit(target_action=spawn_entity_node, on_exit=[load_joint_state_broadcaster])))
+    ld.add_action(RegisterEventHandler(
+        OnProcessExit(target_action=load_joint_state_broadcaster, on_exit=[load_arm_controller])))
+    ld.add_action(RegisterEventHandler(
+        OnProcessExit(target_action=load_arm_controller, on_exit=[load_gripper_controller])))
     return ld

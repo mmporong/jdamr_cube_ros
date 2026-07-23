@@ -16,8 +16,11 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         # URDF 파일 설치 경로 설정 [cite: 37, 58]
         (os.path.join('share', package_name, 'urdf'), glob('urdf/*.urdf')),
-        # Mesh 파일 설치 경로 설정 (있을 경우) [cite: 18, 32]
-        #(os.path.join('share', package_name, 'meshes'), glob('meshes/*')),
+        # Mesh 파일 설치 경로 설정 (so101 팔 STL 포함)
+        (os.path.join('share', package_name, 'meshes', 'so101'), glob('meshes/so101/*.stl')),
+        (os.path.join('share', package_name, 'meshes', 'so101'), glob('meshes/so101/*.md')),
+        # nav2 등 컨트롤러 파라미터 파일
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         # RViz 설정 파일 설치 경로 설정 (있을 경우) [cite: 49]
         (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
     ],

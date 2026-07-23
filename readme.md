@@ -6,7 +6,7 @@ JD-AMR "cube" 로봇용 ROS 2 워크스페이스. 실물 하드웨어 브링업,
 
 | 패키지 | 설명 |
 |---|---|
-| `jdamr_cube_description` | URDF, RViz 디스플레이 launch |
+| `jdamr_cube_description` | URDF(SO-101 팔 포함), RViz 디스플레이 launch, 팔 컨트롤러 설정 |
 | `jdamr_cube_bringup` | 실물 로봇 구동(모터 노드 + 라이다 + robot_state_publisher) |
 | `jdamr_cube_node` | 모터/오도메트리 하드웨어 인터페이스 노드 |
 | `jdamr_cube_teleop` | 키보드 teleop (`geometry_msgs/Twist` → `cmd_vel`) |
@@ -91,6 +91,70 @@ ros2 launch jdamr_cube_gazebo gazebo.launch.py
 - 로봇 스폰 위치는 `x_pose`/`y_pose`/`z_pose` launch 인자로 조정 가능
 - teleop 연결: `ros2 run jdamr_cube_teleop jdamr_cube_teleop` (Twist를 `/cmd_vel`로 발행 → 브릿지를
   통해 Gazebo diff drive 플러그인으로 전달)
+
+## SO-101 로봇 팔
+
+jdamr_cube 몸체 위(base_link 상단면, `arm_mount_joint`)에
+[SO-101](https://github.com/TheRobotStudio/SO-ARM100/tree/main/Simulation/SO101) 팔이 붙어
+있습니다. 링크/조인트/메쉬는 원본 저장소의 `so101_new_calib.urdf`를 그대로 가져오되, jdamr_cube의
+기존 이름(`base_link` 등)과 겹치지 않도록 전부 `arm_` 접두사를 붙여
+[`jdamr_cube_description/urdf/jdamr_cube.urdf`](jdamr_cube_description/urdf/jdamr_cube.urdf)에
+합쳐 넣었습니다. STL 메쉬는 [`jdamr_cube_description/meshes/so101/`](jdamr_cube_description/meshes/so101)에
+포함되어 있습니다(Apache-2.0, 출처는 같은 폴더의 `NOTICE.md` 참고).
+
+**관절 구성** (전부 `revolute`, 값 단위 rad):
+
+| 조인트 | 설명 | 범위 |
+|---|---|---|
+| `arm_shoulder_pan` | 베이스 회전 | -1.92 ~ 1.92 |
+| `arm_shoulder_lift` | 어깨 상하 | -1.75 ~ 1.75 |
+| `arm_elbow_flex` | 팔꿈치 | -1.69 ~ 1.69 |
+| `arm_wrist_flex` | 손목 굽힘 | -1.66 ~ 1.66 |
+| `arm_wrist_roll` | 손목 회전 | -2.74 ~ 2.84 |
+| `arm_gripper` | 그리퍼 개폐 | -0.17(닫힘) ~ 1.75(열림) |
+
+### 실제로 움직이기 (ros2_control + gz_ros2_control)
+
+팔은 `<ros2_control>` + gz-sim `gz_ros2_control-system` 플러그인으로 시뮬레이션에 연결되어
+있어서, 스폰 이후 [`jdamr_cube_gazebo/launch/gazebo.launch.py`](jdamr_cube_gazebo/launch/gazebo.launch.py)가
+자동으로 아래 컨트롤러를 로드/activate합니다(컨트롤러 설정:
+[`jdamr_cube_description/config/so101_controllers.yaml`](jdamr_cube_description/config/so101_controllers.yaml)).
+
+- `joint_state_broadcaster` — 팔 관절 상태를 `/joint_states`로 발행(휠 관절은 기존처럼 별도
+  gz-sim 조인트 상태 플러그인 → 브릿지로 같은 토픽에 함께 발행됩니다)
+- `arm_controller` (`joint_trajectory_controller`) — 5개 팔 관절을
+  `/arm_controller/follow_joint_trajectory` (`FollowJointTrajectory`) 액션으로 제어
+- `gripper_controller` (`GripperActionController`) — 그리퍼를
+  `/gripper_controller/gripper_cmd` (`GripperCommand`) 액션으로 제어
+
+```bash
+source install/setup.bash
+ros2 launch jdamr_cube_gazebo gazebo.launch.py
+
+# 다른 터미널에서 팔 이동
+ros2 action send_goal /arm_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory "{
+  trajectory: {
+    joint_names: [arm_shoulder_pan, arm_shoulder_lift, arm_elbow_flex, arm_wrist_flex, arm_wrist_roll],
+    points: [{ positions: [0.5, -0.3, 0.4, 0.2, 0.0], time_from_start: { sec: 3 } }]
+  }
+}"
+
+# 그리퍼 닫기/열기 (0.0=닫힘 근처 ~ 1.0=열림 근처)
+ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand \
+  "{command: {position: 1.0, max_effort: 5.0}}"
+```
+
+실제로 `ros2 launch jdamr_cube_gazebo gazebo.launch.py`로 room.world를 띄운 뒤 위 두 액션을
+호출해서 관절이 목표 각도까지 정확히 이동하고(`/joint_states`로 확인), `base_link`→`arm_gripper_link`
+TF가 그에 맞게 갱신되는 것까지 확인했습니다.
+
+**빌드 중 발견해서 고친 문제**: `<gazebo><plugin filename="gz_ros2_control-system" ...>` 안의
+`<parameters>` 태그에 `package://jdamr_cube_description/config/so101_controllers.yaml` 같은
+package URI를 그대로 넣으면 gz_ros2_control이 이를 해석하지 못하고 그 문자열을 그대로
+`--params-file` 인자로 넘겨서 YAML 파싱에 실패, **gz-sim 프로세스 자체가 죽는** 문제가 있었습니다.
+URDF는 xacro가 아닌 순수 XML이라 launch 시점 치환이 불가능하므로,
+`jdamr_cube_gazebo/launch/gazebo.launch.py`에서 URDF 문자열을 읽은 뒤 그 부분만
+`get_package_share_directory()`로 구한 실제 절대경로로 치환해서 로봇을 스폰하도록 고쳤습니다.
 
 ## Gazebo + Cartographer로 맵 생성하기
 
