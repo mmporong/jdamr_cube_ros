@@ -1,7 +1,7 @@
 @echo off
 setlocal enableextensions
 
-rem jdamr_cube_ros: launch Gazebo (room.world) + Nav2 (jdamr_cube_controller),
+rem jdamr_cube_ros: launch Gazebo (room.world) + Nav2 (jdamr_cube_navigation),
 rem each in its own window, running inside WSL (ROS 2 Jazzy).
 rem Requires a saved map first: run_gazebo_slam.bat + save_map.bat.
 rem After both windows are up, send goals with goto_pose.bat X Y [YAW].
@@ -38,7 +38,7 @@ echo Build OK. Opening Gazebo / Nav2 windows...
 start "1. Gazebo (room.world)" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_run_gazebo.sh'"
 timeout /t 12 /nobreak >nul
 
-start "2. Nav2 (jdamr_cube_controller)" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_run_navigation.sh'"
+start "2. Nav2 (jdamr_cube_navigation)" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_run_navigation.sh'"
 timeout /t 8 /nobreak >nul
 
 echo.

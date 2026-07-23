@@ -2,7 +2,7 @@ from setuptools import setup
 import os
 from glob import glob
 
-package_name = 'jdamr_cube_controller'
+package_name = 'jdamr_cube_navigation'
 
 setup(
     name=package_name,
@@ -24,7 +24,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'goto_pose = jdamr_cube_controller.goto_pose:main',
+            'goto_pose = jdamr_cube_navigation.goto_pose:main',
         ],
     },
 )

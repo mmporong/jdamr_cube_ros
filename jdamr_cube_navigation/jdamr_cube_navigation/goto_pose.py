@@ -26,7 +26,7 @@ class GotoPose(Node):
         if not self._client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error(
                 "'navigate_to_pose' action server not available. "
-                'jdamr_cube_controller navigation.launch.py가 실행 중인지 확인하세요.')
+                'jdamr_cube_navigation navigation.launch.py가 실행 중인지 확인하세요.')
             return False
 
         goal_msg = NavigateToPose.Goal()

@@ -3,4 +3,4 @@
 # usage: wsl_goto_pose.sh X Y [--yaw YAW]
 source /opt/ros/jazzy/setup.bash
 source "$HOME/jdamr_cube_ws/install/setup.bash"
-exec ros2 run jdamr_cube_controller goto_pose "$@"
+exec ros2 run jdamr_cube_navigation goto_pose "$@"

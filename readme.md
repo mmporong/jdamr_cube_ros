@@ -12,7 +12,7 @@ JD-AMR "cube" 로봇용 ROS 2 워크스페이스. 실물 하드웨어 브링업,
 | `jdamr_cube_teleop` | 키보드 teleop (`geometry_msgs/Twist` → `cmd_vel`) |
 | `jdamr_cube_cartographer` | Cartographer 기반 2D SLAM |
 | `jdamr_cube_gazebo` | Gazebo 시뮬레이션 launch/월드/브릿지 설정 |
-| `jdamr_cube_controller` | Nav2 기반 좌표 이동(`goto_pose`). 저장된 맵을 로드해 목표 좌표로 자율주행 |
+| `jdamr_cube_navigation` | Nav2 기반 좌표 이동(`goto_pose`). 저장된 맵을 로드해 목표 좌표로 자율주행 |
 | `ldlidar_sl_ros2` | LDRobot LD14 라이다 드라이버 (C++) |
 
 ## 빌드 환경 검증 (ROS 2 Jazzy / WSL Ubuntu 24.04)
@@ -213,10 +213,10 @@ ros2 run nav2_map_server map_saver_cli -f ~/maps/jdamr_cube_room
 occupied/free threshold)이 생성됩니다. 실제로 방(벽 4면 + 박스/원기둥 장애물)을 반영한 맵이
 생성되는 것까지 확인했습니다.
 
-### 3. 저장한 맵으로 좌표까지 자율주행하기 (`jdamr_cube_controller`)
+### 3. 저장한 맵으로 좌표까지 자율주행하기 (`jdamr_cube_navigation`)
 
 저장된 맵(.yaml)을 로드해서 Nav2(AMCL 로컬라이제이션 + 경로계획/추종)를 띄우고, 좌표를 주면
-그 지점까지 이동시키는 [`jdamr_cube_controller`](jdamr_cube_controller) 패키지가 있습니다.
+그 지점까지 이동시키는 [`jdamr_cube_navigation`](jdamr_cube_navigation) 패키지가 있습니다.
 
 **Windows에서 배치 파일로**: 먼저 `run_gazebo_slam.bat` + `save_map.bat`으로
 `~/maps/jdamr_cube_room.yaml`을 만들어둔 상태에서,
@@ -243,25 +243,25 @@ ros2 launch jdamr_cube_gazebo gazebo.launch.py \
 
 # 2) Nav2 (기본값으로 ~/maps/jdamr_cube_room.yaml을 로드함)
 source install/setup.bash
-ros2 launch jdamr_cube_controller navigation.launch.py
-# 다른 맵을 쓰려면: ros2 launch jdamr_cube_controller navigation.launch.py map:=/path/to/map.yaml
+ros2 launch jdamr_cube_navigation navigation.launch.py
+# 다른 맵을 쓰려면: ros2 launch jdamr_cube_navigation navigation.launch.py map:=/path/to/map.yaml
 
 # 3) 목표 좌표로 이동 (map 프레임 기준 x, y[, --yaw])
 source install/setup.bash
-ros2 run jdamr_cube_controller goto_pose 1.0 -1.8
-ros2 run jdamr_cube_controller goto_pose 0.0 0.0 --yaw 1.57
+ros2 run jdamr_cube_navigation goto_pose 1.0 -1.8
+ros2 run jdamr_cube_navigation goto_pose 0.0 0.0 --yaw 1.57
 ```
 
 `goto_pose`는 `navigate_to_pose` 액션으로 목표를 보내고 도착/실패까지 대기하는 1회성 CLI 노드로,
 성공하면 종료 코드 0, 실패(장애물에 너무 붙은 목표, 경로 없음 등)하면 1을 반환합니다.
 
 로봇은 room.world에 스폰될 때 항상 `(0, 0, 0)`이고 맵 원점도 그 지점이므로, AMCL이
-`jdamr_cube_controller/config/nav2_params.yaml`의 `set_initial_pose`로 시작 시 자동으로
+`jdamr_cube_navigation/config/nav2_params.yaml`의 `set_initial_pose`로 시작 시 자동으로
 초기 위치를 잡습니다(RViz에서 수동으로 "2D Pose Estimate"를 클릭할 필요 없음). 시각적으로
 확인하고 싶다면 `rviz2`를 별도로 띄우고 Fixed Frame을 `map`으로, Map/LaserScan/RobotModel
 디스플레이를 추가해서 보면 됩니다.
 
-`jdamr_cube_controller/config/nav2_params.yaml`은 Jazzy 기본 `nav2_bringup` 파라미터를 베이스로
+`jdamr_cube_navigation/config/nav2_params.yaml`은 Jazzy 기본 `nav2_bringup` 파라미터를 베이스로
 jdamr_cube의 실제 몸체 크기(0.5 x 0.3m + 라이다/휠 돌출부 반영 footprint)와 저속 실내 로봇에 맞는
 속도 제한만 조정한 것입니다. 장애물/벽에 너무 붙은(수십 cm 이내) 좌표를 목표로 주면 costmap
 inflation 때문에 `xy_goal_tolerance`(0.15m) 안으로 들어가지 못하고 근처에서 멈출 수 있습니다 —

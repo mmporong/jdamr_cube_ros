@@ -8,7 +8,7 @@ from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
-    pkg_controller_dir = get_package_share_directory('jdamr_cube_controller')
+    pkg_controller_dir = get_package_share_directory('jdamr_cube_navigation')
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
 
     default_map = os.path.expanduser('~/maps/jdamr_cube_room.yaml')
