@@ -60,3 +60,4 @@ build-*/
 *.gch
 /install
 /log
+/maps

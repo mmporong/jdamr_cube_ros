@@ -9,10 +9,13 @@ options = {
   tracking_frame = "base_link", -- jdamr_cube의 중심 프레임 [cite: 20, 35]
   published_frame = "odom",
   odom_frame = "odom",
-  provide_odom_frame = true,
-  publish_frame_with_odometry = false,
-  provide_untracked_odom_frame = false,
-  use_odometry = true,
+  provide_odom_frame = false, -- published_frame과 odom_frame이 둘 다 "odom"이라 true로 두면
+                               -- cartographer가 odom -> odom 자기자신에게 TF를 발행하려다
+                               -- TF_SELF_TRANSFORM 에러가 발생함. map -> odom만 발행하도록 false.
+  publish_frame_projected_to_2d = false,
+  use_odometry = false, -- gz-sim DiffDrive의 /odom 첫 메시지가 트래젝토리 시작 시점과
+                         -- 동일한 타임스탬프로 들어와 cartographer_node가 죽는 문제 회피.
+                         -- online_correlative_scan_matching으로 스캔 매칭만으로 충분함.
   use_nav_sat = false,
   use_landmarks = false,
   num_laser_scans = 1,
