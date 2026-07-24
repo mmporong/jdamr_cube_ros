@@ -181,7 +181,7 @@
     <!-- 추가 pick 대상들. 색을 다르게 해서 뎁스카메라 픽셀 pick(pick --at-pixel)으로
          개별로 골라 집을 수 있게 한다. 전부 로봇 상판(z=0.15) 위, 팔이 닿는 범위에 배치. -->
     <model name="pick_object_green">
-      <pose>0.20 0.09 0.17 0 0 0</pose>
+      <pose>0.40 0.19 0.17 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.02</mass>
@@ -199,7 +199,7 @@
     </model>
 
     <model name="pick_object_blue">
-      <pose>0.20 -0.09 0.17 0 0 0</pose>
+      <pose>0.20 -1.09 0.17 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.02</mass>
@@ -217,7 +217,7 @@
     </model>
 
     <model name="pick_object_orange">
-      <pose>0.14 0.0 0.17 0 0 0</pose>
+      <pose>0.14 1.0 0.17 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.02</mass>
@@ -239,7 +239,7 @@
          상판 높이(0.15)보다 살짝 높여 팔이 테두리 너머로 물체를 떨어뜨릴 수 있게 한다. -->
     <model name="trash_can">
       <static>true</static>
-      <pose>0.34 0 0 0 0 0</pose>
+      <pose>0.34 1 0 0 0 0</pose>
       <link name="link">
         <!-- 바닥판 -->
         <collision name="bottom_col"><pose>0 0 0.006 0 0 0</pose><geometry><box><size>0.16 0.16 0.012</size></box></geometry></collision>
