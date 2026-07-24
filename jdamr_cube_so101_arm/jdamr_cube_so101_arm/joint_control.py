@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 
 import cv2
@@ -9,9 +10,12 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
+from tf2_geometry_msgs import do_transform_point
+from tf2_ros import Buffer, TransformListener
 
 from control_msgs.action import FollowJointTrajectory, GripperCommand
-from sensor_msgs.msg import Image, JointState
+from geometry_msgs.msg import PointStamped
+from sensor_msgs.msg import CameraInfo, Image, JointState
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 ARM_JOINTS = [
@@ -36,6 +40,19 @@ CAMERA_TOPICS = {
 }
 DEPTH_VIEW_NEAR = 0.1  # 이 거리 이하는 가장 가까운 색(빨강)으로 표시
 DEPTH_VIEW_FAR = 3.0   # 이 거리 이상/무한대(NaN)는 가장 먼 색(파랑)으로 표시
+
+# --- MoveIt2 기반 "pick --at-pixel" 에서 사용하는 RGBD 카메라/좌표 상수 ---
+RGBD_IMAGE_TOPIC = 'rgbd_camera/image'
+RGBD_DEPTH_TOPIC = DEPTH_CAMERA_TOPIC
+RGBD_CAMERA_INFO_TOPIC = 'rgbd_camera/camera_info'
+RGBD_CAMERA_FRAME = 'rgbd_camera_link'
+MOVEIT_PLANNING_FRAME = 'base_footprint'
+MOVEIT_PLANNING_GROUP = 'arm'
+MOVEIT_EE_LINK = 'arm_gripper_frame_link'
+# 집기 전/후 목표 지점 위(z+)로 이만큼 띄운 자세를 먼저 거쳐간다 (충돌 회피 + 들어올리기).
+PICK_APPROACH_HEIGHT = 0.08
+# 뎁스로 잰 표면 위치보다 그리퍼가 살짝 더 파고들도록 하는 보정값 (물체를 완전히 감싸 집기 위함).
+PICK_GRASP_Z_OFFSET = -0.01
 
 # 손목 카메라로 물체를 찾는 "탐색 자세". 이 자세에서 shoulder_pan만 바꿔가며 화면 중앙에
 # 물체가 오도록 정렬한다. jdamr_cube_gazebo/worlds/room.world의 pick_object 기준으로
@@ -89,6 +106,31 @@ def colorize_depth(depth, near=DEPTH_VIEW_NEAR, far=DEPTH_VIEW_FAR):
     return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
 
+def deproject_pixel(depth, camera_info, u, v):
+    """뎁스 이미지의 픽셀 (u, v)를 rgbd_camera_link 자신의 프레임 기준 3D 점으로 되돌린다.
+
+    gz-sim의 카메라 센서는 (ROS 표준 광학 프레임이 아니라) 링크 자신의 로컬 +X축 방향을
+    바라본다. room.world의 pick_object를 카메라 정면 광선 위에 정확히 놓고 픽셀 중심(320,240)과
+    실측 깊이로 반복 검증해 확정한 변환식이다:
+        x_body = z (원시 뎁스, 카메라가 보는 방향)
+        y_body = -(u-cx)*z/fx
+        z_body = -(v-cy)*z/fy
+    """
+    height, width = depth.shape[:2]
+    ui, vi = int(round(u)), int(round(v))
+    if not (0 <= ui < width and 0 <= vi < height):
+        return None
+    z = float(depth[vi, ui])
+    if not np.isfinite(z) or z <= 0.0:
+        return None
+    fx, fy = camera_info.k[0], camera_info.k[4]
+    cx, cy = camera_info.k[2], camera_info.k[5]
+    x_body = z
+    y_body = -(u - cx) * z / fx
+    z_body = -(v - cy) * z / fy
+    return x_body, y_body, z_body
+
+
 class So101ArmControl(Node):
 
     def __init__(self, node_name='jdamr_cube_so101_arm_control'):
@@ -99,9 +141,18 @@ class So101ArmControl(Node):
             self, GripperCommand, 'gripper_controller/gripper_cmd')
         self._latest_arm_state = None
         self._latest_image = None
+        self._latest_depth = None
+        self._latest_camera_info = None
+        self._moveit_py = None
+        self._moveit_arm = None
         self._bridge = CvBridge()
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
         self.create_subscription(JointState, 'joint_states', self._joint_state_cb, 10)
         self.create_subscription(Image, CAMERA_TOPIC, self._image_cb, 1)
+        self.create_subscription(Image, RGBD_DEPTH_TOPIC, self._depth_cb, 1)
+        self.create_subscription(
+            CameraInfo, RGBD_CAMERA_INFO_TOPIC, self._camera_info_cb, 1)
 
     def _joint_state_cb(self, msg):
         if all(j in msg.name for j in ARM_JOINTS):
@@ -109,6 +160,12 @@ class So101ArmControl(Node):
 
     def _image_cb(self, msg):
         self._latest_image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+    def _depth_cb(self, msg):
+        self._latest_depth = self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+
+    def _camera_info_cb(self, msg):
+        self._latest_camera_info = msg
 
     def wait_for_current_arm_positions(self, timeout_sec=5.0):
         deadline = self.get_clock().now() + Duration(seconds=timeout_sec)
@@ -128,6 +185,17 @@ class So101ArmControl(Node):
                 return None
             rclpy.spin_once(self, timeout_sec=0.2)
         return self._latest_image
+
+    def wait_for_rgbd_depth_and_info(self, timeout_sec=5.0):
+        """rgbd_camera의 뎁스 이미지 + camera_info(내부 파라미터)를 함께 기다린다."""
+        deadline = self.get_clock().now() + Duration(seconds=timeout_sec)
+        self._latest_depth = None
+        self._latest_camera_info = None
+        while rclpy.ok() and (self._latest_depth is None or self._latest_camera_info is None):
+            if self.get_clock().now() > deadline:
+                return None, None
+            rclpy.spin_once(self, timeout_sec=0.2)
+        return self._latest_depth, self._latest_camera_info
 
     def move_joints(self, overrides, duration_sec):
         """현재 각도를 읽어와 overrides로 준 관절만 바꾼 목표를 arm_controller로 보낸다."""
@@ -235,6 +303,167 @@ class So101ArmControl(Node):
 
         self.get_logger().warn('정렬 반복 횟수를 초과했습니다. 마지막 pan 각도로 진행합니다.')
         return pan
+
+    def pixel_to_planning_frame(self, u, v, target_frame=MOVEIT_PLANNING_FRAME, timeout_sec=3.0):
+        """RGBD 카메라 픽셀 (u, v)을 target_frame(기본 base_footprint) 기준 3D 점으로 변환한다.
+        뎁스가 없거나(NaN/0) TF를 못 찾으면 None을 반환한다."""
+        depth, camera_info = self.wait_for_rgbd_depth_and_info()
+        if depth is None or camera_info is None:
+            self.get_logger().error(
+                f"'{RGBD_DEPTH_TOPIC}' 또는 '{RGBD_CAMERA_INFO_TOPIC}'을 받지 못했습니다. "
+                'jdamr_cube_gazebo/gazebo.launch.py가 실행 중인지 확인하세요.')
+            return None
+
+        point_camera = deproject_pixel(np.asarray(depth), camera_info, u, v)
+        if point_camera is None:
+            self.get_logger().error(f'픽셀 ({u:.0f}, {v:.0f})의 뎁스 값이 유효하지 않습니다.')
+            return None
+
+        stamped = PointStamped()
+        stamped.header.frame_id = RGBD_CAMERA_FRAME
+        stamped.header.stamp = rclpy.time.Time().to_msg()
+        stamped.point.x, stamped.point.y, stamped.point.z = point_camera
+
+        # lookup_transform의 timeout은 노드가 spin되지 않으면 TF 버퍼가 채워지지 않아
+        # 그대로 실패한다. 직접 spin하면서 변환이 가능해질 때까지 기다린다.
+        deadline = self.get_clock().now() + Duration(seconds=timeout_sec)
+        while rclpy.ok() and not self._tf_buffer.can_transform(
+                target_frame, RGBD_CAMERA_FRAME, rclpy.time.Time()):
+            if self.get_clock().now() > deadline:
+                self.get_logger().error(
+                    f"'{RGBD_CAMERA_FRAME}' -> '{target_frame}' TF 변환을 "
+                    f'{timeout_sec}초 안에 못 찾았습니다.')
+                return None
+            rclpy.spin_once(self, timeout_sec=0.1)
+        transform = self._tf_buffer.lookup_transform(
+            target_frame, RGBD_CAMERA_FRAME, rclpy.time.Time())
+
+        transformed = do_transform_point(stamped, transform)
+        point = transformed.point.x, transformed.point.y, transformed.point.z
+        self.get_logger().info(
+            f'픽셀 ({u:.0f}, {v:.0f}) -> {target_frame} 기준 '
+            f'x={point[0]:.3f}, y={point[1]:.3f}, z={point[2]:.3f}')
+        return point
+
+    def _init_moveit(self):
+        """moveit_py는 이 명령(pick --at-pixel)에서만 필요하므로 지연 임포트한다 — 설치되지
+        않은 환경에서도 move/view/pick(색상)/place 등 다른 명령은 정상 동작해야 한다."""
+        if getattr(self, '_moveit_py', None) is not None:
+            return self._moveit_py, self._moveit_arm
+
+        from ament_index_python.packages import get_package_share_directory
+        from moveit.planning import MoveItPy
+        from moveit_configs_utils import MoveItConfigsBuilder
+
+        urdf_file = os.path.join(
+            get_package_share_directory('jdamr_cube_description'), 'urdf', 'jdamr_cube.urdf')
+        moveit_config = (
+            MoveItConfigsBuilder('jdamr_cube', package_name='jdamr_cube_moveit_config')
+            .robot_description(file_path=urdf_file)
+            .planning_pipelines(pipelines=['ompl'])
+            .to_moveit_configs()
+        )
+        # moveit_ros_move_group(런치 파일)과 moveit_py가 내부적으로 쓰는 MoveItCpp는
+        # 파이프라인 이름 목록을 서로 다른 파라미터 이름으로 읽는다:
+        #   move_group      -> 최상위 'planning_pipelines' (문자열 리스트)
+        #   MoveItCpp(moveit_py) -> 'planning_pipelines.pipeline_names'
+        # MoveItConfigsBuilder.planning_pipelines()는 move_group 형식만 채워주므로
+        # MoveItCpp가 읽는 중첩 키를 여기서 추가해준다.
+        config_dict = moveit_config.to_dict()
+        config_dict['planning_pipelines'] = {'pipeline_names': list(config_dict['planning_pipelines'])}
+        # MoveItCpp는 어느 파이프라인/플래너를 쓸지도 'plan_request_params.*' 파라미터로 읽는다
+        # (안 주면 planning_pipeline이 빈 문자열로 기본값 처리돼 플래닝이 바로 실패한다).
+        config_dict['plan_request_params'] = {
+            'planning_pipeline': 'ompl',
+            'planner_id': 'RRTConnectkConfigDefault',
+            'planning_time': 5.0,
+            'planning_attempts': 5,
+            'max_velocity_scaling_factor': 0.3,
+            'max_acceleration_scaling_factor': 0.3,
+        }
+        # Gazebo 시뮬레이션 클럭 기준으로 joint_states 타임스탬프를 해석해야
+        # 궤적 실행 전 현재 상태 검증이 통과한다 (없으면 실행이 바로 실패).
+        # 주의: use_sim_time만 주면 내부 노드가 /clock 구독의 qos_overrides 파라미터를
+        # 선언하다 InvalidParameterValueException으로 죽는다(moveit_py 2.12.4 실측).
+        # qos_overrides 기본값 4개를 함께 미리 넣어주면 회피된다.
+        config_dict['use_sim_time'] = True
+        config_dict['qos_overrides./clock.subscription.depth'] = 1
+        config_dict['qos_overrides./clock.subscription.durability'] = 'volatile'
+        config_dict['qos_overrides./clock.subscription.history'] = 'keep_last'
+        config_dict['qos_overrides./clock.subscription.reliability'] = 'best_effort'
+
+        self.get_logger().info('MoveItPy를 초기화합니다 (몇 초 걸릴 수 있습니다)...')
+        self._moveit_py = MoveItPy(
+            node_name='jdamr_cube_pick_moveit_py', config_dict=config_dict)
+        self._moveit_arm = self._moveit_py.get_planning_component(MOVEIT_PLANNING_GROUP)
+        return self._moveit_py, self._moveit_arm
+
+    def _moveit_move_to(self, x, y, z, frame_id=MOVEIT_PLANNING_FRAME):
+        """MoveIt2(OMPL)로 arm_gripper_frame_link를 (x, y, z) 위치로 플래닝/실행한다.
+
+        주의: PoseStamped 목표를 쓰면 안 된다 — 목표 제약에 방향(orientation)까지 포함돼
+        position_only_ik(KDL)가 찾은 '위치만 맞는' 해가 전부 기각되어 5-DOF 팔에서는
+        플래닝이 항상 실패한다(실측). 위치 제약만 담은 Constraints를 직접 만들어 준다.
+        """
+        from moveit.core.kinematic_constraints import construct_link_constraint
+
+        moveit_py, arm = self._init_moveit()
+
+        # moveit_py의 첫 execute() 호출이 컨트롤러/실행매니저 초기화 레이스로 가끔 바로
+        # 실패한다(실측). 매번 새로 plan한 뒤 실행하고, 실패하면 최대 2회까지 재시도한다.
+        for attempt in range(1, 3):
+            constraint = construct_link_constraint(
+                link_name=MOVEIT_EE_LINK,
+                source_frame=frame_id,
+                cartesian_position=[x, y, z],
+                cartesian_position_tolerance=0.01)
+            arm.set_start_state_to_current_state()
+            arm.set_goal_state(motion_plan_constraints=[constraint])
+            plan_result = arm.plan()
+            if not plan_result:
+                self.get_logger().error(
+                    f'MoveIt 플래닝 실패: 목표 x={x:.3f}, y={y:.3f}, z={z:.3f} ({frame_id}).')
+                return False
+
+            self.get_logger().info(
+                f'MoveIt 플랜 실행: x={x:.3f}, y={y:.3f}, z={z:.3f} ({frame_id}).')
+            if moveit_py.execute(plan_result.trajectory, controllers=[]):
+                return True
+            self.get_logger().warn(
+                f'MoveIt 궤적 실행 실패 (시도 {attempt}/2). 다시 시도합니다.')
+
+        self.get_logger().error('MoveIt 궤적 실행에 2회 실패했습니다.')
+        return False
+
+    def pick_at_pixel(self, u, v, approach_height=PICK_APPROACH_HEIGHT, z_offset=PICK_GRASP_Z_OFFSET):
+        """뎁스카메라 픽셀 (u, v) 위치를 3D로 되돌려 MoveIt2(OMPL)로 그 지점을 집는다."""
+        point = self.pixel_to_planning_frame(u, v)
+        if point is None:
+            return False
+        target_x, target_y, target_z = point
+        target_z += z_offset
+
+        if not self.send_gripper_goal(GRIPPER_OPEN):
+            return False
+
+        self.get_logger().info('목표 위 지점(pre-grasp)으로 접근합니다.')
+        if not self._moveit_move_to(target_x, target_y, target_z + approach_height):
+            return False
+
+        self.get_logger().info('목표 지점까지 내려갑니다.')
+        if not self._moveit_move_to(target_x, target_y, target_z):
+            return False
+
+        self.get_logger().info('그리퍼를 닫아 집습니다.')
+        if not self.send_gripper_goal(GRIPPER_CLOSED):
+            return False
+
+        self.get_logger().info('들어올립니다.')
+        if not self._moveit_move_to(target_x, target_y, target_z + approach_height):
+            return False
+
+        self.get_logger().info('pick --at-pixel 동작을 완료했습니다.')
+        return True
 
     def pick(self, color='pink'):
         if color not in COLOR_PRESETS:
@@ -402,9 +631,15 @@ def parse_move_args(argv):
 def parse_pick_args(argv):
     parser = argparse.ArgumentParser(
         prog='joint_control pick',
-        description='손목 카메라 + OpenCV 색상 검출로 물체를 찾아 집는다.')
+        description='물체를 찾아 집는다. 기본은 손목 카메라 + OpenCV 색상 검출이고, '
+                    '--at-pixel U V를 주면 상단 RGBD 뎁스카메라 픽셀 좌표를 3D로 되돌려 '
+                    'MoveIt2(OMPL)로 그 지점을 집는다.')
     parser.add_argument('--color', default='pink', choices=list(COLOR_PRESETS),
-                        help='찾을 물체 색상 프리셋 (기본값 pink)')
+                        help='(색상 검출 방식) 찾을 물체 색상 프리셋 (기본값 pink)')
+    parser.add_argument('--at-pixel', type=float, nargs=2, default=None, metavar=('U', 'V'),
+                        help="(MoveIt2 방식) 'rgbd' 카메라 화면의 픽셀 좌표 U V를 지정하면 "
+                             '뎁스로 3D 위치를 구해 MoveIt2로 그 지점을 집는다. '
+                             "먼저 'joint_control view --camera rgbd'로 좌표를 확인하세요.")
     return parser.parse_args(argv)
 
 
@@ -467,12 +702,25 @@ def main(args=None):
     elif command == 'view':
         node.view_camera(view_topic, parsed.near, parsed.far)
     elif command == 'pick':
-        ok = node.pick(parsed.color)
+        if parsed.at_pixel is not None:
+            ok = node.pick_at_pixel(parsed.at_pixel[0], parsed.at_pixel[1])
+        else:
+            ok = node.pick(parsed.color)
     elif command == 'place':
         ok = node.place(parsed.pan)
 
+    used_moveit = node._moveit_py is not None
+    if used_moveit:
+        node._moveit_py.shutdown()
     node.destroy_node()
     rclpy.shutdown()
+    if used_moveit:
+        # moveit_py(2.12.4)의 C++ 소멸자가 프로세스 종료 시점에 segfault를 내는
+        # 알려진 버그가 있다. 실제 작업은 이미 끝났으므로, 소멸자를 건너뛰고
+        # 우리가 계산한 성공/실패 코드로 즉시 종료한다.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0 if ok else 1)
     sys.exit(0 if ok else 1)
 
 

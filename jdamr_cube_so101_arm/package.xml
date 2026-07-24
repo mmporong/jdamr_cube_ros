@@ -10,12 +10,21 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>control_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>trajectory_msgs</exec_depend>
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>jdamr_cube_gazebo</exec_depend>
+  <exec_depend>jdamr_cube_description</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <!-- "pick 명령의 at-pixel 옵션"(MoveIt2 기반 픽셀 pick)에서만 지연 임포트로 사용.
+       설치 안 돼 있어도 다른 명령(move/view/pick/place)은 정상 동작해야 한다. -->
+  <exec_depend>moveit_py</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>jdamr_cube_moveit_config</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

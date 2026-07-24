@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--This does not replace URDF, and is not an extension of URDF.
+    This is a format for representing semantic information about the robot structure.
+    A URDF file must exist for this robot as well, where the joints and the links that are
+    referenced are defined (jdamr_cube_description/urdf/jdamr_cube.urdf).
+-->
+<robot name="jdamr_cube">
+    <!-- 5-DOF so101 팔. 위치만 맞추면 충분하므로(kinematics.yaml에서 position_only_ik: true)
+         베이스~그리퍼 TCP(arm_gripper_frame_link)까지를 체인으로 묶는다. -->
+    <group name="arm">
+        <chain base_link="arm_base_link" tip_link="arm_gripper_frame_link"/>
+    </group>
+    <group name="gripper">
+        <joint name="arm_gripper"/>
+    </group>
+
+    <!--GROUP STATES-->
+    <group_state name="home" group="arm">
+        <joint name="arm_shoulder_pan" value="0"/>
+        <joint name="arm_shoulder_lift" value="0"/>
+        <joint name="arm_elbow_flex" value="0"/>
+        <joint name="arm_wrist_flex" value="0"/>
+        <joint name="arm_wrist_roll" value="0"/>
+    </group_state>
+    <group_state name="open" group="gripper">
+        <joint name="arm_gripper" value="1.7"/>
+    </group_state>
+    <group_state name="closed" group="gripper">
+        <joint name="arm_gripper" value="-0.17"/>
+    </group_state>
+
+    <!--END EFFECTOR-->
+    <end_effector name="gripper" parent_link="arm_gripper_frame_link" group="gripper"/>
+
+    <!--VIRTUAL JOINT: 로봇 베이스를 planning frame(odom)에 고정. 실제로는 diff_drive 플러그인이
+        odom->base_footprint TF를 계속 발행하므로, 피킹 중에는 로봇이 정지해 있다고 가정한다.-->
+    <virtual_joint name="virtual_joint" type="fixed" parent_frame="odom" child_link="base_footprint"/>
+
+    <!--DISABLE COLLISIONS: 인접(자기 몸에 물리적으로 붙어있는) 링크 쌍은 항상 닿아있으므로 제외.-->
+    <disable_collisions link1="base_footprint" link2="base_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="left_wheel_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="right_wheel_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="caster_link_front" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="caster_link_rear" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="laser_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="rgbd_mast_link" reason="Adjacent"/>
+    <disable_collisions link1="rgbd_mast_link" link2="rgbd_camera_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="arm_riser_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_riser_link" link2="arm_base_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_base_link" link2="arm_shoulder_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_shoulder_link" link2="arm_upper_arm_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_upper_arm_link" link2="arm_lower_arm_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_lower_arm_link" link2="arm_wrist_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_wrist_link" link2="arm_wrist_camera_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_wrist_link" link2="arm_gripper_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_gripper_link" link2="arm_moving_jaw_link" reason="Adjacent"/>
+    <disable_collisions link1="arm_gripper_link" link2="arm_gripper_frame_link" reason="Adjacent"/>
+    <!-- 팔 베이스 근처 부품들은 서로 메쉬가 겹쳐 있어(원본 SO-101 조립체) 항상 충돌 판정됨 -->
+    <disable_collisions link1="arm_riser_link" link2="arm_shoulder_link" reason="Default"/>
+    <disable_collisions link1="arm_base_link" link2="arm_riser_link" reason="Default"/>
+    <disable_collisions link1="base_link" link2="arm_base_link" reason="Default"/>
+    <!-- 그리퍼 손목/집게 부위는 서로 가까워 그리퍼를 닫으면(움직이는 집게가 안으로 접힘)
+         손목 카메라/그리퍼 프레임과 접촉 판정이 난다. 물리적으로 정상 동작이므로 제외. -->
+    <disable_collisions link1="arm_moving_jaw_link" link2="arm_wrist_camera_link" reason="Never"/>
+    <disable_collisions link1="arm_moving_jaw_link" link2="arm_wrist_link" reason="Never"/>
+    <disable_collisions link1="arm_moving_jaw_link" link2="arm_gripper_frame_link" reason="Never"/>
+    <disable_collisions link1="arm_gripper_link" link2="arm_wrist_camera_link" reason="Never"/>
+    <disable_collisions link1="arm_wrist_camera_link" link2="arm_gripper_frame_link" reason="Never"/>
+</robot>

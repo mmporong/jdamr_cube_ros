@@ -16,6 +16,8 @@ PATTERNS=(
   "lifecycle_manager"
   "joint_control"
   "ros_gz_image"
+  "move_group"
+  "move_group.launch.py"
 )
 
 for p in "${PATTERNS[@]}"; do

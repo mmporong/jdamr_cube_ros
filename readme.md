@@ -13,7 +13,8 @@ JD-AMR "cube" 로봇용 ROS 2 워크스페이스. 실물 하드웨어 브링업,
 | `jdamr_cube_cartographer` | Cartographer 기반 2D SLAM |
 | `jdamr_cube_gazebo` | Gazebo 시뮬레이션 launch/월드/브릿지 설정 |
 | `jdamr_cube_navigation` | Nav2 기반 좌표 이동(`goto_pose`). 저장된 맵을 로드해 목표 좌표로 자율주행 |
-| `jdamr_cube_so101_arm` | SO-101 팔 관절 각도 제어 CLI(`joint_control`) |
+| `jdamr_cube_so101_arm` | SO-101 팔 관절 각도 제어 + 뎁스카메라 픽셀 기반 MoveIt2 pick CLI(`joint_control`) |
+| `jdamr_cube_moveit_config` | SO-101 팔 MoveIt2 설정(SRDF/kinematics/controllers/OMPL, `move_group` launch) |
 | `ldlidar_sl_ros2` | LDRobot LD14 라이다 드라이버 (C++) |
 
 ## 빌드 환경 검증 (ROS 2 Jazzy / WSL Ubuntu 24.04)
@@ -218,6 +219,70 @@ arm_control.bat view --camera depth --near 0.2 --far 1.0   :: 표시 범위를 �
    `arm_shoulder_pan`이 여전히 0.8, `arm_wrist_roll`이 여전히 -1.0로 유지된 채 `arm_elbow_flex`만
    0.6으로 바뀌는지 확인 (터미널 로그의 "팔 목표 전송:" 줄에 그대로 표시됩니다)
 5. `arm_control.bat --gripper 1.5` 실행 → "그리퍼 이동 완료" 로그와 함께 그리퍼가 열림
+
+### 뎁스카메라 픽셀 위치로 집기 (MoveIt2, `pick --at-pixel`)
+
+상단 RGBD 뎁스카메라 화면에서 **집고 싶은 물체의 픽셀 좌표 (u, v)** 를 주면, 그 픽셀의 뎁스 값으로
+3D 위치를 복원한 뒤 [MoveIt2](https://moveit.ai/)(OMPL 모션플래닝)로 팔을 그 지점까지 움직여 집습니다.
+앞의 `pick`(손목 카메라 색상 검출 + 튜닝된 고정 자세)과 달리, 이 방식은 **임의의 위치**에 대해
+매번 IK/모션플래닝을 다시 풀기 때문에 물체가 팔 작업공간(reach) 안에 있기만 하면 됩니다.
+
+동작 순서: (1) 픽셀 → 뎁스 → `rgbd_camera_link` 기준 3D → TF로 `base_footprint` 기준 3D 변환,
+(2) 그리퍼 열기, (3) 목표 지점 8cm 위(pre-grasp)로 이동, (4) 목표 지점까지 하강, (5) 그리퍼 닫기,
+(6) 다시 8cm 들어올리기. 각 이동은 `move_group`을 따로 띄울 필요 없이 CLI 안에서 `MoveItPy`가
+직접 플래닝/실행합니다.
+
+먼저 뎁스/컬러 창으로 집을 픽셀 좌표를 확인한 뒤 그 값을 넘깁니다.
+
+```bat
+:: 1) rgbd(또는 depth) 창을 띄워 집을 물체의 픽셀 좌표(u, v)를 눈으로 확인
+arm_control.bat view --camera rgbd
+
+:: 2) 그 픽셀 위치를 집기 (예: u=402, v=449)
+arm_control.bat pick --at-pixel 402 449
+```
+
+수동 실행:
+
+```bash
+source install/setup.bash
+ros2 run jdamr_cube_so101_arm joint_control pick --at-pixel 402 449
+```
+
+- 픽셀 → 3D 복원식은 gz-sim 카메라 센서가 (ROS 광학 프레임이 아니라) 링크 로컬 +X축을 바라보는
+  규약을 반영해, room.world의 물체를 카메라 광선 위에 정확히 놓고 실측으로 검증한 값입니다
+  (화면 중앙 물체가 계산상 예상 깊이와 mm 단위로 일치). `arm_gripper_frame_link`(그리퍼 TCP)를
+  목표 위치에 맞추며, SO-101은 5-DOF라 자세(orientation)까지는 맞추지 못하므로 위치만 맞추는
+  IK(`position_only_ik`)를 씁니다.
+- 물체가 팔 리치를 벗어나 IK 해가 없으면 "MoveIt 플래닝 실패" 로그를 남기고 종료 코드 1로 끝납니다.
+- `moveit_py`는 이 명령에서만 지연 임포트하므로, MoveIt2가 설치되지 않은 환경에서도 나머지 명령
+  (`move`/`view`/`pick`/`place`)은 정상 동작합니다. MoveIt2가 필요하면:
+  `sudo apt-get install ros-jazzy-moveit-py ros-jazzy-moveit-configs-utils ros-jazzy-moveit-simple-controller-manager`
+
+**테스트 방법** (실제로 이 순서로 Gazebo에서 검증):
+
+1. `run_gazebo_slam.bat` 등으로 시뮬레이터 실행(room.world). `pick_object`(핑크 큐브)가 팔 작업공간
+   안(예: 로봇 상판 위)에 놓여 있어야 합니다.
+2. `arm_control.bat view --camera rgbd`로 큐브의 화면 픽셀 좌표를 확인
+3. `arm_control.bat pick --at-pixel <u> <v>` 실행 → 로그에 "픽셀 (u, v) -> base_footprint 기준
+   x=…, y=…, z=…"로 복원된 3D 좌표가 찍히고, pre-grasp → 하강 → 그리퍼 닫기 → 들어올리기가
+   차례로 실행된 뒤 "pick --at-pixel 동작을 완료했습니다."가 출력됩니다.
+4. Gazebo에서 큐브가 그리퍼에 물려 함께 들려 올라가는지 확인(월드 상태에서 큐브의 z가 올라감).
+
+**구현하면서 발견/해결한 문제**:
+
+- **`move_group`이 "Planning plugin name is empty"로 크래시**: 이 MoveIt 버전(2.12.4)은 예전
+  예제의 평평한 `move_group.planning_plugin` 스키마가 아니라 `MoveItConfigsBuilder`가 만드는
+  버전에 맞는 파라미터를 요구함. launch를 `MoveItConfigsBuilder` 기반으로 재작성해 해결.
+- **`MoveItPy`가 "Failed to load planning pipelines"**: `move_group`은 최상위
+  `planning_pipelines`(문자열 리스트)를, `MoveItCpp`(moveit_py)는 `planning_pipelines.pipeline_names`를
+  읽는 등 파라미터 이름이 달라서, config_dict에 `pipeline_names`와 `plan_request_params.*`를 직접 보강.
+- **`use_sim_time`을 주면 `/clock` 구독의 `qos_overrides` 파라미터 선언 중 크래시**: qos_overrides
+  기본값 4개를 미리 넣어 회피.
+- **PoseStamped 목표로는 플래닝이 항상 실패**: 5-DOF + `position_only_ik`에서는 목표에 방향까지
+  포함되면 IK 해가 전부 기각됨. 위치만 담은 `construct_link_constraint`로 목표를 준다.
+- **집은 뒤 들어올릴 때 자기충돌로 플래닝 거부**: 그리퍼를 닫으면 `arm_moving_jaw_link`가
+  `arm_wrist_camera_link`와 접촉 판정됨. SRDF `disable_collisions`에 해당 쌍들을 추가.
 
 ## Gazebo + Cartographer로 맵 생성하기
 

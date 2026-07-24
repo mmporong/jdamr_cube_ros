@@ -164,7 +164,7 @@
           </inertia>
         </inertial>
         <collision name="collision">
-          <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
           <surface>
             <friction>
               <ode><mu>1.2</mu><mu2>1.2</mu2></ode>
@@ -172,7 +172,7 @@
           </surface>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
           <material><ambient>0.9 0.1 0.6 1</ambient><diffuse>0.9 0.1 0.6 1</diffuse></material>
         </visual>
       </link>
