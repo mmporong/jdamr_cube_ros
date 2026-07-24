@@ -187,14 +187,23 @@ ros2 run jdamr_cube_so101_arm joint_control --shoulder-pan 0 --shoulder-lift 0 -
 
 **카메라 화면**: `run_gazebo_slam.bat`/`run_navigation.bat`을 실행하면 손목 카메라(`wrist`),
 상단 RGBD 컬러 카메라(`rgbd`), RGBD 뎁스 카메라(`depth`) 창 3개가 시작할 때 자동으로 함께 뜹니다.
-뎁스 화면은 가까울수록 빨강, 멀거나 반사가 없는 곳(NaN/무한대)은 파랑에 가깝게 컬러맵을 입혀서
-보여줍니다. 수동으로 띄우거나 닫힌 창을 다시 열고 싶으면:
+뎁스 화면은 근/원 범위(기본 0.1~3.0m) 안에 있는 픽셀은 흰색, 그 범위를 벗어나거나(너무
+가깝거나/멀거나) 반사가 없는 곳(NaN/무한대)은 검정으로 표시합니다. 수동으로 띄우거나 닫힌 창을
+다시 열고 싶으면:
 
 ```bat
 arm_control.bat view --camera wrist
 arm_control.bat view --camera rgbd
 arm_control.bat view --camera depth
+arm_control.bat view --camera depth --near 0.2 --far 1.0   :: 표시 범위를 직접 지정해서 시작
 ```
+
+뎁스 창의 near/far 범위는 창이 떠 있는 동안에도 실시간으로 조절할 수 있습니다(0.05m 단위):
+- **버튼**: 뎁스 창을 열면 `Near -`/`Near +`/`Far -`/`Far +` 버튼이 있는 Qt 컨트롤 패널이
+  함께 뜹니다(OpenCV가 Qt로 빌드된 경우; 이 저장소가 검증한 환경에서는 정상 동작).
+- **키보드**: 이미지 창에 포커스를 준 상태에서 `[`/`]` = near 감소/증가, `,`/`.` = far 감소/증가.
+
+조절할 때마다 터미널에 현재 값이 로그로 출력됩니다.
 
 창에서 `q`를 누르거나 터미널에서 Ctrl+C로 닫습니다. 여러 창을 동시에 띄워도 ROS 2 노드 이름이
 겹치지 않도록 카메라별로 고유한 이름(`jdamr_cube_camera_view_<토픽>`)을 사용합니다.

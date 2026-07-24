@@ -81,12 +81,12 @@ def detect_object_center(image_bgr, hsv_lower, hsv_upper, min_area=50):
 
 
 def colorize_depth(depth, near=DEPTH_VIEW_NEAR, far=DEPTH_VIEW_FAR):
-    """rgbd_camera의 32FC1 depth 원본을 화면에 보이도록 컬러맵을 입힌 8비트 이미지로 바꾼다.
-    가까울수록 빨강, 멀거나 반사가 없는(NaN/inf) 곳은 파랑에 가깝게 표시."""
-    depth = np.nan_to_num(depth, nan=far, posinf=far, neginf=near)
-    depth = np.clip(depth, near, far)
-    normalized = ((depth - near) / (far - near) * 255.0).astype(np.uint8)
-    return cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+    """rgbd_camera의 32FC1 depth 원본을 화면에 보이는 8비트 이미지로 바꾼다.
+    near~far 범위 안에 있는 픽셀은 흰색, 벗어나면(너무 가깝거나 멀거나 반사가 없는 NaN/inf)
+    검정으로 그린다."""
+    in_range = np.isfinite(depth) & (depth >= near) & (depth <= far)
+    mask = np.where(in_range, np.uint8(255), np.uint8(0))
+    return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
 
 class So101ArmControl(Node):
@@ -288,32 +288,79 @@ class So101ArmControl(Node):
         self.get_logger().info('place 동작을 완료했습니다.')
         return True
 
-    def view_camera(self, topic=None):
-        """지정한 카메라 화면을 창으로 띄운다. 창에서 'q'를 누르거나 Ctrl+C로 종료."""
+    def view_camera(self, topic=None, near=DEPTH_VIEW_NEAR, far=DEPTH_VIEW_FAR):
+        """지정한 카메라 화면을 창으로 띄운다. 창에서 'q'를 누르거나 Ctrl+C로 종료.
+        depth 카메라일 때는 near~far 범위 안만 흰색으로 표시하며, 창의 Near-/Near+/Far-/Far+
+        버튼(또는 '['/']'/','/'.' 키)으로 범위를 실시간으로 조절할 수 있다."""
         topic = topic or CAMERA_TOPIC
         is_depth = topic == DEPTH_CAMERA_TOPIC
         self.get_logger().info(
             f"'{topic}' 화면을 표시합니다. 창을 클릭한 뒤 'q'를 누르면 종료합니다 "
             '(Ctrl+C로도 종료 가능).')
         latest = {'image': None}
+        depth_range = {'near': near, 'far': far}
+        depth_step = 0.05
+
+        def _adjust(field, delta):
+            if field == 'near':
+                depth_range['near'] = max(0.0, min(depth_range['far'], depth_range['near'] + delta))
+            else:
+                depth_range['far'] = max(depth_range['near'], depth_range['far'] + delta)
+            self.get_logger().info(
+                f"뎁스 표시 범위 변경: near={depth_range['near']:.2f}m, "
+                f"far={depth_range['far']:.2f}m")
 
         def _cb(msg):
             if is_depth:
                 raw = self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-                latest['image'] = colorize_depth(np.asarray(raw))
+                latest['image'] = colorize_depth(
+                    np.asarray(raw), depth_range['near'], depth_range['far'])
             else:
                 latest['image'] = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
         sub = self.create_subscription(Image, topic, _cb, 1)
         window = f'jdamr_cube camera: {topic}'
         cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+
+        if is_depth:
+            self.get_logger().info(
+                f'뎁스 표시 범위: near={near:.2f}m, far={far:.2f}m '
+                "(창의 Near-/Near+/Far-/Far+ 버튼 또는 '['/']'/','/'.'  키로 조절, 0.05m 단위)")
+            try:
+                cv2.createButton(
+                    'Near -', lambda state, _: _adjust('near', -depth_step),
+                    None, cv2.QT_PUSH_BUTTON, 0)
+                cv2.createButton(
+                    'Near +', lambda state, _: _adjust('near', depth_step),
+                    None, cv2.QT_PUSH_BUTTON, 0)
+                cv2.createButton(
+                    'Far -', lambda state, _: _adjust('far', -depth_step),
+                    None, cv2.QT_PUSH_BUTTON, 0)
+                cv2.createButton(
+                    'Far +', lambda state, _: _adjust('far', depth_step),
+                    None, cv2.QT_PUSH_BUTTON, 0)
+            except cv2.error:
+                self.get_logger().warn(
+                    '이 OpenCV 빌드는 버튼(Qt)을 지원하지 않습니다. '
+                    "'['/']'/','/'.' 키로 조절하세요.")
+
         try:
             while rclpy.ok():
                 rclpy.spin_once(self, timeout_sec=0.1)
                 if latest['image'] is not None:
                     cv2.imshow(window, latest['image'])
-                if (cv2.waitKey(1) & 0xFF) == ord('q'):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     break
+                if is_depth and key in (ord('['), ord(']'), ord(','), ord('.')):
+                    if key == ord('['):
+                        _adjust('near', -depth_step)
+                    elif key == ord(']'):
+                        _adjust('near', depth_step)
+                    elif key == ord(','):
+                        _adjust('far', -depth_step)
+                    elif key == ord('.'):
+                        _adjust('far', depth_step)
         finally:
             cv2.destroyAllWindows()
             self.destroy_subscription(sub)
@@ -328,6 +375,10 @@ def parse_view_args(argv):
                              'depth=상단 RGBD 뎁스 카메라, 기본값 wrist)')
     parser.add_argument('--topic', default=None,
                         help='--camera 대신 임의의 이미지 토픽을 직접 지정')
+    parser.add_argument('--near', type=float, default=DEPTH_VIEW_NEAR,
+                        help=f'depth 카메라: 흰색으로 표시할 최소 거리 [m] (기본값 {DEPTH_VIEW_NEAR})')
+    parser.add_argument('--far', type=float, default=DEPTH_VIEW_FAR,
+                        help=f'depth 카메라: 흰색으로 표시할 최대 거리 [m] (기본값 {DEPTH_VIEW_FAR})')
     return parser.parse_args(argv)
 
 
@@ -414,7 +465,7 @@ def main(args=None):
         if parsed.gripper is not None:
             ok = node.send_gripper_goal(parsed.gripper) and ok
     elif command == 'view':
-        node.view_camera(view_topic)
+        node.view_camera(view_topic, parsed.near, parsed.far)
     elif command == 'pick':
         ok = node.pick(parsed.color)
     elif command == 'place':
