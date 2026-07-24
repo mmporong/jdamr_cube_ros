@@ -91,6 +91,12 @@ def generate_launch_description():
         arguments=['wrist_camera/image_raw'],
         output='screen')
 
+    rgbd_camera_bridge_node = Node(
+        package='ros_gz_image',
+        executable='image_bridge',
+        arguments=['rgbd_camera/image', 'rgbd_camera/depth_image'],
+        output='screen')
+
     # so101 팔은 gz_ros2_control(URDF의 <ros2_control>/<gazebo><plugin gz_ros2_control-system>)로
     # 노출되는데, 스폰 전에는 controller_manager 서비스가 없어 스포너가 실패한다.
     # spawn_entity_node가 끝난 뒤 joint_state_broadcaster -> arm_controller -> gripper_controller
@@ -124,6 +130,7 @@ def generate_launch_description():
     ld.add_action(spawn_entity_node)
     ld.add_action(bridge_node)
     ld.add_action(wrist_camera_bridge_node)
+    ld.add_action(rgbd_camera_bridge_node)
     ld.add_action(RegisterEventHandler(
         OnProcessExit(target_action=spawn_entity_node, on_exit=[load_joint_state_broadcaster])))
     ld.add_action(RegisterEventHandler(

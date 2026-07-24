@@ -14,6 +14,8 @@ PATTERNS=(
   "navigation.launch.py"
   "component_container_isolated"
   "lifecycle_manager"
+  "joint_control"
+  "ros_gz_image"
 )
 
 for p in "${PATTERNS[@]}"; do

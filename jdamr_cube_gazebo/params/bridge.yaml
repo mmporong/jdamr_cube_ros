@@ -46,3 +46,23 @@
   ros_type_name: "sensor_msgs/msg/LaserScan"
   gz_type_name: "gz.msgs.LaserScan"
   direction: GZ_TO_ROS
+
+# gz topic published by wrist_camera sensor (image 자체는 ros_gz_image가 별도로 브릿지)
+- ros_topic_name: "wrist_camera/camera_info"
+  gz_topic_name: "wrist_camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# gz topic published by rgbd_camera 센서 (color/depth 이미지는 ros_gz_image가 별도로 브릿지)
+- ros_topic_name: "rgbd_camera/camera_info"
+  gz_topic_name: "rgbd_camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "rgbd_camera/points"
+  gz_topic_name: "rgbd_camera/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "gz.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS

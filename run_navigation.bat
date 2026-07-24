@@ -41,8 +41,12 @@ timeout /t 12 /nobreak >nul
 start "2. Nav2 (jdamr_cube_navigation)" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_run_navigation.sh'"
 timeout /t 8 /nobreak >nul
 
+start "3. Wrist camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera wrist"
+start "4. RGBD overview camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera rgbd"
+start "5. RGBD depth camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera depth"
+
 echo.
-echo Both windows launched. Nav2 loads ~/maps/jdamr_cube_room.yaml by default
+echo All 5 windows launched. Nav2 loads ~/maps/jdamr_cube_room.yaml by default
 echo (create it first with run_gazebo_slam.bat + save_map.bat if you have not yet).
 echo.
 echo Send the robot to a goal from another terminal:

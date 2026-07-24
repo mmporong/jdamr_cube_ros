@@ -185,6 +185,20 @@ ros2 run jdamr_cube_so101_arm joint_control --shoulder-pan 0 --shoulder-lift 0 -
 (전부 rad 단위, 관절 범위는 위 표 참고), `--duration`(팔 이동 시간, 초 단위, 기본 3.0). 최소 하나는
 지정해야 하며, 아무것도 지정하지 않으면 사용법 에러(종료 코드 1)를 출력합니다.
 
+**카메라 화면**: `run_gazebo_slam.bat`/`run_navigation.bat`을 실행하면 손목 카메라(`wrist`),
+상단 RGBD 컬러 카메라(`rgbd`), RGBD 뎁스 카메라(`depth`) 창 3개가 시작할 때 자동으로 함께 뜹니다.
+뎁스 화면은 가까울수록 빨강, 멀거나 반사가 없는 곳(NaN/무한대)은 파랑에 가깝게 컬러맵을 입혀서
+보여줍니다. 수동으로 띄우거나 닫힌 창을 다시 열고 싶으면:
+
+```bat
+arm_control.bat view --camera wrist
+arm_control.bat view --camera rgbd
+arm_control.bat view --camera depth
+```
+
+창에서 `q`를 누르거나 터미널에서 Ctrl+C로 닫습니다. 여러 창을 동시에 띄워도 ROS 2 노드 이름이
+겹치지 않도록 카메라별로 고유한 이름(`jdamr_cube_camera_view_<토픽>`)을 사용합니다.
+
 **테스트 방법** (실제로 이 순서로 검증):
 
 1. `run_gazebo_slam.bat` 또는 `ros2 launch jdamr_cube_gazebo gazebo.launch.py`로 시뮬레이터 실행

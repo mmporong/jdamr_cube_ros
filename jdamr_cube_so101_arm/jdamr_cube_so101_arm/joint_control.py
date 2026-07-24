@@ -27,6 +27,16 @@ CAMERA_TOPIC = 'wrist_camera/image_raw'
 IMAGE_WIDTH = 640
 IMAGE_CENTER_X = IMAGE_WIDTH / 2.0
 
+# `view` 명령에서 --camera로 고를 수 있는 카메라 토픽 프리셋.
+DEPTH_CAMERA_TOPIC = 'rgbd_camera/depth_image'
+CAMERA_TOPICS = {
+    'wrist': CAMERA_TOPIC,
+    'rgbd': 'rgbd_camera/image',
+    'depth': DEPTH_CAMERA_TOPIC,
+}
+DEPTH_VIEW_NEAR = 0.1  # 이 거리 이하는 가장 가까운 색(빨강)으로 표시
+DEPTH_VIEW_FAR = 3.0   # 이 거리 이상/무한대(NaN)는 가장 먼 색(파랑)으로 표시
+
 # 손목 카메라로 물체를 찾는 "탐색 자세". 이 자세에서 shoulder_pan만 바꿔가며 화면 중앙에
 # 물체가 오도록 정렬한다. jdamr_cube_gazebo/worlds/room.world의 pick_object 기준으로
 # 시뮬레이션에서 실측/튜닝한 값.
@@ -70,10 +80,19 @@ def detect_object_center(image_bgr, hsv_lower, hsv_upper, min_area=50):
     return moments['m10'] / moments['m00'], moments['m01'] / moments['m00']
 
 
+def colorize_depth(depth, near=DEPTH_VIEW_NEAR, far=DEPTH_VIEW_FAR):
+    """rgbd_camera의 32FC1 depth 원본을 화면에 보이도록 컬러맵을 입힌 8비트 이미지로 바꾼다.
+    가까울수록 빨강, 멀거나 반사가 없는(NaN/inf) 곳은 파랑에 가깝게 표시."""
+    depth = np.nan_to_num(depth, nan=far, posinf=far, neginf=near)
+    depth = np.clip(depth, near, far)
+    normalized = ((depth - near) / (far - near) * 255.0).astype(np.uint8)
+    return cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+
+
 class So101ArmControl(Node):
 
-    def __init__(self):
-        super().__init__('jdamr_cube_so101_arm_control')
+    def __init__(self, node_name='jdamr_cube_so101_arm_control'):
+        super().__init__(node_name)
         self._arm_client = ActionClient(
             self, FollowJointTrajectory, 'arm_controller/follow_joint_trajectory')
         self._gripper_client = ActionClient(
@@ -269,22 +288,47 @@ class So101ArmControl(Node):
         self.get_logger().info('place 동작을 완료했습니다.')
         return True
 
-    def view_camera(self):
-        """손목 카메라 화면을 창으로 띄운다. 창에서 'q'를 누르거나 Ctrl+C로 종료."""
+    def view_camera(self, topic=None):
+        """지정한 카메라 화면을 창으로 띄운다. 창에서 'q'를 누르거나 Ctrl+C로 종료."""
+        topic = topic or CAMERA_TOPIC
+        is_depth = topic == DEPTH_CAMERA_TOPIC
         self.get_logger().info(
-            f"'{CAMERA_TOPIC}' 화면을 표시합니다. 창을 클릭한 뒤 'q'를 누르면 종료합니다 "
+            f"'{topic}' 화면을 표시합니다. 창을 클릭한 뒤 'q'를 누르면 종료합니다 "
             '(Ctrl+C로도 종료 가능).')
-        window = 'jdamr_cube wrist camera'
+        latest = {'image': None}
+
+        def _cb(msg):
+            if is_depth:
+                raw = self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+                latest['image'] = colorize_depth(np.asarray(raw))
+            else:
+                latest['image'] = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+        sub = self.create_subscription(Image, topic, _cb, 1)
+        window = f'jdamr_cube camera: {topic}'
         cv2.namedWindow(window, cv2.WINDOW_NORMAL)
         try:
             while rclpy.ok():
                 rclpy.spin_once(self, timeout_sec=0.1)
-                if self._latest_image is not None:
-                    cv2.imshow(window, self._latest_image)
+                if latest['image'] is not None:
+                    cv2.imshow(window, latest['image'])
                 if (cv2.waitKey(1) & 0xFF) == ord('q'):
                     break
         finally:
             cv2.destroyAllWindows()
+            self.destroy_subscription(sub)
+
+
+def parse_view_args(argv):
+    parser = argparse.ArgumentParser(
+        prog='joint_control view',
+        description='카메라 화면을 창으로 띄운다.')
+    parser.add_argument('--camera', default='wrist', choices=list(CAMERA_TOPICS),
+                        help='표시할 카메라 (wrist=손목 카메라, rgbd=상단 RGBD 컬러 카메라, '
+                             'depth=상단 RGBD 뎁스 카메라, 기본값 wrist)')
+    parser.add_argument('--topic', default=None,
+                        help='--camera 대신 임의의 이미지 토픽을 직접 지정')
+    return parser.parse_args(argv)
 
 
 def parse_move_args(argv):
@@ -349,10 +393,18 @@ def main(args=None):
     elif command == 'place':
         parsed = parse_place_args(rest)
     else:  # view
-        parsed = None
+        parsed = parse_view_args(rest)
+
+    node_name = 'jdamr_cube_so101_arm_control'
+    view_topic = None
+    if command == 'view':
+        view_topic = parsed.topic or CAMERA_TOPICS[parsed.camera]
+        # 카메라 창을 여러 개 동시에 띄울 때(예: wrist + rgbd) 노드 이름이 겹치지 않도록
+        # 토픽 이름을 반영한 고유한 이름을 쓴다.
+        node_name = 'jdamr_cube_camera_view_' + view_topic.replace('/', '_').replace('-', '_')
 
     rclpy.init(args=argv)
-    node = So101ArmControl()
+    node = So101ArmControl(node_name)
     ok = True
 
     if command == 'move':
@@ -362,7 +414,7 @@ def main(args=None):
         if parsed.gripper is not None:
             ok = node.send_gripper_goal(parsed.gripper) and ok
     elif command == 'view':
-        node.view_camera()
+        node.view_camera(view_topic)
     elif command == 'pick':
         ok = node.pick(parsed.color)
     elif command == 'place':

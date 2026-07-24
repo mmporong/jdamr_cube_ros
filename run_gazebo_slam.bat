@@ -41,9 +41,14 @@ start "2. Cartographer + RViz" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_run_ca
 timeout /t 5 /nobreak >nul
 
 start "3. Teleop (keyboard control)" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_run_teleop.sh'"
+timeout /t 3 /nobreak >nul
+
+start "4. Wrist camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera wrist"
+start "5. RGBD overview camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera rgbd"
+start "6. RGBD depth camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera depth"
 
 echo.
-echo All 3 windows launched. Use the Teleop window to drive the robot and fill the map.
+echo All 6 windows launched. Use the Teleop window to drive the robot and fill the map.
 echo To save the map from another terminal:
 echo   wsl bash -lc "source ~/jdamr_cube_ws/install/setup.bash && ros2 run nav2_map_server map_saver_cli -f ~/maps/jdamr_cube_room"
 
