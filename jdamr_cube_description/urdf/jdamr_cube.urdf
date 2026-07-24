@@ -350,8 +350,8 @@
     <joint name="rgbd_camera_joint" type="fixed">
         <parent link="rgbd_mast_link"/>
         <child link="rgbd_camera_link"/>
-        <!-- pitch +0.7rad(=40도)만큼 숙여 앞쪽/아래(팔 작업공간)를 내려다봄. -->
-        <origin xyz="0 0 0.6" rpy="0 0.7 0"/>
+        <!-- pitch +1.0rad(=57도)만큼 숙여 앞쪽/아래(팔 작업공간)를 더 내려다봄. -->
+        <origin xyz="0.05 0 0.6" rpy="0 0.9 0"/>
     </joint>
 
     <link name="rgbd_camera_link">
