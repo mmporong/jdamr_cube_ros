@@ -153,7 +153,7 @@
          z=0.15) 위에 바로 올려서 그 위 공간에서 집게 한다. 로봇은 (0,0,0)에 스폰되고 팔
          shoulder_pan=0 기준 +X 방향으로 뻗는다. -->
     <model name="pick_object">
-      <pose>0.21 0 0.165 0 0 0</pose>
+      <pose>0.21 0 0.17 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.02</mass>
@@ -175,6 +175,92 @@
           <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
           <material><ambient>0.9 0.1 0.6 1</ambient><diffuse>0.9 0.1 0.6 1</diffuse></material>
         </visual>
+      </link>
+    </model>
+
+    <!-- 추가 pick 대상들. 색을 다르게 해서 뎁스카메라 픽셀 pick(pick --at-pixel)으로
+         개별로 골라 집을 수 있게 한다. 전부 로봇 상판(z=0.15) 위, 팔이 닿는 범위에 배치. -->
+    <model name="pick_object_green">
+      <pose>0.20 0.09 0.17 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.02</mass>
+          <inertia><ixx>6e-6</ixx><ixy>0</ixy><ixz>0</ixz><iyy>6e-6</iyy><iyz>0</iyz><izz>6e-6</izz></inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <material><ambient>0.1 0.7 0.1 1</ambient><diffuse>0.1 0.7 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="pick_object_blue">
+      <pose>0.20 -0.09 0.17 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.02</mass>
+          <inertia><ixx>6e-6</ixx><ixy>0</ixy><ixz>0</ixz><iyy>6e-6</iyy><iyz>0</iyz><izz>6e-6</izz></inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <material><ambient>0.1 0.3 0.9 1</ambient><diffuse>0.1 0.3 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="pick_object_orange">
+      <pose>0.14 0.0 0.17 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.02</mass>
+          <inertia><ixx>6e-6</ixx><ixy>0</ixy><ixz>0</ixz><iyy>6e-6</iyy><iyz>0</iyz><izz>6e-6</izz></inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <material><ambient>0.95 0.5 0.1 1</ambient><diffuse>0.95 0.5 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 쓰레기통: 윗면이 열린 사각 통(바닥판 + 4면 벽). 집은 물체를 넣는 place 목표.
+         로봇 정면 바닥(x=0.34)에 두어 챠시 앞면(x=0.25)과 겹치지 않게 하고, 통 높이(0.18)를
+         상판 높이(0.15)보다 살짝 높여 팔이 테두리 너머로 물체를 떨어뜨릴 수 있게 한다. -->
+    <model name="trash_can">
+      <static>true</static>
+      <pose>0.34 0 0 0 0 0</pose>
+      <link name="link">
+        <!-- 바닥판 -->
+        <collision name="bottom_col"><pose>0 0 0.006 0 0 0</pose><geometry><box><size>0.16 0.16 0.012</size></box></geometry></collision>
+        <visual name="bottom_vis"><pose>0 0 0.006 0 0 0</pose><geometry><box><size>0.16 0.16 0.012</size></box></geometry>
+          <material><ambient>0.3 0.3 0.32 1</ambient><diffuse>0.3 0.3 0.32 1</diffuse></material></visual>
+        <!-- +x 벽 -->
+        <collision name="wall_px_col"><pose>0.074 0 0.09 0 0 0</pose><geometry><box><size>0.012 0.16 0.18</size></box></geometry></collision>
+        <visual name="wall_px_vis"><pose>0.074 0 0.09 0 0 0</pose><geometry><box><size>0.012 0.16 0.18</size></box></geometry>
+          <material><ambient>0.35 0.35 0.38 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material></visual>
+        <!-- -x 벽 -->
+        <collision name="wall_nx_col"><pose>-0.074 0 0.09 0 0 0</pose><geometry><box><size>0.012 0.16 0.18</size></box></geometry></collision>
+        <visual name="wall_nx_vis"><pose>-0.074 0 0.09 0 0 0</pose><geometry><box><size>0.012 0.16 0.18</size></box></geometry>
+          <material><ambient>0.35 0.35 0.38 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material></visual>
+        <!-- +y 벽 -->
+        <collision name="wall_py_col"><pose>0 0.074 0.09 0 0 0</pose><geometry><box><size>0.16 0.012 0.18</size></box></geometry></collision>
+        <visual name="wall_py_vis"><pose>0 0.074 0.09 0 0 0</pose><geometry><box><size>0.16 0.012 0.18</size></box></geometry>
+          <material><ambient>0.35 0.35 0.38 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material></visual>
+        <!-- -y 벽 -->
+        <collision name="wall_ny_col"><pose>0 -0.074 0.09 0 0 0</pose><geometry><box><size>0.16 0.012 0.18</size></box></geometry></collision>
+        <visual name="wall_ny_vis"><pose>0 -0.074 0.09 0 0 0</pose><geometry><box><size>0.16 0.012 0.18</size></box></geometry>
+          <material><ambient>0.35 0.35 0.38 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material></visual>
       </link>
     </model>
   </world>
