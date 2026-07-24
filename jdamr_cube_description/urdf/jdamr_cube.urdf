@@ -791,7 +791,10 @@
 
     <!-- ros2_control: gz_ros2_control이 gz-sim 조인트를 command/state 인터페이스로 노출.
          controller_manager 설정은 config/so101_controllers.yaml, 컨트롤러 로딩은
-         jdamr_cube_gazebo/launch/gazebo.launch.py에서 수행. -->
+         jdamr_cube_gazebo/launch/gazebo.launch.py에서 수행.
+         각 조인트의 initial_value는 스폰 시 팔이 취하는 "접힌 기본 자세"다.
+         (lift=-1.0, elbow=1.5, wrist_flex=0.8) 조합은 팔을 몸체 위로 낮게 접어 넣는
+         자세로, 시뮬레이션에서 챠시와 충돌 없이 정확히 유지되는 것을 실측 확인했다. -->
     <ros2_control name="jdamr_cube_arm" type="system">
         <hardware>
             <plugin>gz_ros2_control/GazeboSimSystem</plugin>
@@ -801,7 +804,9 @@
                 <param name="min">-1.91986</param>
                 <param name="max">1.91986</param>
             </command_interface>
-            <state_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
             <state_interface name="velocity"/>
         </joint>
         <joint name="arm_shoulder_lift">
@@ -809,7 +814,9 @@
                 <param name="min">-1.74533</param>
                 <param name="max">1.74533</param>
             </command_interface>
-            <state_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">-1.0</param>
+            </state_interface>
             <state_interface name="velocity"/>
         </joint>
         <joint name="arm_elbow_flex">
@@ -817,7 +824,9 @@
                 <param name="min">-1.69</param>
                 <param name="max">1.69</param>
             </command_interface>
-            <state_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">1.5</param>
+            </state_interface>
             <state_interface name="velocity"/>
         </joint>
         <joint name="arm_wrist_flex">
@@ -825,7 +834,9 @@
                 <param name="min">-1.65806</param>
                 <param name="max">1.65806</param>
             </command_interface>
-            <state_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.8</param>
+            </state_interface>
             <state_interface name="velocity"/>
         </joint>
         <joint name="arm_wrist_roll">
@@ -833,7 +844,9 @@
                 <param name="min">-2.74385</param>
                 <param name="max">2.84121</param>
             </command_interface>
-            <state_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
             <state_interface name="velocity"/>
         </joint>
         <joint name="arm_gripper">
@@ -841,7 +854,9 @@
                 <param name="min">-0.174533</param>
                 <param name="max">1.74533</param>
             </command_interface>
-            <state_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
             <state_interface name="velocity"/>
         </joint>
     </ros2_control>
