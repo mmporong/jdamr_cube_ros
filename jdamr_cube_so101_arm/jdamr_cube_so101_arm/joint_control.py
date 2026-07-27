@@ -1,10 +1,13 @@
 import argparse
+import math
 import os
 import sys
+import time
 
 import cv2
 import numpy as np
 import rclpy
+import yaml
 from cv_bridge import CvBridge
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
@@ -26,6 +29,25 @@ ARM_JOINTS = [
     'arm_wrist_roll',
 ]
 GRIPPER_JOINT = 'arm_gripper'
+
+# 관절 가동범위 (jdamr_cube_description/urdf/jdamr_cube.urdf의 <limit lower/upper>와 동일).
+# `ui` 명령의 슬라이더 범위로 쓴다.
+JOINT_LIMITS = {
+    'arm_shoulder_pan': (-1.91986, 1.91986),
+    'arm_shoulder_lift': (-1.74533, 1.74533),
+    'arm_elbow_flex': (-1.69, 1.69),
+    'arm_wrist_flex': (-1.65806, 1.65806),
+    'arm_wrist_roll': (-2.74385, 2.84121),
+    GRIPPER_JOINT: (-0.174533, 1.74533),
+}
+UI_JOINTS = ARM_JOINTS + [GRIPPER_JOINT]
+UI_TRACKBAR_STEPS = 1000   # 슬라이더는 정수만 다루므로 가동범위를 이 칸수로 나눠 쓴다
+UI_MOVE_DURATION = 0.5     # 슬라이더를 움직였을 때 그 목표까지 가는 데 주는 시간 [sec]
+UI_SEND_PERIOD = 0.15      # 슬라이더를 끌 때 목표를 다시 보내는 최소 간격 [sec]
+UI_PANEL_WIDTH = 620
+UI_PANEL_ROW_HEIGHT = 34
+# run_gazebo_slam.bat이 시뮬레이터와 같이 띄우기 때문에, 컨트롤러가 올라올 때까지 넉넉히 기다린다.
+UI_STARTUP_TIMEOUT = 30.0
 
 CAMERA_TOPIC = 'wrist_camera/image_raw'
 IMAGE_WIDTH = 640
@@ -53,6 +75,30 @@ MOVEIT_EE_LINK = 'arm_gripper_frame_link'
 PICK_APPROACH_HEIGHT = 0.08
 # 뎁스로 잰 표면 위치보다 그리퍼가 살짝 더 파고들도록 하는 보정값 (물체를 완전히 감싸 집기 위함).
 PICK_GRASP_Z_OFFSET = -0.01
+# 내려놓을 때는 반대로 살짝 띄운 곳에서 손을 펴야 물체가 바닥/상판에 끼이지 않는다.
+PLACE_RELEASE_Z_OFFSET = 0.01
+
+# grip/place 동작을 마친 뒤 돌아갈 "원위치" (jdamr_cube.srdf의 'home' group_state와 동일).
+# 이 자세는 MoveIt 충돌 검사도 통과한다: URDF collision 메쉬로 실측한 laser_link 원통까지
+# 최소 거리가 팔 링크 전부 19mm 이상(라이다가 base_link 기준 x=0.25, z=0.1일 때 기준. 라이다
+# 위치를 옮기면 이 여유도 달라지므로 다시 확인할 것). 반면 Gazebo 스폰 자세
+# (shoulder_lift=-1.0, elbow_flex=1.5, wrist_flex=0.8)는 arm_gripper_link가 라이다 안으로
+# 22mm 파고들어 있어, 그 자세에서 MoveIt에 플래닝을 시키면 시작 자세 충돌로 즉시 거부된다.
+DEFAULT_HOME_JOINTS = {
+    'arm_shoulder_pan': 0.0,
+    'arm_shoulder_lift': 0.0,
+    'arm_elbow_flex': 0.0,
+    'arm_wrist_flex': 0.0,
+    'arm_wrist_roll': 0.0,
+}
+HOME_DURATION = 3.0
+
+# 홈 자세는 파일에서 읽어온다. 워크스페이스를 다시 빌드해도(소스를 ~/jdamr_cube_ws로 rsync)
+# 값이 날아가지 않도록 설치 경로가 아니라 홈 디렉터리에 저장한다. 파일이 없으면
+# DEFAULT_HOME_JOINTS를 쓰고, `ui` 창의 "Set current as HOME" 버튼으로 새로 만들 수 있다.
+HOME_FILE_ENV = 'JDAMR_CUBE_ARM_HOME_FILE'
+DEFAULT_HOME_FILE = os.path.join(
+    os.path.expanduser('~'), '.config', 'jdamr_cube', 'arm_home.yaml')
 
 # 손목 카메라로 물체를 찾는 "탐색 자세". 이 자세에서 shoulder_pan만 바꿔가며 화면 중앙에
 # 물체가 오도록 정렬한다. jdamr_cube_gazebo/worlds/room.world의 pick_object 기준으로
@@ -97,6 +143,110 @@ def detect_object_center(image_bgr, hsv_lower, hsv_upper, min_area=50):
     return moments['m10'] / moments['m00'], moments['m01'] / moments['m00']
 
 
+def home_file_path(path=None):
+    """홈 자세 파일 경로. 인자 > 환경변수(JDAMR_CUBE_ARM_HOME_FILE) > 기본 경로 순."""
+    return os.path.expanduser(path or os.environ.get(HOME_FILE_ENV) or DEFAULT_HOME_FILE)
+
+
+def load_home_joints(path=None):
+    """홈 자세를 파일에서 읽어 (관절 dict, 출처 설명) 을 반환한다.
+
+    파일이 없거나 형식이 잘못됐으면 DEFAULT_HOME_JOINTS를 그대로 쓴다 (UI/CLI가 죽지 않도록).
+    파일에 일부 관절만 적혀 있어도 되고, 값은 가동범위(JOINT_LIMITS) 안으로 잘라서 쓴다."""
+    file_path = home_file_path(path)
+    home = dict(DEFAULT_HOME_JOINTS)
+    if not os.path.exists(file_path):
+        return home, f'기본값(파일 없음: {file_path})'
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        return home, f'기본값(파일을 읽지 못함: {file_path} — {exc})'
+
+    joints = data.get('home_joints', data)
+    if not isinstance(joints, dict):
+        return home, f'기본값(형식이 잘못됨: {file_path})'
+    for joint in ARM_JOINTS:
+        if joint not in joints:
+            continue
+        try:
+            value = float(joints[joint])
+        except (TypeError, ValueError):
+            continue
+        lo, hi = JOINT_LIMITS[joint]
+        home[joint] = min(max(value, lo), hi)
+    return home, file_path
+
+
+def save_home_joints(values, path=None):
+    """현재 각도를 홈 자세로 파일에 저장하고 저장한 경로를 반환한다."""
+    file_path = home_file_path(path)
+    directory = os.path.dirname(file_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    payload = {'home_joints': {j: round(float(values[j]), 4) for j in ARM_JOINTS if j in values}}
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write('# jdamr_cube SO-101 팔의 홈(원위치) 자세 [rad].\n')
+        f.write("# 'joint_control ui' 창의 'Set current as HOME' 버튼(또는 's' 키)이 덮어씁니다.\n")
+        yaml.safe_dump(payload, f, default_flow_style=False, sort_keys=False)
+    return file_path
+
+
+def rad_to_slider(value, joint):
+    """관절 각도[rad]를 0~UI_TRACKBAR_STEPS 슬라이더 눈금으로 바꾼다."""
+    lo, hi = JOINT_LIMITS[joint]
+    ratio = (min(max(value, lo), hi) - lo) / (hi - lo)
+    return int(round(ratio * UI_TRACKBAR_STEPS))
+
+
+def slider_to_rad(pos, joint):
+    """슬라이더 눈금을 관절 각도[rad]로 되돌린다."""
+    lo, hi = JOINT_LIMITS[joint]
+    return lo + (hi - lo) * pos / UI_TRACKBAR_STEPS
+
+
+def render_joint_panel(targets, actual, gripper_ready=True, status=None):
+    """`ui` 창에 그릴 상태 표. 슬라이더로 준 목표값과 /joint_states의 실제값을 나란히 보여준다.
+
+    OpenCV putText는 한글을 못 그리므로 이 표 안의 글자만 영문으로 쓴다."""
+    rows = len(UI_JOINTS)
+    height = UI_PANEL_ROW_HEIGHT * (rows + 4)
+    img = np.full((height, UI_PANEL_WIDTH, 3), 32, np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    cv2.putText(img, 'joint', (12, 26), font, 0.5, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.putText(img, 'target [rad] (deg)', (200, 26), font, 0.5, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.putText(img, 'actual', (410, 26), font, 0.5, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.putText(img, 'limits', (505, 26), font, 0.5, (170, 170, 170), 1, cv2.LINE_AA)
+
+    for i, joint in enumerate(UI_JOINTS):
+        y = UI_PANEL_ROW_HEIGHT * (i + 2)
+        target = targets[joint]
+        now = actual.get(joint)
+        lo, hi = JOINT_LIMITS[joint]
+        # 목표와 실제가 많이 벌어져 있으면(아직 이동 중이거나 막혀 있으면) 노란색으로.
+        color = (255, 255, 255)
+        if now is not None and abs(now - target) > 0.05:
+            color = (0, 210, 255)
+        if joint == GRIPPER_JOINT and not gripper_ready:
+            color = (120, 120, 120)
+        cv2.putText(img, joint.replace('arm_', ''), (12, y), font, 0.55, color, 1, cv2.LINE_AA)
+        cv2.putText(img, f'{target:+.3f} ({math.degrees(target):+.1f})', (200, y),
+                    font, 0.5, color, 1, cv2.LINE_AA)
+        cv2.putText(img, ' --' if now is None else f'{now:+.3f}', (410, y),
+                    font, 0.5, color, 1, cv2.LINE_AA)
+        cv2.putText(img, f'{lo:+.2f}~{hi:+.2f}', (505, y), font, 0.45,
+                    (140, 140, 140), 1, cv2.LINE_AA)
+
+    cv2.putText(img, 'h: go HOME   s: set current as HOME   r: resync   q: quit',
+                (12, height - 44), font, 0.5, (0, 220, 120), 1, cv2.LINE_AA)
+    if status:
+        # 경로가 길면 뒤쪽(파일 이름 쪽)이 잘리지 않도록 앞을 줄인다.
+        text = status if len(status) <= 66 else '...' + status[-63:]
+        cv2.putText(img, text, (12, height - 14), font, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+    return img
+
+
 def colorize_depth(depth, near=DEPTH_VIEW_NEAR, far=DEPTH_VIEW_FAR):
     """rgbd_camera의 32FC1 depth 원본을 화면에 보이는 8비트 이미지로 바꾼다.
     near~far 범위 안에 있는 픽셀은 흰색, 벗어나면(너무 가깝거나 멀거나 반사가 없는 NaN/inf)
@@ -133,8 +283,10 @@ def deproject_pixel(depth, camera_info, u, v):
 
 class So101ArmControl(Node):
 
-    def __init__(self, node_name='jdamr_cube_so101_arm_control'):
+    def __init__(self, node_name='jdamr_cube_so101_arm_control', home_file=None):
         super().__init__(node_name)
+        self.home_file = home_file
+        self._home_joints = None
         self._arm_client = ActionClient(
             self, FollowJointTrajectory, 'arm_controller/follow_joint_trajectory')
         self._gripper_client = ActionClient(
@@ -167,15 +319,20 @@ class So101ArmControl(Node):
     def _camera_info_cb(self, msg):
         self._latest_camera_info = msg
 
+    def latest_arm_positions(self):
+        """마지막으로 받은 /joint_states에서 팔+그리퍼 각도를 꺼낸다 (없으면 빈 dict)."""
+        msg = self._latest_arm_state
+        if msg is None:
+            return {}
+        return {j: msg.position[msg.name.index(j)] for j in UI_JOINTS if j in msg.name}
+
     def wait_for_current_arm_positions(self, timeout_sec=5.0):
         deadline = self.get_clock().now() + Duration(seconds=timeout_sec)
         while rclpy.ok() and self._latest_arm_state is None:
             if self.get_clock().now() > deadline:
                 return None
             rclpy.spin_once(self, timeout_sec=0.2)
-        msg = self._latest_arm_state
-        return {j: msg.position[msg.name.index(j)] for j in ARM_JOINTS + [GRIPPER_JOINT]
-                if j in msg.name}
+        return self.latest_arm_positions()
 
     def wait_for_camera_image(self, timeout_sec=5.0):
         deadline = self.get_clock().now() + Duration(seconds=timeout_sec)
@@ -209,6 +366,32 @@ class So101ArmControl(Node):
         target.update(overrides)
         return self.send_arm_goal(target, duration_sec)
 
+    def make_arm_goal(self, target_positions, duration_sec):
+        point = JointTrajectoryPoint()
+        point.positions = [float(target_positions[j]) for j in ARM_JOINTS]
+        point.time_from_start.sec = int(duration_sec)
+        point.time_from_start.nanosec = int((duration_sec - int(duration_sec)) * 1e9)
+
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory.joint_names = list(ARM_JOINTS)
+        goal_msg.trajectory.points = [point]
+        return goal_msg
+
+    def send_arm_goal_nowait(self, target_positions, duration_sec):
+        """결과를 기다리지 않고 팔 목표만 던진다.
+
+        `ui` 명령처럼 슬라이더를 끄는 동안 목표를 계속 갱신해야 할 때 쓴다. 결과를 기다리면
+        이동이 끝날 때까지 창이 멈추기 때문이다. joint_trajectory_controller는 새 목표가
+        들어오면 실행 중이던 목표를 취소하고 새 목표를 따라가므로 이렇게 보내도 안전하다."""
+        self._arm_client.send_goal_async(self.make_arm_goal(target_positions, duration_sec))
+
+    def send_gripper_goal_nowait(self, position, max_effort=5.0):
+        """결과를 기다리지 않고 그리퍼 목표만 던진다 (`ui` 명령용)."""
+        goal_msg = GripperCommand.Goal()
+        goal_msg.command.position = float(position)
+        goal_msg.command.max_effort = max_effort
+        self._gripper_client.send_goal_async(goal_msg)
+
     def send_arm_goal(self, target_positions, duration_sec):
         if not self._arm_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error(
@@ -216,14 +399,8 @@ class So101ArmControl(Node):
                 'jdamr_cube_gazebo/gazebo.launch.py가 실행 중인지 확인하세요.')
             return False
 
-        point = JointTrajectoryPoint()
-        point.positions = [target_positions[j] for j in ARM_JOINTS]
-        point.time_from_start.sec = int(duration_sec)
-        point.time_from_start.nanosec = int((duration_sec - int(duration_sec)) * 1e9)
-
-        goal_msg = FollowJointTrajectory.Goal()
-        goal_msg.trajectory.joint_names = list(ARM_JOINTS)
-        goal_msg.trajectory.points = [point]
+        goal_msg = self.make_arm_goal(target_positions, duration_sec)
+        point = goal_msg.trajectory.points[0]
 
         self.get_logger().info(
             '팔 목표 전송: ' + ', '.join(f'{j}={v:.3f}' for j, v in zip(ARM_JOINTS, point.positions)))
@@ -435,23 +612,61 @@ class So101ArmControl(Node):
         self.get_logger().error('MoveIt 궤적 실행에 2회 실패했습니다.')
         return False
 
-    def pick_at_pixel(self, u, v, approach_height=PICK_APPROACH_HEIGHT, z_offset=PICK_GRASP_Z_OFFSET):
-        """뎁스카메라 픽셀 (u, v) 위치를 3D로 되돌려 MoveIt2(OMPL)로 그 지점을 집는다."""
-        point = self.pixel_to_planning_frame(u, v)
-        if point is None:
-            return False
-        target_x, target_y, target_z = point
-        target_z += z_offset
+    def home_joints(self, reload=False):
+        """홈 자세를 (필요하면 파일에서 읽어) 돌려준다. 한 번 읽으면 캐시한다."""
+        if self._home_joints is None or reload:
+            self._home_joints, source = load_home_joints(self.home_file)
+            self.get_logger().info(f'홈 자세 출처: {source}')
+        return dict(self._home_joints)
+
+    def save_home_joints(self, values):
+        """현재 각도를 홈 자세로 파일에 저장한다. 저장한 경로를 반환(실패 시 None)."""
+        try:
+            path = save_home_joints(values, self.home_file)
+        except OSError as exc:
+            self.get_logger().error(f'홈 자세를 저장하지 못했습니다: {exc}')
+            return None
+        self._home_joints = {j: values[j] for j in ARM_JOINTS if j in values}
+        self.get_logger().info(
+            f'현재 각도를 홈 자세로 저장했습니다 -> {path}: '
+            + ', '.join(f'{j.replace("arm_", "")}={self._home_joints[j]:+.3f}'
+                        for j in self._home_joints))
+        return path
+
+    def go_home(self, duration_sec=HOME_DURATION):
+        """팔을 원위치(홈 자세 파일 또는 기본값)로 되돌린다."""
+        home = self.home_joints()
+        self.get_logger().info(
+            '팔을 원위치로 되돌립니다: '
+            + ', '.join(f'{j.replace("arm_", "")}={v:+.3f}' for j, v in home.items()))
+        return self.move_joints(home, duration_sec)
+
+    def prepare_for_planning(self, duration_sec=HOME_DURATION):
+        """MoveIt 플래닝 전에 팔을 충돌 없는 원위치로 먼저 빼낸다.
+
+        MoveIt은 시작 자세가 충돌 상태면(CheckStartStateCollision) 플래닝 자체를 거부한다
+        ("2 contact(s) detected : arm_gripper_link - laser_link, ..."). 그런데 Gazebo 스폰
+        자세나 직전 명령이 남긴 자세는 그리퍼가 라이다에 닿아 있을 수 있다. arm_controller로
+        보내는 궤적은 충돌 검사를 거치지 않으므로, 이 경로로 먼저 원위치까지 빠져나온 뒤
+        플래닝을 시작한다. 홈 자세를 파일에서 바꿔 놓았다면 그 자세가 충돌 없는지도
+        확인해야 한다 (충돌 자세를 홈으로 저장하면 여기서 다시 플래닝이 거부된다)."""
+        self.get_logger().info('MoveIt 플래닝 시작 자세(원위치)로 팔을 먼저 옮깁니다.')
+        return self.move_joints(self.home_joints(), duration_sec)
+
+    def grasp_at_point(self, x, y, z, approach_height=PICK_APPROACH_HEIGHT,
+                       z_offset=PICK_GRASP_Z_OFFSET, frame_id=MOVEIT_PLANNING_FRAME):
+        """(x, y, z) 지점을 MoveIt2로 집는다: 열기 → pre-grasp → 하강 → 닫기 → 들어올리기."""
+        target_z = z + z_offset
 
         if not self.send_gripper_goal(GRIPPER_OPEN):
             return False
 
         self.get_logger().info('목표 위 지점(pre-grasp)으로 접근합니다.')
-        if not self._moveit_move_to(target_x, target_y, target_z + approach_height):
+        if not self._moveit_move_to(x, y, target_z + approach_height, frame_id):
             return False
 
         self.get_logger().info('목표 지점까지 내려갑니다.')
-        if not self._moveit_move_to(target_x, target_y, target_z):
+        if not self._moveit_move_to(x, y, target_z, frame_id):
             return False
 
         self.get_logger().info('그리퍼를 닫아 집습니다.')
@@ -459,7 +674,66 @@ class So101ArmControl(Node):
             return False
 
         self.get_logger().info('들어올립니다.')
-        if not self._moveit_move_to(target_x, target_y, target_z + approach_height):
+        return self._moveit_move_to(x, y, target_z + approach_height, frame_id)
+
+    def release_at_point(self, x, y, z, approach_height=PICK_APPROACH_HEIGHT,
+                         z_offset=PLACE_RELEASE_Z_OFFSET, frame_id=MOVEIT_PLANNING_FRAME):
+        """(x, y, z) 지점에 MoveIt2로 내려놓는다: pre-place → 하강 → 열기 → 다시 들어올리기."""
+        target_z = z + z_offset
+
+        self.get_logger().info('목표 위 지점(pre-place)으로 접근합니다.')
+        if not self._moveit_move_to(x, y, target_z + approach_height, frame_id):
+            return False
+
+        self.get_logger().info('목표 지점까지 내려갑니다.')
+        if not self._moveit_move_to(x, y, target_z, frame_id):
+            return False
+
+        self.get_logger().info('그리퍼를 열어 물체를 놓습니다.')
+        if not self.send_gripper_goal(GRIPPER_OPEN):
+            return False
+
+        self.get_logger().info('팔을 들어올려 물러납니다.')
+        return self._moveit_move_to(x, y, target_z + approach_height, frame_id)
+
+    def grip_at_point(self, x, y, z, approach_height=PICK_APPROACH_HEIGHT,
+                      z_offset=PICK_GRASP_Z_OFFSET, frame_id=MOVEIT_PLANNING_FRAME):
+        """grip 명령: (x, y, z)로 가서 집은 뒤 원위치로 돌아온다."""
+        self.get_logger().info(
+            f'grip 목표: x={x:.3f}, y={y:.3f}, z={z:.3f} ({frame_id} 기준).')
+        if not self.prepare_for_planning():
+            return False
+        if not self.grasp_at_point(x, y, z, approach_height, z_offset, frame_id):
+            return False
+        if not self.go_home():
+            return False
+        self.get_logger().info('grip 동작을 완료했습니다.')
+        return True
+
+    def place_at_point(self, x, y, z, approach_height=PICK_APPROACH_HEIGHT,
+                       z_offset=PLACE_RELEASE_Z_OFFSET, frame_id=MOVEIT_PLANNING_FRAME):
+        """place 명령: (x, y, z)로 가서 내려놓은 뒤 원위치로 돌아온다."""
+        self.get_logger().info(
+            f'place 목표: x={x:.3f}, y={y:.3f}, z={z:.3f} ({frame_id} 기준).')
+        if not self.prepare_for_planning():
+            return False
+        if not self.release_at_point(x, y, z, approach_height, z_offset, frame_id):
+            return False
+        if not self.go_home():
+            return False
+        self.get_logger().info('place 동작을 완료했습니다.')
+        return True
+
+    def pick_at_pixel(self, u, v, approach_height=PICK_APPROACH_HEIGHT, z_offset=PICK_GRASP_Z_OFFSET):
+        """뎁스카메라 픽셀 (u, v) 위치를 3D로 되돌려 MoveIt2(OMPL)로 그 지점을 집는다."""
+        # 3D 좌표를 먼저 구한다: 팔을 옮기면 RGBD 카메라 시야를 가릴 수 있으므로
+        # 목표 픽셀의 뎁스를 읽은 뒤에 팔을 움직인다.
+        point = self.pixel_to_planning_frame(u, v)
+        if point is None:
+            return False
+        if not self.prepare_for_planning():
+            return False
+        if not self.grasp_at_point(point[0], point[1], point[2], approach_height, z_offset):
             return False
 
         self.get_logger().info('pick --at-pixel 동작을 완료했습니다.')
@@ -515,6 +789,155 @@ class So101ArmControl(Node):
             return False
 
         self.get_logger().info('place 동작을 완료했습니다.')
+        return True
+
+    def control_ui(self, duration_sec=UI_MOVE_DURATION, init_home=True):
+        """슬라이더로 관절을 직접 움직이는 수동 제어 창을 띄운다.
+
+        창을 띄우기 전에 홈 자세 파일을 읽어 그 자세로 팔을 초기화한다(init_home=False면 생략).
+        Gazebo 스폰 자세는 그리퍼가 라이다에 닿아 있어서, 시작할 때 홈 자세로 빼두면 이후
+        grip/place의 MoveIt 플래닝도 바로 통한다.
+
+        창의 슬라이더는 각 관절의 가동범위(JOINT_LIMITS)를 UI_TRACKBAR_STEPS 칸으로 나눈 것이고,
+        초기화가 끝난 뒤의 실제 각도에 맞춰 놓는다. 슬라이더를 움직이면 UI_SEND_PERIOD 간격으로
+        arm_controller/gripper_controller에 목표를 (결과를 기다리지 않고) 보낸다.
+
+        창의 버튼(OpenCV가 Qt로 빌드된 경우)과 단축키로 홈 자세를 다룰 수 있다:
+        'h'=홈으로 이동, 's'=현재 각도를 홈으로 저장(파일에 기록), 'r'=슬라이더를 실제 각도로
+        다시 맞춤, 'q'=종료."""
+        self.get_logger().info('컨트롤러와 /joint_states를 기다리는 중...')
+        current = self.wait_for_current_arm_positions(timeout_sec=UI_STARTUP_TIMEOUT)
+        if current is None:
+            self.get_logger().error(
+                f'/joint_states에서 현재 팔 각도를 {UI_STARTUP_TIMEOUT:.0f}초 안에 받지 '
+                '못했습니다. jdamr_cube_gazebo/gazebo.launch.py가 실행 중인지 확인하세요.')
+            return False
+        if not self._arm_client.wait_for_server(timeout_sec=UI_STARTUP_TIMEOUT):
+            self.get_logger().error(
+                "'arm_controller/follow_joint_trajectory' 액션 서버가 없습니다. "
+                'jdamr_cube_gazebo/gazebo.launch.py가 실행 중인지 확인하세요.')
+            return False
+        gripper_ready = self._gripper_client.wait_for_server(timeout_sec=5.0)
+        if not gripper_ready:
+            self.get_logger().warn(
+                "'gripper_controller/gripper_cmd' 액션 서버가 없어 gripper 슬라이더는 동작하지 "
+                '않습니다 (팔 관절은 그대로 제어됩니다).')
+
+        # 시작 자세 초기화: 홈 자세 파일을 읽어 그 자세로 옮긴 뒤, 슬라이더를 그 결과에 맞춘다.
+        home = self.home_joints()  # 출처(파일 경로 또는 기본값)를 로그로 남긴다
+        if init_home:
+            self.get_logger().info('시작 자세를 홈 자세로 초기화합니다...')
+            if self.go_home():
+                init_status = 'initialized to HOME'
+                current = self.wait_for_current_arm_positions() or dict(current, **home)
+            else:
+                init_status = 'HOME init failed (see terminal log)'
+                self.get_logger().warn(
+                    '홈 자세로 초기화하지 못했습니다. 현재 자세 그대로 창을 띄웁니다.')
+        else:
+            init_status = 'HOME init skipped (--no-home-init)'
+
+        window = 'jdamr_cube arm joints'
+        bar_names = {j: j.replace('arm_', '') for j in UI_JOINTS}
+        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window, UI_PANEL_WIDTH, UI_PANEL_ROW_HEIGHT * (len(UI_JOINTS) + 4))
+        for joint in UI_JOINTS:
+            cv2.createTrackbar(bar_names[joint], window,
+                               rad_to_slider(current.get(joint, 0.0), joint),
+                               UI_TRACKBAR_STEPS, lambda _pos: None)
+
+        def read_targets():
+            return {j: slider_to_rad(cv2.getTrackbarPos(bar_names[j], window), j)
+                    for j in UI_JOINTS}
+
+        def set_sliders(values):
+            for joint in UI_JOINTS:
+                if joint in values:
+                    cv2.setTrackbarPos(bar_names[joint], window,
+                                       rad_to_slider(values[joint], joint))
+
+        # 버튼 콜백은 Qt 이벤트 루프에서 불리므로 여기서는 요청만 남기고,
+        # 실제 처리(액션 전송/파일 저장)는 아래 메인 루프에서 한다.
+        request = {'go_home': False, 'save_home': False}
+        status = {'text': f'{init_status} | home file: {home_file_path(self.home_file)}'}
+
+        def _request(what):
+            request[what] = True
+
+        try:
+            cv2.createButton('Go HOME', lambda state, _: _request('go_home'),
+                             None, cv2.QT_PUSH_BUTTON, 0)
+            cv2.createButton('Set current as HOME', lambda state, _: _request('save_home'),
+                             None, cv2.QT_PUSH_BUTTON, 0)
+        except cv2.error:
+            self.get_logger().warn(
+                "이 OpenCV 빌드는 버튼(Qt)을 지원하지 않습니다. 'h'(홈으로 이동)/"
+                "'s'(현재 각도를 홈으로 저장) 키를 쓰세요.")
+
+        self.get_logger().info(
+            '관절 수동 제어 창을 띄웠습니다. 슬라이더로 각 관절을 움직이세요 '
+            "(창에서 'h'=홈으로 이동, 's'=현재 각도를 홈으로 저장, "
+            "'r'=슬라이더를 현재 각도로 동기화, 'q'=종료).")
+
+        sent = read_targets()
+        last_send = 0.0
+        try:
+            while rclpy.ok():
+                rclpy.spin_once(self, timeout_sec=0.02)
+
+                if request['go_home']:
+                    request['go_home'] = False
+                    home = self.home_joints()
+                    set_sliders(home)
+                    status['text'] = 'moving to HOME'
+                    self.get_logger().info('홈 자세로 이동합니다.')
+                if request['save_home']:
+                    request['save_home'] = False
+                    actual = self.latest_arm_positions()
+                    if not actual:
+                        status['text'] = 'save failed: no /joint_states'
+                        self.get_logger().error(
+                            '/joint_states를 아직 못 받아 홈 자세를 저장하지 못했습니다.')
+                    else:
+                        saved = self.save_home_joints(actual)
+                        status['text'] = (f'HOME saved: {saved}' if saved
+                                          else 'save failed (see terminal log)')
+
+                targets = read_targets()
+                if time.monotonic() - last_send >= UI_SEND_PERIOD:
+                    arm_changed = any(abs(targets[j] - sent[j]) > 1e-3 for j in ARM_JOINTS)
+                    grip_changed = abs(targets[GRIPPER_JOINT] - sent[GRIPPER_JOINT]) > 1e-3
+                    if arm_changed:
+                        self.send_arm_goal_nowait(targets, duration_sec)
+                    if grip_changed and gripper_ready:
+                        self.send_gripper_goal_nowait(targets[GRIPPER_JOINT])
+                    if arm_changed or grip_changed:
+                        summary = ', '.join(
+                            f'{bar_names[j]}={targets[j]:+.3f}' for j in UI_JOINTS)
+                        self.get_logger().info(
+                            '목표 갱신: ' + summary, throttle_duration_sec=1.0)
+                        sent = targets
+                        last_send = time.monotonic()
+
+                cv2.imshow(window, render_joint_panel(
+                    targets, self.latest_arm_positions(), gripper_ready, status['text']))
+                key = cv2.waitKey(30) & 0xFF
+                if key == ord('q'):
+                    break
+                if key == ord('h'):
+                    _request('go_home')
+                elif key == ord('s'):
+                    _request('save_home')
+                elif key == ord('r'):
+                    actual = self.latest_arm_positions()
+                    if actual:
+                        set_sliders(actual)
+                        sent = read_targets()
+                        status['text'] = 'sliders resynced to actual'
+                        self.get_logger().info('슬라이더를 현재 각도로 동기화했습니다.')
+        finally:
+            cv2.destroyAllWindows()
+        self.get_logger().info('관절 수동 제어 창을 닫았습니다.')
         return True
 
     def view_camera(self, topic=None, near=DEPTH_VIEW_NEAR, far=DEPTH_VIEW_FAR):
@@ -611,6 +1034,28 @@ def parse_view_args(argv):
     return parser.parse_args(argv)
 
 
+def add_home_file_arg(parser):
+    parser.add_argument('--home-file', default=None,
+                        help='홈(원위치) 자세를 읽고 저장할 YAML 파일 경로 '
+                             f'(기본값 ${HOME_FILE_ENV} 또는 {DEFAULT_HOME_FILE})')
+
+
+def parse_ui_args(argv):
+    parser = argparse.ArgumentParser(
+        prog='joint_control ui',
+        description='슬라이더로 팔 관절과 그리퍼를 직접 움직이는 수동 제어 창을 띄운다. '
+                    '시작할 때 홈 자세 파일을 읽어 그 자세로 팔을 초기화하고, '
+                    "창의 'Go HOME'/'Set current as HOME' 버튼(또는 'h'/'s' 키)으로 "
+                    '홈 자세로 이동하거나 현재 각도를 홈 자세 파일에 저장할 수 있다.')
+    parser.add_argument('--duration', type=float, default=UI_MOVE_DURATION,
+                        help='슬라이더를 움직였을 때 그 목표까지 가는 데 주는 시간 [sec] '
+                             f'(작을수록 즉각 반응, 기본값 {UI_MOVE_DURATION})')
+    parser.add_argument('--no-home-init', action='store_true',
+                        help='시작할 때 홈 자세로 초기화하지 않고 현재 자세 그대로 창을 띄운다')
+    add_home_file_arg(parser)
+    return parser.parse_args(argv)
+
+
 def parse_move_args(argv):
     parser = argparse.ArgumentParser(
         prog='joint_control',
@@ -640,23 +1085,58 @@ def parse_pick_args(argv):
                         help="(MoveIt2 방식) 'rgbd' 카메라 화면의 픽셀 좌표 U V를 지정하면 "
                              '뎁스로 3D 위치를 구해 MoveIt2로 그 지점을 집는다. '
                              "먼저 'joint_control view --camera rgbd'로 좌표를 확인하세요.")
+    add_home_file_arg(parser)
+    return parser.parse_args(argv)
+
+
+def parse_grip_args(argv):
+    parser = argparse.ArgumentParser(
+        prog='joint_control grip',
+        description='좌표 X Y Z(기본 base_footprint 기준 [m])를 주면 MoveIt2로 그 위치의 물체를 '
+                    '집은 뒤 원위치(홈 자세)로 돌아온다.')
+    parser.add_argument('x', type=float, help='목표 x [m]')
+    parser.add_argument('y', type=float, help='목표 y [m]')
+    parser.add_argument('z', type=float, help='목표 z [m]')
+    parser.add_argument('--frame', default=MOVEIT_PLANNING_FRAME,
+                        help=f'좌표 기준 프레임 (기본값 {MOVEIT_PLANNING_FRAME})')
+    parser.add_argument('--approach-height', type=float, default=PICK_APPROACH_HEIGHT,
+                        help='집기 전/후에 목표 지점 위로 띄울 높이 [m] '
+                             f'(기본값 {PICK_APPROACH_HEIGHT})')
+    parser.add_argument('--z-offset', type=float, default=PICK_GRASP_Z_OFFSET,
+                        help=f'목표 z에 더할 보정값 [m] (기본값 {PICK_GRASP_Z_OFFSET})')
+    add_home_file_arg(parser)
     return parser.parse_args(argv)
 
 
 def parse_place_args(argv):
     parser = argparse.ArgumentParser(
         prog='joint_control place',
-        description='pick으로 집은 물체를 내려놓는다.')
+        description='집은 물체를 내려놓는다. 좌표 X Y Z(기본 base_footprint 기준 [m])를 주면 '
+                    'MoveIt2로 그 위치에 내려놓은 뒤 원위치(홈 자세)로 돌아오고, 좌표를 생략하면 '
+                    '기존처럼 --pan 각도의 고정 자세로 내려놓는다.')
+    parser.add_argument('xyz', type=float, nargs='*', metavar='X Y Z',
+                        help='내려놓을 위치의 x y z [m] (3개를 모두 주거나 전부 생략)')
+    parser.add_argument('--frame', default=MOVEIT_PLANNING_FRAME,
+                        help=f'좌표 기준 프레임 (기본값 {MOVEIT_PLANNING_FRAME})')
+    parser.add_argument('--approach-height', type=float, default=PICK_APPROACH_HEIGHT,
+                        help='놓기 전/후에 목표 지점 위로 띄울 높이 [m] '
+                             f'(기본값 {PICK_APPROACH_HEIGHT})')
+    parser.add_argument('--z-offset', type=float, default=PLACE_RELEASE_Z_OFFSET,
+                        help=f'목표 z에 더할 보정값 [m] (기본값 {PLACE_RELEASE_Z_OFFSET})')
     parser.add_argument('--pan', type=float, default=DEFAULT_PLACE_PAN,
-                        help='내려놓을 위치의 shoulder_pan 각도 [rad] (기본값 pick 지점과 다른 위치)')
-    return parser.parse_args(argv)
+                        help='(좌표를 생략했을 때) 내려놓을 위치의 shoulder_pan 각도 [rad]')
+    add_home_file_arg(parser)
+    parsed = parser.parse_args(argv)
+    if len(parsed.xyz) not in (0, 3):
+        parser.error('좌표는 X Y Z 3개를 모두 지정하거나 전부 생략해야 합니다.')
+    return parsed
 
 
 def main(args=None):
     argv = args if args is not None else sys.argv
     clean_argv = remove_ros_args(args=argv)[1:]
 
-    if clean_argv and clean_argv[0] in ('view', 'pick', 'place'):
+    if clean_argv and clean_argv[0] in ('view', 'ui', 'pick', 'grip', 'place'):
         command, rest = clean_argv[0], clean_argv[1:]
     else:
         command, rest = 'move', clean_argv
@@ -674,8 +1154,12 @@ def main(args=None):
         if not arm_requested and parsed.gripper is None:
             print('오류: 관절 값을 최소 하나 이상 지정해야 합니다 (--help 참고).', file=sys.stderr)
             sys.exit(1)
+    elif command == 'ui':
+        parsed = parse_ui_args(rest)
     elif command == 'pick':
         parsed = parse_pick_args(rest)
+    elif command == 'grip':
+        parsed = parse_grip_args(rest)
     elif command == 'place':
         parsed = parse_place_args(rest)
     else:  # view
@@ -688,9 +1172,12 @@ def main(args=None):
         # 카메라 창을 여러 개 동시에 띄울 때(예: wrist + rgbd) 노드 이름이 겹치지 않도록
         # 토픽 이름을 반영한 고유한 이름을 쓴다.
         node_name = 'jdamr_cube_camera_view_' + view_topic.replace('/', '_').replace('-', '_')
+    elif command == 'ui':
+        # 다른 arm 명령과 동시에 띄울 수 있으므로 노드 이름을 따로 쓴다.
+        node_name = 'jdamr_cube_arm_joint_ui'
 
     rclpy.init(args=argv)
-    node = So101ArmControl(node_name)
+    node = So101ArmControl(node_name, home_file=getattr(parsed, 'home_file', None))
     ok = True
 
     if command == 'move':
@@ -701,13 +1188,24 @@ def main(args=None):
             ok = node.send_gripper_goal(parsed.gripper) and ok
     elif command == 'view':
         node.view_camera(view_topic, parsed.near, parsed.far)
+    elif command == 'ui':
+        ok = node.control_ui(parsed.duration, init_home=not parsed.no_home_init)
     elif command == 'pick':
         if parsed.at_pixel is not None:
             ok = node.pick_at_pixel(parsed.at_pixel[0], parsed.at_pixel[1])
         else:
             ok = node.pick(parsed.color)
+    elif command == 'grip':
+        ok = node.grip_at_point(
+            parsed.x, parsed.y, parsed.z,
+            parsed.approach_height, parsed.z_offset, parsed.frame)
     elif command == 'place':
-        ok = node.place(parsed.pan)
+        if parsed.xyz:
+            ok = node.place_at_point(
+                parsed.xyz[0], parsed.xyz[1], parsed.xyz[2],
+                parsed.approach_height, parsed.z_offset, parsed.frame)
+        else:
+            ok = node.place(parsed.pan)
 
     used_moveit = node._moveit_py is not None
     if used_moveit:

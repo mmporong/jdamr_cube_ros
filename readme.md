@@ -13,7 +13,7 @@ JD-AMR "cube" 로봇용 ROS 2 워크스페이스. 실물 하드웨어 브링업,
 | `jdamr_cube_cartographer` | Cartographer 기반 2D SLAM |
 | `jdamr_cube_gazebo` | Gazebo 시뮬레이션 launch/월드/브릿지 설정 |
 | `jdamr_cube_navigation` | Nav2 기반 좌표 이동(`goto_pose`). 저장된 맵을 로드해 목표 좌표로 자율주행 |
-| `jdamr_cube_so101_arm` | SO-101 팔 관절 각도 제어 + 뎁스카메라 픽셀 기반 MoveIt2 pick CLI(`joint_control`) |
+| `jdamr_cube_so101_arm` | SO-101 팔 관절 각도 제어 + 슬라이더 수동 제어 UI + 좌표/픽셀 기반 MoveIt2 pick·place CLI(`joint_control`) |
 | `jdamr_cube_moveit_config` | SO-101 팔 MoveIt2 설정(SRDF/kinematics/controllers/OMPL, `move_group` launch) |
 | `ldlidar_sl_ros2` | LDRobot LD14 라이다 드라이버 (C++) |
 
@@ -220,6 +220,67 @@ arm_control.bat view --camera depth --near 0.2 --far 1.0   :: 표시 범위를 �
    0.6으로 바뀌는지 확인 (터미널 로그의 "팔 목표 전송:" 줄에 그대로 표시됩니다)
 5. `arm_control.bat --gripper 1.5` 실행 → "그리퍼 이동 완료" 로그와 함께 그리퍼가 열림
 
+### 슬라이더로 수동 제어하기 (`ui`)
+
+관절 값을 매번 옵션으로 주는 대신, 슬라이더를 끌어서 팔을 직접 움직이는 창입니다. 자세를 눈으로
+찾아가며 튜닝할 때(예: `APPROACH_JOINTS` 값 조정, 물체 위치 확인) 쓰면 편합니다.
+
+```bat
+arm_control.bat ui
+```
+
+```bash
+source install/setup.bash
+ros2 run jdamr_cube_so101_arm joint_control ui
+```
+
+- **시작할 때 홈 자세 파일을 읽어 그 자세로 팔을 초기화**합니다. Gazebo 스폰 자세는 그리퍼가
+  라이다에 닿아 있으므로(아래 `grip`/`place` 항목 참고), 창을 띄우는 것만으로 팔이 안전한
+  자세로 빠져나옵니다. 초기화 없이 현재 자세 그대로 띄우려면 `--no-home-init`을 주세요.
+- 슬라이더는 관절 5개 + 그리퍼 1개, 각각 URDF의 가동범위(`<limit lower/upper>`)를 1000칸으로
+  나눈 것이며, **초기화가 끝난 뒤의 실제 각도에 맞춰** 시작합니다.
+- 슬라이더를 움직이면 0.15초 간격으로 `arm_controller`/`gripper_controller`에 목표를 보냅니다.
+  결과를 기다리지 않고 보내므로(이전 목표는 새 목표로 대체됨) 끄는 동안에도 창이 멈추지 않습니다.
+  한 번에 움직이는 시간은 `--duration`(기본 0.5초)으로 조절합니다 — 작을수록 즉각 반응합니다.
+- 창의 표에 **target**(슬라이더 값)과 **actual**(`/joint_states` 실제 각도)이 함께 나오며, 둘이
+  0.05rad 이상 벌어져 있으면(이동 중이거나 무언가에 막힌 상태) 노란색으로 표시됩니다.
+- **버튼 / 단축키**: `Go HOME`(`h`)=홈 자세로 이동, `Set current as HOME`(`s`)=지금 각도를 홈
+  자세로 저장, `r`=슬라이더를 실제 각도로 다시 맞춤, `q`=종료. 버튼은 OpenCV가 Qt로 빌드된
+  경우 창의 컨트롤 패널에 함께 뜨며(뎁스 창의 Near/Far 버튼과 같은 방식), 지원하지 않는
+  빌드에서는 단축키만 씁니다. 실행 결과(저장 경로 등)는 창 맨 아래 줄에 표시됩니다.
+- 이 창은 MoveIt을 쓰지 않으므로 **충돌 검사를 하지 않습니다.** 라이다(`laser_link`)가 팔
+  작업공간 안에 있으니(`base_link` 기준 x=0.25, z=0.1) 그리퍼를 그 부근으로 내릴 때는 주의하세요.
+
+#### 홈(원위치) 자세 파일
+
+`grip`/`place`/`pick --at-pixel`이 돌아가는 원위치, `ui`의 시작 초기화와 `Go HOME`은 모두
+**YAML 파일**에서 읽어옵니다. 파일이 없으면 기본값(팔 관절 전부 0 rad)을 씁니다. 파일은 명령을
+실행할 때마다 한 번 읽으며, 어디서 읽었는지는 터미널에 `홈 자세 출처: ...`로 찍힙니다.
+
+| | 경로 |
+| --- | --- |
+| 기본 | `~/.config/jdamr_cube/arm_home.yaml` |
+| 환경변수 | `JDAMR_CUBE_ARM_HOME_FILE` |
+| 옵션 | `--home-file <경로>` (`ui`/`grip`/`place`/`pick`에서 사용 가능) |
+
+```yaml
+# ui 창의 'Set current as HOME' 버튼이 이 파일을 덮어씁니다.
+home_joints:
+  arm_shoulder_pan: 0.12
+  arm_shoulder_lift: -0.87
+  arm_elbow_flex: 1.234
+  arm_wrist_flex: 0.5
+  arm_wrist_roll: -0.25
+```
+
+- 워크스페이스를 다시 빌드해도(소스를 `~/jdamr_cube_ws`로 rsync) 값이 날아가지 않도록 설치
+  경로가 아니라 홈 디렉터리에 저장합니다. 디렉터리는 저장할 때 자동으로 만들어집니다.
+- 팔 관절 5개만 저장합니다(그리퍼는 제외 — 물체를 든 채 홈으로 갈 때 손이 열리면 안 되므로).
+- 파일에 일부 관절만 적어도 되고, 나머지는 기본값을 씁니다. 가동범위를 벗어난 값은 범위 안으로
+  잘라서 쓰며, 파일이 깨져 있으면 경고 로그를 남기고 기본값으로 동작합니다.
+- **주의**: 홈 자세는 `grip`/`place`가 MoveIt 플래닝을 시작하는 자세이기도 합니다. 충돌 상태인
+  자세를 홈으로 저장하면 다음 `grip`에서 시작 자세 충돌로 플래닝이 거부됩니다(아래 참고).
+
 ### 뎁스카메라 픽셀 위치로 집기 (MoveIt2, `pick --at-pixel`)
 
 상단 RGBD 뎁스카메라 화면에서 **집고 싶은 물체의 픽셀 좌표 (u, v)** 를 주면, 그 픽셀의 뎁스 값으로
@@ -255,8 +316,9 @@ ros2 run jdamr_cube_so101_arm joint_control pick --at-pixel 402 449
   목표 위치에 맞추며, SO-101은 5-DOF라 자세(orientation)까지는 맞추지 못하므로 위치만 맞추는
   IK(`position_only_ik`)를 씁니다.
 - 물체가 팔 리치를 벗어나 IK 해가 없으면 "MoveIt 플래닝 실패" 로그를 남기고 종료 코드 1로 끝납니다.
-- `moveit_py`는 이 명령에서만 지연 임포트하므로, MoveIt2가 설치되지 않은 환경에서도 나머지 명령
-  (`move`/`view`/`pick`/`place`)은 정상 동작합니다. MoveIt2가 필요하면:
+- `moveit_py`는 MoveIt2를 쓰는 명령(`pick --at-pixel`, `grip`, 좌표를 준 `place`)에서만 지연
+  임포트하므로, MoveIt2가 설치되지 않은 환경에서도 나머지 명령(`move`/`view`/`pick`/좌표 없는
+  `place`)은 정상 동작합니다. MoveIt2가 필요하면:
   `sudo apt-get install ros-jazzy-moveit-py ros-jazzy-moveit-configs-utils ros-jazzy-moveit-simple-controller-manager`
 
 **테스트 방법** (실제로 이 순서로 Gazebo에서 검증):
@@ -283,6 +345,60 @@ ros2 run jdamr_cube_so101_arm joint_control pick --at-pixel 402 449
   포함되면 IK 해가 전부 기각됨. 위치만 담은 `construct_link_constraint`로 목표를 준다.
 - **집은 뒤 들어올릴 때 자기충돌로 플래닝 거부**: 그리퍼를 닫으면 `arm_moving_jaw_link`가
   `arm_wrist_camera_link`와 접촉 판정됨. SRDF `disable_collisions`에 해당 쌍들을 추가.
+
+### 3D 좌표로 집고 놓기 (MoveIt2, `grip` / `place X Y Z`)
+
+픽셀 대신 **3D 좌표 (x, y, z)를 직접** 주고 싶을 때 쓰는 명령입니다. 좌표는 기본적으로
+`base_footprint` 기준 미터 단위이며(`--frame`으로 변경 가능), 동작을 마치면 항상 **원위치(홈 자세,
+모든 팔 관절 0 rad)** 로 돌아옵니다.
+
+| 명령 | 동작 순서 |
+| --- | --- |
+| `grip X Y Z` | **원위치로 복귀**(플래닝 시작 자세 확보) → 그리퍼 열기 → 목표 위(pre-grasp)로 이동 → 목표까지 하강 → 그리퍼 닫기 → 들어올리기 → **원위치** |
+| `place X Y Z` | **원위치로 복귀** → 목표 위(pre-place)로 이동 → 목표까지 하강 → 그리퍼 열기 → 들어올리기 → **원위치** |
+
+맨 앞의 "원위치로 복귀"는 MoveIt의 **시작 자세 충돌 검사**를 통과하기 위한 단계입니다. MoveIt은
+시작 자세가 충돌 상태면 플래닝 자체를 거부하는데(`CheckStartStateCollision`), 팔의 Gazebo 스폰
+자세(`shoulder_lift=-1.0, elbow_flex=1.5, wrist_flex=0.8`)는 그리퍼가 라이다(`laser_link`,
+`base_link` 기준 x=0.25, z=0.1의 원통) 안으로 파고들어 있어 그대로는 다음 에러로 끝납니다.
+
+```
+PlanningRequestAdapter 'CheckStartStateCollision' failed, because
+'2 contact(s) detected : arm_gripper_link - laser_link, arm_moving_jaw_link - laser_link'
+```
+
+`arm_controller`로 직접 보내는 궤적은 충돌 검사를 거치지 않으므로, 이 경로로 먼저
+원위치([홈 자세 파일](#홈원위치-자세-파일), 기본값은 팔 관절 전부 0 rad — URDF 충돌 메쉬로
+계산했을 때 모든 팔 링크가 라이다에서 19mm 이상 떨어진 자세)까지 빠져나온 뒤 플래닝을 시작합니다. 같은 이유로 `pick --at-pixel`도 (목표 픽셀의 뎁스를 먼저 읽은 뒤)
+원위치를 거쳐 플래닝합니다.
+
+```bat
+:: 로봇 앞 25cm, 왼쪽 10cm, 높이 35cm 지점의 물체를 집고 원위치로
+arm_control.bat grip 0.25 0.10 0.35
+
+:: 다른 지점에 내려놓고 원위치로
+arm_control.bat place 0.25 -0.15 0.35
+```
+
+수동 실행:
+
+```bash
+source install/setup.bash
+ros2 run jdamr_cube_so101_arm joint_control grip 0.25 0.10 0.35
+ros2 run jdamr_cube_so101_arm joint_control place 0.25 -0.15 0.35
+```
+
+공통 옵션: `--frame`(좌표 기준 프레임, 기본 `base_footprint`), `--approach-height`(목표 위로 띄울
+높이 [m], 기본 0.08), `--z-offset`(목표 z 보정값 [m], `grip`은 물체를 감싸도록 기본 -0.01,
+`place`는 바닥에 끼지 않도록 기본 +0.01).
+
+- `pick --at-pixel`과 같은 MoveIt2(OMPL) 경로를 쓰므로 주의사항도 동일합니다. 좌표가 팔 리치를
+  벗어나면 "MoveIt 플래닝 실패" 로그와 함께 종료 코드 1로 끝납니다.
+- 좌표를 주지 않은 `place`(예: `place --pan -0.8`)는 기존처럼 MoveIt 없이 튜닝된 고정 자세로
+  내려놓는 동작 그대로입니다.
+- 물체의 3D 좌표를 모를 때는 `arm_control.bat view --camera rgbd`로 픽셀을 확인해
+  `pick --at-pixel`을 실행하면, 로그에 "픽셀 (u, v) -> base_footprint 기준 x=…, y=…, z=…"로
+  좌표가 찍히므로 그 값을 `grip`/`place`에 그대로 쓸 수 있습니다.
 
 ## Gazebo + Cartographer로 맵 생성하기
 
@@ -446,3 +562,16 @@ Gazebo(room.world)를 띄운 상태에서 `cartographer.launch.py`를 실제로 
 - 검증은 WSL(Ubuntu 24.04) 상에서 소스 트리를 별도 임시 워크스페이스로 복사해 진행했으며,
   저장소에 커밋되어 있는 `build/`, `install/`, `log/` 디렉터리는 건드리지 않았습니다. 필요 시
   워크스페이스 루트에서 직접 `colcon build`를 실행해 새로 갱신하세요.
+
+
+###남은작업
+
+월드좌표를 주면 해당위치로 피킹
+휴지통으로 이동
+휴지통에 놓기
+
+VLA 를 붙여 피킹
+휴지통으로 이동
+VLA 놓기
+
+LLM 붙이기

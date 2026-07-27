@@ -47,8 +47,14 @@ start "4. Wrist camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.s
 start "5. RGBD overview camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera rgbd"
 start "6. RGBD depth camera" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' view --camera depth"
 
+rem Arm joint sliders. Needs arm_controller/gripper_controller to be active and
+rem /joint_states to be published, so it starts after Gazebo has settled.
+timeout /t 5 /nobreak >nul
+start "7. Arm joint control UI" wsl bash -lc "bash '%REPO_WSL%/scripts/wsl_arm_control.sh' ui"
+
 echo.
-echo All 6 windows launched. Use the Teleop window to drive the robot and fill the map.
+echo All 7 windows launched. Use the Teleop window to drive the robot and fill the map.
+echo Window 7 has sliders for the SO-101 arm joints (q: quit, h: home, r: resync).
 echo To save the map from another terminal:
 echo   wsl bash -lc "source ~/jdamr_cube_ws/install/setup.bash && ros2 run nav2_map_server map_saver_cli -f ~/maps/jdamr_cube_room"
 

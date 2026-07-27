@@ -18,6 +18,8 @@
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <!-- 홈(원위치) 자세를 YAML 파일로 읽고 저장한다 (ui 명령의 홈 설정 버튼). -->
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
   <!-- "pick 명령의 at-pixel 옵션"(MoveIt2 기반 픽셀 pick)에서만 지연 임포트로 사용.

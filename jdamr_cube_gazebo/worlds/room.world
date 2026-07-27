@@ -152,7 +152,8 @@
          반경(섀시 0.25m + 라이다 0.325m)을 넘지 못하므로, 바닥이 아니라 로봇 상판(cube top,
          z=0.15) 위에 바로 올려서 그 위 공간에서 집게 한다. 로봇은 (0,0,0)에 스폰되고 팔
          shoulder_pan=0 기준 +X 방향으로 뻗는다. -->
-    <model name="pick_object">
+    <!-- <model name="pick_object">
+    
       <pose>0.21 0 0.17 0 0 0</pose>
       <link name="link">
         <inertial>
@@ -176,7 +177,7 @@
           <material><ambient>0.9 0.1 0.6 1</ambient><diffuse>0.9 0.1 0.6 1</diffuse></material>
         </visual>
       </link>
-    </model>
+    </model> -->
 
     <!-- 추가 pick 대상들. 색을 다르게 해서 뎁스카메라 픽셀 pick(pick --at-pixel)으로
          개별로 골라 집을 수 있게 한다. 전부 로봇 상판(z=0.15) 위, 팔이 닿는 범위에 배치. -->
