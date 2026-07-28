@@ -68,6 +68,7 @@ class PickNode(Node):
         self.scale = float(self.declare_parameter('speed_scale', 3.0).value)
         self.skip_approach = bool(self.declare_parameter('skip_approach', False).value)
         self.get_logger().info(f'speed_scale={self.scale}')
+        self.hold_target = GRIPPER_CLOSED  # 파지 시 최초 접촉각-0.03으로 갱신됨
         self.bridge = CvBridge()
         self.color = None
         self.depth = None
@@ -218,7 +219,7 @@ class PickNode(Node):
             return False
         g = GripperCommand.Goal()
         g.command.position = float(position)
-        g.command.max_effort = 5.0
+        g.command.max_effort = 10.0  # 파지력 복원 — 파고듦 방지는 목표각 캡(스톨각-0.03)이 담당
         f = self.grip_client.send_goal_async(g)
         rclpy.spin_until_future_complete(self, f)
         h = f.result()
@@ -334,8 +335,9 @@ class PickNode(Node):
             self.spin_until(lambda: self.gripper_angle is not None, 5.0)
             angle = self.gripper_angle
             if angle is not None and angle > -0.10:
-                # 파고듦 방지: 목표를 물림각 바로 안쪽으로 재설정 (파지력 제어 근사)
-                self.move_gripper(max(GRIPPER_CLOSED, angle - 0.03))
+                # 파고듦 방지: 최초 접촉각-0.01을 절대 바닥으로 고정 (이후 재조임도 이 값만 사용)
+                self.hold_target = max(GRIPPER_CLOSED, angle - 0.01)
+                self.move_gripper(self.hold_target)
                 time.sleep(0.3)
                 break
             self.get_logger().info(f'얕은 물림(각도={angle}) — 재물림')
@@ -372,7 +374,8 @@ class PickNode(Node):
             self.spin_until(lambda: self.gripper_angle is not None, 3.0)
             self.get_logger().info(f'  step lift={lf}: 그리퍼 각도={self.gripper_angle:.3f}')
             if lf in (0.42, 0.27):
-                self.move_gripper(GRIPPER_CLOSED)
+                # 재조임 = 최초 접촉각 기준 절대 목표 재주장 (현재각 기준 래칫 파고듦 방지)
+                self.move_gripper(self.hold_target)
         time.sleep(0.5)
         self.gripper_angle = None
         self.spin_until(lambda: self.gripper_angle is not None, 5.0)
