@@ -351,7 +351,7 @@
         <parent link="rgbd_mast_link"/>
         <child link="rgbd_camera_link"/>
         <!-- pitch +1.0rad(=57도)만큼 숙여 앞쪽/아래(팔 작업공간)를 더 내려다봄. -->
-        <origin xyz="0.05 0 0.4" rpy="0 0.9 0"/>
+        <origin xyz="0.05 0 0.4" rpy="0 0.45 0"/>
     </joint>
 
     <link name="rgbd_camera_link">
@@ -736,6 +736,19 @@
                 <mesh filename="package://jdamr_cube_description/meshes/so101/wrist_roll_follower_so101_v1.stl"/>
             </geometry>
         </collision>
+        <collision name="fixed_finger_tip">
+            <origin xyz="-0.0157 0.0038 -0.0895" rpy="0 0 0"/>
+            <geometry><box size="0.0286 0.0238 0.0319"/></geometry>
+        </collision>
+        <collision name="fixed_finger_mid">
+            <origin xyz="-0.0230 -0.0002 -0.0594" rpy="0 0 0"/>
+            <geometry><box size="0.0229 0.0243 0.0299"/></geometry>
+        </collision>
+        <collision name="fixed_finger_base">
+            <origin xyz="-0.0115 0.0000 -0.0294" rpy="0 0 0"/>
+            <geometry><box size="0.0473 0.0480 0.0299"/></geometry>
+        </collision>
+
     </link>
 
     <joint name="arm_wrist_roll" type="revolute">
@@ -779,6 +792,19 @@
                 <mesh filename="package://jdamr_cube_description/meshes/so101/moving_jaw_so101_v1.stl"/>
             </geometry>
         </collision>
+        <collision name="moving_finger_tip">
+            <origin xyz="-0.0083 -0.0756 0.0189" rpy="0 0 0"/>
+            <geometry><box size="0.0181 0.0129 0.0203"/></geometry>
+        </collision>
+        <collision name="moving_finger_mid">
+            <origin xyz="-0.0030 -0.0549 0.0189" rpy="0 0 0"/>
+            <geometry><box size="0.0256 0.0398 0.0238"/></geometry>
+        </collision>
+        <collision name="moving_finger_base">
+            <origin xyz="0.0000 -0.0150 0.0189" rpy="0 0 0"/>
+            <geometry><box size="0.0200 0.0399 0.0480"/></geometry>
+        </collision>
+
     </link>
 
     <joint name="arm_gripper" type="revolute">
