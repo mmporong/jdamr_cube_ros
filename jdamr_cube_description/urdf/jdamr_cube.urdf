@@ -737,8 +737,9 @@
             </geometry>
         </collision>
         <collision name="fixed_finger_tip">
-            <origin xyz="-0.0157 0.0038 -0.0895" rpy="0 0 0"/>
-            <geometry><box size="0.0286 0.0238 0.0319"/></geometry>
+            <!-- STL 실측 그대로 (가상 패드 제거) — 조임은 effort 10 + 접촉각 캡이 담당 -->
+            <origin xyz="-0.0157 -0.0002 -0.0895" rpy="0 0 0"/>
+            <geometry><box size="0.0156 0.0158 0.0299"/></geometry>
         </collision>
         <collision name="fixed_finger_mid">
             <origin xyz="-0.0230 -0.0002 -0.0594" rpy="0 0 0"/>
