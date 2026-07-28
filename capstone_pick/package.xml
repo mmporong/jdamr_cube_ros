@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>capstone_pick</name>
+  <version>0.1.0</version>
+  <description>
+    비전(RGBD 뎁스+HSV 검출) 기반 물체 위치 추정과 실측 캘리브레이션된 그리퍼 파지를
+    결합한 이동-파지 파이프라인. 물체 판단은 카메라 계산으로, 파지 성공 판정은
+    그리퍼 조인트 스톨 각도로 수행한다.
+  </description>
+  <maintainer email="mmporong@gmail.com">mmporong</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>trajectory_msgs</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
