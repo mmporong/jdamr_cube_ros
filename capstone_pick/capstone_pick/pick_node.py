@@ -51,9 +51,18 @@ POSE_WAY = dict(zip(ARM_JOINTS, [0.0, 0.28, 0.32, 0.9, 0.0]))   # 수직 하강 
 POSE_GRASP = dict(zip(ARM_JOINTS, [0.0, 0.48, 0.2, 0.9, 0.0]))   # 그립(스캔 파지 확정)
 POSE_LIFT1 = {'arm_shoulder_lift': 0.15}
 POSE_LIFT2 = {'arm_shoulder_lift': 0.05}
-# 대상 물체 HSV 범위 — 2026-07-28 카메라 실측: 병 H15-19/S163/V206.
-# 빨간 데크(H0-4)·노랑 팔(H30-34)은 H로, 갈색 장애물(V≈106)은 V≥160으로 분리.
-HSV_LOWER, HSV_UPPER = (100, 130, 100), (135, 255, 255)  # 파란 큐브
+# 대상 색 HSV 범위 목록 (OpenCV H 0-179) — 2026-07-28 카메라 실측 기반.
+# 실측: 병(오렌지) H15-19/S163/V206, 갈색 장애물 H≈13/V≈106(실조명), 노랑 팔 H30-34, 빨간 데크 H0-4.
+# 갈색↔orange는 H15+V160 이중 게이트로, 노랑 팔은 H로 분리. 파란 장애물 실린더(H≈107)는
+# blue 범위 안 — 최근접 후보 선택·타깃 락·높이 게이트로 회피. red는 H 랩어라운드라 범위 2개,
+# 빨간 데크(자기 몸)는 뎁스 게이트(MIN_OBJECT_DEPTH)가 거른다.
+TARGET_COLOR_RANGES = {
+    'blue': [((100, 130, 100), (135, 255, 255))],
+    'red': [((0, 150, 100), (6, 255, 255)), ((174, 150, 100), (179, 255, 255))],
+    'green': [((45, 80, 80), (75, 255, 255))],
+    'orange': [((15, 120, 160), (22, 255, 255))],
+    'pink': [((140, 80, 80), (170, 255, 255))],
+}
 MIN_OBJECT_DEPTH = 0.30   # 이보다 가까운 검출은 자기 몸(팔)으로 간주하고 제외
 MIN_COMPONENT_AREA = 20
 OBJECT_HALF_DEPTH = 0.015
@@ -67,7 +76,13 @@ class PickNode(Node):
         # 속도 배율 (조절: --ros-args -p speed_scale:=1.0 ~ 5.0)
         self.scale = float(self.declare_parameter('speed_scale', 3.0).value)
         self.skip_approach = bool(self.declare_parameter('skip_approach', False).value)
-        self.get_logger().info(f'speed_scale={self.scale}')
+        target_color = str(self.declare_parameter('target_color', 'blue').value).strip().lower()
+        if target_color not in TARGET_COLOR_RANGES:
+            self.get_logger().error(
+                f'미지원 색 "{target_color}" — 사용 가능: {sorted(TARGET_COLOR_RANGES)}')
+            raise SystemExit(1)
+        self.hsv_ranges = TARGET_COLOR_RANGES[target_color]
+        self.get_logger().info(f'speed_scale={self.scale} target_color={target_color}')
         self.hold_target = GRIPPER_CLOSED  # 파지 시 최초 접촉각-0.03으로 갱신됨
         self.bridge = CvBridge()
         self.color = None
@@ -125,7 +140,9 @@ class PickNode(Node):
             self.get_logger().error('카메라 토픽 수신 실패')
             return None
         hsv = cv2.cvtColor(self.color, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, HSV_LOWER, HSV_UPPER)
+        mask = np.zeros(hsv.shape[:2], np.uint8)
+        for lo, hi in self.hsv_ranges:
+            mask |= cv2.inRange(hsv, lo, hi)
         depth_img = np.asarray(self.depth)
         # 연결 성분별로 뎁스 게이팅: 자기 몸(근접)·무효 뎁스 성분을 걸러내고
         # 남은 후보 중 가장 가까운 것을 대상으로 삼는다.
@@ -164,6 +181,13 @@ class PickNode(Node):
             if near:
                 best = min(near, key=lambda c: math.hypot(c[0] - prev[0], c[1] - prev[1]))
         self._target_px = (best[0], best[1])
+        # 검출 근거 로그: 선택 성분의 실제 픽셀 색 — 어떤 색이 검출을 만들었는지 추적 가능하게
+        li = int(labels[int(best[1]), int(best[0])])
+        if li > 0:
+            hm = hsv[labels == li].mean(axis=0)
+            self.get_logger().info(
+                f'검출 근거: HSV평균=({hm[0]:.0f},{hm[1]:.0f},{hm[2]:.0f}) '
+                f'면적={int(stats[li, cv2.CC_STAT_AREA])}px')
         u, v, d = best
         k = self.cam_info.k
         fx, fy, cx, cy = k[0], k[4], k[2], k[5]
