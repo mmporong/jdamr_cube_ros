@@ -2,7 +2,10 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import (AppendEnvironmentVariable, DeclareLaunchArgument,
+                            IncludeLaunchDescription, RegisterEventHandler,
+                            SetEnvironmentVariable)
+from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -29,6 +32,7 @@ def generate_launch_description():
 
     world = LaunchConfiguration('world')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    gui = LaunchConfiguration('gui')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
     z_pose = LaunchConfiguration('z_pose')
@@ -43,6 +47,11 @@ def generate_launch_description():
         default_value='true',
         description='Use simulation (Gazebo) clock if true')
 
+    declare_gui_cmd = DeclareLaunchArgument(
+        'gui',
+        default_value='true',
+        description='false면 Gazebo GUI 없이 서버만 실행 (시각화는 RViz2 사용)')
+
     declare_x_pose_cmd = DeclareLaunchArgument(
         'x_pose', default_value='0.0', description='Initial x position of the robot')
 
@@ -52,10 +61,31 @@ def generate_launch_description():
     declare_z_pose_cmd = DeclareLaunchArgument(
         'z_pose', default_value='0.01', description='Initial z position of the robot')
 
+    # URDF의 package:// 메쉬 URI는 스폰 시 model://로 변환되는데, gz 서버가 이를
+    # 해석하려면 GZ_SIM_RESOURCE_PATH에 share 디렉터리가 있어야 한다. 없으면 SO-101
+    # 팔의 STL 메쉬(비주얼+충돌)가 조용히 빠져 그리퍼가 물체를 통과한다(충돌 없음).
+    set_resource_path = AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH', os.path.dirname(pkg_description_dir))
+
+    # WSLg에서 gz 서버의 EGL 헤드리스 렌더링은 기본적으로 llvmpipe(CPU)로 떨어져
+    # 코어를 다 먹는다. headless(gui:=false)일 때만 d3d12(GPU)를 강제한다.
+    # GUI 모드에서는 이 변수가 Qt GLX 컨텍스트 생성을 깨뜨리므로 걸지 않는다.
+    set_gpu_adapter = SetEnvironmentVariable(
+        'MESA_D3D12_DEFAULT_ADAPTER_NAME', 'NVIDIA', condition=UnlessCondition(gui))
+    set_gpu_driver = SetEnvironmentVariable(
+        'GALLIUM_DRIVER', 'd3d12', condition=UnlessCondition(gui))
+
     gazebo_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': ['-r -v2 ', world]}.items())
+        launch_arguments={'gz_args': ['-r -v2 ', world]}.items(),
+        condition=IfCondition(gui))
+
+    gazebo_sim_headless = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
+        launch_arguments={'gz_args': ['-r -s -v2 ', world]}.items(),
+        condition=UnlessCondition(gui))
 
     robot_state_publisher_node = Node(
         package='robot_state_publisher',
@@ -122,10 +152,15 @@ def generate_launch_description():
     ld = LaunchDescription()
     ld.add_action(declare_world_cmd)
     ld.add_action(declare_use_sim_time_cmd)
+    ld.add_action(declare_gui_cmd)
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
     ld.add_action(declare_z_pose_cmd)
+    ld.add_action(set_resource_path)
+    ld.add_action(set_gpu_adapter)
+    ld.add_action(set_gpu_driver)
     ld.add_action(gazebo_sim)
+    ld.add_action(gazebo_sim_headless)
     ld.add_action(robot_state_publisher_node)
     ld.add_action(spawn_entity_node)
     ld.add_action(bridge_node)
