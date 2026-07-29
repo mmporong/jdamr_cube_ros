@@ -76,8 +76,8 @@ TRASH_HALF = 0.08               # 뎁스는 앞면 → 중심까지 반깊이 �
 # 운반·투하 자세 = 들어올리기가 끝나는 자세 그대로. 자세를 '전환'하면 팔꿈치가 펴지는
 # 관성으로 물체가 빠진다(계단식·저속으로 나눠도 반복 실패). 전환을 없애는 것이 해법이고,
 # pan 회전만 하는 것은 옆에 내려놓기에서 이미 검증된 동작이다.
-# 실측: 그리퍼 x=0.364 z=0.281 → 큐브 하단 0.186 (통 벽 0.18 위 0.6cm),
-# 로봇 전면(0.27)과 통 벽 사이 1.4cm 여유.
+# 실측: 그리퍼 x=0.353 z=0.300 → 큐브 하단 0.205 (통 벽 0.18 위 2.5cm).
+# 여유 0.6cm(lift 0.15) 자세로는 주행 흔들림에 큐브가 통 벽에 걸렸다 — 실측 확인.
 POSE_CARRY = dict(zip(ARM_JOINTS, [0.0, 0.15, 0.15, 1.28, 0.0]))
 # 운반·탐색 중에는 pan을 옆으로 빼 카메라 시야를 연다(정면 자세는 화면 중앙을 가림 — 실측 확인).
 POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.0)
@@ -89,9 +89,10 @@ TRASH_POCKET_X = 0.364          # 통 중심이 이 거리에 오면 그리퍼�
 # 환산해 썼더니 기준이 46px 어긋나 정렬이 큐브 모서리로 수렴했다 — 포켓을 옮기면 반드시 다시 잰다.
 WRIST_REF = (412.9, 320.2)      # 포켓 정위치 큐브의 블롭 중심 (실측)
 WRIST_PX_PER_M = 6073.0         # 전후 1m당 px — 포켓 0.361/0.401 두 점으로 산출
-# pan 게인은 pan을 실제로 돌려 잰 직접 측정값(0.1rad → -174px). 물체를 옆으로 옮겨
-# 환산하면 카메라도 함께 도는 효과가 빠져 과대평가되고 정렬이 진동한다.
-WRIST_PY_PER_PAN = 1740.0       # pan 1rad당 py 변화 (직접 측정)
+# pan 게인: 호버 자세에서 pan을 -0.1~+0.1로 돌려 잰 값(423.7→168.2px / 0.2rad).
+# 이전 값 1740은 과대라 보정이 매번 부족했고, 남은 약 4mm 오차가 죠 한쪽에 치우친
+# 얕은 물림을 만들어 들어올리는 첫 순간 미끄러지는 원인이 됐다.
+WRIST_PY_PER_PAN = 1277.0       # pan 1rad당 py 변화 (실측)
 # 큐브 기울기 정렬: 손목캠 minAreaRect 각도는 큐브 yaw와 1:1 반전(실측: +20도→rect 70).
 # 카메라는 roll 관절 앞단이라 롤을 돌려도 측정 불변 — 측정·제어 분리.
 WRIST_RECT_REF = 90.0           # 정렬 큐브의 rect 각 (실측)
@@ -374,7 +375,7 @@ class PickNode(Node):
         """
         return angle is not None and GRIP_HOLD_MIN < angle < GRIP_HOLD_MAX
 
-    def move_gripper(self, position, wait=True, effort=20.0):
+    def move_gripper(self, position, wait=True, effort=10.0):
         self._last_grip_cmd = float(position)
         if not self.grip_client.wait_for_server(timeout_sec=10.0):
             return False
@@ -511,7 +512,7 @@ class PickNode(Node):
     # ---- 손목 카메라 최종 정렬 (바닥 모드): 좌우=pan, 전후=미세 주행 ----
     def wrist_align(self, pan, pre):
         """호버 자세에서 손목 RGB로 물체 중간이 파지선(WRIST_REF)에 오도록 정렬한다."""
-        for i in range(4):
+        for i in range(6):     # 임계를 좁힌 만큼 반복 여유를 준다
             self.wrist_img = None
             if not self.spin_until(lambda: self.wrist_img is not None, 3.0):
                 break
@@ -529,12 +530,13 @@ class PickNode(Node):
                 self.get_logger().info('손목캠: 물체 미검출 — 정렬 생략')
                 break
             dr = (best[0] - WRIST_REF[0]) / WRIST_PX_PER_M     # 전후 오차 [m] (+=멂)
-            # 감쇠 0.6: 큐브가 화면을 크게 차지하면 블롭 중심이 흔들려 전량 보정 시 진동한다
-            dpan = 0.6 * (best[1] - WRIST_REF[1]) / WRIST_PY_PER_PAN
+            # 게인이 실측으로 정확해진 뒤에는 감쇠를 줄여 빠르게 수렴시킨다(0.85)
+            dpan = 0.85 * (best[1] - WRIST_REF[1]) / WRIST_PY_PER_PAN
             self.get_logger().info(
                 f'손목캠 정렬[{i}]: blob=({best[0]:.0f},{best[1]:.0f}) '
                 f'전후 {dr * 1000:+.0f}mm, pan 보정 {dpan:+.3f}rad')
-            if abs(dr) < 0.006 and abs(dpan) < 0.012:
+            # 좌우 임계 0.006rad ≈ 포켓 반경 0.222m에서 1.3mm — 죠 중앙에 물리려면 이 수준이어야 한다
+            if abs(dr) < 0.006 and abs(dpan) < 0.006:
                 break
             if abs(dpan) >= 0.012:
                 pan = max(-0.6, min(0.6, pan + max(-0.25, min(0.25, dpan))))

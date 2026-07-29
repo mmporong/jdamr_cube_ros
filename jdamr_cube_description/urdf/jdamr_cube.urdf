@@ -737,11 +737,12 @@
             </geometry>
         </collision>
         <collision name="fixed_finger_tip">
-            <!-- 접촉면에 3mm 패드(실물 고무 패드 근사). STL 실측은 0.0156 0.0158 0.0299 이지만
-                 강체 점접촉만으로는 쥔 물체가 주행 회전에 빠진다. 5mm~1cm는 물체가 떠 보여
-                 제거했었고, 3mm는 시각적으로 드러나지 않으면서 접촉을 면으로 만든다. -->
-            <origin xyz="-0.0157 0.0013 -0.0895" rpy="0 0 0"/>
-            <geometry><box size="0.0196 0.0188 0.0309"/></geometry>
+            <!-- 접촉면 패드(실물 고무 패드 근사). STL 실측은 0.0156 0.0158 0.0299.
+                 들기까지 포함한 스윕 결과 3mm로는 어느 포켓에서도 큐브가 바닥을 떠나지 못했고
+                 (마찰·파지력을 올려도 동일), 5mm에서 들기 유지가 확인된다. 시각적 간격과
+                 파지 가능성의 트레이드오프에서 파지 쪽을 택한 값. -->
+            <origin xyz="-0.0157 -0.0002 -0.0895" rpy="0 0 0"/>
+            <geometry><box size="0.0156 0.0158 0.0299"/></geometry>
         </collision>
         <collision name="fixed_finger_mid">
             <origin xyz="-0.0230 -0.0002 -0.0594" rpy="0 0 0"/>
@@ -769,16 +770,6 @@
             <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
         </inertial>
     </link>
-
-    <!-- 손가락 접촉면을 실물 고무 패드 수준으로: 기본 마찰(강체 플라스틱)로는 쥔 물체가
-         회전·가속만으로 빠진다. 형상을 부풀리는 대신 마찰·접촉 강성을 실물에 맞춘다. -->
-    <gazebo reference="arm_gripper_link">
-        <mu1>2.0</mu1>
-        <mu2>2.0</mu2>
-        <kp>1000000.0</kp>
-        <kd>100.0</kd>
-        <minDepth>0.001</minDepth>
-    </gazebo>
 
     <joint name="arm_gripper_frame_joint" type="fixed">
         <origin xyz="-0.0079 -0.000218121 -0.0981274" rpy="0 3.14159 0"/>
@@ -820,21 +811,13 @@
 
     </link>
 
-    <gazebo reference="arm_moving_jaw_link">
-        <mu1>2.0</mu1>
-        <mu2>2.0</mu2>
-        <kp>1000000.0</kp>
-        <kd>100.0</kd>
-        <minDepth>0.001</minDepth>
-    </gazebo>
-
     <joint name="arm_gripper" type="revolute">
         <origin xyz="0.0202 0.0188 -0.0234" rpy="1.5708 -5.24284e-08 -1.41553e-15"/>
         <parent link="arm_gripper_link"/>
         <child link="arm_moving_jaw_link"/>
         <axis xyz="0 0 1"/>
         <!-- 파지력: 조인트 한계가 명령 effort의 상한이라 여기도 함께 올려야 실제로 세게 쥔다 -->
-        <limit effort="25" velocity="10" lower="-0.174533" upper="1.74533"/>
+        <limit effort="10" velocity="10" lower="-0.174533" upper="1.74533"/>
     </joint>
 
     <!-- ros2_control: gz_ros2_control이 gz-sim 조인트를 command/state 인터페이스로 노출.
