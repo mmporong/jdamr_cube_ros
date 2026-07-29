@@ -208,7 +208,7 @@ class App:
                       command=lambda c=color: self.run_pick(c)).pack(side=tk.LEFT, padx=2)
         opt = tk.Frame(pickf)
         opt.pack(pady=2)
-        tk.Label(opt, text='속도').pack(side=tk.LEFT)
+        tk.Label(opt, text='속도(권장 4)').pack(side=tk.LEFT)
         self.speed = tk.StringVar(value='4.0')
         tk.Entry(opt, textvariable=self.speed, width=4).pack(side=tk.LEFT, padx=(0, 6))
         tk.Button(opt, text='중지', bg='#e8cfcf', command=self.stop_pick).pack(side=tk.LEFT)

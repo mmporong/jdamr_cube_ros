@@ -21,7 +21,7 @@ for n in ('pick_object', 'pick_object_green', 'pick_object_blue', 'pick_object_o
     svc('/world/room/remove', 'gz.msgs.Entity', f'name: "{n}" type: MODEL')
 time.sleep(1)
 c = ('<sdf version="1.6"><model name="pick_blue">'
-     '<pose>0.661 0.0 0.015 0 0 0</pose>'
+     '<pose>0.681 0.0 0.015 0 0 0</pose>'
      '<link name="link"><inertial><mass>0.04</mass>'
      '<inertia><ixx>4e-6</ixx><ixy>0</ixy><ixz>0</ixz><iyy>4e-6</iyy><iyz>0</iyz><izz>4e-6</izz></inertia></inertial>'
      '<collision name="c"><geometry><box><size>0.03 0.03 0.03</size></box></geometry>'

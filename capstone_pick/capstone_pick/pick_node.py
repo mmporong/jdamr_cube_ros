@@ -41,7 +41,11 @@ PAN_BASE_BEARING = math.radians(-1.1)   # pan=0일 때 포켓 방위각
 GRIPPER_OPEN = 0.5                # 3cm 물체 통과에 충분한 최소 열림
 GRIPPER_STAGE1 = 0.25
 GRIPPER_CLOSED = -0.17
-GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 닫힘) 파지 성공
+GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 닫힘) 접촉은 있었다는 뜻
+# 물림 판정 구간 (2026-07-29 실측): 3cm 큐브를 제대로 물면 0.07~0.40에 머문다.
+# 구간 밖은 전부 실패 — 아래로는 허공 닫힘(-0.17)·모서리 헛집기(-0.07)·미닫힘(0.0),
+# 위로는 열린 상태(0.5+). 물체 크기가 바뀌면 이 구간을 다시 잰다.
+GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.45
 # 실측 근거: 3cm 큐브 정상 파지는 항상 +0.07 이상, 모서리 헛집기는 -0.07 부근(가짜 성공 사례)
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
@@ -57,14 +61,37 @@ POSE_LIFT2 = {'arm_shoulder_lift': 0.05}
 # 닫힘이 큐브를 고정 죠 쪽으로 쓸어담아 물리는 방식 — 포켓은 쓸림 거리까지 반영한 실측값.
 POSE_PRE_FLOOR = dict(zip(ARM_JOINTS, [0.0, 0.85, 0.15, 0.58, 0.0]))    # 바닥 상공 대기
 POSE_GRASP_FLOOR = dict(zip(ARM_JOINTS, [0.0, 1.20, 0.15, 0.23, 0.0]))  # 바닥 파지
-POCKET_FLOOR = (0.361, 0.000)   # 바닥 모드 파지 포켓 [m, base_footprint]
+# 포켓 스윕 실측(2026-07-29): 0.361은 하강이 큐브를 3.5mm 밀어내고, 0.381은 밀림 0에
+# 물림각 +0.273으로 가장 깊다(0.401은 얕게 물림 +0.142, 0.421은 놓침).
+POCKET_FLOOR = (0.381, 0.000)   # 바닥 모드 파지 포켓 [m, base_footprint]
 FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 모드
+# ---- 쓰레기통 투입 (2026-07-29 실측) ----
+# 통 = 16cm 정사각, 벽 높이 0.18m, 개구부 13.6cm. 회색이라 색상(H)은 무의미하고
+# 무채색(S<45) + 어두움(45<V<115) + 뎁스·높이 게이트로 분리한다(바닥 V=196, 그림자는 z<0).
+TRASH_S_MAX, TRASH_V_LO, TRASH_V_HI = 45, 45, 115
+TRASH_D_LO, TRASH_D_HI = 0.35, 2.0   # 상한을 넓히면 원경 벽이 통과 한 덩어리로 붙는다(실측)
+TRASH_Z_LO, TRASH_Z_HI = 0.02, 0.30
+TRASH_MIN_AREA = 400
+TRASH_HALF = 0.08               # 뎁스는 앞면 → 중심까지 반깊이 보정
+# 운반·투하 자세 = 들어올리기가 끝나는 자세 그대로. 자세를 '전환'하면 팔꿈치가 펴지는
+# 관성으로 물체가 빠진다(계단식·저속으로 나눠도 반복 실패). 전환을 없애는 것이 해법이고,
+# pan 회전만 하는 것은 옆에 내려놓기에서 이미 검증된 동작이다.
+# 실측: 그리퍼 x=0.364 z=0.281 → 큐브 하단 0.186 (통 벽 0.18 위 0.6cm),
+# 로봇 전면(0.27)과 통 벽 사이 1.4cm 여유.
+POSE_CARRY = dict(zip(ARM_JOINTS, [0.0, 0.15, 0.15, 1.28, 0.0]))
+# 운반·탐색 중에는 pan을 옆으로 빼 카메라 시야를 연다(정면 자세는 화면 중앙을 가림 — 실측 확인).
+POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.0)
+TRASH_POCKET_X = 0.364          # 통 중심이 이 거리에 오면 그리퍼가 개구부 바로 위
 # 손목 카메라 최종 정렬(바닥 모드) — 접근 비전은 근접(<0.45m)에서 팔·시야각에 가려지므로
 # 마지막 정렬은 손목 RGB로. 실측(2026-07-29, 바닥 호버): 손목캠은 90° 회전 장착이라
 # px=전후거리(82px/cm), py=좌우(67px/cm). pan 1rad당 py -1740px(포켓 반경 0.26m×6700px/m와 일치).
-WRIST_REF = (296.0, 329.0)      # 포켓 정위치 큐브의 블롭 중심
-WRIST_PX_PER_M = 8175.0         # 전후 1m당 px (멀수록 px 증가)
-WRIST_PY_PER_PAN = 1740.0       # pan -1rad당 py 증가 (Δpan = py오차/1740)
+# 아래 세 값은 포켓 0.381에서 직접 실측(2026-07-29). 이전 포켓(0.361) 값을 게인으로
+# 환산해 썼더니 기준이 46px 어긋나 정렬이 큐브 모서리로 수렴했다 — 포켓을 옮기면 반드시 다시 잰다.
+WRIST_REF = (412.9, 320.2)      # 포켓 정위치 큐브의 블롭 중심 (실측)
+WRIST_PX_PER_M = 6073.0         # 전후 1m당 px — 포켓 0.361/0.401 두 점으로 산출
+# pan 게인은 pan을 실제로 돌려 잰 직접 측정값(0.1rad → -174px). 물체를 옆으로 옮겨
+# 환산하면 카메라도 함께 도는 효과가 빠져 과대평가되고 정렬이 진동한다.
+WRIST_PY_PER_PAN = 1740.0       # pan 1rad당 py 변화 (직접 측정)
 # 큐브 기울기 정렬: 손목캠 minAreaRect 각도는 큐브 yaw와 1:1 반전(실측: +20도→rect 70).
 # 카메라는 roll 관절 앞단이라 롤을 돌려도 측정 불변 — 측정·제어 분리.
 WRIST_RECT_REF = 90.0           # 정렬 큐브의 rect 각 (실측)
@@ -102,6 +129,8 @@ class PickNode(Node):
         self.hsv_ranges = TARGET_COLOR_RANGES[target_color]
         # 바닥 모드: 기본은 비전 검출 높이로 자동 결정, skip_approach 시엔 -p floor:=true로 강제
         self.floor_mode = bool(self.declare_parameter('floor', False).value)
+        # 놓을 곳: side(옆 바닥) | trash(쓰레기통 투입)
+        self.place_target = str(self.declare_parameter('place_target', 'side').value).strip().lower()
         # 검출기: yolo(기본, 시뮬 자동라벨 파인튜닝 모델) / hsv(폴백·orange·pink용)
         self.detector = str(self.declare_parameter('detector', 'yolo').value).strip().lower()
         self.yolo = None
@@ -159,6 +188,7 @@ class PickNode(Node):
     def _joint_cb(self, m):
         if 'arm_gripper' in m.name:
             self.gripper_angle = m.position[m.name.index('arm_gripper')]
+        self.joint_pos = {n: p for n, p in zip(m.name, m.position) if n in ARM_JOINTS}
 
     def spin_until(self, pred, sec):
         t0 = time.time()
@@ -242,8 +272,11 @@ class PickNode(Node):
                 f'면적={int(stats[li, cv2.CC_STAT_AREA])}px')
         return self._pixel_to_base(*best)
 
-    def _pixel_to_base(self, u, v, d):
-        """픽셀+뎁스 → base_footprint 3D (역투영 + 축변환 + TF + 높이 게이트)."""
+    def _pixel_to_base(self, u, v, d, z_gate=(-0.05, 0.20)):
+        """픽셀+뎁스 → base_footprint 3D (역투영 + 축변환 + TF + 높이 게이트).
+
+        z_gate는 대상별로 다르다 — 바닥 물체는 기본값, 쓰레기통처럼 높은 구조물은 넓혀 준다.
+        """
         k = self.cam_info.k
         fx, fy, cx, cy = k[0], k[4], k[2], k[5]
         # 광학 프레임: X=우, Y=하, Z=전방
@@ -261,8 +294,8 @@ class PickNode(Node):
             return None
         tr = self.tf_buffer.lookup_transform('base_footprint', CAMERA_FRAME, rclpy.time.Time())
         out = do_transform_point(p, tr)
-        # 물리적 타당성 검증: 물체는 지면 근처 높이여야 한다
-        if not (-0.05 < out.point.z < 0.20):
+        # 물리적 타당성 검증: 대상이 있을 수 있는 높이 범위 안인지
+        if not (z_gate[0] < out.point.z < z_gate[1]):
             self.get_logger().warning(
                 f'높이 검증 실패 z={out.point.z:.3f} — 오검출로 판단, 무시')
             return None
@@ -311,14 +344,43 @@ class PickNode(Node):
             return False
         rf = h.get_result_async()
         rclpy.spin_until_future_complete(self, rf)
-        return True
+        # 액션 완료 ≠ 도달. 궤적 시간이 끝나면 컨트롤러는 못 따라온 채로도 종료하는데,
+        # 그 상태에서 다음 명령이 겹치면 급가속이 생겨 쥔 물체가 빠진다(실측).
+        # 관절이 실제로 목표에 닿을 때까지 기다린다.
+        return self.wait_arm_settled(merged)
 
-    def move_gripper(self, position, wait=True):
+    def wait_arm_settled(self, target, tol=0.04, timeout=6.0):
+        """팔 관절이 목표 각도에 실제 도달할 때까지 대기."""
+        t0 = time.time()
+        worst = None
+        while time.time() - t0 < timeout:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            jp = getattr(self, 'joint_pos', None)
+            if not jp:
+                continue
+            worst = max(abs(jp.get(j, target[j]) - target[j]) for j in target)
+            if worst < tol:
+                return True
+        self.get_logger().warning(f'자세 도달 미완 (최대 오차 {worst if worst else float("nan"):.3f}rad)')
+        return False
+
+    def gripped(self, angle):
+        """물림 판정: 그리퍼 각도가 '물체 두께에 해당하는 구간'에 있는가.
+
+        하한만 두면 아예 닫히지 않은 상태(각도 0 부근)까지 성공으로 새어 나가고
+        (실측: 명령 0.0 / 각도 -0.000인데 HOLDING 오판), 명령 대비 잔여각으로 보면
+        유지용 재조임이 목표에 도달하는 순간 0이 되어 오판한다. 구간 판정이 둘 다 피한다.
+        실측: 3cm 큐브 물림 0.07~0.40 / 허공 완전닫힘 -0.17 / 모서리 헛집기 -0.07 / 열림 0.5+
+        """
+        return angle is not None and GRIP_HOLD_MIN < angle < GRIP_HOLD_MAX
+
+    def move_gripper(self, position, wait=True, effort=20.0):
+        self._last_grip_cmd = float(position)
         if not self.grip_client.wait_for_server(timeout_sec=10.0):
             return False
         g = GripperCommand.Goal()
         g.command.position = float(position)
-        g.command.max_effort = 10.0  # 파지력 복원 — 파고듦 방지는 목표각 캡(스톨각-0.03)이 담당
+        g.command.max_effort = effort  # 파지력. 파고듦 방지는 목표각 캡이 담당
         f = self.grip_client.send_goal_async(g)
         rclpy.spin_until_future_complete(self, f)
         h = f.result()
@@ -467,7 +529,8 @@ class PickNode(Node):
                 self.get_logger().info('손목캠: 물체 미검출 — 정렬 생략')
                 break
             dr = (best[0] - WRIST_REF[0]) / WRIST_PX_PER_M     # 전후 오차 [m] (+=멂)
-            dpan = (best[1] - WRIST_REF[1]) / WRIST_PY_PER_PAN  # 좌우 오차 → pan 보정 [rad]
+            # 감쇠 0.6: 큐브가 화면을 크게 차지하면 블롭 중심이 흔들려 전량 보정 시 진동한다
+            dpan = 0.6 * (best[1] - WRIST_REF[1]) / WRIST_PY_PER_PAN
             self.get_logger().info(
                 f'손목캠 정렬[{i}]: blob=({best[0]:.0f},{best[1]:.0f}) '
                 f'전후 {dr * 1000:+.0f}mm, pan 보정 {dpan:+.3f}rad')
@@ -554,7 +617,7 @@ class PickNode(Node):
             self.get_logger().info(f'얕은 물림(각도={angle}) — 재물림')
             self.move_gripper(0.5)
             time.sleep(0.6)
-        held = angle is not None and angle > GRIP_HOLD_THRESHOLD
+        held = self.gripped(angle)
         self.get_logger().info(
             f'파지 검증: 그리퍼 각도={angle if angle is not None else float("nan"):.3f} '
             f'(임계 {GRIP_HOLD_THRESHOLD}) → {"HOLDING" if held else "EMPTY"}')
@@ -564,6 +627,184 @@ class PickNode(Node):
             self.move_arm({**pre, 'arm_shoulder_pan': pan}, 2.5)
             time.sleep(0.3)
         return held
+
+    # ---- 쓰레기통 검출·접근·투입 ----
+    def locate_trash(self):
+        """쓰레기통 중심의 base_footprint 좌표. 실패 시 None."""
+        self.color = self.depth = None
+        if not self.spin_until(
+                lambda: self.color is not None and self.depth is not None
+                and self.cam_info is not None, 5.0):
+            return None
+        hsv = cv2.cvtColor(self.color, cv2.COLOR_BGR2HSV)
+        dep = np.nan_to_num(np.asarray(self.depth), nan=0.0, posinf=0.0)
+        mask = ((hsv[:, :, 1] < TRASH_S_MAX) & (hsv[:, :, 2] > TRASH_V_LO)
+                & (hsv[:, :, 2] < TRASH_V_HI) & (dep > TRASH_D_LO)
+                & (dep < TRASH_D_HI)).astype(np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        num, labels, stats, cents = cv2.connectedComponentsWithStats(mask)
+        best, rejected = None, []
+        for i in range(1, num):
+            a = int(stats[i, cv2.CC_STAT_AREA])
+            if a < TRASH_MIN_AREA:
+                continue
+            ds = dep[labels == i]
+            ds = ds[(ds > TRASH_D_LO) & (ds < TRASH_D_HI)]
+            if len(ds) < 50:
+                rejected.append(f'면적{a}:뎁스부족')
+                continue
+            # 통은 높이 0.18m 구조물 — 물체용 기본 게이트(0.20)로는 상단이 걸린다
+            loc = self._pixel_to_base(cents[i][0], cents[i][1], float(np.median(ds)),
+                                      z_gate=(-0.10, 0.60))
+            if loc is None:
+                rejected.append(f'면적{a}:역투영실패')
+                continue
+            x, y, z = loc[0], loc[1], loc[2]
+            if not (TRASH_Z_LO < z < TRASH_Z_HI):
+                rejected.append(f'면적{a}:높이{z:.2f}')
+                continue          # 바닥 그림자(z<0)·원경 구조물 배제
+            if best is None or a > best[0]:
+                best = (a, x, y, z)
+        if best is None:
+            if rejected:
+                self.get_logger().info('통 후보 기각: ' + ', '.join(rejected[:4]))
+            return None
+        a, x, y, z = best
+        # 뎁스는 앞면 → 중심 방향으로 반깊이만큼 밀어 통 중심을 추정
+        r = math.hypot(x, y)
+        k = (r + TRASH_HALF) / r if r > 1e-3 else 1.0
+        self.get_logger().info(
+            f'쓰레기통: 앞면 base=({x:.3f},{y:.3f},{z:.3f}) 면적={a} → 중심 r={r + TRASH_HALF:.3f}')
+        return x * k, y * k
+
+    def carry_to_trash(self, max_iter=45):
+        """물체를 든 채 쓰레기통 앞까지 저속 주행. 성공 시 True."""
+        # 팔은 들어올린 자세 그대로 손대지 않는다. 자세 전환은 물론 pan 회전만으로도
+        # 얕게 물린 물체가 빠진다(실측 반복). 통은 큰 구조물이라 팔 위쪽 시야로 원거리에서
+        # 검출되고, 근접해 가려지는 구간은 근접 락(추측 접근)이 담당한다.
+        if not self.holding():
+            self.get_logger().error('운반 시작 시 물체 없음')
+            return False
+        # 운반 구간은 배율을 1로 — 회전 관성만으로도 얕게 물린 물체가 빠진다(실측)
+        carry_scale, self.scale = self.scale, 1.0
+        try:
+            return self._carry_loop(max_iter)
+        finally:
+            self.scale = carry_scale
+
+    def _carry_loop(self, max_iter):
+        miss = 0
+        for it in range(max_iter):
+            self.spin_until(lambda: self.odom is not None, 3.0)
+            # 근접 락: 통이 화면을 채우면 마스크 중심이 한쪽 면으로 치우쳐 방위가 수렴하지 않는다
+            # (실측: r=0.50에서 brg -14도 고착). 락 이후에는 기억한 좌표로만 추측 접근한다.
+            near_lock = getattr(self, '_trash_lock', False)
+            loc = None if near_lock else self.locate_trash()
+            if loc is not None and self.odom:
+                # 통은 고정물 — 실검출마다 오도메트리 좌표로 기억해 두고 근접 사각에서 재사용
+                x, y, yaw = self.odom
+                self._trash_odom = (x + math.cos(yaw) * loc[0] - math.sin(yaw) * loc[1],
+                                    y + math.sin(yaw) * loc[0] + math.cos(yaw) * loc[1])
+            elif loc is None and getattr(self, '_trash_odom', None) and self.odom:
+                ox, oy = self._trash_odom
+                x, y, yaw = self.odom
+                dx, dy = ox - x, oy - y
+                loc = (math.cos(yaw) * dx + math.sin(yaw) * dy,
+                       -math.sin(yaw) * dx + math.cos(yaw) * dy)
+                self.get_logger().info(f'[{it}] 통 추정 추적: base=({loc[0]:.3f},{loc[1]:.3f})')
+            if loc is None:
+                miss += 1
+                if miss > 12:
+                    self.get_logger().error('쓰레기통 미검출 — 탐색 실패')
+                    return False
+                self.get_logger().warning(f'[{it}] 쓰레기통 미검출 — 회전 탐색')
+                self.drive(0.0, 0.30, 1.2)
+                time.sleep(0.4)      # 회전 직후 흔들림이 가라앉은 뒤 관측
+                continue
+            miss = 0
+            tx, ty = loc
+            r = math.hypot(tx, ty)
+            brg = math.atan2(ty, tx)
+            er = r - TRASH_POCKET_X
+            if not near_lock and r < 0.60 and getattr(self, '_trash_odom', None):
+                self._trash_lock = True     # 이 시점의 좌표를 기준으로 고정
+                self.get_logger().info(f'근접 락 (r={r:.3f}) — 이후 추측 접근')
+            self.get_logger().info(
+                f'[{it}] 통 접근: r={r:.3f} er={er * 1000:.0f}mm brg={math.degrees(brg):.1f}deg')
+            # 개구부 13.6cm 기준 거리 0.4m에서 허용 방위는 약 9.6도 — 임계를 그 안쪽으로 둔다.
+            # 좁게 잡으면 회전만 반복하다 전진을 못 한다(실측: 3.4도 임계에서 예산 소진).
+            if abs(er) < 0.025 and abs(brg) < 0.10:
+                return True
+            if not self.holding():
+                self.get_logger().error('운반 중 물체 놓침')
+                return False
+            if abs(brg) > 0.25:
+                self.drive(0.0, 0.20 if brg > 0 else -0.20, min(2.0, abs(brg) / 0.20))
+            else:
+                v = 0.06 if er > 0.15 else (0.03 if er > 0 else -0.03)
+                wz = max(-0.12, min(0.12, brg * 0.7))     # 전진하며 방위도 함께 좁힌다
+                self.drive(v, wz, min(3.0, abs(er) / abs(v) + 0.2))
+        self.get_logger().error('쓰레기통 접근 반복 소진')
+        return False
+
+    def to_pose_holding(self, target, steps=5):
+        """물체를 쥔 채 목표 자세로 계단식 전환.
+
+        한 번에 바꾸면 팔꿈치가 펴지는 관성으로 물체가 밀려 빠진다(실측). 들어올리기와
+        같은 방식으로 잘게 나누고 단계마다 쥔 힘을 재주장한다.
+        """
+        cur = dict(getattr(self, '_last_arm', {j: 0.0 for j in ARM_JOINTS}))
+        for i in range(1, steps + 1):
+            t = i / steps
+            pose = {j: cur.get(j, 0.0) + (target[j] - cur.get(j, 0.0)) * t for j in ARM_JOINTS}
+            self.move_arm(pose, 1.0 * self.scale)     # 배율 무시: 실제 1초씩
+            time.sleep(0.3)
+            self.move_gripper(self.hold_target)       # 쥔 힘만 재주장 (확인은 마지막에)
+            time.sleep(0.2)
+        return self.holding()      # 전환이 끝난 뒤 한 번만 능동 확인
+
+    def holding(self):
+        """물체를 쥐고 있는지 능동 확인 — 완전 닫힘을 시도해 스톨 여부로 판정.
+
+        각도만 읽으면 안 된다. 물체가 빠져도 그리퍼는 직전 재조임 명령 위치를 그대로
+        유지하므로 각도가 물림 구간에 남는다(실측: 큐브가 바닥에 있는데 0.333 유지 →
+        가짜 성공). 끝까지 닫아 보면 물체가 없을 때만 완전 닫힘(-0.17)에 도달한다.
+        """
+        self.gripper_angle = None
+        if not self.spin_until(lambda: self.gripper_angle is not None, 3.0):
+            return False
+        before = self.gripper_angle
+        # 완전 닫힘까지 시도하면 확인 동작이 물체를 밀어내 떨어뜨린다(실측).
+        # 살짝(0.06rad)만 더 조여 본다 — 물체가 있으면 그만큼도 못 닫힌다.
+        probe = max(GRIPPER_CLOSED, before - 0.06)
+        self.move_gripper(probe, effort=3.0)
+        time.sleep(0.4)
+        self.gripper_angle = None
+        if not self.spin_until(lambda: self.gripper_angle is not None, 3.0):
+            return False
+        after = self.gripper_angle
+        held = self.gripped(after) and (after - probe) > 0.02
+        if held:
+            self.hold_target = max(GRIPPER_CLOSED, after - 0.01)
+            self.move_gripper(self.hold_target)
+            time.sleep(0.2)
+        else:
+            self.get_logger().warning(
+                f'물체 없음 확인 (조임 {before:.3f}→{after:.3f}, 목표 {probe:.3f})')
+        return held
+
+    def drop_into_trash(self):
+        """통 개구부 위에서 그리퍼를 열어 투입."""
+        time.sleep(0.5)   # 팔은 운반 자세 그대로 — 이미 통 개구부 위에 있다
+        if not self.holding():
+            self.get_logger().error('투입 직전 물체 없음')
+            return False
+        self.get_logger().info('쓰레기통 위 — 그리퍼 열기')
+        self.move_gripper(1.0)
+        time.sleep(1.2)
+        self.move_arm(POSE_FOLDED, 3.0)     # 팔을 접어 통에서 빠져나옴
+        time.sleep(0.5)
+        return True
 
     def place(self, pan_target=-0.7):
         """잡은 물체를 옆(pan_target 방향)에 내려놓고 팔을 접는다."""
@@ -583,9 +824,15 @@ class PickNode(Node):
         # 시작 자세는 모드의 파지 자세 — 받침대(0.48/0.9), 바닥(1.20/0.23) 공용.
         grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
         lift0, wrist0 = grasp_pose['arm_shoulder_lift'], grasp_pose['arm_wrist_flex']
+        # 물체가 바닥을 떠나는 첫 순간에 하중이 걸려 가장 잘 미끄러진다(실측: 2단계째부터
+        # 각도가 목표에 정확히 도달 = 저항 없음 = 이미 놓침). 떼기 직전 한 번 더 조이고,
+        # 초반 두 단계는 잘게 올린다.
+        self.move_gripper(self.hold_target)
+        time.sleep(0.4)
         lf, k = lift0, 0
         while lf > 0.151:
-            lf = max(0.15, lf - 0.07)
+            step = 0.02 if k < 2 else 0.07      # 초반만 미세하게
+            lf = max(0.15, lf - step)
             wf = wrist0 + (lift0 - lf)
             self.move_arm({'arm_shoulder_lift': lf, 'arm_wrist_flex': wf}, 1.5)
             time.sleep(0.2)
@@ -597,13 +844,8 @@ class PickNode(Node):
                 self.move_gripper(self.hold_target)
             k += 1
         time.sleep(0.5)
-        self.gripper_angle = None
-        self.spin_until(lambda: self.gripper_angle is not None, 5.0)
-        angle = self.gripper_angle
-        still = angle is not None and angle > GRIP_HOLD_THRESHOLD
-        self.get_logger().info(
-            f'들기 후 재검증: 각도={angle if angle is not None else float("nan"):.3f} '
-            f'→ {"HOLDING" if still else "DROPPED"}')
+        still = self.holding()      # 능동 확인: 각도 유지만으로는 낙하를 못 잡는다
+        self.get_logger().info(f'들기 후 재검증 → {"HOLDING" if still else "DROPPED"}')
         return still
 
 
@@ -639,7 +881,10 @@ def main(args=None):
             if held:
                 n.get_logger().info('== 4. 들어올리기 ==')
                 ok = n.lift()
-                if ok:
+                if ok and n.place_target == 'trash':
+                    n.get_logger().info('== 5. 쓰레기통으로 운반 ==')
+                    ok = n.carry_to_trash() and n.drop_into_trash()
+                elif ok:
                     n.get_logger().info('== 5. 옮겨 놓기 (place) ==')
                     n.place()
                 break
