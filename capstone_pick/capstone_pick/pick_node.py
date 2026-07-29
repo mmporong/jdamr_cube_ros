@@ -65,6 +65,10 @@ FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 �
 WRIST_REF = (296.0, 329.0)      # 포켓 정위치 큐브의 블롭 중심
 WRIST_PX_PER_M = 8175.0         # 전후 1m당 px (멀수록 px 증가)
 WRIST_PY_PER_PAN = 1740.0       # pan -1rad당 py 증가 (Δpan = py오차/1740)
+# 큐브 기울기 정렬: 손목캠 minAreaRect 각도는 큐브 yaw와 1:1 반전(실측: +20도→rect 70).
+# 카메라는 roll 관절 앞단이라 롤을 돌려도 측정 불변 — 측정·제어 분리.
+WRIST_RECT_REF = 90.0           # 정렬 큐브의 rect 각 (실측)
+ROLL_SIGN = 1.0                 # 롤 방향 부호 (파지 실험으로 확정)
 # 대상 색 HSV 범위 목록 (OpenCV H 0-179) — 2026-07-28 카메라 실측 기반.
 # 실측: 병(오렌지) H15-19/S163/V206, 갈색 장애물 H≈13/V≈106(실조명), 노랑 팔 H30-34, 빨간 데크 H0-4.
 # 갈색↔orange는 H15+V160 이중 게이트로, 노랑 팔은 H로 분리. 파란 장애물 실린더(H≈107)는
@@ -472,7 +476,37 @@ class PickNode(Node):
             if abs(dr) >= 0.006:
                 step = max(-0.05, min(0.05, dr))
                 self.drive(0.03 if step > 0 else -0.03, 0.0, abs(step) / 0.03)
-        return pan
+        # 큐브 기울기 정렬: 죠가 큐브 면과 수직·수평이 되도록 롤 회전
+        roll = 0.0
+        ang = self._wrist_cube_angle()
+        if ang is not None and abs(ang) > 0.06:
+            roll = max(-0.8, min(0.8, ROLL_SIGN * ang))
+            self.get_logger().info(f'큐브 기울기 {math.degrees(ang):+.0f}도 → 롤 정렬 {roll:+.2f}rad')
+            self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.2)
+            time.sleep(0.3)
+        return pan, roll
+
+    def _wrist_cube_angle(self):
+        """손목캠 마스크의 최소면적사각형으로 큐브 yaw[rad] 추정 (90도 대칭 랩)."""
+        self.wrist_img = None
+        if not self.spin_until(lambda: self.wrist_img is not None, 3.0):
+            return None
+        hsv = cv2.cvtColor(self.wrist_img, cv2.COLOR_BGR2HSV)
+        mask = np.zeros(hsv.shape[:2], np.uint8)
+        for lo, hi in self.hsv_ranges:
+            mask |= cv2.inRange(hsv, lo, hi)
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+        best = None
+        for i in range(1, num):
+            a = stats[i, cv2.CC_STAT_AREA]
+            if a > 300 and (best is None or a > best[1]):
+                best = (i, a)
+        if best is None:
+            return None
+        pts = np.column_stack(np.where(labels == best[0])[::-1]).astype(np.float32)
+        rect_ang = cv2.minAreaRect(pts)[2]
+        delta = ((rect_ang - WRIST_RECT_REF + 45.0) % 90.0) - 45.0  # [-45,45)
+        return -math.radians(delta)  # 실측: 이미지 각 = 큐브 yaw의 반전
 
     # ---- 3~5) Grasp / Verify / Lift ----
     def grasp(self, pan):
@@ -492,11 +526,12 @@ class PickNode(Node):
             if abs(fwd) > 0.005:
                 v = -0.03 if fwd > 0 else 0.03
                 self.drive(v, 0.0, min(2.5, abs(fwd) / 0.03 + 0.1))
+        roll = 0.0
         if self.floor_mode:
-            # 근접 비전 사각을 손목 RGB로 보완: 물체 중간이 파지선에 오도록 pan 정렬
-            pan = self.wrist_align(pan, pre)
+            # 근접 비전 사각을 손목 RGB로 보완: 물체 중간이 파지선에 오도록 pan 정렬 + 기울기 롤 정렬
+            pan, roll = self.wrist_align(pan, pre)
         self.get_logger().info('수직 하강' + (' (바닥 모드)' if self.floor_mode else ''))
-        self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan}, 3.0)
+        self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 3.0)
         time.sleep(0.3)
         angle = None
         for attempt in range(3):

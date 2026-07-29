@@ -32,8 +32,10 @@ VIEW_W, VIEW_H = 320, 240
 DEPTH_NEAR, DEPTH_FAR = 0.15, 3.0
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
+SPAWN_POSE = (0.0, 0.0, 0.03)               # 원본 launch 기본 스폰 위치 (x_pose=0, y_pose=0)
 ARM_POSES = {
-    '홈': [0.0, -1.0, 1.5, 0.8, 0.0],       # 기존 모델의 스폰(접힘) 자세와 동일
+    # 홈 = 원본 URDF initial_value(스폰 접힘)와 동일: pan0 lift-1.0 elbow1.5 wrist0.8 roll0, 그리퍼 0
+    '홈': [0.0, -1.0, 1.5, 0.8, 0.0],
     '접힘': [0.0, -0.4, 1.0, 0.2, 0.0],     # 주행 자세 (pick_node와 동일)
     '상공': [0.0, 0.15, 0.2, 0.9, 0.0],
     '파지': [0.0, 0.48, 0.2, 0.9, 0.0],
@@ -214,7 +216,6 @@ class App:
         row = tk.Frame(stagef)
         row.pack(pady=2)
         tk.Button(row, text='3색 배치', command=lambda: self.run_stage('tricolor_stage.py')).pack(side=tk.LEFT, padx=2)
-        tk.Button(row, text='리셋', bg='#f0e0c0', command=self.reset_robot).pack(side=tk.LEFT, padx=2)
 
         manf = tk.LabelFrame(ctrl, text='수동 조작')
         manf.pack(fill=tk.X, pady=2)
@@ -271,6 +272,9 @@ class App:
         self.node.drive(0.0, 0.0)
 
     def arm_pose(self, name):
+        if name == '홈':          # 홈 = 완전 초기화 (초기 위치 복귀 + 스폰 접힘 + 그리퍼 0)
+            self.reset_robot()
+            return
         self.append(f'팔 자세: {name}')
         self.node.arm_pose(ARM_POSES[name])
 
@@ -292,8 +296,15 @@ class App:
         if self.proc and self.proc.poll() is None:
             self.append('이미 실행 중 — 먼저 중지하세요')
             return
+        try:
+            # 정수 입력(예: 20)은 ROS 파라미터가 int로 파싱돼 double 선언과 충돌 — 실수로 정규화
+            spd = max(0.5, min(10.0, float(self.speed.get())))
+        except ValueError:
+            self.append(f'속도 값이 숫자가 아님: {self.speed.get()!r}')
+            return
+        self.speed.set(f'{spd:g}')
         cmd = ['ros2', 'run', 'capstone_pick', 'pick', '--ros-args',
-               '-p', f'speed_scale:={self.speed.get()}',
+               '-p', f'speed_scale:={spd:.2f}',
                '-p', f'target_color:={color}']
         self.append(f'== {color} 집기 시작 ==')
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -327,7 +338,7 @@ class App:
         self.node.drive(0.0, 0.0)
 
     def reset_robot(self):
-        self.append('== 리셋: 픽 중지·팔 홈·위치 복귀 ==')
+        self.append('== 홈: 픽 중지·초기 위치 복귀·스폰 접힘·그리퍼 0 ==')
         self.stop_pick()
         self.stop_drive()
         self.node.arm_pose(ARM_POSES['홈'])
@@ -335,13 +346,14 @@ class App:
         threading.Thread(target=self._reset_worker, daemon=True).start()
 
     def _reset_worker(self):
+        x, y, z = SPAWN_POSE
         r = subprocess.run(
             ['gz', 'service', '-s', '/world/room/set_pose',
              '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
              '--timeout', '5000', '--req',
-             'name: "jdamr_cube" position {x: 0.3 y: 0 z: 0.03} orientation {w: 1}'],
+             f'name: "jdamr_cube" position {{x: {x} y: {y} z: {z}}} orientation {{w: 1}}'],
             capture_output=True, text=True)
-        self.logq.put('로봇 위치 리셋: ' + (r.stdout.strip() or r.stderr.strip()[-100:]))
+        self.logq.put('초기 위치 복귀: ' + (r.stdout.strip() or r.stderr.strip()[-100:]))
 
     # ---- 표시 ----
     def append(self, text):
