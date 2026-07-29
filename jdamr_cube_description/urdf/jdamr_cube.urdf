@@ -771,6 +771,14 @@
         </inertial>
     </link>
 
+    <!-- 손가락 마찰: SDF 변환 결과가 빈 <friction><ode/>라 기본값 1.0이었다.
+         실물 고무 패드는 훨씬 잘 물리므로 3.0으로 올린다. 파지력(effort)을 올리면
+         강체가 물체를 튕겨내지만, 마찰은 쥐는 힘을 키우지 않고 미끄러짐만 막는다. -->
+    <gazebo reference="arm_gripper_link">
+        <mu1>3.0</mu1>
+        <mu2>3.0</mu2>
+    </gazebo>
+
     <joint name="arm_gripper_frame_joint" type="fixed">
         <origin xyz="-0.0079 -0.000218121 -0.0981274" rpy="0 3.14159 0"/>
         <parent link="arm_gripper_link"/>
@@ -810,6 +818,11 @@
         </collision>
 
     </link>
+
+    <gazebo reference="arm_moving_jaw_link">
+        <mu1>3.0</mu1>
+        <mu2>3.0</mu2>
+    </gazebo>
 
     <joint name="arm_gripper" type="revolute">
         <origin xyz="0.0202 0.0188 -0.0234" rpy="1.5708 -5.24284e-08 -1.41553e-15"/>

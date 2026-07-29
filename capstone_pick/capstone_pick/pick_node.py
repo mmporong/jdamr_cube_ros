@@ -82,6 +82,10 @@ POSE_CARRY = dict(zip(ARM_JOINTS, [0.0, 0.15, 0.15, 1.28, 0.0]))
 # 운반·탐색 중에는 pan을 옆으로 빼 카메라 시야를 연다(정면 자세는 화면 중앙을 가림 — 실측 확인).
 POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.0)
 TRASH_POCKET_X = 0.364          # 통 중심이 이 거리에 오면 그리퍼가 개구부 바로 위
+# 투하 자세: 운반 자세(x=0.364)로는 통 중심에 9.6cm 못 미쳐 통 앞 바닥에 떨어졌다(실측).
+# 로봇 전면(0.275)과 통 벽 때문에 더 접근할 수 없으므로 팔을 뻗어 채운다. 이 자세는
+# 그리퍼가 기울어 물체를 놓지만, 이미 통 개구부 위이므로 그대로 투입이 된다.
+POSE_DROP = dict(zip(ARM_JOINTS, [0.0, 0.05, -0.30, 0.60, 0.0]))   # 리치 x=0.410
 # 손목 카메라 최종 정렬(바닥 모드) — 접근 비전은 근접(<0.45m)에서 팔·시야각에 가려지므로
 # 마지막 정렬은 손목 RGB로. 실측(2026-07-29, 바닥 호버): 손목캠은 90° 회전 장착이라
 # px=전후거리(82px/cm), py=좌우(67px/cm). pan 1rad당 py -1740px(포켓 반경 0.26m×6700px/m와 일치).
@@ -797,10 +801,15 @@ class PickNode(Node):
 
     def drop_into_trash(self):
         """통 개구부 위에서 그리퍼를 열어 투입."""
-        time.sleep(0.5)   # 팔은 운반 자세 그대로 — 이미 통 개구부 위에 있다
+        time.sleep(0.5)
         if not self.holding():
             self.get_logger().error('투입 직전 물체 없음')
             return False
+        # 통 중심까지 팔을 뻗는다. 이 자세는 그리퍼가 기울어 물체가 스스로 빠질 수 있는데,
+        # 이미 개구부 위이므로 그것도 투입이다. 그래서 파지 유지를 확인하지 않는다.
+        self.get_logger().info('통 중심으로 팔 뻗기')
+        self.move_arm(POSE_DROP, 2.0 * self.scale)
+        time.sleep(0.8)
         self.get_logger().info('쓰레기통 위 — 그리퍼 열기')
         self.move_gripper(1.0)
         time.sleep(1.2)
