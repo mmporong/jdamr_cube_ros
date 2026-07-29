@@ -58,6 +58,12 @@ POSE_PRE_FLOOR = dict(zip(ARM_JOINTS, [0.0, 0.85, 0.15, 0.58, 0.0]))    # 바닥
 POSE_GRASP_FLOOR = dict(zip(ARM_JOINTS, [0.0, 1.20, 0.15, 0.23, 0.0]))  # 바닥 파지
 POCKET_FLOOR = (0.361, 0.000)   # 바닥 모드 파지 포켓 [m, base_footprint]
 FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 모드
+# 손목 카메라 최종 정렬(바닥 모드) — 접근 비전은 근접(<0.45m)에서 팔·시야각에 가려지므로
+# 마지막 정렬은 손목 RGB로. 실측(2026-07-29, 바닥 호버): 손목캠은 90° 회전 장착이라
+# px=전후거리(82px/cm), py=좌우(67px/cm). pan 1rad당 py -1740px(포켓 반경 0.26m×6700px/m와 일치).
+WRIST_REF = (296.0, 329.0)      # 포켓 정위치 큐브의 블롭 중심
+WRIST_PX_PER_M = 8175.0         # 전후 1m당 px (멀수록 px 증가)
+WRIST_PY_PER_PAN = 1740.0       # pan -1rad당 py 증가 (Δpan = py오차/1740)
 # 대상 색 HSV 범위 목록 (OpenCV H 0-179) — 2026-07-28 카메라 실측 기반.
 # 실측: 병(오렌지) H15-19/S163/V206, 갈색 장애물 H≈13/V≈106(실조명), 노랑 팔 H30-34, 빨간 데크 H0-4.
 # 갈색↔orange는 H15+V160 이중 게이트로, 노랑 팔은 H로 분리. 파란 장애물 실린더(H≈107)는
@@ -99,6 +105,8 @@ class PickNode(Node):
         self.cam_info = None
         self.odom = None
         self.gripper_angle = None
+        self.wrist_img = None
+        self.create_subscription(Image, 'wrist_camera/image_raw', self._wrist_cb, 1)
         self.create_subscription(Image, 'rgbd_camera/image', self._color_cb, 1)
         self.create_subscription(Image, 'rgbd_camera/depth_image', self._depth_cb, 1)
         self.create_subscription(CameraInfo, 'rgbd_camera/camera_info', self._info_cb, 1)
@@ -112,6 +120,9 @@ class PickNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
     # ---- 콜백 ----
+    def _wrist_cb(self, m):
+        self.wrist_img = self.bridge.imgmsg_to_cv2(m, desired_encoding='bgr8')
+
     def _color_cb(self, m):
         self.color = self.bridge.imgmsg_to_cv2(m, desired_encoding='bgr8')
 
@@ -277,26 +288,24 @@ class PickNode(Node):
         time.sleep(0.5)
 
     # ---- 2) Approach: 비전 재인식 폐루프 (odom 기반 스톨 감지 포함) ----
-    def approach(self, max_iter=24):
+    def approach(self, max_iter=40):
         prev_odom = None
+        stall_n = 0
         for it in range(max_iter):
             self.spin_until(lambda: self.odom is not None, 5.0)
+            # 스톨 = 2회 연속 무이동일 때만 (짧은 회전은 관성으로 1회 무이동이 정상 — 오판 방지)
             if prev_odom is not None and self.odom is not None:
                 moved = math.hypot(self.odom[0] - prev_odom[0], self.odom[1] - prev_odom[1]) \
                     + abs(self.odom[2] - prev_odom[2])
-                if moved < 0.005:
+                stall_n = stall_n + 1 if moved < 0.005 else 0
+                if stall_n >= 2:
                     self.get_logger().warning(f'[{it}] 스톨 감지(odom 변위 {moved * 1000:.1f}mm) — 후진 회복')
                     self.drive(-0.08, 0.3, 1.5)
+                    stall_n = 0
             prev_odom = self.odom
             loc = self.locate_object()
             real = loc is not None
             if not real and getattr(self, '_obj_odom', None) is not None and self.odom:
-                if not getattr(self, '_arm_aside', False):
-                    # 접힌 팔이 화면 하단 중앙(근접 물체 위치)을 가림 — 옆으로 젖혀 시야 확보
-                    self._arm_aside = True
-                    self.get_logger().info('근접 시야 확보: 팔을 옆으로 (pan 0.6)')
-                    self.move_arm({'arm_shoulder_pan': 0.6}, 1.2)
-                    continue
                 # 마지막 관측 위치 추적: odom 기준으로 기억한 물체 방향으로 계속 접근
                 ox, oy = self._obj_odom
                 x, y, yaw = self.odom
@@ -304,6 +313,15 @@ class PickNode(Node):
                 xb = math.cos(yaw) * dx + math.sin(yaw) * dy
                 yb = -math.sin(yaw) * dx + math.cos(yaw) * dy
                 zb, dbg = 0.0, (0, 0, 0)
+                if not getattr(self, '_arm_aside', False):
+                    # 접힌 팔이 화면 하단 중앙(근접 물체 위치)을 가림 — 물체 반대쪽으로 젖혀 시야 확보.
+                    # 방향은 순간 방위(진동 튐)가 아니라 추정 좌표의 좌우 부호로.
+                    self._arm_aside = True
+                    aside = 0.6 if yb > 0 else -0.6
+                    self.get_logger().info(f'근접 시야 확보: 팔을 물체 반대쪽으로 (pan {aside})')
+                    self.move_arm({'arm_shoulder_pan': aside}, 1.2)
+                    prev_odom = None  # 의도적 정지 — 다음 반복 스톨 오판 방지
+                    continue
                 self.get_logger().info(f'[{it}] 추정 추적: base=({xb:.3f},{yb:.3f})')
             elif not real:
                 # 카메라는 전방 ~0.9m 바닥만 본다(pitch 0.9rad) — 회전과 전진을 섞어 탐색
@@ -312,11 +330,12 @@ class PickNode(Node):
                     self.get_logger().warning(f'[{it}] 물체 미검출 — 한 발 후진(근접 사각 확인)')
                     self.drive(-0.14, 0.0, 2.5)
                     continue
-                if self._miss % 5 == 4:
+                if self._miss % 14 == 0:
+                    # 한 바퀴(13회전×약27°) 스윕을 마친 뒤에만 전진 — 교대·중간전진은 스윕을 상쇄시킨다
                     self.get_logger().warning(f'[{it}] 물체 미검출 — 전진 탐색(0.25m)')
                     self.drive(0.10, 0.0, 2.5)
                 else:
-                    self.get_logger().warning(f'[{it}] 물체 미검출 — 회전 탐색')
+                    self.get_logger().warning(f'[{it}] 물체 미검출 — 회전 탐색(한 바퀴 스윕)')
                     self.drive(0.0, 0.4, 1.2)
                 continue
             else:
@@ -337,27 +356,72 @@ class PickNode(Node):
             r_target = math.hypot(pocket[0] - PAN_AXIS_X, pocket[1])
             r = math.hypot(xb - PAN_AXIS_X, yb)
             brg = math.atan2(yb, xb - PAN_AXIS_X)
+            if real:
+                self._last_brg = brg  # 팔 젖힘 방향 결정용 (물체가 좌/우 어느 쪽인지)
             # 뎁스=앞표면 → 물체 중심이 포켓에 오도록 앞표면은 반폭만큼 안쪽에
             er = r - (r_target - OBJECT_HALF_DEPTH)  # 물체 중심이 포켓에 오도록 (삽입 없음)
             self.get_logger().info(
                 f'[{it}] 비전: base=({xb:.3f},{yb:.3f},{zb:.3f}) px=({dbg[0]:.0f},{dbg[1]:.0f}) '
                 f'd={dbg[2]:.2f} | er={er * 1000:.0f}mm brg={math.degrees(brg):.1f}deg')
-            if abs(er) < 0.012 and abs(brg) < 0.30 and (real or it - getattr(self, "_last_seen", -99) <= 8):
+            # 바닥 모드는 ±30mm면 합격 — 잔여 오차는 손목캠 정렬(pan+미세주행)이 마무리.
+            # 좁은 공차로 범퍼 코앞에서 전후 왕복하다 물체를 미는 것 방지.
+            tol = 0.030 if self.floor_mode else 0.012
+            if abs(er) < tol and abs(brg) < 0.30 and (real or it - getattr(self, "_last_seen", -99) <= 8):
                 if not real and not getattr(self, '_reacq_done', False):
                     # 추측항법만으로 수렴 — 정지 상태에서 한 번 재관측 (주행 중 비전 상실 드리프트 보정)
                     self._reacq_done = True
                     self.get_logger().info('수렴(추측항법) — 정지 재관측 시도')
                     time.sleep(1.0)
+                    prev_odom = None  # 의도적 정지 — 다음 반복 스톨 오판 방지
                     continue
                 self._anchor_odom = self.odom
                 return -(brg - PAN_BASE_BEARING)
             if abs(brg) > 0.30:
-                self.drive(0.0, 0.25 if brg > 0 else -0.25, min(2.0, abs(brg) / 0.25))
+                # 맹회전은 저속으로 (고속 회전 슬립이 yaw 추정을 무너뜨려 지그재그 발진)
+                wz = 0.25 if real else 0.10
+                self.drive(0.0, wz if brg > 0 else -wz, min(2.0, abs(brg) / wz))
             else:
+                # 맹구간 직진 위주 — 잔여 방위는 파지 단계의 pan 회전과 손목캠 정렬이 흡수
                 v = 0.08 if er > 0.2 else (0.04 if er > 0 else -0.04)
-                self.drive(v, max(-0.15, min(0.15, brg * 0.8)),
-                           min(3.0, abs(er) / abs(v) + 0.2))
+                wz = max(-0.15, min(0.15, brg * 0.8)) if real else 0.0
+                self.drive(v, wz, min(3.0, abs(er) / abs(v) + 0.2))
         return None
+
+    # ---- 손목 카메라 최종 정렬 (바닥 모드): 좌우=pan, 전후=미세 주행 ----
+    def wrist_align(self, pan, pre):
+        """호버 자세에서 손목 RGB로 물체 중간이 파지선(WRIST_REF)에 오도록 정렬한다."""
+        for i in range(4):
+            self.wrist_img = None
+            if not self.spin_until(lambda: self.wrist_img is not None, 3.0):
+                break
+            hsv = cv2.cvtColor(self.wrist_img, cv2.COLOR_BGR2HSV)
+            mask = np.zeros(hsv.shape[:2], np.uint8)
+            for lo, hi in self.hsv_ranges:
+                mask |= cv2.inRange(hsv, lo, hi)
+            num, labels, stats, cents = cv2.connectedComponentsWithStats(mask)
+            best = None
+            for j in range(1, num):
+                a = stats[j, cv2.CC_STAT_AREA]
+                if a > 100 and (best is None or a > best[2]):
+                    best = (cents[j][0], cents[j][1], a)
+            if best is None:
+                self.get_logger().info('손목캠: 물체 미검출 — 정렬 생략')
+                break
+            dr = (best[0] - WRIST_REF[0]) / WRIST_PX_PER_M     # 전후 오차 [m] (+=멂)
+            dpan = (best[1] - WRIST_REF[1]) / WRIST_PY_PER_PAN  # 좌우 오차 → pan 보정 [rad]
+            self.get_logger().info(
+                f'손목캠 정렬[{i}]: blob=({best[0]:.0f},{best[1]:.0f}) '
+                f'전후 {dr * 1000:+.0f}mm, pan 보정 {dpan:+.3f}rad')
+            if abs(dr) < 0.006 and abs(dpan) < 0.012:
+                break
+            if abs(dpan) >= 0.012:
+                pan = max(-0.6, min(0.6, pan + max(-0.25, min(0.25, dpan))))
+                self.move_arm({**pre, 'arm_shoulder_pan': pan}, 1.2)
+                time.sleep(0.3)
+            if abs(dr) >= 0.006:
+                step = max(-0.05, min(0.05, dr))
+                self.drive(0.03 if step > 0 else -0.03, 0.0, abs(step) / 0.03)
+        return pan
 
     # ---- 3~5) Grasp / Verify / Lift ----
     def grasp(self, pan):
@@ -377,6 +441,9 @@ class PickNode(Node):
             if abs(fwd) > 0.005:
                 v = -0.03 if fwd > 0 else 0.03
                 self.drive(v, 0.0, min(2.5, abs(fwd) / 0.03 + 0.1))
+        if self.floor_mode:
+            # 근접 비전 사각을 손목 RGB로 보완: 물체 중간이 파지선에 오도록 pan 정렬
+            pan = self.wrist_align(pan, pre)
         self.get_logger().info('수직 하강' + (' (바닥 모드)' if self.floor_mode else ''))
         self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan}, 3.0)
         time.sleep(0.3)
@@ -470,6 +537,12 @@ def main(args=None):
                 pan = n.approach()
             if pan is None:
                 n.get_logger().error('접근 실패')
+                if cycle < 2:
+                    for attr in ('_reacq_done', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
+                        if hasattr(n, attr):
+                            delattr(n, attr)
+                    n.move_arm(POSE_FOLDED, 2.5)
+                    continue
                 break
             n.get_logger().info(f'== 3. 파지 (pan={math.degrees(pan):.1f}deg) ==')
             held = n.grasp(pan)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""캡스톤 픽 대시보드.
+"""캡스톤 픽 대시보드 (콤팩트 v3).
 
-카메라 3뷰(비전 RGB·뎁스, 손목) + 주행 패드 + 팔 자세 + 그리퍼 + 무대/픽 실행 + 로그.
-ROS 환경이 소싱된 셸에서 실행:
-    python3 ~/capstone_tools/pick_ui.py
+좌: 카메라 2뷰(비전 뎁스, 손목) / 우: 제어 컬럼(3색 집기·무대·수동 조작) / 하: 상태줄+로그.
+3색 무대(파랑=받침대, 빨강·초록=바닥)를 깔고 색 버튼을 눌러 그 색만 골라 집는다.
+ROS 환경이 소싱된 셸에서: python3 ~/capstone_tools/pick_ui.py
 """
 import math
 import os
@@ -13,7 +13,7 @@ import subprocess
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import scrolledtext, ttk
+from tkinter import scrolledtext
 
 import cv2
 import numpy as np
@@ -28,18 +28,19 @@ from sensor_msgs.msg import Image, JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 TOOLS = os.path.expanduser('~/capstone_tools')
-VIEW_W, VIEW_H = 340, 255
+VIEW_W, VIEW_H = 320, 240
 DEPTH_NEAR, DEPTH_FAR = 0.15, 3.0
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
 ARM_POSES = {
-    '홈': [0.0, 0.0, 0.0, 0.0, 0.0],       # 원본 리포 SRDF 'home'과 동일 (리셋 기준 자세)
+    '홈': [0.0, -1.0, 1.5, 0.8, 0.0],       # 기존 모델의 스폰(접힘) 자세와 동일
     '접힘': [0.0, -0.4, 1.0, 0.2, 0.0],     # 주행 자세 (pick_node와 동일)
     '상공': [0.0, 0.15, 0.2, 0.9, 0.0],
     '파지': [0.0, 0.48, 0.2, 0.9, 0.0],
-    '바닥파지': [0.0, 1.20, 0.15, 0.23, 0.0],
+    '바닥': [0.0, 1.20, 0.15, 0.23, 0.0],
 }
-DRIVE_LIN, DRIVE_ANG = 0.20, 0.80  # 주행 패드 속도
+DRIVE_LIN, DRIVE_ANG = 0.20, 0.80
+PICK_COLORS = (('파랑', 'blue', '#2244cc'), ('빨강', 'red', '#cc2222'), ('초록', 'green', '#22aa33'))
 
 
 class UiNode(Node):
@@ -85,11 +86,10 @@ class UiNode(Node):
 
     def _joint_cb(self, msg):
         for n, p in zip(msg.name, msg.position):
-            if n == 'gripper':
+            if n in ('gripper', 'arm_gripper'):
                 with self.lock:
                     self.grip_angle = p
 
-    # ---- 명령 ----
     def drive(self, vx, wz):
         t = Twist()
         t.linear.x = vx
@@ -110,11 +110,10 @@ class UiNode(Node):
         g = GripperCommand.Goal()
         g.command.position = float(position)
         g.command.max_effort = 10.0
-        self.grip_client.send_goal_async(g)  # 결과 대기 안 함 (UI 논블로킹)
+        self.grip_client.send_goal_async(g)
 
 
 def depth_to_bgr(d):
-    """뎁스(m)를 컬러맵으로: 가까울수록 붉게, 무효 픽셀은 검정."""
     v = np.nan_to_num(np.asarray(d, np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     valid = v > 0.05
     v = np.clip(v, DEPTH_NEAR, DEPTH_FAR)
@@ -125,11 +124,37 @@ def depth_to_bgr(d):
 
 
 def bgr_to_photo(bgr):
-    """BGR ndarray → tk.PhotoImage (PPM 경유, PIL 불필요)."""
     bgr = cv2.resize(bgr, (VIEW_W, VIEW_H))
     rgb = np.ascontiguousarray(bgr[:, :, ::-1])
     header = f'P6\n{VIEW_W} {VIEW_H}\n255\n'.encode()
     return tk.PhotoImage(data=header + rgb.tobytes())
+
+
+# 검출 시각화용 HSV 범위 (pick_node의 TARGET_COLOR_RANGES와 동일 값)
+UI_RANGES = {
+    'blue': ([((100, 130, 100), (135, 255, 255))], (220, 120, 40)),
+    'red': ([((0, 150, 100), (6, 255, 255)), ((174, 150, 100), (179, 255, 255))], (40, 40, 230)),
+    'green': ([((45, 80, 80), (75, 255, 255))], (40, 190, 40)),
+}
+
+
+def overlay_detections(bgr):
+    """RGB 화면에 3색 인식 박스를 그려 무엇이 검출되는지 보여준다."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    out = bgr.copy()
+    for name, (ranges, box) in UI_RANGES.items():
+        mask = np.zeros(hsv.shape[:2], np.uint8)
+        for lo, hi in ranges:
+            mask |= cv2.inRange(hsv, lo, hi)
+        num, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+        for i in range(1, num):
+            if stats[i, cv2.CC_STAT_AREA] < 60:
+                continue
+            x, y, w, h = (stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
+                          stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])
+            cv2.rectangle(out, (x, y), (x + w, y + h), box, 2)
+            cv2.putText(out, name, (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box, 1)
+    return out
 
 
 def set_korean_font(root):
@@ -150,91 +175,94 @@ class App:
         self.node = node
         self.proc = None
         self.logq = queue.Queue()
-        self.driving = None  # (vx, wz) 누르는 동안 유지
-        root.title('캡스톤 픽 대시보드')
+        self.driving = None
+        # WSLg 타이틀바는 한글 인코딩이 깨지므로 ASCII 제목 사용
+        root.title('JDAMR Pick Dashboard')
         root.protocol('WM_DELETE_WINDOW', self.on_close)
 
-        # 카메라 3뷰
-        cams = tk.Frame(root)
-        cams.pack(side=tk.TOP, padx=6, pady=4)
-        self.rgb_label = self._cam_panel(cams, '비전 카메라 RGB', 0)
-        self.depth_label = self._cam_panel(cams, '비전 카메라 뎁스', 1)
-        self.wrist_label = self._cam_panel(cams, '손목 카메라', 2)
+        main = tk.Frame(root)
+        main.pack(side=tk.TOP, fill=tk.BOTH, padx=6, pady=4)
 
-        # 상태 표시줄
-        self.status = tk.Label(root, text='상태 수신 대기…', anchor='w', fg='#004080')
-        self.status.pack(side=tk.TOP, fill=tk.X, padx=8)
+        # 2×2 격자: [RGB+인식박스][뎁스] / [손목][제어]
+        cams = tk.Frame(main)
+        cams.grid(row=0, column=0, sticky='n')
+        self.rgb_label = self._cam_panel(cams, '비전 RGB (인식 박스)', 0, 0)
+        self.depth_label = self._cam_panel(cams, '비전 뎁스', 0, 1)
+        self.wrist_label = self._cam_panel(cams, '손목 카메라', 1, 0)
 
-        body = tk.Frame(root)
-        body.pack(side=tk.TOP, fill=tk.X, padx=6, pady=2)
+        # 제어 (격자 우하단)
+        ctrl = tk.Frame(cams)
+        ctrl.grid(row=1, column=1, sticky='n', padx=(8, 0))
 
-        # 주행 패드 (누르는 동안 주행)
-        pad = tk.LabelFrame(body, text='주행 (누르는 동안)')
-        pad.pack(side=tk.LEFT, padx=4)
+        pickf = tk.LabelFrame(ctrl, text='집기 — 색을 눌러 선택')
+        pickf.pack(fill=tk.X, pady=2)
+        row = tk.Frame(pickf)
+        row.pack(pady=2)
+        for label, color, hexc in PICK_COLORS:
+            tk.Button(row, text=label, width=6, bg=hexc, fg='white',
+                      activebackground=hexc,
+                      command=lambda c=color: self.run_pick(c)).pack(side=tk.LEFT, padx=2)
+        opt = tk.Frame(pickf)
+        opt.pack(pady=2)
+        tk.Label(opt, text='속도').pack(side=tk.LEFT)
+        self.speed = tk.StringVar(value='4.0')
+        tk.Entry(opt, textvariable=self.speed, width=4).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Button(opt, text='중지', bg='#e8cfcf', command=self.stop_pick).pack(side=tk.LEFT)
+
+        stagef = tk.LabelFrame(ctrl, text='무대')
+        stagef.pack(fill=tk.X, pady=2)
+        row = tk.Frame(stagef)
+        row.pack(pady=2)
+        tk.Button(row, text='3색 배치', command=lambda: self.run_stage('tricolor_stage.py')).pack(side=tk.LEFT, padx=2)
+        tk.Button(row, text='리셋', bg='#f0e0c0', command=self.reset_robot).pack(side=tk.LEFT, padx=2)
+
+        manf = tk.LabelFrame(ctrl, text='수동 조작')
+        manf.pack(fill=tk.X, pady=2)
+        pad = tk.Frame(manf)
+        pad.pack(side=tk.LEFT, padx=4, pady=2)
         self._drive_btn(pad, '▲', 0, 1, DRIVE_LIN, 0.0)
         self._drive_btn(pad, '◀', 1, 0, 0.0, DRIVE_ANG)
-        tk.Button(pad, text='■', width=3, command=self.stop_drive).grid(row=1, column=1)
+        tk.Button(pad, text='■', width=2, command=self.stop_drive).grid(row=1, column=1)
         self._drive_btn(pad, '▶', 1, 2, 0.0, -DRIVE_ANG)
         self._drive_btn(pad, '▼', 2, 1, -DRIVE_LIN, 0.0)
+        armf = tk.Frame(manf)
+        armf.pack(side=tk.LEFT, padx=4)
+        r1 = tk.Frame(armf)
+        r1.pack()
+        for name in ('홈', '접힘', '상공'):
+            tk.Button(r1, text=name, width=4,
+                      command=lambda n=name: self.arm_pose(n)).pack(side=tk.LEFT, padx=1, pady=1)
+        r2 = tk.Frame(armf)
+        r2.pack()
+        for name in ('파지', '바닥'):
+            tk.Button(r2, text=name, width=4,
+                      command=lambda n=name: self.arm_pose(n)).pack(side=tk.LEFT, padx=1, pady=1)
+        tk.Button(r2, text='열기', width=4, command=lambda: self.gripper(0.8)).pack(side=tk.LEFT, padx=1)
+        tk.Button(r2, text='닫기', width=4, command=lambda: self.gripper(-0.17)).pack(side=tk.LEFT, padx=1)
 
-        # 팔 자세
-        arm = tk.LabelFrame(body, text='팔 자세')
-        arm.pack(side=tk.LEFT, padx=4)
-        for name in ARM_POSES:
-            tk.Button(arm, text=name, width=5,
-                      command=lambda n=name: self.arm_pose(n)).pack(side=tk.LEFT, padx=1, pady=2)
-
-        # 그리퍼
-        grip = tk.LabelFrame(body, text='그리퍼')
-        grip.pack(side=tk.LEFT, padx=4)
-        tk.Button(grip, text='열기', width=5, command=lambda: self.gripper(0.8)).pack(side=tk.LEFT, padx=1, pady=2)
-        tk.Button(grip, text='닫기', width=5, command=lambda: self.gripper(-0.17)).pack(side=tk.LEFT, padx=1, pady=2)
-
-        # 무대
-        stage = tk.LabelFrame(body, text='무대')
-        stage.pack(side=tk.LEFT, padx=4)
-        tk.Button(stage, text='파란 타깃', command=lambda: self.run_stage('grip_stage.py')).pack(side=tk.LEFT, padx=1, pady=2)
-        tk.Button(stage, text='빨간 타깃', command=lambda: self.run_stage('red_stage.py')).pack(side=tk.LEFT, padx=1, pady=2)
-        tk.Button(stage, text='바닥 타깃', command=lambda: self.run_stage('floor_stage.py', '-0.3')).pack(side=tk.LEFT, padx=1, pady=2)
-        tk.Button(stage, text='리셋', bg='#f0e0c0', command=self.reset_robot).pack(side=tk.LEFT, padx=1, pady=2)
-
-        # 픽 실행
-        pick = tk.LabelFrame(body, text='자율 픽')
-        pick.pack(side=tk.LEFT, padx=4)
-        tk.Label(pick, text='색').pack(side=tk.LEFT)
-        self.color = tk.StringVar(value='blue')
-        ttk.Combobox(pick, textvariable=self.color, width=7, state='readonly',
-                     values=('blue', 'red', 'green', 'orange', 'pink')).pack(side=tk.LEFT)
-        tk.Label(pick, text=' 속도').pack(side=tk.LEFT)
-        self.speed = tk.StringVar(value='4.0')
-        tk.Entry(pick, textvariable=self.speed, width=4).pack(side=tk.LEFT)
-        self.grip_only = tk.BooleanVar(value=False)
-        tk.Checkbutton(pick, text='그립만', variable=self.grip_only).pack(side=tk.LEFT)
-        self.run_btn = tk.Button(pick, text='실행', bg='#cfe8cf', command=self.run_pick)
-        self.run_btn.pack(side=tk.LEFT, padx=3, pady=2)
-        tk.Button(pick, text='중지', bg='#e8cfcf', command=self.stop_pick).pack(side=tk.LEFT, pady=2)
-
-        self.log = scrolledtext.ScrolledText(root, height=9, state=tk.DISABLED)
+        self.status = tk.Label(root, text='상태 수신 대기…', anchor='w', fg='#004080')
+        self.status.pack(side=tk.TOP, fill=tk.X, padx=8)
+        self.log = scrolledtext.ScrolledText(root, height=6, state=tk.DISABLED)
         self.log.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=6, pady=4)
 
         self._photos = [None, None, None]
         self.tick()
 
-    def _cam_panel(self, parent, title, col):
+    def _cam_panel(self, parent, title, row, col):
         f = tk.Frame(parent)
-        f.grid(row=0, column=col, padx=3)
+        f.grid(row=row, column=col, padx=3, pady=2)
         tk.Label(f, text=title).pack()
         lbl = tk.Label(f, width=VIEW_W, height=VIEW_H, bg='#222')
         lbl.pack()
         return lbl
 
     def _drive_btn(self, parent, text, r, c, vx, wz):
-        b = tk.Button(parent, text=text, width=3)
+        b = tk.Button(parent, text=text, width=2)
         b.grid(row=r, column=c, padx=1, pady=1)
         b.bind('<ButtonPress-1>', lambda e: self.start_drive(vx, wz))
         b.bind('<ButtonRelease-1>', lambda e: self.stop_drive())
 
-    # ---- 주행 ----
+    # ---- 주행/팔/그리퍼 ----
     def start_drive(self, vx, wz):
         self.driving = (vx, wz)
 
@@ -242,7 +270,6 @@ class App:
         self.driving = None
         self.node.drive(0.0, 0.0)
 
-    # ---- 팔·그리퍼 ----
     def arm_pose(self, name):
         self.append(f'팔 자세: {name}')
         self.node.arm_pose(ARM_POSES[name])
@@ -251,7 +278,7 @@ class App:
         self.append(f'그리퍼 → {pos}')
         self.node.gripper(pos)
 
-    # ---- 무대·픽 ----
+    # ---- 무대/집기 ----
     def run_stage(self, script, *args):
         self.append(f'== 무대: {script} {" ".join(args)} ==')
         threading.Thread(target=self._stage_worker, args=(script, args), daemon=True).start()
@@ -261,33 +288,29 @@ class App:
                            capture_output=True, text=True)
         self.logq.put((r.stdout.strip() or r.stderr.strip())[-300:])
 
-    def run_pick(self):
+    def run_pick(self, color):
         if self.proc and self.proc.poll() is None:
-            self.append('이미 실행 중')
+            self.append('이미 실행 중 — 먼저 중지하세요')
             return
         cmd = ['ros2', 'run', 'capstone_pick', 'pick', '--ros-args',
                '-p', f'speed_scale:={self.speed.get()}',
-               '-p', f'target_color:={self.color.get()}']
-        if self.grip_only.get():
-            cmd += ['-p', 'skip_approach:=true']
-        self.append('== 픽 실행: ' + ' '.join(cmd[4:]) + ' ==')
+               '-p', f'target_color:={color}']
+        self.append(f'== {color} 집기 시작 ==')
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True,
-                                     start_new_session=True)  # 프로세스 그룹으로 분리 (중지 시 자식까지)
-        self.run_btn.config(state=tk.DISABLED)
+                                     start_new_session=True)
         threading.Thread(target=self._pick_reader, daemon=True).start()
 
     def _pick_reader(self):
         for line in self.proc.stdout:
             self.logq.put(line.rstrip())
         self.logq.put(f'== 종료 (코드 {self.proc.wait()}) ==')
-        self.logq.put('__ENABLE_RUN__')
 
     def stop_pick(self):
         if self.proc and self.proc.poll() is None:
             p = self.proc
             try:
-                os.killpg(os.getpgid(p.pid), signal.SIGINT)  # ros2 run의 자식 노드까지 정리
+                os.killpg(os.getpgid(p.pid), signal.SIGINT)
             except ProcessLookupError:
                 pass
             self.append('중지 요청')
@@ -304,7 +327,7 @@ class App:
         self.node.drive(0.0, 0.0)
 
     def reset_robot(self):
-        self.append('== 리셋: 픽 중지·팔 홈(원본 자세)·위치 복귀 ==')
+        self.append('== 리셋: 픽 중지·팔 홈·위치 복귀 ==')
         self.stop_pick()
         self.stop_drive()
         self.node.arm_pose(ARM_POSES['홈'])
@@ -320,7 +343,7 @@ class App:
             capture_output=True, text=True)
         self.logq.put('로봇 위치 리셋: ' + (r.stdout.strip() or r.stderr.strip()[-100:]))
 
-    # ---- 표시 갱신 ----
+    # ---- 표시 ----
     def append(self, text):
         self.log.config(state=tk.NORMAL)
         self.log.insert(tk.END, text + '\n')
@@ -334,7 +357,7 @@ class App:
             rgb, depth, wrist = self.node.rgb, self.node.depth, self.node.wrist
             oxy = self.node.odom_xy_yaw
             ga = self.node.grip_angle
-        for i, (lbl, img) in enumerate(((self.rgb_label, rgb),
+        for i, (lbl, img) in enumerate(((self.rgb_label, None if rgb is None else overlay_detections(rgb)),
                                         (self.depth_label, None if depth is None else depth_to_bgr(depth)),
                                         (self.wrist_label, wrist))):
             if img is not None:
@@ -344,14 +367,12 @@ class App:
         if oxy:
             parts.append(f'위치 x={oxy[0]:.2f} y={oxy[1]:.2f} yaw={oxy[2]:.0f}°')
         if ga is not None:
-            parts.append(f'그리퍼 각도={ga:.3f}')
-        parts.append('픽: ' + ('실행 중' if self.proc and self.proc.poll() is None else '대기'))
+            parts.append(f'그리퍼 {ga:.3f}')
+        parts.append('픽 ' + ('실행 중' if self.proc and self.proc.poll() is None else '대기'))
         self.status.config(text='   |   '.join(parts))
         while not self.logq.empty():
             m = self.logq.get()
-            if m == '__ENABLE_RUN__':
-                self.run_btn.config(state=tk.NORMAL)
-            elif m:
+            if m:
                 self.append(m)
         self.root.after(100, self.tick)
 
