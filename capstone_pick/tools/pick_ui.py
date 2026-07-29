@@ -208,7 +208,9 @@ class App:
                       command=lambda c=color: self.run_pick(c)).pack(side=tk.LEFT, padx=2)
         opt = tk.Frame(pickf)
         opt.pack(pady=2)
-        tk.Label(opt, text='속도(권장 4)').pack(side=tk.LEFT)
+        self.to_trash = tk.BooleanVar(value=False)
+        tk.Checkbutton(opt, text='휴지통에 버리기', variable=self.to_trash).pack(side=tk.LEFT)
+        tk.Label(opt, text=' 속도(권장 4)').pack(side=tk.LEFT)
         self.speed = tk.StringVar(value='4.0')
         tk.Entry(opt, textvariable=self.speed, width=4).pack(side=tk.LEFT, padx=(0, 6))
         tk.Button(opt, text='중지', bg='#e8cfcf', command=self.stop_pick).pack(side=tk.LEFT)
@@ -312,7 +314,9 @@ class App:
         cmd = ['ros2', 'run', 'capstone_pick', 'pick', '--ros-args',
                '-p', f'speed_scale:={spd:.2f}',
                '-p', f'target_color:={color}']
-        self.append(f'== {color} 집기 시작 ==')
+        if self.to_trash.get():
+            cmd += ['-p', 'place_target:=trash']
+        self.append(f'== {color} 집기 시작' + (' → 휴지통 ==' if self.to_trash.get() else ' =='))
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True,
                                      start_new_session=True)
