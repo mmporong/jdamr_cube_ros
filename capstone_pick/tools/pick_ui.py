@@ -34,8 +34,8 @@ ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
 SPAWN_POSE = (0.0, 0.0, 0.03)               # 원본 launch 기본 스폰 위치 (x_pose=0, y_pose=0)
 ARM_POSES = {
-    # 홈 = 원본 URDF initial_value(스폰 접힘)와 동일: pan0 lift-1.0 elbow1.5 wrist0.8 roll0, 그리퍼 0
-    '홈': [0.0, -1.0, 1.5, 0.8, 0.0],
+    # 홈 = 완전 접힘: 어퍼암이 숄더에 닿는 관절 리밋(lift -1.745, elbow 1.69)까지 — 실측 도달 확인
+    '홈': [0.0, -1.745, 1.69, 1.2, 0.0],
     '접힘': [0.0, -0.4, 1.0, 0.2, 0.0],     # 주행 자세 (pick_node와 동일)
     '상공': [0.0, 0.15, 0.2, 0.9, 0.0],
     '파지': [0.0, 0.48, 0.2, 0.9, 0.0],
