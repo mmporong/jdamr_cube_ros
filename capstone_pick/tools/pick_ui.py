@@ -34,9 +34,9 @@ ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
 SPAWN_POSE = (0.0, 0.0, 0.03)               # 원본 launch 기본 스폰 위치 (x_pose=0, y_pose=0)
 ARM_POSES = {
-    # 홈 = 공식 SO-101 rest 실루엣 매칭 + MoveIt 충돌 검사 통과:
-    # lift 리밋(-1.745, 어퍼암 숄더 밀착) + elbow 1.35 + wrist 1.20(그리퍼 하향 접힘)
-    '홈': [0.0, -1.745, 1.35, 1.20, 0.0],
+    # 홈 = 최밀착 접힘 (MoveIt 충돌 0 중 elbow 최대): lift 리밋(-1.745, 어퍼암 숄더 밀착)
+    # + elbow 1.55(전완-어퍼암 밀착 최대) + wrist 0.90(손목 몸쪽, 더 접으면 숄더 관통)
+    '홈': [0.0, -1.745, 1.55, 0.90, 0.0],
     '접힘': [0.0, -0.4, 1.0, 0.2, 0.0],     # 주행 자세 (pick_node와 동일)
     '상공': [0.0, 0.15, 0.2, 0.9, 0.0],
     '파지': [0.0, 0.48, 0.2, 0.9, 0.0],
