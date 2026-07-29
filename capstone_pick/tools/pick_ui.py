@@ -253,7 +253,11 @@ class App:
         f = tk.Frame(parent)
         f.grid(row=row, column=col, padx=3, pady=2)
         tk.Label(f, text=title).pack()
-        lbl = tk.Label(f, width=VIEW_W, height=VIEW_H, bg='#222')
+        # width/height는 이미지 없는 Label에선 문자 단위로 해석돼 창이 거대해진다
+        # — 픽셀 크기 자리표시 이미지를 깔아 처음부터 정확한 크기로 고정
+        ph = tk.PhotoImage(width=VIEW_W, height=VIEW_H)
+        lbl = tk.Label(f, image=ph, bg='#222')
+        lbl._ph = ph  # GC 방지
         lbl.pack()
         return lbl
 
@@ -374,7 +378,7 @@ class App:
                                         (self.wrist_label, wrist))):
             if img is not None:
                 self._photos[i] = bgr_to_photo(img)
-                lbl.config(image=self._photos[i], width=VIEW_W, height=VIEW_H)
+                lbl.config(image=self._photos[i])
         parts = []
         if oxy:
             parts.append(f'위치 x={oxy[0]:.2f} y={oxy[1]:.2f} yaw={oxy[2]:.0f}°')
