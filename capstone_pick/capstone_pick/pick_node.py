@@ -329,13 +329,17 @@ class PickNode(Node):
         return True
 
     def drive(self, vx, wz, sec):
-        # 기준(1배) 속도·시간에 speed_scale 적용: 속도 ×scale, 시간 ÷scale (이동량 불변)
+        # 기준(1배) 이동량(vx*sec, wz*sec)을 불변으로 유지하며 speed_scale 적용.
+        # 속도 상한(0.35, 1.5)에 걸리면 시간을 늘려 보상 — 고배속에서 회전량이 깎여
+        # "탐색 로그만 찍히고 실제로는 안 도는" 문제의 근본 수정. 관성 대비 최소 펄스 0.25s.
         s = self.scale
+        dur = max(sec / s, abs(vx * sec) / 0.35 if vx else 0.0,
+                  abs(wz * sec) / 1.5 if wz else 0.0, 0.25)
         t = Twist()
-        t.linear.x = max(-0.35, min(0.35, vx * s))
-        t.angular.z = max(-1.5, min(1.5, wz * s))
+        t.linear.x = vx * sec / dur
+        t.angular.z = wz * sec / dur
         t0 = time.time()
-        while time.time() - t0 < sec / s:
+        while time.time() - t0 < dur:
             self.cmd_pub.publish(t)
             rclpy.spin_once(self, timeout_sec=0.02)
             time.sleep(0.03)
