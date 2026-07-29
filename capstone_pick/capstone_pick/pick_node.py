@@ -16,6 +16,7 @@
   - 손가락 충돌은 URDF에 추가된 primitive box (트라이메시 관통 문제 해결)
 """
 import math
+import os
 import time
 
 import cv2
@@ -97,7 +98,20 @@ class PickNode(Node):
         self.hsv_ranges = TARGET_COLOR_RANGES[target_color]
         # 바닥 모드: 기본은 비전 검출 높이로 자동 결정, skip_approach 시엔 -p floor:=true로 강제
         self.floor_mode = bool(self.declare_parameter('floor', False).value)
-        self.get_logger().info(f'speed_scale={self.scale} target_color={target_color}')
+        # 검출기: yolo(기본, 시뮬 자동라벨 파인튜닝 모델) / hsv(폴백·orange·pink용)
+        self.detector = str(self.declare_parameter('detector', 'yolo').value).strip().lower()
+        self.yolo = None
+        if self.detector == 'yolo':
+            if target_color not in ('blue', 'red', 'green'):
+                self.get_logger().error(
+                    f'YOLO 모델은 blue/red/green만 학습됨 — "{target_color}"는 -p detector:=hsv로 실행')
+                raise SystemExit(1)
+            from ultralytics import YOLO as _YOLO   # 지연 임포트 (hsv 모드에선 불필요)
+            model_path = os.path.expanduser('~/capstone_tools/yolo_cubes.pt')
+            self.yolo = _YOLO(model_path)
+            self.yolo_cls = {v: k for k, v in self.yolo.names.items()}[f'{target_color}_box']
+        self.get_logger().info(
+            f'speed_scale={self.scale} target_color={target_color} detector={self.detector}')
         self.hold_target = GRIPPER_CLOSED  # 파지 시 최초 접촉각-0.03으로 갱신됨
         self.bridge = CvBridge()
         self.color = None
@@ -159,6 +173,20 @@ class PickNode(Node):
                 and self.cam_info is not None, timeout):
             self.get_logger().error('카메라 토픽 수신 실패')
             return None
+        if getattr(self, 'yolo', None) is not None:
+            # YOLO 검출 경로: 후보 수집 후 최근접 선택 + 타깃 락 (HSV 경로와 동일 정책)
+            cands = self._yolo_candidates(self.depth)
+            if not cands:
+                return None
+            best = min(cands, key=lambda c: c[2])
+            prev = getattr(self, '_target_px', None)
+            if prev is not None:
+                near = [c for c in cands
+                        if math.hypot(c[0] - prev[0], c[1] - prev[1]) < 120]
+                if near:
+                    best = min(near, key=lambda c: math.hypot(c[0] - prev[0], c[1] - prev[1]))
+            self._target_px = (best[0], best[1])
+            return self._pixel_to_base(*best)
         hsv = cv2.cvtColor(self.color, cv2.COLOR_BGR2HSV)
         mask = np.zeros(hsv.shape[:2], np.uint8)
         for lo, hi in self.hsv_ranges:
@@ -208,7 +236,10 @@ class PickNode(Node):
             self.get_logger().info(
                 f'검출 근거: HSV평균=({hm[0]:.0f},{hm[1]:.0f},{hm[2]:.0f}) '
                 f'면적={int(stats[li, cv2.CC_STAT_AREA])}px')
-        u, v, d = best
+        return self._pixel_to_base(*best)
+
+    def _pixel_to_base(self, u, v, d):
+        """픽셀+뎁스 → base_footprint 3D (역투영 + 축변환 + TF + 높이 게이트)."""
         k = self.cam_info.k
         fx, fy, cx, cy = k[0], k[4], k[2], k[5]
         # 광학 프레임: X=우, Y=하, Z=전방
@@ -232,6 +263,26 @@ class PickNode(Node):
                 f'높이 검증 실패 z={out.point.z:.3f} — 오검출로 판단, 무시')
             return None
         return out.point.x, out.point.y, out.point.z, (u, v, d)
+
+    def _yolo_candidates(self, depth_img):
+        """YOLO 추론 → 대상 클래스 박스들을 (중심u, 중심v, 뎁스중앙값) 후보로."""
+        r = self.yolo.predict(self.color, conf=0.40, verbose=False)[0]
+        cands = []
+        for b in r.boxes:
+            if int(b.cls) != self.yolo_cls:
+                continue
+            x1, y1, x2, y2 = (max(0, int(t)) for t in b.xyxy[0].tolist())
+            region = np.asarray(depth_img)[y1:y2 + 1, x1:x2 + 1]
+            ds = region[np.isfinite(region) & (region > 0.05)]
+            if len(ds) < 10:
+                continue
+            d_med = float(np.median(ds))
+            if d_med < MIN_OBJECT_DEPTH:
+                continue
+            self.get_logger().info(
+                f'검출 근거(YOLO): {self.yolo.names[int(b.cls)]} conf={float(b.conf):.2f} d={d_med:.2f}')
+            cands.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0, d_med))
+        return cands
 
     # ---- 팔/그리퍼 프리미티브 ----
     def move_arm(self, targets, duration):
