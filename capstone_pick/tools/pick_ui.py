@@ -34,9 +34,10 @@ ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
 SPAWN_POSE = (0.0, 0.0, 0.03)               # 원본 launch 기본 스폰 위치 (x_pose=0, y_pose=0)
 ARM_POSES = {
-    # 홈 = 최밀착 접힘 (MoveIt 충돌 0 중 elbow 최대): lift 리밋(-1.745, 어퍼암 숄더 밀착)
-    # + elbow 1.55(전완-어퍼암 밀착 최대) + wrist 0.90(손목 몸쪽, 더 접으면 숄더 관통)
-    '홈': [0.0, -1.745, 1.55, 0.90, 0.0],
+    # 홈 = 공식 rest 키프레임(MuJoCo Menagerie SO-ARM100: [0,-3.32,3.11,1.18,0,-0.174])을
+    # 우리 관절 규약으로 변환한 값의 최근접 무충돌 조합. 편차(elbow -0.15/wrist -0.13)는
+    # 이 기체의 추가 장비(손목 카메라·라이다) 간섭 회피분 — MoveIt 검사 통과.
+    '홈': [0.0, -1.745, 1.45, 1.05, 0.0],
     '접힘': [0.0, -0.4, 1.0, 0.2, 0.0],     # 주행 자세 (pick_node와 동일)
     '상공': [0.0, 0.15, 0.2, 0.9, 0.0],
     '파지': [0.0, 0.48, 0.2, 0.9, 0.0],
@@ -347,7 +348,7 @@ class App:
         self.stop_pick()
         self.stop_drive()
         self.node.arm_pose(ARM_POSES['홈'])
-        self.node.gripper(0.0)
+        self.node.gripper(-0.17)   # 공식 rest는 그리퍼 닫힘(-0.174)
         threading.Thread(target=self._reset_worker, daemon=True).start()
 
     def _reset_worker(self):
