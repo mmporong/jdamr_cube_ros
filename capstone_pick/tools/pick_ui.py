@@ -8,6 +8,7 @@ ROS 환경이 소싱된 셸에서 실행:
 import math
 import os
 import queue
+import signal
 import subprocess
 import threading
 import tkinter as tk
@@ -31,10 +32,12 @@ VIEW_W, VIEW_H = 340, 255
 DEPTH_NEAR, DEPTH_FAR = 0.15, 3.0
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
-ARM_POSES = {  # pick_node와 동일 값
-    '접힘': [0.0, -0.4, 1.0, 0.2, 0.0],
+ARM_POSES = {
+    '홈': [0.0, 0.0, 0.0, 0.0, 0.0],       # 원본 리포 SRDF 'home'과 동일 (리셋 기준 자세)
+    '접힘': [0.0, -0.4, 1.0, 0.2, 0.0],     # 주행 자세 (pick_node와 동일)
     '상공': [0.0, 0.15, 0.2, 0.9, 0.0],
     '파지': [0.0, 0.48, 0.2, 0.9, 0.0],
+    '바닥파지': [0.0, 1.20, 0.15, 0.23, 0.0],
 }
 DRIVE_LIN, DRIVE_ANG = 0.20, 0.80  # 주행 패드 속도
 
@@ -192,6 +195,8 @@ class App:
         stage.pack(side=tk.LEFT, padx=4)
         tk.Button(stage, text='파란 타깃', command=lambda: self.run_stage('grip_stage.py')).pack(side=tk.LEFT, padx=1, pady=2)
         tk.Button(stage, text='빨간 타깃', command=lambda: self.run_stage('red_stage.py')).pack(side=tk.LEFT, padx=1, pady=2)
+        tk.Button(stage, text='바닥 타깃', command=lambda: self.run_stage('floor_stage.py', '-0.3')).pack(side=tk.LEFT, padx=1, pady=2)
+        tk.Button(stage, text='리셋', bg='#f0e0c0', command=self.reset_robot).pack(side=tk.LEFT, padx=1, pady=2)
 
         # 픽 실행
         pick = tk.LabelFrame(body, text='자율 픽')
@@ -247,12 +252,12 @@ class App:
         self.node.gripper(pos)
 
     # ---- 무대·픽 ----
-    def run_stage(self, script):
-        self.append(f'== 무대: {script} ==')
-        threading.Thread(target=self._stage_worker, args=(script,), daemon=True).start()
+    def run_stage(self, script, *args):
+        self.append(f'== 무대: {script} {" ".join(args)} ==')
+        threading.Thread(target=self._stage_worker, args=(script, args), daemon=True).start()
 
-    def _stage_worker(self, script):
-        r = subprocess.run(['python3', os.path.join(TOOLS, script)],
+    def _stage_worker(self, script, args=()):
+        r = subprocess.run(['python3', os.path.join(TOOLS, script), *args],
                            capture_output=True, text=True)
         self.logq.put((r.stdout.strip() or r.stderr.strip())[-300:])
 
@@ -267,7 +272,8 @@ class App:
             cmd += ['-p', 'skip_approach:=true']
         self.append('== 픽 실행: ' + ' '.join(cmd[4:]) + ' ==')
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, text=True)
+                                     stderr=subprocess.STDOUT, text=True,
+                                     start_new_session=True)  # 프로세스 그룹으로 분리 (중지 시 자식까지)
         self.run_btn.config(state=tk.DISABLED)
         threading.Thread(target=self._pick_reader, daemon=True).start()
 
@@ -279,8 +285,40 @@ class App:
 
     def stop_pick(self):
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+            p = self.proc
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGINT)  # ros2 run의 자식 노드까지 정리
+            except ProcessLookupError:
+                pass
             self.append('중지 요청')
+
+            def force():
+                try:
+                    p.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            threading.Thread(target=force, daemon=True).start()
+        self.node.drive(0.0, 0.0)
+
+    def reset_robot(self):
+        self.append('== 리셋: 픽 중지·팔 홈(원본 자세)·위치 복귀 ==')
+        self.stop_pick()
+        self.stop_drive()
+        self.node.arm_pose(ARM_POSES['홈'])
+        self.node.gripper(0.0)
+        threading.Thread(target=self._reset_worker, daemon=True).start()
+
+    def _reset_worker(self):
+        r = subprocess.run(
+            ['gz', 'service', '-s', '/world/room/set_pose',
+             '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
+             '--timeout', '5000', '--req',
+             'name: "jdamr_cube" position {x: 0.3 y: 0 z: 0.03} orientation {w: 1}'],
+            capture_output=True, text=True)
+        self.logq.put('로봇 위치 리셋: ' + (r.stdout.strip() or r.stderr.strip()[-100:]))
 
     # ---- 표시 갱신 ----
     def append(self, text):

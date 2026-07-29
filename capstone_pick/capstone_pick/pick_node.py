@@ -40,7 +40,8 @@ PAN_BASE_BEARING = math.radians(-1.1)   # pan=0일 때 포켓 방위각
 GRIPPER_OPEN = 0.5                # 3cm 물체 통과에 충분한 최소 열림
 GRIPPER_STAGE1 = 0.25
 GRIPPER_CLOSED = -0.17
-GRIP_HOLD_THRESHOLD = -0.155       # 조임 후 각도가 이보다 크면(덜 닫힘) 파지 성공
+GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 닫힘) 파지 성공
+# 실측 근거: 3cm 큐브 정상 파지는 항상 +0.07 이상, 모서리 헛집기는 -0.07 부근(가짜 성공 사례)
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
 # 주행 자세: 추종오차 0.000rad 검증(2026-07-28), 그리퍼가 데크 위로 뜨는 단정한 접힘
@@ -51,6 +52,12 @@ POSE_WAY = dict(zip(ARM_JOINTS, [0.0, 0.28, 0.32, 0.9, 0.0]))   # 수직 하강 
 POSE_GRASP = dict(zip(ARM_JOINTS, [0.0, 0.48, 0.2, 0.9, 0.0]))   # 그립(스캔 파지 확정)
 POSE_LIFT1 = {'arm_shoulder_lift': 0.15}
 POSE_LIFT2 = {'arm_shoulder_lift': 0.05}
+# 바닥 모드: 수직 하향 자세족(lift+elbow+wrist≈1.58) TF 스윕 + 파지 실측으로 확정(2026-07-29).
+# 닫힘이 큐브를 고정 죠 쪽으로 쓸어담아 물리는 방식 — 포켓은 쓸림 거리까지 반영한 실측값.
+POSE_PRE_FLOOR = dict(zip(ARM_JOINTS, [0.0, 0.85, 0.15, 0.58, 0.0]))    # 바닥 상공 대기
+POSE_GRASP_FLOOR = dict(zip(ARM_JOINTS, [0.0, 1.20, 0.15, 0.23, 0.0]))  # 바닥 파지
+POCKET_FLOOR = (0.361, 0.000)   # 바닥 모드 파지 포켓 [m, base_footprint]
+FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 모드
 # 대상 색 HSV 범위 목록 (OpenCV H 0-179) — 2026-07-28 카메라 실측 기반.
 # 실측: 병(오렌지) H15-19/S163/V206, 갈색 장애물 H≈13/V≈106(실조명), 노랑 팔 H30-34, 빨간 데크 H0-4.
 # 갈색↔orange는 H15+V160 이중 게이트로, 노랑 팔은 H로 분리. 파란 장애물 실린더(H≈107)는
@@ -82,6 +89,8 @@ class PickNode(Node):
                 f'미지원 색 "{target_color}" — 사용 가능: {sorted(TARGET_COLOR_RANGES)}')
             raise SystemExit(1)
         self.hsv_ranges = TARGET_COLOR_RANGES[target_color]
+        # 바닥 모드: 기본은 비전 검출 높이로 자동 결정, skip_approach 시엔 -p floor:=true로 강제
+        self.floor_mode = bool(self.declare_parameter('floor', False).value)
         self.get_logger().info(f'speed_scale={self.scale} target_color={target_color}')
         self.hold_target = GRIPPER_CLOSED  # 파지 시 최초 접촉각-0.03으로 갱신됨
         self.bridge = CvBridge()
@@ -269,7 +278,6 @@ class PickNode(Node):
 
     # ---- 2) Approach: 비전 재인식 폐루프 (odom 기반 스톨 감지 포함) ----
     def approach(self, max_iter=24):
-        r_target = math.hypot(POCKET_BASE[0] - PAN_AXIS_X, POCKET_BASE[1])
         prev_odom = None
         for it in range(max_iter):
             self.spin_until(lambda: self.odom is not None, 5.0)
@@ -283,6 +291,12 @@ class PickNode(Node):
             loc = self.locate_object()
             real = loc is not None
             if not real and getattr(self, '_obj_odom', None) is not None and self.odom:
+                if not getattr(self, '_arm_aside', False):
+                    # 접힌 팔이 화면 하단 중앙(근접 물체 위치)을 가림 — 옆으로 젖혀 시야 확보
+                    self._arm_aside = True
+                    self.get_logger().info('근접 시야 확보: 팔을 옆으로 (pan 0.6)')
+                    self.move_arm({'arm_shoulder_pan': 0.6}, 1.2)
+                    continue
                 # 마지막 관측 위치 추적: odom 기준으로 기억한 물체 방향으로 계속 접근
                 ox, oy = self._obj_odom
                 x, y, yaw = self.odom
@@ -309,10 +323,18 @@ class PickNode(Node):
                 self._miss = 0
                 self._last_seen = it
                 xb, yb, zb, dbg = loc
+                if zb > 0.001 and not getattr(self, '_mode_locked', False):
+                    # 첫 실검출의 높이로 받침대/바닥 모드 결정 (이후 고정)
+                    self.floor_mode = zb < FLOOR_Z_MAX
+                    self._mode_locked = True
+                    if self.floor_mode:
+                        self.get_logger().info(f'바닥 모드 진입 (검출 z={zb:.3f})')
                 if self.odom:
                     x, y, yaw = self.odom
                     self._obj_odom = (x + math.cos(yaw) * xb - math.sin(yaw) * yb,
                                       y + math.sin(yaw) * xb + math.cos(yaw) * yb)
+            pocket = POCKET_FLOOR if self.floor_mode else POCKET_BASE
+            r_target = math.hypot(pocket[0] - PAN_AXIS_X, pocket[1])
             r = math.hypot(xb - PAN_AXIS_X, yb)
             brg = math.atan2(yb, xb - PAN_AXIS_X)
             # 뎁스=앞표면 → 물체 중심이 포켓에 오도록 앞표면은 반폭만큼 안쪽에
@@ -321,6 +343,12 @@ class PickNode(Node):
                 f'[{it}] 비전: base=({xb:.3f},{yb:.3f},{zb:.3f}) px=({dbg[0]:.0f},{dbg[1]:.0f}) '
                 f'd={dbg[2]:.2f} | er={er * 1000:.0f}mm brg={math.degrees(brg):.1f}deg')
             if abs(er) < 0.012 and abs(brg) < 0.30 and (real or it - getattr(self, "_last_seen", -99) <= 8):
+                if not real and not getattr(self, '_reacq_done', False):
+                    # 추측항법만으로 수렴 — 정지 상태에서 한 번 재관측 (주행 중 비전 상실 드리프트 보정)
+                    self._reacq_done = True
+                    self.get_logger().info('수렴(추측항법) — 정지 재관측 시도')
+                    time.sleep(1.0)
+                    continue
                 self._anchor_odom = self.odom
                 return -(brg - PAN_BASE_BEARING)
             if abs(brg) > 0.30:
@@ -333,7 +361,9 @@ class PickNode(Node):
 
     # ---- 3~5) Grasp / Verify / Lift ----
     def grasp(self, pan):
-        self.move_arm({**POSE_PRE, 'arm_shoulder_pan': pan}, 3.0)
+        pre = POSE_PRE_FLOOR if self.floor_mode else POSE_PRE
+        grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
+        self.move_arm({**pre, 'arm_shoulder_pan': pan}, 3.0)
         self.get_logger().info('그리퍼 열기 (물체 근처 도착)')
         self.move_gripper(1.2)
         time.sleep(0.5)
@@ -347,8 +377,8 @@ class PickNode(Node):
             if abs(fwd) > 0.005:
                 v = -0.03 if fwd > 0 else 0.03
                 self.drive(v, 0.0, min(2.5, abs(fwd) / 0.03 + 0.1))
-        self.get_logger().info('수직 하강')
-        self.move_arm({**POSE_GRASP, 'arm_shoulder_pan': pan}, 3.0)
+        self.get_logger().info('수직 하강' + (' (바닥 모드)' if self.floor_mode else ''))
+        self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan}, 3.0)
         time.sleep(0.3)
         angle = None
         for attempt in range(3):
@@ -371,17 +401,19 @@ class PickNode(Node):
         self.get_logger().info(
             f'파지 검증: 그리퍼 각도={angle if angle is not None else float("nan"):.3f} '
             f'(임계 {GRIP_HOLD_THRESHOLD}) → {"HOLDING" if held else "EMPTY"}')
-        if held:
+        if held and not self.floor_mode:
+            # 바닥 모드는 자세 급변(원-모션 상승) 없이 곧장 계단 들기로 (실검증 방식)
             self.get_logger().info('수직 상승')
-            self.move_arm({**POSE_PRE, 'arm_shoulder_pan': pan}, 2.5)
+            self.move_arm({**pre, 'arm_shoulder_pan': pan}, 2.5)
             time.sleep(0.3)
         return held
 
     def place(self, pan_target=-0.7):
         """잡은 물체를 옆(pan_target 방향)에 내려놓고 팔을 접는다."""
+        grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
         self.move_arm({'arm_shoulder_pan': pan_target}, 2.5)
         time.sleep(0.3)
-        self.move_arm({**POSE_GRASP, 'arm_shoulder_pan': pan_target}, 2.5)
+        self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan_target}, 2.5)
         time.sleep(0.3)
         self.move_gripper(0.8)
         time.sleep(0.6)
@@ -390,16 +422,23 @@ class PickNode(Node):
         return True
 
     def lift(self):
-        # 계단식 들기 + wrist 보상: 그리퍼 절대 피치를 유지해 핀치가 풀리지 않게
-        for lf, wf in ((0.42, 0.96), (0.35, 1.03), (0.27, 1.11), (0.20, 1.18), (0.15, 1.23)):
+        # 계단식 들기 + wrist 보상(lift 감소분 = wrist 증가분): 그리퍼 절대 피치 유지.
+        # 시작 자세는 모드의 파지 자세 — 받침대(0.48/0.9), 바닥(1.20/0.23) 공용.
+        grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
+        lift0, wrist0 = grasp_pose['arm_shoulder_lift'], grasp_pose['arm_wrist_flex']
+        lf, k = lift0, 0
+        while lf > 0.151:
+            lf = max(0.15, lf - 0.07)
+            wf = wrist0 + (lift0 - lf)
             self.move_arm({'arm_shoulder_lift': lf, 'arm_wrist_flex': wf}, 1.5)
             time.sleep(0.2)
             self.gripper_angle = None
             self.spin_until(lambda: self.gripper_angle is not None, 3.0)
-            self.get_logger().info(f'  step lift={lf}: 그리퍼 각도={self.gripper_angle:.3f}')
-            if lf in (0.42, 0.27):
+            self.get_logger().info(f'  step lift={lf:.2f}: 그리퍼 각도={self.gripper_angle:.3f}')
+            if k % 2 == 0:
                 # 재조임 = 최초 접촉각 기준 절대 목표 재주장 (현재각 기준 래칫 파고듦 방지)
                 self.move_gripper(self.hold_target)
+            k += 1
         time.sleep(0.5)
         self.gripper_angle = None
         self.spin_until(lambda: self.gripper_angle is not None, 5.0)
@@ -419,17 +458,19 @@ def main(args=None):
         n.get_logger().info('== 1. 초기화: 접힘 자세 ==')
         n.move_gripper(0.0)
         n.move_arm(POSE_FOLDED, 3.0)
-        if n.skip_approach:
-            n.get_logger().info('== 2. 접근 생략 (물체 앞 가정, pan=0) ==')
-            pan = 0.0
-            n.spin_until(lambda: n.odom is not None, 5.0)
-            n._anchor_odom = n.odom
-        else:
-            n.get_logger().info('== 2. 비전 접근 주행 ==')
-            pan = n.approach()
-        if pan is None:
-            n.get_logger().error('접근 실패')
-        else:
+        # 파지 실패 시 자동 재시도: 후진해 비전 재획득 후 재접근 (맹주행 드리프트 회복)
+        for cycle in range(3):
+            if n.skip_approach and cycle == 0:
+                n.get_logger().info('== 2. 접근 생략 (물체 앞 가정, pan=0) ==')
+                pan = 0.0
+                n.spin_until(lambda: n.odom is not None, 5.0)
+                n._anchor_odom = n.odom
+            else:
+                n.get_logger().info(f'== 2. 비전 접근 주행 (사이클 {cycle + 1}) ==')
+                pan = n.approach()
+            if pan is None:
+                n.get_logger().error('접근 실패')
+                break
             n.get_logger().info(f'== 3. 파지 (pan={math.degrees(pan):.1f}deg) ==')
             held = n.grasp(pan)
             if held:
@@ -438,8 +479,16 @@ def main(args=None):
                 if ok:
                     n.get_logger().info('== 5. 옮겨 놓기 (place) ==')
                     n.place()
-            else:
-                n.get_logger().error('파지 실패 (그리퍼 완전 닫힘 = 허공)')
+                break
+            n.get_logger().error('파지 실패 (그리퍼 완전 닫힘 = 허공)')
+            if cycle < 2:
+                n.get_logger().info('재시도: 그리퍼 열고 후진 → 재접근')
+                n.move_gripper(0.5)
+                n.move_arm(POSE_FOLDED, 2.5)
+                n.drive(-0.12, 0.0, 3.0)
+                for attr in ('_reacq_done', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
+                    if hasattr(n, attr):
+                        delattr(n, attr)
         n.get_logger().info('=== PICK_SUCCESS ===' if ok else '=== PICK_FAIL ===')
     finally:
         n.destroy_node()
