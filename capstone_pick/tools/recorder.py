@@ -23,9 +23,12 @@ def svc(s_, t_, r_):
 
 svc('/world/room/remove', 'gz.msgs.Entity', 'name: "tripod" type: MODEL')
 time.sleep(0.5)
-# 쓰레기통 데모용: (1.35,0.55,0.60)에서 로봇 진행선(0.33, 0.2~1.0)을 옆에서 바라봄
+# 카메라 pose는 무대마다 달라야 한다(무대에 안 맞으면 로봇이 화면 밖으로 나간다).
+#   REC_POSE 환경변수로 지정: "x y z roll pitch yaw"
+#   기본값 = 쓰레기통 데모용, (1.35,0.55,0.60)에서 로봇 진행선(0.33, 0.2~1.0)을 옆에서 봄
+POSE = os.environ.get('REC_POSE', '1.35 0.55 0.60 0 0.32 2.98')
 cam = ('<sdf version="1.6"><model name="tripod"><static>true</static>'
-       '<pose>1.35 0.55 0.60 0 0.32 2.98</pose>'
+       f'<pose>{POSE}</pose>'
        '<link name="link">'
        '<sensor name="cam" type="camera"><always_on>1</always_on><update_rate>10</update_rate>'
        '<topic>tripod/image</topic>'

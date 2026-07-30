@@ -48,6 +48,11 @@ GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 �
 # 기각할 위험이 커서 0.40으로 되돌렸다 — 그 실패의 주원인은 물림 깊이가 아니라
 # 미세 주행이 죽어 정렬이 어긋난 것이었다(drive 속도 하한 참조).
 GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.30
+# 쥐고 있는지를 손목캠 블롭 면적으로 판정하는 임계(px). 실측(운반 자세):
+# 쥔 상태 36721 / 큐브가 바닥에 떨어진 상태 6079 / 빈손 0. 6배 차이라 중간값보다
+# 낮게 잡아도 안전하다. 쥐고 있으면 큐브가 렌즈 앞 몇 cm에 고정되므로 팔 자세가
+# 바뀌어도 이 값은 유지된다.
+HOLD_AREA_MIN = 15000.0
 # 실측 근거: 3cm 큐브 정상 파지는 항상 +0.07 이상, 모서리 헛집기는 -0.07 부근(가짜 성공 사례)
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
@@ -858,17 +863,35 @@ class PickNode(Node):
         return self.holding()
 
     def holding(self):
-        """물체를 쥐고 있는지 각도로만 판정 — 확인하려고 죠를 다시 움직이지 않는다.
+        """물체를 쥐고 있는지 손목캠으로 판정 — 죠를 다시 움직이지 않는다.
 
-        종전에는 살짝 더 조여 보는 능동 확인을 했는데, 그 확인 동작 자체가 물체를
-        밀어내고 운반 중 죠를 떨게 만들었다(사용자 관측: "잡았는데도 상단 죠가 계속
-        움직인다", "이동 중에 덜렁거린다"). 한 번 물었으면 그 명령을 유지하는 편이
-        실제로 더 안 놓친다. 허공 완전 닫힘(-0.17)은 구간 판정이 그대로 걸러낸다.
+        각도로는 낙하를 볼 수 없다. hold_target(접촉각-0.01)을 명령해 두면 물체가
+        빠져도 그리퍼가 그 각도를 유지하기 때문이다(가짜 성공의 원인). 살짝 더 조여
+        보는 능동 확인은 그 동작 자체가 물체를 밀어내고 운반 중 죠를 떨게 만들었다.
+        손목캠은 둘 다 피한다 — 쥐고 있으면 큐브가 렌즈 앞에 고정돼 화면을 크게 채우고,
+        떨어지면 바닥으로 멀어져 면적이 6분의 1로 준다(실측 36721 대 6079).
         """
         self.gripper_angle = None
-        if not self.spin_until(lambda: self.gripper_angle is not None, 3.0):
-            return False
-        return self.gripped(self.gripper_angle)
+        self.spin_until(lambda: self.gripper_angle is not None, 3.0)
+        ang = self.gripper_angle
+        roll = float(getattr(self, '_last_arm', {}).get('arm_wrist_roll', 0.0) or 0.0)
+        if abs(roll) >= 0.1:
+            # 기울기 정렬로 손목이 돌아간 상태에서는 큐브가 손목캠 시야를 벗어난다
+            # (실측: roll 0.33에서 면적 0인데 실제로는 쥐고 있었다 — 큐브 z=0.19).
+            # 이때는 각도 구간으로 폴백한다. 각도는 낙하를 못 잡을 수 있으므로
+            # 기울어진 물체에서는 판정 신뢰도가 낮다는 한계가 남는다.
+            held = self.gripped(ang)
+            self.get_logger().info(
+                f'파지 확인(각도 폴백, roll={roll:+.2f}): '
+                f'각도={ang if ang is None else round(ang, 3)} → {"HOLDING" if held else "DROPPED"}')
+            return held
+        b = self._wrist_blob(frames=3)
+        area = b[2] if b else 0.0
+        held = area >= HOLD_AREA_MIN
+        self.get_logger().info(
+            f'파지 확인: 손목캠 면적={area:.0f} (임계 {HOLD_AREA_MIN:.0f}) '
+            f'각도={ang if ang is None else round(ang, 3)} → {"HOLDING" if held else "DROPPED"}')
+        return held
 
     def drop_into_trash(self):
         """통 개구부 위에서 그리퍼를 열어 투입."""

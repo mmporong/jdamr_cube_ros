@@ -40,16 +40,24 @@ t0 = time.time()
 while time.time() - t0 < 5.0:
     rclpy.spin_once(n, timeout_sec=0.1)
 rclpy.shutdown()
-print('팔 리셋 완료 → 무대 배치')
-r = subprocess.run(['python3', f'/home/mmporong/capstone_tools/{STAGE}', ROBOT_X],
-                   capture_output=True, text=True)
-print((r.stdout or r.stderr)[-200:])
 
 
 def svc(s_, t_, r_):
     return subprocess.run(['gz', 'service', '-s', s_, '--reqtype', t_,
                            '--reptype', 'gz.msgs.Boolean', '--timeout', '8000', '--req', r_],
                           capture_output=True, text=True).stdout.strip()
+
+
+# 로봇도 되돌린다. 무대 스크립트는 ROBOT_X를 로봇 위치로 가정해 물체를 놓는데
+# (0.3 + 포켓 0.381 = 물체 0.681), 로봇을 옮기지 않으면 직전 실행이 끝난 자리에서
+# 시작해 무대 좌표가 통째로 밀린다. 연속 실행일수록 어긋남이 누적된다.
+svc('/world/room/set_pose', 'gz.msgs.Pose',
+    f'name: "jdamr_cube" position {{x: {ROBOT_X} y: 0 z: 0.05}} orientation {{w: 1}}')
+time.sleep(1.5)
+print(f'로봇 리셋 완료 (x={ROBOT_X}) → 무대 배치')
+r = subprocess.run(['python3', f'/home/mmporong/capstone_tools/{STAGE}', ROBOT_X],
+                   capture_output=True, text=True)
+print((r.stdout or r.stderr)[-200:])
 
 
 def pose_of(name):
