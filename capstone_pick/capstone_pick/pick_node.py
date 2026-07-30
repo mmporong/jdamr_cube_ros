@@ -42,11 +42,12 @@ GRIPPER_OPEN = 0.5                # 3cm 물체 통과에 충분한 최소 열림
 GRIPPER_STAGE1 = 0.25
 GRIPPER_CLOSED = -0.17
 GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 닫힘) 접촉은 있었다는 뜻
-# 물림 판정 구간. 상한은 2026-07-30 실행 편차 실측으로 확정했다:
-#   깊게 물린 0.179·0.195·0.207·0.265는 들기 성공, 얕게 걸친 0.343·0.346·0.352는 전부 실패.
-# 상한을 0.45로 두면 얕은 걸침이 성공으로 통과해 들기에서 놓친다 — 0.30에서 끊고 재물림한다.
-# 아래로는 허공 닫힘(-0.17)·모서리 헛집기(-0.07)·미닫힘(0.0)이 걸러진다.
-GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.30
+# 물림 판정 구간. 아래로는 허공 닫힘(-0.17)·모서리 헛집기(-0.07)·미닫힘(0.0)을,
+# 위로는 열린 상태(0.5+)를 걸러낸다.
+# 상한을 0.30까지 좁혀 봤지만(얕은 걸침 0.34대가 들기에서 실패한 관찰 때문) 정상 파지를
+# 기각할 위험이 커서 0.40으로 되돌렸다 — 그 실패의 주원인은 물림 깊이가 아니라
+# 미세 주행이 죽어 정렬이 어긋난 것이었다(drive 속도 하한 참조).
+GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.40
 # 실측 근거: 3cm 큐브 정상 파지는 항상 +0.07 이상, 모서리 헛집기는 -0.07 부근(가짜 성공 사례)
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
@@ -400,15 +401,27 @@ class PickNode(Node):
         # 기준(1배) 이동량(vx*sec, wz*sec)을 불변으로 유지하며 speed_scale 적용.
         # 속도 상한(0.35, 1.5)에 걸리면 시간을 늘려 보상 — 고배속에서 회전량이 깎여
         # "탐색 로그만 찍히고 실제로는 안 도는" 문제의 근본 수정.
-        # 주행 배율은 4로 제한하고 최소 펄스를 0.6초로 둔다: 로봇 가속도 한계(1.0m/s²)
-        # 때문에 짧은 펄스는 가속하다 끝나 이동량이 크게 손실된다(10배속 실측: 명령
-        # 50mm에 실제 7mm만 이동해 접근이 42mm에서 정체 → 반복 예산 소진).
-        s = min(self.scale, 4.0)
-        dur = max(sec / s, abs(vx * sec) / 0.35 if vx else 0.0,
-                  abs(wz * sec) / 1.5 if wz else 0.0, 0.6)
+        # 이동량 보존 + 속도 하한. 두 가지 실패를 모두 피해야 한다:
+        #   ① 고배속에서 펄스가 짧으면 가속하다 끝나 이동량이 손실된다(명령 50mm에 실제 7mm)
+        #   ② 최소 펄스를 길게 두면 미세 조정이 초속 8mm의 너무 느린 명령이 되어
+        #      정지 마찰을 못 이기고 아예 안 움직인다(정렬 실패 → 파지가 허공을 집음)
+        # 그래서 시간을 고정하지 않고, 속도를 [하한, 상한] 안에 두고 시간으로 이동량을 맞춘다.
+        s = min(self.scale, 4.0)          # 주행 배율 상한 (팔 배율은 제한하지 않는다)
         t = Twist()
-        t.linear.x = vx * sec / dur
-        t.angular.z = wz * sec / dur
+        dur = sec / s
+        if vx:
+            v = min(0.35, max(0.06, abs(vx) * s))     # 하한 0.06m/s: 정지 마찰 극복
+            dur = abs(vx) * sec / v
+            t.linear.x = v if vx > 0 else -v
+        if wz:
+            w = min(1.5, max(0.25, abs(wz) * s))      # 하한 0.25rad/s
+            dur = max(dur, abs(wz) * sec / w)
+            t.angular.z = w if wz > 0 else -w
+        dur *= 1.2                        # 가감속 손실 보상
+        if vx:
+            t.linear.x = vx * sec / dur   # 늘어난 시간에 맞춰 속도 재계산 (이동량 불변)
+        if wz:
+            t.angular.z = wz * sec / dur
         t0 = time.time()
         while time.time() - t0 < dur:
             self.cmd_pub.publish(t)
