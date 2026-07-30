@@ -398,10 +398,13 @@ class PickNode(Node):
     def drive(self, vx, wz, sec):
         # 기준(1배) 이동량(vx*sec, wz*sec)을 불변으로 유지하며 speed_scale 적용.
         # 속도 상한(0.35, 1.5)에 걸리면 시간을 늘려 보상 — 고배속에서 회전량이 깎여
-        # "탐색 로그만 찍히고 실제로는 안 도는" 문제의 근본 수정. 관성 대비 최소 펄스 0.25s.
-        s = self.scale
+        # "탐색 로그만 찍히고 실제로는 안 도는" 문제의 근본 수정.
+        # 주행 배율은 4로 제한하고 최소 펄스를 0.6초로 둔다: 로봇 가속도 한계(1.0m/s²)
+        # 때문에 짧은 펄스는 가속하다 끝나 이동량이 크게 손실된다(10배속 실측: 명령
+        # 50mm에 실제 7mm만 이동해 접근이 42mm에서 정체 → 반복 예산 소진).
+        s = min(self.scale, 4.0)
         dur = max(sec / s, abs(vx * sec) / 0.35 if vx else 0.0,
-                  abs(wz * sec) / 1.5 if wz else 0.0, 0.25)
+                  abs(wz * sec) / 1.5 if wz else 0.0, 0.6)
         t = Twist()
         t.linear.x = vx * sec / dur
         t.angular.z = wz * sec / dur

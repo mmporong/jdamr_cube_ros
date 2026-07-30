@@ -7,6 +7,7 @@ ROS 환경이 소싱된 셸에서: python3 ~/capstone_tools/pick_ui.py
 """
 import math
 import os
+import time
 import queue
 import signal
 import subprocess
@@ -28,6 +29,10 @@ from sensor_msgs.msg import Image, JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 TOOLS = os.path.expanduser('~/capstone_tools')
+# 세션 로그: 날짜별 한 파일에 append (조작·결과가 함께 남아야 나중에 대조할 수 있다)
+LOG_DIR = os.path.expanduser('~/capstone_tools/logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_PATH = os.path.join(LOG_DIR, f'dashboard_{time.strftime("%Y%m%d")}.log')
 VIEW_W, VIEW_H = 320, 240
 DEPTH_NEAR, DEPTH_FAR = 0.15, 3.0
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
@@ -250,6 +255,7 @@ class App:
         self.log = scrolledtext.ScrolledText(root, height=6, state=tk.DISABLED)
         self.log.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=6, pady=4)
 
+        self.append(f'== 대시보드 시작 ({time.strftime("%Y-%m-%d %H:%M:%S")}) — 로그: {LOG_PATH} ==')
         self._photos = [None, None, None]
         self.tick()
 
@@ -371,6 +377,13 @@ class App:
         self.log.insert(tk.END, text + '\n')
         self.log.see(tk.END)
         self.log.config(state=tk.DISABLED)
+        # 화면 로그는 창을 닫으면 사라지므로 파일에도 남긴다 — 데모 결과를 나중에 대조하려면
+        # 무엇을 눌렀고(무대·색·중지) 그 결과가 무엇이었는지가 함께 있어야 한다.
+        try:
+            with open(LOG_PATH, 'a', encoding='utf-8') as f:
+                f.write(f'{time.strftime("%H:%M:%S")} {text}\n')
+        except OSError:
+            pass      # 로그 저장 실패가 조작을 막지는 않게
 
     def tick(self):
         if self.driving:
