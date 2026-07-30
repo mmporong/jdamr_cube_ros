@@ -136,6 +136,10 @@ class PickNode(Node):
         self.hsv_ranges = TARGET_COLOR_RANGES[target_color]
         # 바닥 모드: 기본은 비전 검출 높이로 자동 결정, skip_approach 시엔 -p floor:=true로 강제
         self.floor_mode = bool(self.declare_parameter('floor', False).value)
+        # 하강 후 죠 안쪽으로 큐브를 넣는 전진량(m). 상공-파지 자세의 그리퍼 x 차이(40mm)가
+        # 근거이고, 값은 스윕 실측으로 정했다 — 0/25/43/60mm 중 25·43만 큐브가 실제로 옮겨졌고
+        # (0은 제자리, 60은 밀어내 실패), 들기 중 각도 변화가 25mm에서 가장 작았다(+0.030).
+        self.creep = float(self.declare_parameter('creep', 0.025).value)
         # 놓을 곳: side(옆 바닥) | trash(쓰레기통 투입)
         self.place_target = str(self.declare_parameter('place_target', 'side').value).strip().lower()
         # 검출기: yolo(기본, 시뮬 자동라벨 파인튜닝 모델) / hsv(폴백·orange·pink용)
@@ -532,7 +536,22 @@ class PickNode(Node):
 
     # ---- 손목 카메라 최종 정렬 (바닥 모드): 좌우=pan, 전후=미세 주행 ----
     def wrist_align(self, pan, pre):
-        """호버 자세에서 손목 RGB로 물체 중간이 파지선(WRIST_REF)에 오도록 정렬한다."""
+        """호버 자세에서 손목 RGB로 물체 중간이 파지선(WRIST_REF)에 오도록 정렬한다.
+
+        순서가 중요하다: 기울기(roll)를 먼저 맞추고 그 자세에서 위치를 맞춘다.
+        위치를 먼저 맞추고 roll을 돌리면 그리퍼가 회전하면서 파지 중심이 함께 이동해
+        맞춰둔 위치가 어긋난다(물체 중점을 벗어나 얕게 물림).
+        손목캠은 roll 관절 앞단에 있어 롤을 돌려도 측정 기준이 변하지 않으므로,
+        roll을 먼저 적용해도 이후 위치 측정은 그대로 유효하다(실측 확인).
+        """
+        roll = 0.0
+        ang = self._wrist_cube_angle()
+        if ang is not None and abs(ang) > 0.06:
+            roll = max(-0.8, min(0.8, ROLL_SIGN * ang))
+            self.get_logger().info(f'큐브 기울기 {math.degrees(ang):+.0f}도 → 롤 먼저 정렬 {roll:+.2f}rad')
+            self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.5)
+            time.sleep(0.4)
+
         for i in range(6):     # 임계를 좁힌 만큼 반복 여유를 준다
             self.wrist_img = None
             if not self.spin_until(lambda: self.wrist_img is not None, 3.0):
@@ -561,19 +580,12 @@ class PickNode(Node):
                 break
             if abs(dpan) >= 0.012:
                 pan = max(-0.6, min(0.6, pan + max(-0.25, min(0.25, dpan))))
-                self.move_arm({**pre, 'arm_shoulder_pan': pan}, 1.2)
+                # roll을 유지한 채 pan만 조정 (roll을 빼면 정렬 기준이 다시 어긋난다)
+                self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.2)
                 time.sleep(0.3)
             if abs(dr) >= 0.006:
                 step = max(-0.05, min(0.05, dr))
                 self.drive(0.03 if step > 0 else -0.03, 0.0, abs(step) / 0.03)
-        # 큐브 기울기 정렬: 죠가 큐브 면과 수직·수평이 되도록 롤 회전
-        roll = 0.0
-        ang = self._wrist_cube_angle()
-        if ang is not None and abs(ang) > 0.06:
-            roll = max(-0.8, min(0.8, ROLL_SIGN * ang))
-            self.get_logger().info(f'큐브 기울기 {math.degrees(ang):+.0f}도 → 롤 정렬 {roll:+.2f}rad')
-            self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.2)
-            time.sleep(0.3)
         return pan, roll
 
     def _wrist_cube_angle(self):
@@ -621,8 +633,20 @@ class PickNode(Node):
             # 근접 비전 사각을 손목 RGB로 보완: 물체 중간이 파지선에 오도록 pan 정렬 + 기울기 롤 정렬
             pan, roll = self.wrist_align(pan, pre)
         self.get_logger().info('수직 하강' + (' (바닥 모드)' if self.floor_mode else ''))
-        self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 3.0)
-        time.sleep(0.3)
+        descended = {**grasp_pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}
+        self.move_arm(descended, 3.0)
+        # 하강이 끝나기 전에 닫으면 큐브 상단을 스치며 얕게 물거나 밀어낸다.
+        # 궤적 시간(3초)으로는 이 자세에 도달하지 못한다(실측: 3.8초에 lift 1.17/1.20).
+        self.wait_arm_settled(descended, timeout=8.0)
+        # 하강은 수직이 아니다: 상공 자세와 파지 자세의 그리퍼 x가 40mm 차이 난다
+        # (실측 0.378 → 0.338). 상공에서 큐브 중심에 맞춰 놓아도 내려오면 그만큼 뒤로
+        # 물러나 큐브가 죠 끝단에만 걸리고, 들다가 미끄러진다. 열린 죠로 그 차이만큼
+        # 전진해 큐브를 죠 안쪽까지 넣는다. 파지 자세에서는 큐브가 손목캠 시야를
+        # 벗어나므로(실측: 포켓 0.381 검출 불가) 여기서는 비전 대신 실측 거리를 쓴다.
+        if self.floor_mode and self.creep > 0.001:
+            self.get_logger().info(f'죠 안쪽으로 밀어 넣기: {self.creep * 1000:.0f}mm 전진')
+            self.drive(0.03, 0.0, self.creep / 0.03)
+            time.sleep(0.3)
         angle = None
         for attempt in range(3):
             self.get_logger().info(f'그리퍼 닫기 (시도 {attempt + 1})')
@@ -642,10 +666,10 @@ class PickNode(Node):
                 self.get_logger().info(f'얕은 걸침(각도={angle:.3f}) — 물러나 재물림')
                 self.move_gripper(1.0)
                 time.sleep(0.4)
-                self.move_arm({**pre, 'arm_shoulder_pan': pan}, 1.5)
+                self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.5)
                 self.drive(-0.02, 0.0, 1.0)
-                self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan}, 2.0)
-                time.sleep(0.4)
+                self.move_arm(descended, 2.0)
+                self.wait_arm_settled(descended, timeout=8.0)
                 continue
             self.get_logger().info(f'얕은 물림(각도={angle}) — 재물림')
             self.move_gripper(0.5)
@@ -791,40 +815,22 @@ class PickNode(Node):
             t = i / steps
             pose = {j: cur.get(j, 0.0) + (target[j] - cur.get(j, 0.0)) * t for j in ARM_JOINTS}
             self.move_arm(pose, 1.0 * self.scale)     # 배율 무시: 실제 1초씩
-            time.sleep(0.3)
-            self.move_gripper(self.hold_target)       # 쥔 힘만 재주장 (확인은 마지막에)
-            time.sleep(0.2)
-        return self.holding()      # 전환이 끝난 뒤 한 번만 능동 확인
+            time.sleep(0.5)
+            # 재주장하지 않는다 — 명령을 다시 보내면 죠가 움직여 물체가 덜렁거린다.
+        return self.holding()
 
     def holding(self):
-        """물체를 쥐고 있는지 능동 확인 — 완전 닫힘을 시도해 스톨 여부로 판정.
+        """물체를 쥐고 있는지 각도로만 판정 — 확인하려고 죠를 다시 움직이지 않는다.
 
-        각도만 읽으면 안 된다. 물체가 빠져도 그리퍼는 직전 재조임 명령 위치를 그대로
-        유지하므로 각도가 물림 구간에 남는다(실측: 큐브가 바닥에 있는데 0.333 유지 →
-        가짜 성공). 끝까지 닫아 보면 물체가 없을 때만 완전 닫힘(-0.17)에 도달한다.
+        종전에는 살짝 더 조여 보는 능동 확인을 했는데, 그 확인 동작 자체가 물체를
+        밀어내고 운반 중 죠를 떨게 만들었다(사용자 관측: "잡았는데도 상단 죠가 계속
+        움직인다", "이동 중에 덜렁거린다"). 한 번 물었으면 그 명령을 유지하는 편이
+        실제로 더 안 놓친다. 허공 완전 닫힘(-0.17)은 구간 판정이 그대로 걸러낸다.
         """
         self.gripper_angle = None
         if not self.spin_until(lambda: self.gripper_angle is not None, 3.0):
             return False
-        before = self.gripper_angle
-        # 완전 닫힘까지 시도하면 확인 동작이 물체를 밀어내 떨어뜨린다(실측).
-        # 살짝(0.06rad)만 더 조여 본다 — 물체가 있으면 그만큼도 못 닫힌다.
-        probe = max(GRIPPER_CLOSED, before - 0.06)
-        self.move_gripper(probe, effort=3.0)
-        time.sleep(0.4)
-        self.gripper_angle = None
-        if not self.spin_until(lambda: self.gripper_angle is not None, 3.0):
-            return False
-        after = self.gripper_angle
-        held = self.gripped(after) and (after - probe) > 0.02
-        if held:
-            self.hold_target = max(GRIPPER_CLOSED, after - 0.01)
-            self.move_gripper(self.hold_target)
-            time.sleep(0.2)
-        else:
-            self.get_logger().warning(
-                f'물체 없음 확인 (조임 {before:.3f}→{after:.3f}, 목표 {probe:.3f})')
-        return held
+        return self.gripped(self.gripper_angle)
 
     def drop_into_trash(self):
         """통 개구부 위에서 그리퍼를 열어 투입."""
@@ -862,11 +868,8 @@ class PickNode(Node):
         # 시작 자세는 모드의 파지 자세 — 받침대(0.48/0.9), 바닥(1.20/0.23) 공용.
         grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
         lift0, wrist0 = grasp_pose['arm_shoulder_lift'], grasp_pose['arm_wrist_flex']
-        # 물체가 바닥을 떠나는 첫 순간에 하중이 걸려 가장 잘 미끄러진다(실측: 2단계째부터
-        # 각도가 목표에 정확히 도달 = 저항 없음 = 이미 놓침). 떼기 직전 한 번 더 조이고,
-        # 초반 두 단계는 잘게 올린다.
-        self.move_gripper(self.hold_target)
-        time.sleep(0.4)
+        # 물체가 바닥을 떠나는 첫 순간에 하중이 걸려 가장 잘 미끄러진다 — 초반 두 단계를
+        # 잘게 올려 대응한다. 그리퍼는 파지 때 정한 목표를 그대로 유지한다(재조임 없음).
         lf, k = lift0, 0
         while lf > 0.151:
             step = 0.02 if k < 2 else 0.07      # 초반만 미세하게
@@ -877,12 +880,9 @@ class PickNode(Node):
             self.gripper_angle = None
             self.spin_until(lambda: self.gripper_angle is not None, 3.0)
             self.get_logger().info(f'  step lift={lf:.2f}: 그리퍼 각도={self.gripper_angle:.3f}')
-            if k % 2 == 0:
-                # 재조임 = 최초 접촉각 기준 절대 목표 재주장 (현재각 기준 래칫 파고듦 방지)
-                self.move_gripper(self.hold_target)
             k += 1
         time.sleep(0.5)
-        still = self.holding()      # 능동 확인: 각도 유지만으로는 낙하를 못 잡는다
+        still = self.holding()
         self.get_logger().info(f'들기 후 재검증 → {"HOLDING" if still else "DROPPED"}')
         return still
 
