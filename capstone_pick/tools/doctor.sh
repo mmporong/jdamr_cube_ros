@@ -41,7 +41,8 @@ if [ "${CTRL:-0}" -ge 3 ]; then say "ros2_control 컨트롤러" "$CTRL개 active
 
 # 5) DDS 공유메모리 잔재 — 누적되면 디스커버리가 깨진다
 SHM=$(ls /dev/shm 2>/dev/null | grep -c 'fastrtps\|fastdds')
-if [ "$SHM" -lt 60 ]; then say "DDS 공유메모리 잔재" "${SHM}개"; else
+# 정상 동작 중에도 60~80개를 쓴다(실측) — 임계를 낮게 잡으면 오탐이 난다
+if [ "$SHM" -lt 150 ]; then say "DDS 공유메모리 잔재" "${SHM}개"; else
   say "DDS 공유메모리 잔재" "${SHM}개 (과다)"
   BAD=1
   [ $FIX = 1 ] && rm -rf /dev/shm/fastrtps* /dev/shm/sem.fastrtps* /dev/shm/fastdds* 2>/dev/null && \
