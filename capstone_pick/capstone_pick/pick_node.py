@@ -569,26 +569,45 @@ class PickNode(Node):
             self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.5)
             time.sleep(0.4)
 
-        for i in range(6):     # 임계를 좁힌 만큼 반복 여유를 준다
+        # pan 게인은 방향·크기에 따라 568~2905 px/rad로 비선형이라(실측) 상수로는 어느
+        # 구간에서든 어긋난다. 직전에 적용한 pan과 그때 실제로 움직인 픽셀로 게인을
+        # 역산해 갱신하면 그 구간의 실제 감도에 맞춰 붙는다.
+        gain = WRIST_PY_PER_PAN
+        prev_y, prev_applied = None, 0.0
+        for i in range(10):
             best = self._wrist_blob()
             if best is None:
                 self.get_logger().info('손목캠: 물체 미검출 — 정렬 생략')
                 break
+            if prev_y is not None and abs(prev_applied) > 0.004:
+                measured = abs((best[1] - prev_y) / prev_applied)
+                if 300.0 < measured < 6000.0:      # 이상치(측정 튐)는 버린다
+                    gain = 0.5 * gain + 0.5 * measured
             dr = (best[0] - WRIST_REF[0]) / WRIST_PX_PER_M     # 전후 오차 [m] (+=멂)
-            # 게인이 실측으로 정확해진 뒤에는 감쇠를 줄여 빠르게 수렴시킨다(0.85)
-            dpan = 0.85 * (best[1] - WRIST_REF[1]) / WRIST_PY_PER_PAN
+            dpan = 0.9 * (best[1] - WRIST_REF[1]) / gain
             self.get_logger().info(
                 f'손목캠 정렬[{i}]: blob=({best[0]:.0f},{best[1]:.0f}) '
-                f'전후 {dr * 1000:+.0f}mm, pan 보정 {dpan:+.3f}rad')
-            # 좌우 임계 0.006rad ≈ 포켓 반경 0.222m에서 1.3mm — 죠 중앙에 물리려면 이 수준이어야 한다
-            if abs(dr) < 0.006 and abs(dpan) < 0.006:
+                f'전후 {dr * 1000:+.0f}mm, pan 보정 {dpan:+.3f}rad (게인 {gain:.0f})')
+            # 좌우 임계 0.004rad ≈ 포켓 반경 0.222m에서 0.9mm. 죠 중앙에 물리려면
+            # 이 수준이어야 하고, 5프레임 중앙값을 쓰므로 이 임계까지 측정이 견딘다.
+            if abs(dr) < 0.005 and abs(dpan) < 0.004:
+                self.get_logger().info(
+                    f'정렬 수렴({i + 1}회): 전후 {dr * 1000:+.1f}mm, 좌우 {dpan:+.4f}rad')
                 break
-            if abs(dpan) >= 0.012:
-                pan = max(-0.6, min(0.6, pan + max(-0.25, min(0.25, dpan))))
+            prev_y = best[1]
+            prev_applied = 0.0
+            # 보정 데드존을 종료 임계와 맞춘다. 데드존(종전 0.012)이 임계(0.006)보다
+            # 크면 그 사이 구간은 수렴 판정도 못 받고 보정도 안 되어, 중앙이 아닌 채로
+            # 반복만 소진하고 닫으러 내려갔다.
+            if abs(dpan) >= 0.004:
+                applied = max(-0.25, min(0.25, dpan))
+                new_pan = max(-0.6, min(0.6, pan + applied))
+                prev_applied = new_pan - pan      # 관절 한계에 걸린 만큼은 빼고 기록
+                pan = new_pan
                 # roll을 유지한 채 pan만 조정 (roll을 빼면 정렬 기준이 다시 어긋난다)
                 self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.2)
                 time.sleep(0.3)
-            if abs(dr) >= 0.006:
+            if abs(dr) >= 0.005:
                 step = max(-0.05, min(0.05, dr))
                 self.drive(0.03 if step > 0 else -0.03, 0.0, abs(step) / 0.03)
         return pan, roll
@@ -729,6 +748,25 @@ class PickNode(Node):
         return held
 
     # ---- 쓰레기통 검출·접근·투입 ----
+    def _base_z_of(self, us, vs, ds):
+        """픽셀 배열의 base_footprint 높이를 한 번에 계산해 배열로 반환.
+
+        높이만 필요하므로 회전 행렬의 마지막 행만 쓴다. 픽셀마다 TF를 조회하면
+        비싸지만, 변환을 한 번 얻어 벡터 연산으로 적용하면 전체 마스크를 훑을 수 있다.
+        """
+        k = self.cam_info.k
+        fx, fy, cx, cy = k[0], k[4], k[2], k[5]
+        ox = (us - cx) * ds / fx
+        oy = (vs - cy) * ds / fy
+        # 광학(X우·Y하·Z전) → 링크(x전·y좌·z상)
+        px, py, pz = ds, -ox, -oy
+        tr = self.tf_buffer.lookup_transform('base_footprint', CAMERA_FRAME, rclpy.time.Time())
+        q, t = tr.transform.rotation, tr.transform.translation
+        r20 = 2.0 * (q.x * q.z - q.w * q.y)
+        r21 = 2.0 * (q.y * q.z + q.w * q.x)
+        r22 = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+        return r20 * px + r21 * py + r22 * pz + t.z
+
     def locate_trash(self):
         """쓰레기통 중심의 base_footprint 좌표. 실패 시 None."""
         self.color = self.depth = None
@@ -748,23 +786,36 @@ class PickNode(Node):
             a = int(stats[i, cv2.CC_STAT_AREA])
             if a < TRASH_MIN_AREA:
                 continue
-            ds = dep[labels == i]
-            ds = ds[(ds > TRASH_D_LO) & (ds < TRASH_D_HI)]
-            if len(ds) < 50:
+            vs, us = np.nonzero(labels == i)
+            ds = dep[vs, us]
+            ok = (ds > TRASH_D_LO) & (ds < TRASH_D_HI)
+            if int(ok.sum()) < 50:
                 rejected.append(f'면적{a}:뎁스부족')
                 continue
+            us, vs, ds = us[ok], vs[ok], ds[ok]
+            # 성분 중심이 아니라 성분 안에서 통 높이인 픽셀만 골라 쓴다. 통(0.18m)과
+            # 바닥이 같은 회색이라 색 마스크에서 한 덩어리로 붙는데, 덩어리 중심을
+            # 쓰면 높이가 바닥으로 끌려가 통이 계속 기각된다(실측: 면적 3만대 덩어리
+            # 하나가 높이 -0.02로 12회 연속 기각, 통을 한 번도 못 잡음).
+            try:
+                zs = self._base_z_of(us.astype(float), vs.astype(float), ds)
+            except Exception:
+                rejected.append(f'면적{a}:TF실패')
+                continue
+            sel = (zs > TRASH_Z_LO) & (zs < TRASH_Z_HI)
+            n_sel = int(sel.sum())
+            if n_sel < TRASH_MIN_AREA // 2:
+                rejected.append(f'면적{a}:통높이픽셀{n_sel}')
+                continue
             # 통은 높이 0.18m 구조물 — 물체용 기본 게이트(0.20)로는 상단이 걸린다
-            loc = self._pixel_to_base(cents[i][0], cents[i][1], float(np.median(ds)),
-                                      z_gate=(-0.10, 0.60))
+            loc = self._pixel_to_base(float(us[sel].mean()), float(vs[sel].mean()),
+                                      float(np.median(ds[sel])), z_gate=(-0.10, 0.60))
             if loc is None:
                 rejected.append(f'면적{a}:역투영실패')
                 continue
             x, y, z = loc[0], loc[1], loc[2]
-            if not (TRASH_Z_LO < z < TRASH_Z_HI):
-                rejected.append(f'면적{a}:높이{z:.2f}')
-                continue          # 바닥 그림자(z<0)·원경 구조물 배제
-            if best is None or a > best[0]:
-                best = (a, x, y, z)
+            if best is None or n_sel > best[0]:
+                best = (n_sel, x, y, z)
         if best is None:
             if rejected:
                 self.get_logger().info('통 후보 기각: ' + ', '.join(rejected[:4]))
@@ -793,8 +844,14 @@ class PickNode(Node):
             self.scale = carry_scale
 
     def _carry_loop(self, max_iter):
+        # 탐색 반복은 접근 예산을 쓰지 않는다. 통이 뒤쪽에 있으면 회전 탐색에 37회를
+        # 쓰고 접근에 7회만 남아 1.2m에서 0.78m까지 좁히다 예산이 끝났다(실측).
+        # 탐색의 종료는 scan_step이 한 바퀴 × 자리이동 횟수로 따로 관장한다.
         miss = 0
-        for it in range(max_iter):
+        it = 0
+        approached = 0
+        while approached < max_iter:
+            it += 1
             self.spin_until(lambda: self.odom is not None, 3.0)
             # 근접 락: 통이 화면을 채우면 마스크 중심이 한쪽 면으로 치우쳐 방위가 수렴하지 않는다
             # (실측: r=0.50에서 brg -14도 고착). 락 이후에는 기억한 좌표로만 추측 접근한다.
@@ -814,20 +871,22 @@ class PickNode(Node):
                 self.get_logger().info(f'[{it}] 통 추정 추적: base=({loc[0]:.3f},{loc[1]:.3f})')
             if loc is None:
                 miss += 1
-                if miss > 12:
+                if not self.scan_step(it):
                     self.get_logger().error('쓰레기통 미검출 — 탐색 실패')
                     return False
-                self.get_logger().warning(f'[{it}] 쓰레기통 미검출 — 회전 탐색')
-                self.drive(0.0, 0.30, 1.2)
-                time.sleep(0.4)      # 회전 직후 흔들림이 가라앉은 뒤 관측
                 continue
             miss = 0
+            approached += 1
             tx, ty = loc
             r = math.hypot(tx, ty)
             brg = math.atan2(ty, tx)
             er = r - TRASH_POCKET_X
+            # 근접에서는 통이 화면을 채워 마스크가 한쪽 벽으로 치우치고 방위가 편향된다
+            # (실측: 락을 0.42로 늦추니 r 0.60·brg 14도에서 고착해 반복 소진). 그래서
+            # 0.60에서 락을 걸고 이후는 오도메트리로 추측한다.
             if not near_lock and r < 0.60 and getattr(self, '_trash_odom', None):
-                self._trash_lock = True     # 이 시점의 좌표를 기준으로 고정
+                self._lock_trash_pose()
+                self._trash_lock = True
                 self.get_logger().info(f'근접 락 (r={r:.3f}) — 이후 추측 접근')
             self.get_logger().info(
                 f'[{it}] 통 접근: r={r:.3f} er={er * 1000:.0f}mm brg={math.degrees(brg):.1f}deg')
@@ -846,6 +905,77 @@ class PickNode(Node):
                 self.drive(v, wz, min(3.0, abs(er) / abs(v) + 0.2))
         self.get_logger().error('쓰레기통 접근 반복 소진')
         return False
+
+    def _lock_trash_pose(self, samples=5):
+        """락을 걸기 직전에 통 좌표를 여러 번 재서 중앙값으로 확정한다.
+
+        락 이후는 오도메트리 추측이라 락 좌표가 그대로 최종 정확도가 된다. 그런데
+        단일 프레임으로 락을 걸면 그 순간이 나쁜 프레임일 수 있다 — 실측에서 락 시점
+        검출 면적이 764로 앞뒤 프레임(2773~5098)의 1/5이었고, 접근 오차가 20mm까지
+        수렴했는데도 큐브가 통 중심에서 206mm 벗어났다. 중앙값이 그 운을 없앤다.
+        """
+        xs, ys = [], []
+        for _ in range(samples):
+            s = self.locate_trash()
+            if s is not None and self.odom is not None:
+                x, y, yaw = self.odom
+                xs.append(x + math.cos(yaw) * s[0] - math.sin(yaw) * s[1])
+                ys.append(y + math.sin(yaw) * s[0] + math.cos(yaw) * s[1])
+            time.sleep(0.15)
+        if len(xs) < 3:
+            self.get_logger().warning(f'락 좌표 재측정 실패({len(xs)}/{samples}) — 직전 값 유지')
+            return
+        xs.sort()
+        ys.sort()
+        mid = len(xs) // 2
+        before = getattr(self, '_trash_odom', None)
+        self._trash_odom = (xs[mid], ys[mid])
+        if before:
+            d = math.hypot(self._trash_odom[0] - before[0], self._trash_odom[1] - before[1])
+            self.get_logger().info(
+                f'락 좌표 확정: {len(xs)}회 중앙값, 직전 단일 프레임과 {d * 1000:.0f}mm 차이')
+
+    def scan_step(self, it, turn=0.45, laps=1, moves=2):
+        """대상을 못 찾았을 때의 탐색 한 걸음. 더 시도할 곳이 없으면 False.
+
+        명령을 몇 번 보냈는지로 세면 안 된다. 물체를 든 채로는 주행 배율을 1로 낮춰
+        회전 속도가 하한(0.25rad/s)까지 내려가고, 그 상태에서 회전이 실제로 일어나지
+        않은 사례가 있다 — 검출 후보의 면적·높이가 세 번 연속 픽셀 단위로 동일했다
+        (2026-07-30). 명령은 나갔는데 기체가 안 돈 것이다. 그래서 오도메트리로 실제
+        회전량을 누적해 한 바퀴를 보장하고, 돌지 않으면 자리를 옮긴다.
+        """
+        self.spin_until(lambda: self.odom is not None, 3.0)
+        yaw0 = self.odom[2] if self.odom else None
+        self.get_logger().warning(
+            f'[{it}] 미검출 — 회전 탐색 (누적 {math.degrees(getattr(self, "_scan_yaw", 0.0)):.0f}도'
+            f'/{360 * laps}도, 자리이동 {getattr(self, "_scan_moves", 0)}/{moves})')
+        self.drive(0.0, turn, 1.2)
+        time.sleep(0.4)      # 회전 직후 흔들림이 가라앉은 뒤 관측
+        self.spin_until(lambda: self.odom is not None, 3.0)
+        # 실제로 돈 각도를 누적 (yaw는 ±π에서 감기므로 최단 차이로 환산)
+        turned = 0.0
+        if yaw0 is not None and self.odom is not None:
+            turned = abs(math.atan2(math.sin(self.odom[2] - yaw0),
+                                    math.cos(self.odom[2] - yaw0)))
+        self._scan_yaw = getattr(self, '_scan_yaw', 0.0) + turned
+        self._scan_stuck = getattr(self, '_scan_stuck', 0) + 1 if turned < 0.05 else 0
+        if turned < 0.05:
+            self.get_logger().warning(
+                f'  회전 명령 {math.degrees(turn * 1.2):.0f}도인데 실제 '
+                f'{math.degrees(turned):.1f}도 — 기체가 돌지 않았다')
+        if self._scan_stuck >= 2 or self._scan_yaw >= 2 * math.pi * laps:
+            # 한 바퀴를 다 봤거나 회전 자체가 막혔다 — 자리를 옮겨 시야를 바꾼다.
+            self._scan_moves = getattr(self, '_scan_moves', 0) + 1
+            if self._scan_moves > moves:
+                return False
+            reason = '회전 막힘' if self._scan_stuck >= 2 else '한 바퀴 완료'
+            self.get_logger().warning(
+                f'  {reason} — 자리 이동 {self._scan_moves}/{moves} (후진 25cm + 측면 회전)')
+            self.drive(-0.12, 0.0, 2.0)
+            self.drive(0.0, 0.6, 1.5)
+            self._scan_yaw = 0.0
+            self._scan_stuck = 0
+        return True
 
     def to_pose_holding(self, target, steps=5):
         """물체를 쥔 채 목표 자세로 계단식 전환.
@@ -950,6 +1080,16 @@ class PickNode(Node):
             self.get_logger().info(f'  step lift={lf:.2f}: 그리퍼 각도={self.gripper_angle:.3f}')
             k += 1
         time.sleep(0.5)
+        # 손목 roll을 원위치로 돌린다. 기울기 정렬로 돌아간 상태에서는 큐브가 손목캠
+        # 시야를 벗어나 낙하 판정이 각도 폴백으로 떨어지고, 그 폴백이 정상 파지를
+        # 실패로 오판했다(실측: 각도 0.31이 상한 0.30을 넘어 DROPPED, 실제로는 쥐고
+        # 있었다). 쥐고 있으면 큐브가 함께 회전하므로 안전하고, 운반에 roll은 필요 없다.
+        roll_now = float(getattr(self, '_last_arm', {}).get('arm_wrist_roll', 0.0) or 0.0)
+        if abs(roll_now) > 0.1:
+            self.get_logger().info(f'손목 롤 원위치 ({roll_now:+.2f} → 0.00) — 파지 확인용')
+            self.move_arm({'arm_wrist_roll': 0.0}, 1.5)
+            self.wait_arm_settled({**self._last_arm, 'arm_wrist_roll': 0.0}, timeout=5.0)
+            time.sleep(0.3)
         still = self.holding()
         self.get_logger().info(f'들기 후 재검증 → {"HOLDING" if still else "DROPPED"}')
         return still

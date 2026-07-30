@@ -305,6 +305,9 @@ class App:
         r = subprocess.run(['python3', os.path.join(TOOLS, script), *args],
                            capture_output=True, text=True)
         self.logq.put((r.stdout.strip() or r.stderr.strip())[-300:])
+        # 무대를 새로 깔면 홈이 기본 상태다 — 팔 자세와 기체 위치를 함께 되돌린다.
+        # tkinter 위젯은 UI 스레드에서만 건드려야 하므로 after로 넘긴다.
+        self.root.after(0, self.reset_robot)
 
     def run_pick(self, color):
         if self.proc and self.proc.poll() is None:
@@ -332,6 +335,10 @@ class App:
         for line in self.proc.stdout:
             self.logq.put(line.rstrip())
         self.logq.put(f'== 종료 (코드 {self.proc.wait()}) ==')
+        # 성공이든 실패든 홈으로 돌아온다. 실패로 끝나면 팔이 중간 자세에 남고
+        # 기체가 무대 밖에 서 있어, 다음 실행이 엉뚱한 자리에서 시작한다.
+        self.logq.put('태스크 종료 — 홈 복귀')
+        self.root.after(0, self.reset_robot)
 
     def stop_pick(self):
         if self.proc and self.proc.poll() is None:
@@ -423,7 +430,10 @@ def main():
     threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
     root = tk.Tk()
     set_korean_font(root)
-    App(root, node)
+    app = App(root, node)
+    # 켜졌을 때의 기본 상태는 홈이다. 컨트롤러·TF가 붙을 시간을 준 뒤 한 번 보낸다
+    # (즉시 보내면 액션 서버가 아직 없어 조용히 버려진다).
+    root.after(3000, app.reset_robot)
     root.mainloop()
     rclpy.shutdown()
 
