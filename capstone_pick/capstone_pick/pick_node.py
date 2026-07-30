@@ -47,7 +47,7 @@ GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 �
 # 상한을 0.30까지 좁혀 봤지만(얕은 걸침 0.34대가 들기에서 실패한 관찰 때문) 정상 파지를
 # 기각할 위험이 커서 0.40으로 되돌렸다 — 그 실패의 주원인은 물림 깊이가 아니라
 # 미세 주행이 죽어 정렬이 어긋난 것이었다(drive 속도 하한 참조).
-GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.40
+GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.30
 # 실측 근거: 3cm 큐브 정상 파지는 항상 +0.07 이상, 모서리 헛집기는 -0.07 부근(가짜 성공 사례)
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
@@ -93,12 +93,19 @@ POSE_DROP = dict(zip(ARM_JOINTS, [0.0, 0.05, -0.30, 0.60, 0.0]))   # 리치 x=0.
 # px=전후거리(82px/cm), py=좌우(67px/cm). pan 1rad당 py -1740px(포켓 반경 0.26m×6700px/m와 일치).
 # 아래 세 값은 포켓 0.381에서 직접 실측(2026-07-29). 이전 포켓(0.361) 값을 게인으로
 # 환산해 썼더니 기준이 46px 어긋나 정렬이 큐브 모서리로 수렴했다 — 포켓을 옮기면 반드시 다시 잰다.
-WRIST_REF = (412.9, 320.2)      # 포켓 정위치 큐브의 블롭 중심 (실측)
+# 포켓 정위치 큐브의 블롭 중심. 좌우(y) 기준은 "큐브가 로봇 정면(y=0)에 있고 pan=0인
+# 상태"를 5프레임 중앙값으로 직접 재서 정한 값이다 — 종전 320.2는 40px 어긋나 있어
+# 정렬 루프가 매번 큐브 중심을 벗어난 곳으로 수렴했다(성공/실패가 갈린 주원인).
+WRIST_REF = (412.9, 360.6)
 WRIST_PX_PER_M = 6073.0         # 전후 1m당 px — 포켓 0.361/0.401 두 점으로 산출
 # pan 게인: 호버 자세에서 pan을 -0.1~+0.1로 돌려 잰 값(423.7→168.2px / 0.2rad).
 # 이전 값 1740은 과대라 보정이 매번 부족했고, 남은 약 4mm 오차가 죠 한쪽에 치우친
 # 얕은 물림을 만들어 들어올리는 첫 순간 미끄러지는 원인이 됐다.
-WRIST_PY_PER_PAN = 1277.0       # pan 1rad당 py 변화 (실측)
+# pan 1rad당 py 변화. 실측하면 상수가 아니라 방향·크기에 따라 568~2905 px/rad로
+# 비선형이다(pan -0.10/-0.05/+0.05/+0.10에서 568/757/2905/1736). 상수 하나로 맞출 수
+# 없으므로 큰 쪽에 가깝게 잡아 보정을 보수적으로 만든다 — 작게 잡으면 오버슈트해
+# 정렬이 진동한다(종전 1277에서 blob y가 215~448로 흔들렸다).
+WRIST_PY_PER_PAN = 2000.0
 # 큐브 기울기 정렬: 손목캠 minAreaRect 각도는 큐브 yaw와 1:1 반전(실측: +20도→rect 70).
 # 카메라는 roll 관절 앞단이라 롤을 돌려도 측정 불변 — 측정·제어 분리.
 WRIST_RECT_REF = 90.0           # 정렬 큐브의 rect 각 (실측)
@@ -393,6 +400,11 @@ class PickNode(Node):
         g.command.position = float(position)
         g.command.max_effort = effort  # 파지력. 파고듦 방지는 목표각 캡이 담당
         f = self.grip_client.send_goal_async(g)
+        if not wait:
+            # 유지 명령은 결과를 기다릴 필요가 없다. 다만 전송 자체는 spin에서
+            # 처리되므로 수락까지만 짧게 돌린다(파라미터가 선언만 되고 무시되던 버그).
+            rclpy.spin_until_future_complete(self, f, timeout_sec=0.3)
+            return True
         rclpy.spin_until_future_complete(self, f)
         h = f.result()
         if h is None or not h.accepted:
@@ -553,19 +565,7 @@ class PickNode(Node):
             time.sleep(0.4)
 
         for i in range(6):     # 임계를 좁힌 만큼 반복 여유를 준다
-            self.wrist_img = None
-            if not self.spin_until(lambda: self.wrist_img is not None, 3.0):
-                break
-            hsv = cv2.cvtColor(self.wrist_img, cv2.COLOR_BGR2HSV)
-            mask = np.zeros(hsv.shape[:2], np.uint8)
-            for lo, hi in self.hsv_ranges:
-                mask |= cv2.inRange(hsv, lo, hi)
-            num, labels, stats, cents = cv2.connectedComponentsWithStats(mask)
-            best = None
-            for j in range(1, num):
-                a = stats[j, cv2.CC_STAT_AREA]
-                if a > 100 and (best is None or a > best[2]):
-                    best = (cents[j][0], cents[j][1], a)
+            best = self._wrist_blob()
             if best is None:
                 self.get_logger().info('손목캠: 물체 미검출 — 정렬 생략')
                 break
@@ -587,6 +587,38 @@ class PickNode(Node):
                 step = max(-0.05, min(0.05, dr))
                 self.drive(0.03 if step > 0 else -0.03, 0.0, abs(step) / 0.03)
         return pan, roll
+
+    def _wrist_blob(self, frames=5):
+        """손목캠에서 가장 큰 색 블롭의 중심을 여러 프레임의 중앙값으로 구한다.
+
+        단일 프레임으로 재면 좌우 좌표가 ±100px 흔들린다(실측: 기준 320인데 215~413).
+        그리퍼 손가락이 큐브를 부분적으로 가리고 마스크 경계가 프레임마다 달라지기
+        때문이다. 그 노이즈는 pan 약 ±0.08rad에 해당해 정렬 루프가 수렴하지 못하고,
+        마지막 반복에서 우연히 작은 값이 나오면 성공하고 크면 얕게 물었다.
+        중앙값은 튀는 프레임을 버려 이 운을 없앤다.
+        """
+        xs, ys, areas = [], [], []
+        for _ in range(frames):
+            self.wrist_img = None
+            if not self.spin_until(lambda: self.wrist_img is not None, 3.0):
+                break
+            hsv = cv2.cvtColor(self.wrist_img, cv2.COLOR_BGR2HSV)
+            mask = np.zeros(hsv.shape[:2], np.uint8)
+            for lo, hi in self.hsv_ranges:
+                mask |= cv2.inRange(hsv, lo, hi)
+            num, _, stats, cents = cv2.connectedComponentsWithStats(mask)
+            best = None
+            for j in range(1, num):
+                a = stats[j, cv2.CC_STAT_AREA]
+                if a > 100 and (best is None or a > best[2]):
+                    best = (cents[j][0], cents[j][1], a)
+            if best is not None:
+                xs.append(best[0])
+                ys.append(best[1])
+                areas.append(best[2])
+        if len(xs) < 3:      # 과반이 안 잡히면 측정으로 쓰지 않는다
+            return None
+        return (float(np.median(xs)), float(np.median(ys)), float(np.median(areas)))
 
     def _wrist_cube_angle(self):
         """손목캠 마스크의 최소면적사각형으로 큐브 yaw[rad] 추정 (90도 대칭 랩)."""
@@ -658,18 +690,24 @@ class PickNode(Node):
             if self.gripped(angle):
                 # 파고듦 방지: 최초 접촉각-0.01을 절대 바닥으로 고정 (이후 재조임도 이 값만 사용)
                 self.hold_target = max(GRIPPER_CLOSED, angle - 0.01)
-                self.move_gripper(self.hold_target)
+                # 유지력은 닫을 때보다 높게. 닫는 순간 effort를 올리면 강체 큐브를
+                # 튕겨내지만(과거 실측), 이미 문 뒤의 유지는 다르다 — effort 10으로는
+                # 들기 하중에 죠가 밀려 벌어졌다(실측: 0.184로 물고 첫 단계에 0.287).
+                self.move_gripper(self.hold_target, effort=30.0)
                 time.sleep(0.3)
                 break
             if angle is not None and angle >= GRIP_HOLD_MAX:
-                # 얕게 걸친 상태 — 그대로 들면 놓친다. 살짝 물러나 다시 물어 본다.
-                self.get_logger().info(f'얕은 걸침(각도={angle:.3f}) — 물러나 재물림')
+                # 얕게 걸친 상태 — 큐브가 죠 사이가 아니라 죠 앞에 있어 죠가 큐브 위로
+                # 올라탄 것이다(실측: 0.347/0.349/0.350이 반복되고 전부 제자리).
+                # 물러나면 더 멀어지고, 상공으로 올려 다시 내려오면 40mm 후퇴가
+                # 되풀이된다. 파지 자세를 유지한 채 열고 더 밀어 넣는다.
+                # 전진량은 1cm까지만: 2cm로 두 번 밀었더니 큐브가 4cm 밀려나
+                # 허공을 물었다(실측 -0.170).
+                self.get_logger().info(f'얕은 걸침(각도={angle:.3f}) — 더 밀어 넣어 재물림')
                 self.move_gripper(1.0)
                 time.sleep(0.4)
-                self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.5)
-                self.drive(-0.02, 0.0, 1.0)
-                self.move_arm(descended, 2.0)
-                self.wait_arm_settled(descended, timeout=8.0)
+                self.drive(0.02, 0.0, 0.5)
+                time.sleep(0.3)
                 continue
             self.get_logger().info(f'얕은 물림(각도={angle}) — 재물림')
             self.move_gripper(0.5)
@@ -877,6 +915,13 @@ class PickNode(Node):
             wf = wrist0 + (lift0 - lf)
             self.move_arm({'arm_shoulder_lift': lf, 'arm_wrist_flex': wf}, 1.5)
             time.sleep(0.2)
+            # 파지 때 정한 절대 목표를 그대로 다시 주장한다. 값이 같으므로 죠는
+            # 움직이지 않고(덜렁거림 없음), 하중에 밀려 벌어졌을 때만 되돌아온다.
+            # 과거 파고듦의 원인은 "현재각 기준"으로 다시 조이던 래칫이었고,
+            # 절대 목표 반복은 그 문제가 없다.
+            # 완료를 기다리지 않는다 — 계단 수만큼 액션 왕복을 기다리면 전체 실행이
+            # 400초 예산을 넘겨 중단됐다(실측). 유지 명령은 도착만 하면 된다.
+            self.move_gripper(self.hold_target, wait=False, effort=30.0)
             self.gripper_angle = None
             self.spin_until(lambda: self.gripper_angle is not None, 3.0)
             self.get_logger().info(f'  step lift={lf:.2f}: 그리퍼 각도={self.gripper_angle:.3f}')
@@ -938,7 +983,8 @@ def main(args=None):
         n.get_logger().info('=== PICK_SUCCESS ===' if ok else '=== PICK_FAIL ===')
     finally:
         n.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():      # 중단 신호로 이미 내려간 뒤 다시 부르면 RCLError가 난다
+            rclpy.shutdown()
     return 0 if ok else 1
 
 
