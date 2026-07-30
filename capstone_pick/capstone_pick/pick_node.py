@@ -42,10 +42,11 @@ GRIPPER_OPEN = 0.5                # 3cm 물체 통과에 충분한 최소 열림
 GRIPPER_STAGE1 = 0.25
 GRIPPER_CLOSED = -0.17
 GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 닫힘) 접촉은 있었다는 뜻
-# 물림 판정 구간 (2026-07-29 실측): 3cm 큐브를 제대로 물면 0.07~0.40에 머문다.
-# 구간 밖은 전부 실패 — 아래로는 허공 닫힘(-0.17)·모서리 헛집기(-0.07)·미닫힘(0.0),
-# 위로는 열린 상태(0.5+). 물체 크기가 바뀌면 이 구간을 다시 잰다.
-GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.45
+# 물림 판정 구간. 상한은 2026-07-30 실행 편차 실측으로 확정했다:
+#   깊게 물린 0.179·0.195·0.207·0.265는 들기 성공, 얕게 걸친 0.343·0.346·0.352는 전부 실패.
+# 상한을 0.45로 두면 얕은 걸침이 성공으로 통과해 들기에서 놓친다 — 0.30에서 끊고 재물림한다.
+# 아래로는 허공 닫힘(-0.17)·모서리 헛집기(-0.07)·미닫힘(0.0)이 걸러진다.
+GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.30
 # 실측 근거: 3cm 큐브 정상 파지는 항상 +0.07 이상, 모서리 헛집기는 -0.07 부근(가짜 성공 사례)
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
               'arm_wrist_flex', 'arm_wrist_roll']
@@ -617,12 +618,22 @@ class PickNode(Node):
             self.gripper_angle = None
             self.spin_until(lambda: self.gripper_angle is not None, 5.0)
             angle = self.gripper_angle
-            if angle is not None and angle > -0.10:
+            if self.gripped(angle):
                 # 파고듦 방지: 최초 접촉각-0.01을 절대 바닥으로 고정 (이후 재조임도 이 값만 사용)
                 self.hold_target = max(GRIPPER_CLOSED, angle - 0.01)
                 self.move_gripper(self.hold_target)
                 time.sleep(0.3)
                 break
+            if angle is not None and angle >= GRIP_HOLD_MAX:
+                # 얕게 걸친 상태 — 그대로 들면 놓친다. 살짝 물러나 다시 물어 본다.
+                self.get_logger().info(f'얕은 걸침(각도={angle:.3f}) — 물러나 재물림')
+                self.move_gripper(1.0)
+                time.sleep(0.4)
+                self.move_arm({**pre, 'arm_shoulder_pan': pan}, 1.5)
+                self.drive(-0.02, 0.0, 1.0)
+                self.move_arm({**grasp_pose, 'arm_shoulder_pan': pan}, 2.0)
+                time.sleep(0.4)
+                continue
             self.get_logger().info(f'얕은 물림(각도={angle}) — 재물림')
             self.move_gripper(0.5)
             time.sleep(0.6)
