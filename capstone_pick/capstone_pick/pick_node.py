@@ -44,9 +44,9 @@ GRIPPER_CLOSED = -0.17
 GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 닫힘) 접촉은 있었다는 뜻
 # 물림 판정 구간. 아래로는 허공 닫힘(-0.17)·모서리 헛집기(-0.07)·미닫힘(0.0)을,
 # 위로는 열린 상태(0.5+)를 걸러낸다.
-# 상한을 0.30까지 좁혀 봤지만(얕은 걸침 0.34대가 들기에서 실패한 관찰 때문) 정상 파지를
-# 기각할 위험이 커서 0.40으로 되돌렸다 — 그 실패의 주원인은 물림 깊이가 아니라
-# 미세 주행이 죽어 정렬이 어긋난 것이었다(drive 속도 하한 참조).
+# 상한 0.30: 접지 상실(손끝-바닥 간섭) 수정 후의 정상 파지는 0.08~0.23에 모이고
+# (게이트 6회 실측, 2026-08-03), 얕은 걸침은 0.34+에서 나타난다. 한때 0.40으로
+# 넓혔던 것은 미세 주행이 죽어 정렬이 어긋나던 시기의 보상이었다.
 GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.30
 # 쥐고 있는지를 손목캠 블롭 면적으로 판정하는 임계(px). 실측(운반 자세):
 # 쥔 상태 36721 / 큐브가 바닥에 떨어진 상태 6079 / 빈손 0. 6배 차이라 중간값보다
@@ -67,7 +67,14 @@ POSE_LIFT2 = {'arm_shoulder_lift': 0.05}
 # 바닥 모드: 수직 하향 자세족(lift+elbow+wrist≈1.58) TF 스윕 + 파지 실측으로 확정(2026-07-29).
 # 닫힘이 큐브를 고정 죠 쪽으로 쓸어담아 물리는 방식 — 포켓은 쓸림 거리까지 반영한 실측값.
 POSE_PRE_FLOOR = dict(zip(ARM_JOINTS, [0.0, 0.85, 0.15, 0.58, 0.0]))    # 바닥 상공 대기
-POSE_GRASP_FLOOR = dict(zip(ARM_JOINTS, [0.0, 1.20, 0.15, 0.23, 0.0]))  # 바닥 파지
+# 바닥 파지 lift는 1.15: 1.20에서는 손끝 충돌 박스가 바닥을 눌러 로봇 앞이 들리고
+# (pitch −1.15→−1.32°, base z +1mm) 구동륜 접지가 풀려 creep·미세주행이 월드 실변위
+# 0mm가 된다(odom만 22mm 허위 전진 → 이후 odom 로직까지 오염). 스윕 실측(2026-08-03):
+# lift 1.18 스침 / 1.16·1.14 청정(pitch −1.15 유지, creep 21~23mm 회복, 파지 성립).
+# 접촉 경계 ~1.17에서 0.02 여유. wrist는 자세족 불변식(lift+elbow+wrist≈1.58,
+# 툴 수직 하향)을 지키도록 lift 감소분만큼 올린 0.28 — lift만 줄이면 죠 평면이
+# 2.9° 기울어 들기·운반 내내 유지된다(lift()의 wrist 보상이 합을 보존하므로).
+POSE_GRASP_FLOOR = dict(zip(ARM_JOINTS, [0.0, 1.15, 0.15, 0.28, 0.0]))  # 바닥 파지
 # 포켓 스윕 실측(2026-07-29): 0.361은 하강이 큐브를 3.5mm 밀어내고, 0.381은 밀림 0에
 # 물림각 +0.273으로 가장 깊다(0.401은 얕게 물림 +0.142, 0.421은 놓침).
 POCKET_FLOOR = (0.381, 0.000)   # 바닥 모드 파지 포켓 [m, base_footprint]
@@ -148,9 +155,10 @@ class PickNode(Node):
         self.hsv_ranges = TARGET_COLOR_RANGES[target_color]
         # 바닥 모드: 기본은 비전 검출 높이로 자동 결정, skip_approach 시엔 -p floor:=true로 강제
         self.floor_mode = bool(self.declare_parameter('floor', False).value)
-        # 하강 후 죠 안쪽으로 큐브를 넣는 전진량(m). 상공-파지 자세의 그리퍼 x 차이(40mm)가
-        # 근거이고, 값은 스윕 실측으로 정했다 — 0/25/43/60mm 중 25·43만 큐브가 실제로 옮겨졌고
-        # (0은 제자리, 60은 밀어내 실패), 들기 중 각도 변화가 25mm에서 가장 작았다(+0.030).
+        # 하강 후 죠 안쪽으로 큐브를 넣는 전진량(m). 상공-파지 자세의 죠 x 후퇴량이
+        # 근거 — 새 파지 자세(1.15/0.28)에서 실측 25.0mm로 이 값과 정확히 일치한다.
+        # 값 자체는 구자세 스윕에서 정했다 — 0/25/43/60mm 중 25·43만 큐브가 실제로
+        # 옮겨졌고(0은 제자리, 60은 밀어내 실패), 들기 중 각도 변화가 25mm에서 최소(+0.030).
         self.creep = float(self.declare_parameter('creep', 0.025).value)
         # 놓을 곳: side(옆 바닥) | trash(쓰레기통 투입)
         self.place_target = str(self.declare_parameter('place_target', 'side').value).strip().lower()
@@ -692,13 +700,20 @@ class PickNode(Node):
         descended = {**grasp_pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}
         self.move_arm(descended, 3.0)
         # 하강이 끝나기 전에 닫으면 큐브 상단을 스치며 얕게 물거나 밀어낸다.
-        # 궤적 시간(3초)으로는 이 자세에 도달하지 못한다(실측: 3.8초에 lift 1.17/1.20).
         self.wait_arm_settled(descended, timeout=8.0)
-        # 하강은 수직이 아니다: 상공 자세와 파지 자세의 그리퍼 x가 40mm 차이 난다
-        # (실측 0.378 → 0.338). 상공에서 큐브 중심에 맞춰 놓아도 내려오면 그만큼 뒤로
-        # 물러나 큐브가 죠 끝단에만 걸리고, 들다가 미끄러진다. 열린 죠로 그 차이만큼
-        # 전진해 큐브를 죠 안쪽까지 넣는다. 파지 자세에서는 큐브가 손목캠 시야를
-        # 벗어나므로(실측: 포켓 0.381 검출 불가) 여기서는 비전 대신 실측 거리를 쓴다.
+        # 접지 가드: 도달 허용오차(0.04)가 접촉 경계 여유(0.02)보다 크므로 실측 lift를
+        # 감시한다. 1.17을 넘으면 손끝이 바닥을 눌러 바퀴가 헛도는 상태로 회귀한 것.
+        lift_now = getattr(self, 'joint_pos', {}).get('arm_shoulder_lift')
+        if self.floor_mode and lift_now is not None and lift_now > 1.17:
+            self.get_logger().warning(
+                f'파지 자세 lift={lift_now:.3f} > 1.17 — 손끝 바닥 간섭 구간, 접지 상실 위험')
+        # 하강은 수직이 아니다: 상공 자세와 파지 자세의 죠 x가 25mm 차이 난다
+        # (2026-08-03 실측, 새 파지 자세 1.15/0.28 기준. 구자세 1.20/0.23에서는 40mm).
+        # 상공에서 큐브 중심에 맞춰 놓아도 내려오면 그만큼 뒤로 물러나 큐브가 죠
+        # 끝단에만 걸리고, 들다가 미끄러진다. 열린 죠로 그 차이만큼 전진해 큐브를
+        # 죠 안쪽까지 넣는다 — creep 기본값 25mm가 이 후퇴량과 정확히 일치한다.
+        # 파지 자세에서는 큐브가 손목캠 시야를 벗어나므로(실측: 포켓 0.381 검출
+        # 불가) 여기서는 비전 대신 실측 거리를 쓴다.
         if self.floor_mode and self.creep > 0.001:
             self.get_logger().info(f'죠 안쪽으로 밀어 넣기: {self.creep * 1000:.0f}mm 전진')
             self.drive(0.03, 0.0, self.creep / 0.03)
@@ -723,7 +738,7 @@ class PickNode(Node):
             if angle is not None and angle >= GRIP_HOLD_MAX:
                 # 얕게 걸친 상태 — 큐브가 죠 사이가 아니라 죠 앞에 있어 죠가 큐브 위로
                 # 올라탄 것이다(실측: 0.347/0.349/0.350이 반복되고 전부 제자리).
-                # 물러나면 더 멀어지고, 상공으로 올려 다시 내려오면 40mm 후퇴가
+                # 물러나면 더 멀어지고, 상공으로 올려 다시 내려오면 하강 후퇴(25mm)가
                 # 되풀이된다. 파지 자세를 유지한 채 열고 더 밀어 넣는다.
                 # 전진량은 1cm까지만: 2cm로 두 번 밀었더니 큐브가 4cm 밀려나
                 # 허공을 물었다(실측 -0.170).
@@ -737,6 +752,9 @@ class PickNode(Node):
             self.move_gripper(0.5)
             time.sleep(0.6)
         held = self.gripped(angle)
+        # 판정에 쓴 각도를 보존한다 — 이후 재열림(move_gripper 0.5/1.0)으로
+        # self.gripper_angle이 열림값으로 덮이므로, main의 실패 사유 로그는 이 값을 봐야 한다
+        self.last_grasp_angle = angle
         self.get_logger().info(
             f'파지 검증: 그리퍼 각도={angle if angle is not None else float("nan"):.3f} '
             f'(임계 {GRIP_HOLD_THRESHOLD}) → {"HOLDING" if held else "EMPTY"}')
@@ -1056,7 +1074,7 @@ class PickNode(Node):
 
     def lift(self):
         # 계단식 들기 + wrist 보상(lift 감소분 = wrist 증가분): 그리퍼 절대 피치 유지.
-        # 시작 자세는 모드의 파지 자세 — 받침대(0.48/0.9), 바닥(1.20/0.23) 공용.
+        # 시작 자세는 모드의 파지 자세 — 받침대(0.48/0.9), 바닥(1.15/0.28) 공용.
         grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
         lift0, wrist0 = grasp_pose['arm_shoulder_lift'], grasp_pose['arm_wrist_flex']
         # 물체가 바닥을 떠나는 첫 순간에 하중이 걸려 가장 잘 미끄러진다 — 초반 두 단계를
@@ -1134,7 +1152,17 @@ def main(args=None):
                     n.get_logger().info('== 5. 옮겨 놓기 (place) ==')
                     n.place()
                 break
-            n.get_logger().error('파지 실패 (그리퍼 완전 닫힘 = 허공)')
+            # 실패 양상 구분 — 판정 시점의 각도(last_grasp_angle)로. 현재 joint값은
+            # grasp()가 실패 후 죠를 다시 열어 두므로(0.5/1.0) 열림값이라 쓸 수 없다.
+            a = getattr(n, 'last_grasp_angle', None)
+            if a is None:
+                n.get_logger().error('파지 실패 (각도 미수신)')
+            elif a >= GRIP_HOLD_MAX:
+                n.get_logger().error(f'파지 실패 (얕은 걸침 각도={a:.3f} — 물체가 죠 사이에 못 들어옴)')
+            elif a <= -0.12:
+                n.get_logger().error(f'파지 실패 (완전 닫힘 = 허공, 각도={a:.3f})')
+            else:
+                n.get_logger().error(f'파지 실패 (모서리 헛집기/미닫힘 구간, 각도={a:.3f})')
             if cycle < 2:
                 n.get_logger().info('재시도: 그리퍼 열고 후진 → 재접근')
                 n.move_gripper(0.5)
