@@ -55,21 +55,21 @@ record() {   # $1=이름 $2=REC_POSE $3=녹화초 $4=GIF스텝 $5.. = pick 인�
 
 # 1) 바닥 파지 → 들기 → 옮겨 놓기 (게이트1에서 10/10 검증된 핵심 동작)
 #    place가 y+ 쪽이라 카메라를 y+에 둬서 내려놓는 순간이 가려지지 않게 한다.
-python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1
+python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1 || { echo "무대 배치 실패 — 중단"; exit 1; }
 reset_robot
 place_cube blue 0.681 0.0
 echo "1) 바닥 파지 시작 (큐브 $(cube_pos blue))" >> "$LOG"
 record demo_floor_pick "0.34 1.45 0.75 0 0.42 -1.571" 190 6
 
 # 2) 기울어진 큐브 (손목 롤 정렬) — yaw 0.35rad = 20도
-python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1
+python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1 || { echo "무대 배치 실패 — 중단"; exit 1; }
 reset_robot
 place_cube blue 0.681 0.35
 echo "2) 기울기 20도 파지 시작 (큐브 $(cube_pos blue))" >> "$LOG"
 record demo_tilted_pick "0.34 1.45 0.75 0 0.42 -1.571" 190 6
 
 # 3) 색 지정 — 3색 무대에서 초록만 집기
-python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1
+python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1 || { echo "무대 배치 실패 — 중단"; exit 1; }
 reset_robot
 place_cube green 0.681 -0.2
 echo "3) 색 지정(초록) 파지 시작 (큐브 $(cube_pos green))" >> "$LOG"

@@ -61,3 +61,6 @@ build-*/
 /install
 /log
 /maps
+# 세션 상태·실행 로그 (도구 산출물)
+.omc/
+capstone_pick/tools/logs/

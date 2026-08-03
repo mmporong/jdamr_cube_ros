@@ -5,7 +5,7 @@ import sys
 
 from PIL import Image
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else '/home/mmporong/gazebo-so101-capstone/assets/demo_yolo_pick.gif'
+OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser('~/gazebo-so101-capstone/assets/demo_yolo_pick.gif')
 STEP = int(sys.argv[2]) if len(sys.argv) > 2 else 3
 
 frames = sorted(glob.glob('/tmp/frames/f_*.png'))[::STEP]

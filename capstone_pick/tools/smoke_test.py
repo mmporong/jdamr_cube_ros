@@ -9,12 +9,13 @@
   quick: 파지 → 들기 까지만 (약 2분)
 """
 import math
+import os
 import subprocess
 import sys
 import time
 
 QUICK = '--quick' in sys.argv
-TOOLS = '/home/mmporong/capstone_tools'
+TOOLS = os.path.dirname(os.path.abspath(__file__))  # 사용자명 하드코딩 금지
 TRASH_CENTER = (0.34, 1.0)
 TRASH_HALF_OPEN = 0.068
 
@@ -35,8 +36,14 @@ def pose(name):
 
 
 def stage(script, arg=''):
-    sh(f'source /opt/ros/jazzy/setup.bash && source ~/jdamr_cube_ws/install/setup.bash && '
-       f'python3 {TOOLS}/{script} {arg}', timeout=120)
+    # 배치 실패는 이후 판정을 전부 오염시키므로 즉시 죽는다 (sh()는 returncode를 버림)
+    r = subprocess.run(
+        f'source /opt/ros/jazzy/setup.bash && source ~/jdamr_cube_ws/install/setup.bash && '
+        f'python3 {TOOLS}/{script} {arg}', shell=True, capture_output=True, text=True,
+        timeout=120, executable='/bin/bash')
+    if r.returncode != 0:
+        print(f'무대 배치 실패({script}): {(r.stderr or r.stdout)[-200:]}')
+        sys.exit(1)
 
 
 def run_pick(extra=''):

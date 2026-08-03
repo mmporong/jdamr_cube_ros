@@ -8,7 +8,7 @@ OUT=~/capstone_tools/logs
 NAME=$1; COLOR=$2; YAW=$3; shift 3
 POSE="0.34 1.45 0.75 0 0.42 -1.571"
 
-python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1
+python3 ~/capstone_tools/reset_and_stage.py tricolor_stage.py > /dev/null 2>&1 || { echo "무대 배치 실패 — 중단"; exit 1; }
 gz service -s /world/room/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean \
   --timeout 5000 --req 'name: "jdamr_cube" position {x: 0 y: 0 z: 0.05} orientation {w: 1}' > /dev/null 2>&1
 sleep 2

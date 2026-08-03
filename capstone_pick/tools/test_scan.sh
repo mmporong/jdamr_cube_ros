@@ -6,7 +6,7 @@ source ~/jdamr_cube_ws/install/setup.bash
 OUT=~/capstone_tools/logs
 mkdir -p "$OUT"
 
-python3 ~/capstone_tools/reset_and_stage.py trash_demo_stage.py > /dev/null 2>&1
+python3 ~/capstone_tools/reset_and_stage.py trash_demo_stage.py > /dev/null 2>&1 || { echo "무대 배치 실패 — 중단"; exit 1; }
 sleep 1
 # 로봇은 원점 정면, 통은 로봇 뒤쪽(-y)에 둔다 → 파지 후 통이 시야 밖이라 탐색이 발동한다
 gz service -s /world/room/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean \

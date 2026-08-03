@@ -3,6 +3,7 @@
 팔이 뻗은 상태로 무대를 깔면, 다음 실행의 접힘 동작이 물체를 쳐서 밀어낸다.
 사용: python3 reset_and_stage.py [stage_script] [robot_x]
 """
+import os
 import subprocess
 import sys
 import time
@@ -55,8 +56,16 @@ svc('/world/room/set_pose', 'gz.msgs.Pose',
     f'name: "jdamr_cube" position {{x: {ROBOT_X} y: 0 z: 0.05}} orientation {{w: 1}}')
 time.sleep(1.5)
 print(f'로봇 리셋 완료 (x={ROBOT_X}) → 무대 배치')
-r = subprocess.run(['python3', f'/home/mmporong/capstone_tools/{STAGE}', ROBOT_X],
+# 무대 스크립트는 이 파일과 같은 디렉터리에 있다 (사용자명 하드코딩 금지 —
+# WSL 시절 /home/mmporong 고정 경로가 네이티브 이관 후 조용히 실패했다)
+tools_dir = os.path.dirname(os.path.abspath(__file__))
+r = subprocess.run(['python3', os.path.join(tools_dir, STAGE), ROBOT_X],
                    capture_output=True, text=True)
+if r.returncode != 0:
+    # 실패 시엔 stderr 우선 — stdout이 있으면 트레이스백이 가려진다
+    print((r.stderr or r.stdout)[-300:])
+    print(f'무대 배치 실패 (코드 {r.returncode})')
+    sys.exit(1)
 print((r.stdout or r.stderr)[-200:])
 
 
