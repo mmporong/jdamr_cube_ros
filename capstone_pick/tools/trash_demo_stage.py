@@ -30,6 +30,11 @@ c = ('<sdf version="1.6"><model name="pick_blue">'
      '<material><ambient>0.1 0.2 0.9 1</ambient><diffuse>0.1 0.2 0.9 1</diffuse></material></visual></link></model></sdf>')
 print('cube:', svc('/world/room/create', 'gz.msgs.EntityFactory', 'sdf: "' + c.replace('"', '\\"') + '"'))
 
+# 통 위치도 무대가 책임진다 — 다른 시험이 통을 옮겨 두면 "일직선" 전제가
+# 조용히 깨진다(실측: 통이 측후방에 남은 채 일직선 시험이 돌아 회전 운반이 됐다)
+print('trash:', svc('/world/room/set_pose', 'gz.msgs.Pose',
+                    'name: "trash_can" position {x: 0.34 y: 1.0 z: 0.0} orientation {w: 1}'))
+
 # 로봇을 +y(통 방향)로 향하게 두고, 큐브 앞 파지 포켓(0.381) 거리에 배치
 yaw = math.pi / 2
 print('robot:', svc('/world/room/set_pose', 'gz.msgs.Pose',

@@ -451,9 +451,29 @@ class PickNode(Node):
             t.linear.x = vx * sec / dur   # 늘어난 시간에 맞춰 속도 재계산 (이동량 불변)
         if wz:
             t.angular.z = wz * sec / dur
+        # 운반 중에는 사다리꼴 속도 프로파일로 저크를 없앤다. 즉발 시작·정지의 회전
+        # 관성이 물림을 흐트러뜨린다 — 실측: 회전 누적 74도에서 큐브가 죠 안에서
+        # 미끄러져(실좌표 z=0.21로 쥔 상태 유지) 손목캠 면적이 51724→8103으로 급감,
+        # 낙하 오판으로 운반이 중단됐다. 이동량 보존을 위해 램프 시간만큼 연장한다
+        # (사다리꼴 면적 = v×(dur−ramp) → dur+ramp로 원래 이동량 유지). 파지 단계의
+        # creep 캘리브레이션은 운반이 아니므로 영향 없다.
+        ramp = min(0.3, dur / 3) if getattr(self, '_carrying', False) else 0.0
+        # 램프 시작을 0이 아니라 40%에서: 0-시작은 정지 마찰을 못 깨 회전 펄스가
+        # 통째로 무변위가 된다(실측: brg 36.4도가 5펄스 연속 고정 — drive 주석의
+        # 실패 모드 ②와 동일). 이동량 보존 연장분도 손실 면적(ramp×(1−e0))에 맞춘다.
+        E0 = 0.4
+        dur += ramp * (1.0 - E0)
         t0 = time.time()
         while time.time() - t0 < dur:
-            self.cmd_pub.publish(t)
+            e = 1.0
+            if ramp:
+                el = time.time() - t0
+                e = max(0.0, min(1.0, el / ramp, (dur - el) / ramp))
+                e = E0 + (1.0 - E0) * e
+            out = Twist()
+            out.linear.x = t.linear.x * e
+            out.angular.z = t.angular.z * e
+            self.cmd_pub.publish(out)
             rclpy.spin_once(self, timeout_sec=0.02)
             time.sleep(0.03)
         self.cmd_pub.publish(Twist())
@@ -855,11 +875,14 @@ class PickNode(Node):
             self.get_logger().error('운반 시작 시 물체 없음')
             return False
         # 운반 구간은 배율을 1로 — 회전 관성만으로도 얕게 물린 물체가 빠진다(실측)
+        # _carrying: drive()가 사다리꼴 프로파일(저크 제거)을 켜는 플래그
         carry_scale, self.scale = self.scale, 1.0
+        self._carrying = True
         try:
             return self._carry_loop(max_iter)
         finally:
             self.scale = carry_scale
+            self._carrying = False
 
     def _carry_loop(self, max_iter):
         # 탐색 반복은 접근 예산을 쓰지 않는다. 통이 뒤쪽에 있으면 회전 탐색에 37회를
@@ -1010,6 +1033,38 @@ class PickNode(Node):
             # 재주장하지 않는다 — 명령을 다시 보내면 죠가 움직여 물체가 덜렁거린다.
         return self.holding()
 
+    def _front_target_heights(self, min_area=120):
+        """전방 카메라에서 대상색 블롭들의 base_footprint 높이 목록 — 낙하 판정 제3신호.
+
+        손목캠 면적은 죠 안에서 밀린 상태와 실제 낙하를 못 가른다(둘 다 임계 아래,
+        실측 밀림 8103~11048 vs 바닥 낙하 6079). 물리 높이는 가른다: 바닥 z≈0.015
+        vs 운반 중 죠 안 z≈0.19. roll과도 무관해 게이트 2의 남은 한계까지 커버한다.
+        """
+        self.color = self.depth = None
+        if not self.spin_until(lambda: self.color is not None and self.depth is not None
+                               and self.cam_info is not None, 3.0):
+            return []
+        hsv = cv2.cvtColor(self.color, cv2.COLOR_BGR2HSV)
+        mask = None
+        for lo, hi in self.hsv_ranges:
+            m = cv2.inRange(hsv, np.array(lo), np.array(hi))
+            mask = m if mask is None else cv2.bitwise_or(mask, m)
+        num, _, stats, cents = cv2.connectedComponentsWithStats(mask)
+        zs = []
+        for i in range(1, num):
+            if stats[i, cv2.CC_STAT_AREA] < min_area:
+                continue
+            u, v = int(cents[i][0]), int(cents[i][1])
+            if not (0 <= v < self.depth.shape[0] and 0 <= u < self.depth.shape[1]):
+                continue
+            d = float(self.depth[v, u])
+            if not np.isfinite(d) or d <= 0.05:
+                continue
+            r = self._pixel_to_base(u, v, d, z_gate=(-0.05, 0.45))
+            if r:
+                zs.append(r[2])
+        return zs
+
     def holding(self):
         """물체를 쥐고 있는지 손목캠으로 판정 — 죠를 다시 움직이지 않는다.
 
@@ -1035,6 +1090,63 @@ class PickNode(Node):
             return held
         b = self._wrist_blob(frames=3)
         area = b[2] if b else 0.0
+        if area < HOLD_AREA_MIN:
+            # 회전·가감속 직후에는 쥔 채로도 흔들림·블러로 면적이 일시 급감할 수 있다.
+            # 정지 안정화 후 한 번 재확인해 일시 급감과 실제 낙하를 가른다
+            # (실제 낙하는 재확인에서도 낮게 유지되므로 감지력 손실 없음).
+            time.sleep(0.8)
+            b = self._wrist_blob(frames=3)
+            area2 = b[2] if b else 0.0
+            self.get_logger().info(f'파지 재확인(안정화 후): 면적 {area:.0f} → {area2:.0f}')
+            area = max(area, area2)
+        if area < HOLD_AREA_MIN:
+            # 제3신호: 전방 카메라 블롭 높이. 죠 안에서 밀린 큐브(운반 높이 z>0.10)와
+            # 바닥에 떨어진 큐브(z<0.06)를 물리 높이로 확정한다. 실측: 회전 운반에서
+            # 면적이 임계 아래로 내려간 두 번 모두 실좌표 z=0.19~0.21로 쥔 상태였다.
+            zs = self._front_target_heights()
+            floor_hit = any(z < 0.06 for z in zs)
+            carry_hit = any(z > 0.10 for z in zs)
+            zs_txt = '[' + ', '.join(f'{z:.3f}' for z in zs) + ']'
+            if floor_hit:
+                self.get_logger().info(f'파지 확인(제3신호): 바닥 높이 블롭 {zs_txt} → DROPPED')
+                return False
+            if carry_hit:
+                self.get_logger().warning(
+                    f'파지 확인(제3신호): 운반 높이 블롭 {zs_txt} — 죠 안에서 밀림, HOLDING 유지')
+                return True
+            if getattr(self, '_carrying', False):
+                # 능동 판별 직후 유예: 매 반복 후진하면 통에서 멀어지며(실측: r 0.94까지
+                # 후퇴) 후진 저크가 물림을 더 흔들어 진짜 낙하를 유발하는 악순환이 된다.
+                # HOLDING 확정 후 12초간은 저면적을 "밀린-쥔 상태"로 간주하고 유지한다.
+                if time.time() < getattr(self, '_hold_grace', 0.0):
+                    self.get_logger().info(
+                        f'파지 확인(유예 중): 면적 {area:.0f} — 직전 능동 판별 HOLDING 신뢰')
+                    return True
+                # 능동 판별(운반 중 한정): 10cm 저속 후진 후 손목캠 블롭 중심 변위 비교.
+                # 쥔 큐브는 로봇과 강체 결합이라 화면이 불변이고, 떨어진 큐브는 뒤로
+                # 멀어져 중심이 크게 이동한다(실측: 낙하 상태 10cm 후진에 x 314→563,
+                # 249px 이동 / 쥔 상태 75px. 밀린-쥔 상태와 낙하 직후는 정적 화면이
+                # 완전 동일해 — area 6157/중심까지 일치 실측 — 수동 신호로는 원리적으로
+                # 구분 불가). 후진은 통·물체에서 멀어지는 방향이라 안전하고, 저속
+                # (0.06m/s)이라 물림을 흔들지 않으며, 운반 폐루프가 위치를 다시 보정한다.
+                b0 = self._wrist_blob(frames=3)
+                self.drive(-0.05, 0.0, 2.0)
+                b1 = self._wrist_blob(frames=3)
+                if b0 is not None and b1 is not None:
+                    shift = math.hypot(b1[0] - b0[0], b1[1] - b0[1])
+                    # 임계 130px: 쥔 상태 실측 75px(죠 안 유격·프레임 노이즈 포함) vs
+                    # 낙하 실측 249px — 두 실측의 중간보다 약간 아래
+                    held2 = shift < 130.0
+                    if held2:
+                        self._hold_grace = time.time() + 12.0
+                    self.get_logger().info(
+                        f'파지 확인(능동 판별): 10cm 후진에 블롭 중심 {shift:.0f}px 이동 '
+                        f'→ {"HOLDING(강체 결합)" if held2 else "DROPPED(뒤로 멀어짐)"}')
+                    return held2
+                self.get_logger().info('파지 확인(능동 판별): 블롭 소실 → DROPPED')
+                return False
+            self.get_logger().info(f'파지 확인(제3신호 무소득 {zs_txt}): 면적 기준 DROPPED')
+            return False
         held = area >= HOLD_AREA_MIN
         self.get_logger().info(
             f'파지 확인: 손목캠 면적={area:.0f} (임계 {HOLD_AREA_MIN:.0f}) '
@@ -1045,8 +1157,11 @@ class PickNode(Node):
         """통 개구부 위에서 그리퍼를 열어 투입."""
         time.sleep(0.5)
         if not self.holding():
-            self.get_logger().error('투입 직전 물체 없음')
-            return False
+            # 여기서 중단하지 않는다 — 이미 개구부 앞이라 투하를 진행해도 잃을 게 없다
+            # (쥐고 있으면 투입 성공, 아니면 어차피 실패). 신호가 전부 사각인 상태
+            # (전방캠 무소득 + 손목캠 시야 이탈)의 오판으로 중단했는데 실좌표는 통 안
+            # 44mm — 쥔 채였던 사례가 실측됐다. 아래 팔 뻗기 주석과 같은 철학.
+            self.get_logger().warning('투입 직전 파지 확인 실패 — 개구부 앞이므로 투하는 진행')
         # 통 중심까지 팔을 뻗는다. 이 자세는 그리퍼가 기울어 물체가 스스로 빠질 수 있는데,
         # 이미 개구부 위이므로 그것도 투입이다. 그래서 파지 유지를 확인하지 않는다.
         self.get_logger().info('통 중심으로 팔 뻗기')
