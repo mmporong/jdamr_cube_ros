@@ -67,13 +67,18 @@ def generate_launch_description():
     set_resource_path = AppendEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH', os.path.dirname(pkg_description_dir))
 
-    # WSLg에서 gz 서버의 EGL 헤드리스 렌더링은 기본적으로 llvmpipe(CPU)로 떨어져
-    # 코어를 다 먹는다. headless(gui:=false)일 때만 d3d12(GPU)를 강제한다.
-    # GUI 모드에서는 이 변수가 Qt GLX 컨텍스트 생성을 깨뜨리므로 걸지 않는다.
-    set_gpu_adapter = SetEnvironmentVariable(
-        'MESA_D3D12_DEFAULT_ADAPTER_NAME', 'NVIDIA', condition=UnlessCondition(gui))
-    set_gpu_driver = SetEnvironmentVariable(
-        'GALLIUM_DRIVER', 'd3d12', condition=UnlessCondition(gui))
+    # (네이티브 리눅스) WSLg용 d3d12 강제는 제거하고, 헤드리스 EGL이 NVIDIA를
+    # 쓰도록 벤더를 지정한다. 이게 없으면 EGL이 NVIDIA PCI 장치(10de:2dd8)를
+    # 고른 뒤 Mesa 드라이버로 열려다 실패하고("egl: failed to create dri2 screen")
+    # llvmpipe(CPU)로 떨어진다. 그러면 카메라 프레임이 아예 발행되지 않는다.
+    # GUI 모드는 GLX를 쓰므로 걸지 않는다 — 그쪽은 실행 시 오프로드
+    # (__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia)로 처리한다.
+    set_egl_vendor = SetEnvironmentVariable(
+        '__EGL_VENDOR_LIBRARY_FILENAMES',
+        '/usr/share/glvnd/egl_vendor.d/10_nvidia.json',
+        condition=UnlessCondition(gui))
+    set_prime_offload = SetEnvironmentVariable(
+        '__NV_PRIME_RENDER_OFFLOAD', '1', condition=UnlessCondition(gui))
 
     gazebo_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -157,8 +162,8 @@ def generate_launch_description():
     ld.add_action(declare_y_pose_cmd)
     ld.add_action(declare_z_pose_cmd)
     ld.add_action(set_resource_path)
-    ld.add_action(set_gpu_adapter)
-    ld.add_action(set_gpu_driver)
+    ld.add_action(set_egl_vendor)
+    ld.add_action(set_prime_offload)
     ld.add_action(gazebo_sim)
     ld.add_action(gazebo_sim_headless)
     ld.add_action(robot_state_publisher_node)
