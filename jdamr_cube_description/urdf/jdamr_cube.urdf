@@ -194,7 +194,7 @@
         <sensor type="gpu_lidar" name="laser_sensor">
             <pose>0 0 0 0 0 0</pose>
             <visualize>true</visualize>
-            <update_rate>10</update_rate>
+            <update_rate>2</update_rate><!-- 픽 시험 가속: SLAM 시 10으로 -->
             <always_on>true</always_on>
             <topic>scan</topic>
             <gz_frame_id>laser_link</gz_frame_id>

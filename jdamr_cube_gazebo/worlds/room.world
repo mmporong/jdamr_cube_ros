@@ -3,6 +3,11 @@
   <world name="room">
     <physics name="1ms" type="ignored">
       <max_step_size>0.001</max_step_size>
+      <!-- 배속 실측(2026-08-04, RTX 5050 + 단일코어 물리): 타깃 3.0을 걸어도
+           실측 ~0.9가 상한이고, 가변 RTF는 CPU YOLO 추론(월 150ms)과 충돌해
+           이미지-TF 각도 불일치로 탐색 미검출이 폭증한다(이미지 스탬프 TF 조회
+           미사용 구조). 노드는 전부 sim-time이므로 더 좋은 하드웨어에서는 이
+           값만 올리면 안전하게 가속된다. -->
       <real_time_factor>1.0</real_time_factor>
     </physics>
 

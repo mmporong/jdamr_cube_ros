@@ -890,6 +890,7 @@ class PickNode(Node):
         # 얕게 물린 물체가 빠진다(실측 반복). 통은 큰 구조물이라 팔 위쪽 시야로 원거리에서
         # 검출되고, 근접해 가려지는 구간은 근접 락(추측 접근)이 담당한다.
         self._carry_drop = False
+        self._reseat_cnt = 0
         if not self.holding():
             self._carry_drop = True   # 들기 직후 낙하도 재파지로 복구 가능
             self.get_logger().error('운반 시작 시 물체 없음')
@@ -977,6 +978,19 @@ class PickNode(Node):
                 # 재접근·재파지 후 운반을 재개할 수 있도록 사유를 남긴다.
                 self._carry_drop = True
                 self.get_logger().error('운반 중 물체 놓침 (재파지 복구 대상)')
+                return False
+            la = getattr(self, '_last_hold_area', None)
+            if la is not None and la < HOLD_AREA_MIN and getattr(self, '_reseat_cnt', 0) < 2:
+                # 조기 재안착: 능동 판별로 간신히 살린 상태(면적<임계)는 미끄럼이
+                # 진행 중이라는 뜻 — 낙하를 기다리지 말고 지금 내려놓고 다시 깊게
+                # 잡는다. 통제된 재파지는 낙하 후 수습보다 성공률이 압도적이다.
+                self._reseat_cnt = getattr(self, '_reseat_cnt', 0) + 1
+                self.get_logger().warning(
+                    f'물림 열화(면적 {la:.0f} < {HOLD_AREA_MIN:.0f}) — 조기 재안착 '
+                    f'({self._reseat_cnt}/2)')
+                if self._reseat():
+                    continue
+                self._carry_drop = True   # 재안착 실패 → 외부 복구 루프로
                 return False
             # 스톨 감지: 회전·전진 명령에도 관측이 안 변하면(같은 r·brg 3연속) 정지
             # 마찰에 걸린 것 — 실측: wz 0.20은 dur×1.2 재계산(0.208)과 램프 하한을
@@ -1139,6 +1153,7 @@ class PickNode(Node):
             # (실측: roll 0.33에서 면적 0인데 실제로는 쥐고 있었다 — 큐브 z=0.19).
             # 이때는 각도 구간으로 폴백한다. 각도는 낙하를 못 잡을 수 있으므로
             # 기울어진 물체에서는 판정 신뢰도가 낮다는 한계가 남는다.
+            self._last_hold_area = None   # 시각 신호 없음 — 재안착 게이트 비활성
             held = self.gripped(ang)
             self.get_logger().info(
                 f'파지 확인(각도 폴백, roll={roll:+.2f}): '
@@ -1155,6 +1170,7 @@ class PickNode(Node):
             area2 = b[2] if b else 0.0
             self.get_logger().info(f'파지 재확인(안정화 후): 면적 {area:.0f} → {area2:.0f}')
             area = max(area, area2)
+        self._last_hold_area = area   # 재안착 게이트용 열화 신호
         if area < HOLD_AREA_MIN:
             # 제3신호: 전방 카메라 블롭 높이. 죠 안에서 밀린 큐브(운반 높이 z>0.10)와
             # 바닥에 떨어진 큐브(z<0.06)를 물리 높이로 확정한다. 실측: 회전 운반에서
@@ -1208,6 +1224,19 @@ class PickNode(Node):
             f'파지 확인: 손목캠 면적={area:.0f} (임계 {HOLD_AREA_MIN:.0f}) '
             f'각도={ang if ang is None else round(ang, 3)} → {"HOLDING" if held else "DROPPED"}')
         return held
+
+    def _reseat(self):
+        """조기 재안착: 쥔 큐브를 정면 바닥에 내려놓고 재접근·재파지한다.
+
+        하강(파지 자세, pan 0) → 개방 → recover_dropped()의 검증된 재파지
+        파이프라인 재사용. 통 기억 좌표는 유지되므로 운반이 이어진다.
+        """
+        pose = {**POSE_GRASP_FLOOR, 'arm_shoulder_pan': 0.0}
+        self.move_arm(pose, 2.5)
+        self.wait_arm_settled(pose, timeout=6.0)
+        self.move_gripper(1.0)
+        time.sleep(0.5)
+        return self.recover_dropped()
 
     def recover_dropped(self):
         """운반 중 낙하 복구: 떨어진 큐브를 재접근·재파지하고 들기까지 마친다.
