@@ -8,7 +8,7 @@
            이미지-TF 각도 불일치로 탐색 미검출이 폭증한다(이미지 스탬프 TF 조회
            미사용 구조). 노드는 전부 sim-time이므로 더 좋은 하드웨어에서는 이
            값만 올리면 안전하게 가속된다. -->
-      <real_time_factor>3.0</real_time_factor>
+      <real_time_factor>1.0</real_time_factor>
     </physics>
 
     <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">
@@ -267,6 +267,41 @@
         <collision name="wall_ny_col"><pose>0 -0.074 0.09 0 0 0</pose><geometry><box><size>0.16 0.012 0.18</size></box></geometry></collision>
         <visual name="wall_ny_vis"><pose>0 -0.074 0.09 0 0 0</pose><geometry><box><size>0.16 0.012 0.18</size></box></geometry>
           <material><ambient>0.35 0.35 0.38 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- LeRobot 시연(svla_so101_pickplace) 모사 관측 카메라 2대 — 프레임 대조로
+         근사한 시점. 로봇 고정 베이스(0.3, 0, yaw 0) + 테이블(~0.65, 높이 0.18) 기준.
+         up: 로봇 후상방에서 작업 영역 내려보기 / side: 전좌측 테이블 높이에서 로봇 조망 -->
+    <model name="demo_cam_up">
+      <static>true</static>
+      <pose>0.32 0.0 1.0 0 1.25 0</pose>
+      <link name="link">
+        <sensor name="demo_up" type="camera">
+          <update_rate>30</update_rate>
+          <topic>demo_up/image_raw</topic>
+          <always_on>1</always_on>
+          <camera>
+            <horizontal_fov>1.05</horizontal_fov>
+            <image><width>640</width><height>480</height></image>
+            <clip><near>0.05</near><far>10</far></clip>
+          </camera>
+        </sensor>
+      </link>
+    </model>
+    <model name="demo_cam_side">
+      <static>true</static>
+      <pose>1.0 0.40 0.33 0 0.20 -2.60</pose>
+      <link name="link">
+        <sensor name="demo_side" type="camera">
+          <update_rate>30</update_rate>
+          <topic>demo_side/image_raw</topic>
+          <always_on>1</always_on>
+          <camera>
+            <horizontal_fov>1.05</horizontal_fov>
+            <image><width>640</width><height>480</height></image>
+            <clip><near>0.05</near><far>10</far></clip>
+          </camera>
+        </sensor>
       </link>
     </model>
   </world>

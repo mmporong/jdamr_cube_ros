@@ -24,8 +24,10 @@ from control_msgs.action import GripperCommand
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Image, JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from cv_bridge import CvBridge
+import cv2
 
 AJ = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex', 'arm_wrist_flex', 'arm_wrist_roll']
 POSE_RE = re.compile(r'\[([-\d.eE+ ]+)\]')
@@ -82,8 +84,14 @@ class Rep(Node):
         super().__init__('lerobot_replay')
         self.set_parameters([Parameter('use_sim_time', value=True)])
         self.st = {}
+        self.imgs = {}
+        self.bridge = CvBridge()
         self.create_subscription(JointState, '/joint_states',
                                  lambda m: self.st.update(dict(zip(m.name, m.position))), 10)
+        for cam in ('demo_up', 'demo_side'):
+            self.create_subscription(
+                Image, f'/{cam}/image_raw',
+                (lambda c: lambda m: self.imgs.__setitem__(c, self.bridge.imgmsg_to_cv2(m, 'bgr8')))(cam), 1)
         self.traj = self.create_publisher(JointTrajectory, '/arm_controller/joint_trajectory', 10)
         self.grip = ActionClient(self, GripperCommand, '/gripper_controller/gripper_cmd')
 
@@ -214,10 +222,28 @@ def main():
         lego_yaw = math.atan2(math.sin(close_dir - math.pi / 2), math.cos(close_dir - math.pi / 2))
         print(f'정적 핀치 측정: B=({comp[0]:+.3f},{comp[1]:+.3f},{comp[2]:+.3f}) '
               f'닫힘방향 {math.degrees(close_dir):+.0f}도 → 레고 yaw {math.degrees(lego_yaw):+.0f}도')
+        if '--snap' in sys.argv:
+            # 시점 비교용: 측정 좌표에 무대를 깔고 두 카메라 프레임 저장
+            spawn_scene([comp[0], comp[1], comp[2], lego_yaw])
+            n.move_pt(R[fc_meas, :5], 3.0)
+            n.wall_spin(5)
+            n.imgs.clear()
+            n.wall_spin(2)
+            out = os.path.dirname(npy)
+            for cam in ('demo_up', 'demo_side'):
+                if cam in n.imgs:
+                    cv2.imwrite(os.path.join(out, f'snap_{cam}.png'), n.imgs[cam])
+                    print(f'저장: {out}/snap_{cam}.png')
+                else:
+                    print(f'{cam} 프레임 미수신')
+            rclpy.shutdown()
+            return
         if '--auto' in sys.argv:
             print('== 자동 패스2 ==')
+            extra = [a for a in ('--record',) if a in sys.argv]
             os.execv(sys.executable, [sys.executable, __file__, '--ep', str(ep), '--cube',
-                                      f'{comp[0]:.3f}', f'{comp[1]:.3f}', f'{comp[2]:.3f}', f'{lego_yaw:.3f}'])
+                                      f'{comp[0]:.3f}', f'{comp[1]:.3f}', f'{comp[2]:.3f}',
+                                      f'{lego_yaw:.3f}'] + extra)
         rclpy.shutdown()
         return
 
@@ -238,6 +264,10 @@ def main():
     grip_state = R[0, 5]
     stall = None
     stall_at = None
+    rec = None
+    if '--record' in sys.argv:
+        rec = {'dir': os.path.join(os.path.dirname(npy), 'collect', f'ep{ep}'),
+               'demo_up': [], 'demo_side': [], 'state': [], 'action': [], 'last_fi': -1}
     deadline = time.time() + 60
     while time.time() < deadline:
         rclpy.spin_once(n, timeout_sec=0.01)
@@ -247,6 +277,12 @@ def main():
         if el > len(R) / FPS + 1.0:
             break
         fi = min(len(R) - 1, int(el * FPS))
+        if rec is not None and fi > rec['last_fi'] and 'demo_up' in n.imgs and 'demo_side' in n.imgs:
+            rec['last_fi'] = fi
+            rec['demo_up'].append(n.imgs['demo_up'].copy())
+            rec['demo_side'].append(n.imgs['demo_side'].copy())
+            rec['state'].append([n.st.get(j, 0.0) for j in AJ] + [n.st.get('arm_gripper', 0.0)])
+            rec['action'].append(R[fi].tolist())
         if abs(R[fi, 5] - grip_state) > 0.015:
             grip_state = R[fi, 5]
             n.gripper_cmd(grip_state)
@@ -257,6 +293,15 @@ def main():
             if stall is not None:
                 print(f'파지 스톨각={stall:+.3f} (빈손 완전닫힘≈-0.15, 레고 15.8mm 정상 물림≈-0.05~+0.05)')
     zproc.terminate()
+    if rec is not None:
+        os.makedirs(rec['dir'], exist_ok=True)
+        for cam in ('demo_up', 'demo_side'):
+            os.makedirs(os.path.join(rec['dir'], cam), exist_ok=True)
+            for i, im in enumerate(rec[cam]):
+                cv2.imwrite(os.path.join(rec['dir'], cam, f'{i:06d}.png'), im)
+        np.save(os.path.join(rec['dir'], 'state.npy'), np.array(rec['state']))
+        np.save(os.path.join(rec['dir'], 'action.npy'), np.array(rec['action']))
+        print(f"수집: {len(rec['action'])}프레임 → {rec['dir']} (up/side PNG + state/action npy)")
     max_z = cube[2]
     try:
         for ln in open(zlog):
