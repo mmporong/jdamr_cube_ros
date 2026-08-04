@@ -88,10 +88,13 @@ class Rep(Node):
         self.bridge = CvBridge()
         self.create_subscription(JointState, '/joint_states',
                                  lambda m: self.st.update(dict(zip(m.name, m.position))), 10)
+        from rclpy.qos import qos_profile_sensor_data
         for cam in ('demo_up', 'demo_side'):
+            # 원시 메시지만 저장 — 매 수신 디코드는 수집 루프를 굶긴다(95/303 실측)
             self.create_subscription(
                 Image, f'/{cam}/image_raw',
-                (lambda c: lambda m: self.imgs.__setitem__(c, self.bridge.imgmsg_to_cv2(m, 'bgr8')))(cam), 1)
+                (lambda c: lambda m: self.imgs.__setitem__(c, m))(cam),
+                qos_profile_sensor_data)
         self.traj = self.create_publisher(JointTrajectory, '/arm_controller/joint_trajectory', 10)
         self.grip = ActionClient(self, GripperCommand, '/gripper_controller/gripper_cmd')
 
@@ -113,13 +116,13 @@ class Rep(Node):
         jt.points = [pt]
         self.traj.publish(jt)
 
-    def send_full(self, R):
+    def send_full(self, R, slow=1.0):
         jt = JointTrajectory()
         jt.joint_names = AJ
         for i in range(len(R)):
             pt = JointTrajectoryPoint()
             pt.positions = [float(v) for v in R[i, :5]]
-            t = i / FPS + 0.2
+            t = i / FPS * slow + 0.2
             pt.time_from_start.sec = int(t)
             pt.time_from_start.nanosec = int((t % 1) * 1e9)
             jt.points.append(pt)
@@ -180,6 +183,7 @@ def spawn_scene(cube):
 
 def main():
     ep = int(sys.argv[sys.argv.index('--ep') + 1]) if '--ep' in sys.argv else 0
+    slow = float(sys.argv[sys.argv.index('--slow') + 1]) if '--slow' in sys.argv else 1.0
     cube = None
     if '--cube' in sys.argv:
         i = sys.argv.index('--cube')
@@ -232,7 +236,8 @@ def main():
             out = os.path.dirname(npy)
             for cam in ('demo_up', 'demo_side'):
                 if cam in n.imgs:
-                    cv2.imwrite(os.path.join(out, f'snap_{cam}.png'), n.imgs[cam])
+                    cv2.imwrite(os.path.join(out, f'snap_{cam}.png'),
+                                n.bridge.imgmsg_to_cv2(n.imgs[cam], 'bgr8'))
                     print(f'저장: {out}/snap_{cam}.png')
                 else:
                     print(f'{cam} 프레임 미수신')
@@ -241,6 +246,8 @@ def main():
         if '--auto' in sys.argv:
             print('== 자동 패스2 ==')
             extra = [a for a in ('--record',) if a in sys.argv]
+        if '--slow' in sys.argv:
+            extra += ['--slow', sys.argv[sys.argv.index('--slow') + 1]]
             os.execv(sys.executable, [sys.executable, __file__, '--ep', str(ep), '--cube',
                                       f'{comp[0]:.3f}', f'{comp[1]:.3f}', f'{comp[2]:.3f}',
                                       f'{lego_yaw:.3f}'] + extra)
@@ -259,7 +266,7 @@ def main():
     zproc = subprocess.Popen(['bash', '-c',
         'for i in $(seq 1 80); do gz model -m demo_cube -p 2>/dev/null | '
         f'grep -A2 Pose | sed -n 2p >> {zlog}; sleep 0.3; done'])
-    n.send_full(R)
+    n.send_full(R, slow)
     sim0 = n.sim_now()
     grip_state = R[0, 5]
     stall = None
@@ -267,20 +274,21 @@ def main():
     rec = None
     if '--record' in sys.argv:
         rec = {'dir': os.path.join(os.path.dirname(npy), 'collect', f'ep{ep}'),
-               'demo_up': [], 'demo_side': [], 'state': [], 'action': [], 'last_fi': -1}
+               'demo_up': [], 'demo_side': [], 'state': [], 'action': [], 'fi': [], 'last_fi': -1}
     deadline = time.time() + 60
     while time.time() < deadline:
         rclpy.spin_once(n, timeout_sec=0.01)
-        el = n.sim_now() - sim0 - 0.2
+        el = (n.sim_now() - sim0 - 0.2) / slow
         if el < 0:
             continue
-        if el > len(R) / FPS + 1.0:
+        if el > len(R) / FPS + 1.0 / slow:
             break
         fi = min(len(R) - 1, int(el * FPS))
         if rec is not None and fi > rec['last_fi'] and 'demo_up' in n.imgs and 'demo_side' in n.imgs:
             rec['last_fi'] = fi
-            rec['demo_up'].append(n.imgs['demo_up'].copy())
-            rec['demo_side'].append(n.imgs['demo_side'].copy())
+            rec['fi'].append(fi)
+            rec['demo_up'].append(n.bridge.imgmsg_to_cv2(n.imgs['demo_up'], 'bgr8'))
+            rec['demo_side'].append(n.bridge.imgmsg_to_cv2(n.imgs['demo_side'], 'bgr8'))
             rec['state'].append([n.st.get(j, 0.0) for j in AJ] + [n.st.get('arm_gripper', 0.0)])
             rec['action'].append(R[fi].tolist())
         if abs(R[fi, 5] - grip_state) > 0.015:
@@ -298,7 +306,8 @@ def main():
         for cam in ('demo_up', 'demo_side'):
             os.makedirs(os.path.join(rec['dir'], cam), exist_ok=True)
             for i, im in enumerate(rec[cam]):
-                cv2.imwrite(os.path.join(rec['dir'], cam, f'{i:06d}.png'), im)
+                cv2.imwrite(os.path.join(rec['dir'], cam, f'{i:06d}.jpg'), im)
+        np.save(os.path.join(rec['dir'], 'fi.npy'), np.array(rec['fi']))
         np.save(os.path.join(rec['dir'], 'state.npy'), np.array(rec['state']))
         np.save(os.path.join(rec['dir'], 'action.npy'), np.array(rec['action']))
         print(f"수집: {len(rec['action'])}프레임 → {rec['dir']} (up/side PNG + state/action npy)")
@@ -316,11 +325,20 @@ def main():
         x, r = gz_pose('demo_cube')
         if x is not None:
             d = math.hypot(x[0] - cube[0], x[1] - cube[1])
-            lifted = max_z - cube[2] > 0.03
+            lifted = max_z - cube[2] > 0.025
             ok = lifted and d > 0.05 and x[2] > cube[2] - 0.05
             print(f'레고 최종 ({x[0]:.3f},{x[1]:.3f},{x[2]:.3f}) | 스폰 ({cube[0]:.3f},{cube[1]:.3f},{cube[2]:.3f}) '
                   f'| 들림 최대 {(max_z - cube[2]) * 1000:+.0f}mm | 수평 변위 {d * 1000:.0f}mm '
                   f'| {"파지·운반 성공" if ok else ("들었으나 낙하" if lifted else "파지 실패")}')
+            if rec is not None:
+                import json
+                meta = {'episode': ep, 'frames': len(rec['action']), 'total_frames': len(R),
+                        'success': bool(ok), 'lifted': bool(lifted),
+                        'lift_mm': round((max_z - cube[2]) * 1000, 1),
+                        'moved_mm': round(d * 1000, 1),
+                        'stall_angle': None if stall is None else round(float(stall), 3),
+                        'spawn': [round(v, 4) for v in cube], 'final': [round(float(v), 4) for v in x]}
+                json.dump(meta, open(os.path.join(rec['dir'], 'meta.json'), 'w'), ensure_ascii=False, indent=1)
     elif close_meas is not None and '--auto' in sys.argv:
         comp = close_meas[3]
         yw = close_meas[4]
