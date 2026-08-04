@@ -8,7 +8,7 @@
            이미지-TF 각도 불일치로 탐색 미검출이 폭증한다(이미지 스탬프 TF 조회
            미사용 구조). 노드는 전부 sim-time이므로 더 좋은 하드웨어에서는 이
            값만 올리면 안전하게 가속된다. -->
-      <real_time_factor>1.0</real_time_factor>
+      <real_time_factor>3.0</real_time_factor>
     </physics>
 
     <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">

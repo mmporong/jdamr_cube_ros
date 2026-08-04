@@ -21,7 +21,7 @@ def cube(name, rgba, pose):
             '<link name="link"><inertial><mass>0.04</mass>'
             '<inertia><ixx>4e-6</ixx><ixy>0</ixy><ixz>0</ixz><iyy>4e-6</iyy><iyz>0</iyz><izz>4e-6</izz></inertia></inertial>'
             '<collision name="c"><geometry><box><size>0.03 0.03 0.03</size></box></geometry>'
-            '<surface><friction><ode><mu>3.0</mu><mu2>3.0</mu2></ode><torsional><coefficient>1.0</coefficient><use_patch_radius>true</use_patch_radius><patch_radius>0.01</patch_radius></torsional></friction></surface></collision>'
+            '<surface><friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction></surface></collision>'
             '<visual name="v"><geometry><box><size>0.03 0.03 0.03</size></box></geometry>'
             '<material><ambient>' + rgba + '</ambient><diffuse>' + rgba + '</diffuse></material></visual></link></model></sdf>')
 

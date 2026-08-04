@@ -378,7 +378,7 @@
     <gazebo reference="rgbd_camera_link">
         <sensor name="rgbd_camera" type="rgbd_camera">
             <pose>0 0 0 0 0 0</pose>
-            <update_rate>15</update_rate>
+            <update_rate>2</update_rate><!-- 고정팔 3배속: 주행 모드 시 15 -->
             <always_on>true</always_on>
             <visualize>true</visualize>
             <topic>rgbd_camera</topic>
@@ -736,22 +736,6 @@
                 <mesh filename="package://jdamr_cube_description/meshes/so101/wrist_roll_follower_so101_v1.stl"/>
             </geometry>
         </collision>
-        <collision name="fixed_finger_tip">
-            <!-- 접촉면 패드(실물 고무 패드 근사). STL 실측은 0.0156 0.0158 0.0299.
-                 들기까지 포함한 스윕 결과 3mm로는 어느 포켓에서도 큐브가 바닥을 떠나지 못했고
-                 (마찰·파지력을 올려도 동일), 5mm에서 들기 유지가 확인된다. 시각적 간격과
-                 파지 가능성의 트레이드오프에서 파지 쪽을 택한 값. -->
-            <origin xyz="-0.0157 -0.0002 -0.0895" rpy="0 0 0"/>
-            <geometry><box size="0.0156 0.0158 0.0299"/></geometry>
-        </collision>
-        <collision name="fixed_finger_mid">
-            <origin xyz="-0.0230 -0.0002 -0.0594" rpy="0 0 0"/>
-            <geometry><box size="0.0229 0.0243 0.0299"/></geometry>
-        </collision>
-        <collision name="fixed_finger_base">
-            <origin xyz="-0.0115 0.0000 -0.0294" rpy="0 0 0"/>
-            <geometry><box size="0.0473 0.0480 0.0299"/></geometry>
-        </collision>
 
     </link>
 
@@ -774,14 +758,6 @@
     <!-- 손가락 마찰: SDF 변환 결과가 빈 <friction><ode/>라 기본값 1.0이었다.
          실물 고무 패드는 훨씬 잘 물리므로 3.0으로 올린다. 파지력(effort)을 올리면
          강체가 물체를 튕겨내지만, 마찰은 쥐는 힘을 키우지 않고 미끄러짐만 막는다. -->
-    <gazebo reference="arm_gripper_link">
-        <!-- 고무 패킹 근사 강화(2026-08-04): 얕은 팁 물림에서 점접촉이 비틀림에
-             무저항이라 회전 운반 중 큐브가 죠 안에서 돌아 빠졌다(실측 yaw 0.7rad).
-             μ를 고무 수준으로 올린다. 비틀림 마찰은 큐브 SDF 쪽에서 patch로 준다. -->
-        <mu1>6.0</mu1>
-        <mu2>6.0</mu2>
-        <minDepth>0.001</minDepth>
-    </gazebo>
 
     <joint name="arm_gripper_frame_joint" type="fixed">
         <origin xyz="-0.0079 -0.000218121 -0.0981274" rpy="0 3.14159 0"/>
@@ -808,26 +784,8 @@
                 <mesh filename="package://jdamr_cube_description/meshes/so101/moving_jaw_so101_v1.stl"/>
             </geometry>
         </collision>
-        <collision name="moving_finger_tip">
-            <origin xyz="-0.0083 -0.0756 0.0189" rpy="0 0 0"/>
-            <geometry><box size="0.0181 0.0129 0.0203"/></geometry>
-        </collision>
-        <collision name="moving_finger_mid">
-            <origin xyz="-0.0030 -0.0549 0.0189" rpy="0 0 0"/>
-            <geometry><box size="0.0256 0.0398 0.0238"/></geometry>
-        </collision>
-        <collision name="moving_finger_base">
-            <origin xyz="0.0000 -0.0150 0.0189" rpy="0 0 0"/>
-            <geometry><box size="0.0200 0.0399 0.0480"/></geometry>
-        </collision>
 
     </link>
-
-    <gazebo reference="arm_moving_jaw_link">
-        <mu1>6.0</mu1>
-        <mu2>6.0</mu2>
-        <minDepth>0.001</minDepth>
-    </gazebo>
 
     <joint name="arm_gripper" type="revolute">
         <origin xyz="0.0202 0.0188 -0.0234" rpy="1.5708 -5.24284e-08 -1.41553e-15"/>
