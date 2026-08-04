@@ -20,11 +20,14 @@
         </collision>
         
         <inertial>
-            <mass value="3.0"/>
+            <!-- 밸러스트 3→15kg: 3kg·관성 0.01은 팔 반동만으로 차체가 들리거나
+                 비주행 방향으로 틀어졌다(실측: 재생 후 섀시 요·틸트). 주행은 속도
+                 제어라 정상 동작 유지. -->
+            <mass value="15.0"/>
             <origin xyz="0 0 0"/>
-            <inertia ixx="0.010" ixy="0.0" ixz="0.0" 
-                     iyy="0.010" iyz="0.0" 
-                     izz="0.010"/>
+            <inertia ixx="0.15" ixy="0.0" ixz="0.0" 
+                     iyy="0.15" iyz="0.0" 
+                     izz="0.15"/>
         </inertial>
     </link>
 
@@ -704,6 +707,14 @@
         <limit effort="10" velocity="10" lower="-1.65806" upper="1.65806"/>
     </joint>
 
+    
+    <gazebo reference="arm_gripper_link">
+        <!-- 고무 패드 근사: 정직한 접촉(관통 클램프) 위에서 운반 미끄럼을 잡는
+             마찰. 실물 파지가 버티는 물리와 같은 자리. -->
+        <mu1>6.0</mu1>
+        <mu2>6.0</mu2>
+        <minDepth>0.001</minDepth>
+    </gazebo>
     <link name="arm_gripper_link">
         <inertial>
             <origin xyz="0.000213627 0.000245138 -0.025187" rpy="0 0 0"/>
@@ -781,6 +792,14 @@
         <child link="arm_gripper_frame_link"/>
     </joint>
 
+    
+    <gazebo reference="arm_moving_jaw_link">
+        <!-- 고무 패드 근사: 정직한 접촉(관통 클램프) 위에서 운반 미끄럼을 잡는
+             마찰. 실물 파지가 버티는 물리와 같은 자리. -->
+        <mu1>6.0</mu1>
+        <mu2>6.0</mu2>
+        <minDepth>0.001</minDepth>
+    </gazebo>
     <link name="arm_moving_jaw_link">
         <inertial>
             <origin xyz="-0.00157495 -0.0300244 0.0192755" rpy="0 0 0"/>

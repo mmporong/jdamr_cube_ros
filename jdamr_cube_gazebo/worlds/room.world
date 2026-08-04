@@ -274,7 +274,7 @@
          up: 로봇 후상방에서 작업 영역 내려보기 / side: 전좌측 테이블 높이에서 로봇 조망 -->
     <model name="demo_cam_up">
       <static>true</static>
-      <pose>0.32 0.0 1.0 0 1.25 0</pose>
+      <pose>0.62 -0.03 1.08 0 1.5 0</pose>
       <link name="link">
         <sensor name="demo_up" type="camera">
           <update_rate>30</update_rate>
@@ -290,7 +290,7 @@
     </model>
     <model name="demo_cam_side">
       <static>true</static>
-      <pose>1.0 0.40 0.33 0 0.20 -2.60</pose>
+      <pose>1.18 0.46 0.33 0 0.20 -2.42</pose>
       <link name="link">
         <sensor name="demo_side" type="camera">
           <update_rate>30</update_rate>

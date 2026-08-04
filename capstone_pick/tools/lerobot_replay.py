@@ -130,8 +130,11 @@ class Rep(Node):
 
     def gripper_cmd(self, pos):
         g = GripperCommand.Goal()
-        g.command.position = float(pos)
-        g.command.max_effort = 10.0
+        # 닫힘 하한 -0.02: 시연 명령(-0.14)은 레고 폭(15.8mm, 정상 스톨 +0.012)을
+        # 한참 지나친 목표라 위치 제어가 손가락을 관통시킨다(실측: 레고가 그리퍼에
+        # 꽂힌 채 운반 — 가짜 성공). effort 3: 2.5g 물체에 과한 힘도 관통을 키운다.
+        g.command.position = max(float(pos), -0.035)
+        g.command.max_effort = 5.0
         self.grip.send_goal_async(g)
         rclpy.spin_once(self, timeout_sec=0.02)
 
@@ -173,7 +176,9 @@ def spawn_scene(cube):
          '<link name="link"><inertial><mass>0.0025</mass>'
          '<inertia><ixx>3e-7</ixx><ixy>0</ixy><ixz>0</ixz><iyy>3e-7</iyy><iyz>0</iyz><izz>3e-7</izz></inertia></inertial>'
          '<collision name="c"><geometry><box><size>0.0318 0.0158 0.0114</size></box></geometry>'
-         '<surface><friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction></surface></collision>'
+         '<surface><friction><ode><mu>3.0</mu><mu2>3.0</mu2></ode>'
+         '<torsional><coefficient>1.0</coefficient><use_patch_radius>true</use_patch_radius>'
+         '<patch_radius>0.008</patch_radius></torsional></friction></surface></collision>'
          '<visual name="v"><geometry><box><size>0.0318 0.0158 0.0114</size></box></geometry>'
          '<material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material></visual></link></model></sdf>')
     print('cube:', svc('/world/room/create', 'gz.msgs.EntityFactory',
@@ -246,11 +251,15 @@ def main():
         if '--auto' in sys.argv:
             print('== 자동 패스2 ==')
             extra = [a for a in ('--record',) if a in sys.argv]
-        if '--slow' in sys.argv:
-            extra += ['--slow', sys.argv[sys.argv.index('--slow') + 1]]
-            os.execv(sys.executable, [sys.executable, __file__, '--ep', str(ep), '--cube',
-                                      f'{comp[0]:.3f}', f'{comp[1]:.3f}', f'{comp[2]:.3f}',
-                                      f'{lego_yaw:.3f}'] + extra)
+            if '--slow' in sys.argv:
+                extra += ['--slow', sys.argv[sys.argv.index('--slow') + 1]]
+            # execv 대신 서브프로세스 — 이전 sed가 execv를 --slow 분기 안에 가둬
+            # slow 없는 배치에서 패스2가 통째로 증발했다(에피소드당 20초 무메타 실측)
+            rclpy.shutdown()
+            rc = subprocess.run([sys.executable, '-u', __file__, '--ep', str(ep), '--cube',
+                                 f'{comp[0]:.3f}', f'{comp[1]:.3f}', f'{comp[2]:.3f}',
+                                 f'{lego_yaw:.3f}'] + extra).returncode
+            sys.exit(rc)
         rclpy.shutdown()
         return
 
@@ -296,10 +305,10 @@ def main():
             n.gripper_cmd(grip_state)
             if grip_state < 0.0 and stall_at is None:
                 stall_at = time.time() + 1.2   # 닫힘 명령 후 스톨 안착을 기다려 읽는다
-        if stall is None and stall_at is not None and time.time() > stall_at:
-            stall = n.st.get('arm_gripper')
-            if stall is not None:
-                print(f'파지 스톨각={stall:+.3f} (빈손 완전닫힘≈-0.15, 레고 15.8mm 정상 물림≈-0.05~+0.05)')
+        if stall_at is not None and time.time() > stall_at:
+            a = n.st.get('arm_gripper')
+            if a is not None:
+                stall = a if stall is None else min(stall, a)
     zproc.terminate()
     if rec is not None:
         os.makedirs(rec['dir'], exist_ok=True)
@@ -332,8 +341,10 @@ def main():
                   f'| {"파지·운반 성공" if ok else ("들었으나 낙하" if lifted else "파지 실패")}')
             if rec is not None:
                 import json
+                pinch_ok = stall is not None and -0.06 < stall < 0.08
                 meta = {'episode': ep, 'frames': len(rec['action']), 'total_frames': len(R),
-                        'success': bool(ok), 'lifted': bool(lifted),
+                        'success': bool(ok and pinch_ok), 'lifted': bool(lifted),
+                        'pinch_ok': bool(pinch_ok),
                         'lift_mm': round((max_z - cube[2]) * 1000, 1),
                         'moved_mm': round(d * 1000, 1),
                         'stall_angle': None if stall is None else round(float(stall), 3),
@@ -343,8 +354,10 @@ def main():
         comp = close_meas[3]
         yw = close_meas[4]
         print('== 자동 패스2: 측정 좌표·방향에 레고 스폰 ==')
-        os.execv(sys.executable, [sys.executable, __file__, '--ep', str(ep), '--cube',
-                                  f'{comp[0]:.3f}', f'{comp[1]:.3f}', f'{comp[2]:.3f}', f'{yw:.3f}'])
+        rclpy.shutdown()
+        rc = subprocess.run([sys.executable, '-u', __file__, '--ep', str(ep), '--cube',
+                             f'{comp[0]:.3f}', f'{comp[1]:.3f}', f'{comp[2]:.3f}', f'{yw:.3f}']).returncode
+        sys.exit(rc)
     rclpy.shutdown()
 
 
