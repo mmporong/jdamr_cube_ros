@@ -775,8 +775,12 @@
          실물 고무 패드는 훨씬 잘 물리므로 3.0으로 올린다. 파지력(effort)을 올리면
          강체가 물체를 튕겨내지만, 마찰은 쥐는 힘을 키우지 않고 미끄러짐만 막는다. -->
     <gazebo reference="arm_gripper_link">
-        <mu1>3.0</mu1>
-        <mu2>3.0</mu2>
+        <!-- 고무 패킹 근사 강화(2026-08-04): 얕은 팁 물림에서 점접촉이 비틀림에
+             무저항이라 회전 운반 중 큐브가 죠 안에서 돌아 빠졌다(실측 yaw 0.7rad).
+             μ를 고무 수준으로 올린다. 비틀림 마찰은 큐브 SDF 쪽에서 patch로 준다. -->
+        <mu1>6.0</mu1>
+        <mu2>6.0</mu2>
+        <minDepth>0.001</minDepth>
     </gazebo>
 
     <joint name="arm_gripper_frame_joint" type="fixed">
@@ -820,8 +824,9 @@
     </link>
 
     <gazebo reference="arm_moving_jaw_link">
-        <mu1>3.0</mu1>
-        <mu2>3.0</mu2>
+        <mu1>6.0</mu1>
+        <mu2>6.0</mu2>
+        <minDepth>0.001</minDepth>
     </gazebo>
 
     <joint name="arm_gripper" type="revolute">
