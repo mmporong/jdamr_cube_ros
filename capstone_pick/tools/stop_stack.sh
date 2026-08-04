@@ -5,7 +5,7 @@
 systemctl --user stop capstone-sim capstone-gui capstone-ui 2>/dev/null
 systemctl --user reset-failed capstone-sim capstone-gui capstone-ui 2>/dev/null
 sleep 2
-LEFT=$(pgrep -c -f "gz sim" 2>/dev/null || echo 0)
+LEFT=$(pgrep -c -f "gz sim" 2>/dev/null); LEFT=${LEFT:-0}
 if [ "${LEFT:-0}" -gt 0 ]; then
   pkill -f "gz sim"
   echo "잔여 gz 프로세스 ${LEFT}개 강제 종료"
