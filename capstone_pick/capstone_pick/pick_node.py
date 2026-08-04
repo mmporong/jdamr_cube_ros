@@ -86,7 +86,9 @@ TRASH_S_MAX, TRASH_V_LO, TRASH_V_HI = 45, 45, 115
 TRASH_D_LO, TRASH_D_HI = 0.35, 2.0   # 상한을 넓히면 원경 벽이 통과 한 덩어리로 붙는다(실측)
 TRASH_Z_LO, TRASH_Z_HI = 0.02, 0.30
 TRASH_MIN_AREA = 400
-TRASH_HALF = 0.08               # 뎁스는 앞면 → 중심까지 반깊이 보정
+# 앞면 → 중심 반깊이. 0.08은 과소 보정이었다 — 착지가 일관되게 짧았다
+# (실측: 직선 51mm, 회전 114mm 부족). 0.115로 올려 계통 편향을 제거한다.
+TRASH_HALF = 0.115
 # 운반·투하 자세 = 들어올리기가 끝나는 자세 그대로. 자세를 '전환'하면 팔꿈치가 펴지는
 # 관성으로 물체가 빠진다(계단식·저속으로 나눠도 반복 실패). 전환을 없애는 것이 해법이고,
 # pan 회전만 하는 것은 옆에 내려놓기에서 이미 검증된 동작이다.
@@ -95,7 +97,9 @@ TRASH_HALF = 0.08               # 뎁스는 앞면 → 중심까지 반깊이 �
 POSE_CARRY = dict(zip(ARM_JOINTS, [0.0, 0.15, 0.15, 1.28, 0.0]))
 # 운반·탐색 중에는 pan을 옆으로 빼 카메라 시야를 연다(정면 자세는 화면 중앙을 가림 — 실측 확인).
 POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.0)
-TRASH_POCKET_X = 0.364          # 통 중심이 이 거리에 오면 그리퍼가 개구부 바로 위
+# 통 중심이 이 거리에 오면 그리퍼가 개구부 바로 위. 0.364→0.344: 짧은 착지
+# 편향 보정의 나머지 절반 — 중심 초과 리치 46+20=66mm로 개구부 반경(68mm) 안.
+TRASH_POCKET_X = 0.344
 # 투하 자세: 운반 자세(x=0.364)로는 통 중심에 9.6cm 못 미쳐 통 앞 바닥에 떨어졌다(실측).
 # 로봇 전면(0.275)과 통 벽 때문에 더 접근할 수 없으므로 팔을 뻗어 채운다. 이 자세는
 # 그리퍼가 기울어 물체를 놓지만, 이미 통 개구부 위이므로 그대로 투입이 된다.
@@ -303,7 +307,12 @@ class PickNode(Node):
                 f'면적={int(stats[li, cv2.CC_STAT_AREA])}px')
         return self._pixel_to_base(*best)
 
-    def _pixel_to_base(self, u, v, d, z_gate=(-0.05, 0.20)):
+    def _pixel_to_base(self, u, v, d, z_gate=None):
+        if z_gate is None:
+            # 복구 중에는 큐브가 반드시 바닥에 있다 — 게이트를 바닥 전용으로 조여
+            # 통 몸통(z≈0.14, blue_box conf 0.4~0.75로 오검출 실측)·받침대 높이의
+            # 유령 표적을 걸러낸다. 평상시엔 받침대(0.13) 파지를 위해 0.20까지 연다.
+            z_gate = (-0.05, 0.06) if getattr(self, '_floor_only', False) else (-0.05, 0.20)
         """픽셀+뎁스 → base_footprint 3D (역투영 + 축변환 + TF + 높이 게이트).
 
         z_gate는 대상별로 다르다 — 바닥 물체는 기본값, 쓰레기통처럼 높은 구조물은 넓혀 준다.
@@ -605,6 +614,12 @@ class PickNode(Node):
         for i in range(10):
             best = self._wrist_blob()
             if best is None:
+                if i == 0:
+                    # 첫 관측부터 없음 = 추측항법이 포켓 포착 범위 밖에 내렸다는 뜻.
+                    # 맹목 하강은 허공 파지가 보장된다(실측: 복구 재파지 2회 연속
+                    # -0.170) — 하강하지 말고 실패를 알려 재접근을 태운다.
+                    self.get_logger().warning('손목캠: 물체 미검출 — 맹목 하강 대신 재접근 요청')
+                    return None
                 self.get_logger().info('손목캠: 물체 미검출 — 정렬 생략')
                 break
             if prev_y is not None and abs(prev_applied) > 0.004:
@@ -715,7 +730,10 @@ class PickNode(Node):
         roll = 0.0
         if self.floor_mode:
             # 근접 비전 사각을 손목 RGB로 보완: 물체 중간이 파지선에 오도록 pan 정렬 + 기울기 롤 정렬
-            pan, roll = self.wrist_align(pan, pre)
+            aligned = self.wrist_align(pan, pre)
+            if aligned is None:
+                return False    # 손목캠이 물체를 전혀 못 봄 — 재접근이 답이다
+            pan, roll = aligned
         self.get_logger().info('수직 하강' + (' (바닥 모드)' if self.floor_mode else ''))
         descended = {**grasp_pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}
         self.move_arm(descended, 3.0)
@@ -866,12 +884,14 @@ class PickNode(Node):
             f'쓰레기통: 앞면 base=({x:.3f},{y:.3f},{z:.3f}) 면적={a} → 중심 r={r + TRASH_HALF:.3f}')
         return x * k, y * k
 
-    def carry_to_trash(self, max_iter=45):
+    def carry_to_trash(self, max_iter=70):
         """물체를 든 채 쓰레기통 앞까지 저속 주행. 성공 시 True."""
         # 팔은 들어올린 자세 그대로 손대지 않는다. 자세 전환은 물론 pan 회전만으로도
         # 얕게 물린 물체가 빠진다(실측 반복). 통은 큰 구조물이라 팔 위쪽 시야로 원거리에서
         # 검출되고, 근접해 가려지는 구간은 근접 락(추측 접근)이 담당한다.
+        self._carry_drop = False
         if not self.holding():
+            self._carry_drop = True   # 들기 직후 낙하도 재파지로 복구 가능
             self.get_logger().error('운반 시작 시 물체 없음')
             return False
         # 운반 구간은 배율을 1로 — 회전 관성만으로도 얕게 물린 물체가 빠진다(실측)
@@ -899,10 +919,27 @@ class PickNode(Node):
             near_lock = getattr(self, '_trash_lock', False)
             loc = None if near_lock else self.locate_trash()
             if loc is not None and self.odom:
-                # 통은 고정물 — 실검출마다 오도메트리 좌표로 기억해 두고 근접 사각에서 재사용
+                # 통은 고정물 — 실검출마다 오도메트리 좌표로 기억해 두고 근접 사각에서 재사용.
+                # 단, 기억과 0.8m 이상 어긋난 관측은 유령(원거리 벽·그림자 블롭)으로 기각 —
+                # 실측: 실통(0.6m)과 유령(2.4m) 검출이 교대로 앵커를 덮어써 접근이 진동하며
+                # 예산 절반을 태웠다. 3연속 기각되면 기억이 틀린 것으로 보고 새 관측을 받는다.
                 x, y, yaw = self.odom
-                self._trash_odom = (x + math.cos(yaw) * loc[0] - math.sin(yaw) * loc[1],
-                                    y + math.sin(yaw) * loc[0] + math.cos(yaw) * loc[1])
+                wx = x + math.cos(yaw) * loc[0] - math.sin(yaw) * loc[1]
+                wy = y + math.sin(yaw) * loc[0] + math.cos(yaw) * loc[1]
+                prev = getattr(self, '_trash_odom', None)
+                if prev is not None and math.hypot(wx - prev[0], wy - prev[1]) > 0.8 \
+                        and getattr(self, '_anchor_rej', 0) < 3:
+                    self._anchor_rej = getattr(self, '_anchor_rej', 0) + 1
+                    self.get_logger().info(
+                        f'[{it}] 통 관측 기각: 기억 좌표와 '
+                        f'{math.hypot(wx - prev[0], wy - prev[1]):.2f}m 불일치 (유령 의심)')
+                    ox, oy = prev
+                    dx, dy = ox - x, oy - y
+                    loc = (math.cos(yaw) * dx + math.sin(yaw) * dy,
+                           -math.sin(yaw) * dx + math.cos(yaw) * dy)
+                else:
+                    self._anchor_rej = 0
+                    self._trash_odom = (wx, wy)
             elif loc is None and getattr(self, '_trash_odom', None) and self.odom:
                 ox, oy = self._trash_odom
                 x, y, yaw = self.odom
@@ -936,10 +973,29 @@ class PickNode(Node):
             if abs(er) < 0.025 and abs(brg) < 0.10:
                 return True
             if not self.holding():
-                self.get_logger().error('운반 중 물체 놓침')
+                # 능동 판별이 확정한 실낙하 — 큐브는 근처 바닥에 있다. 복구 루프가
+                # 재접근·재파지 후 운반을 재개할 수 있도록 사유를 남긴다.
+                self._carry_drop = True
+                self.get_logger().error('운반 중 물체 놓침 (재파지 복구 대상)')
                 return False
+            # 스톨 감지: 회전·전진 명령에도 관측이 안 변하면(같은 r·brg 3연속) 정지
+            # 마찰에 걸린 것 — 실측: wz 0.20은 dur×1.2 재계산(0.208)과 램프 하한을
+            # 거치며 제자리에서 반복 소진(45회 전부 r=0.853/brg=23.0 동결). 강한
+            # 펄스로 탈출한다.
+            key = (round(r, 3), round(brg, 2))
+            if key == getattr(self, '_carry_last', None):
+                self._carry_stall = getattr(self, '_carry_stall', 0) + 1
+            else:
+                self._carry_stall = 0
+            self._carry_last = key
+            if self._carry_stall >= 3:
+                self.get_logger().warning('운반 접근 스톨 — 강한 회전 펄스로 탈출')
+                self.drive(0.0, 0.5 if brg > 0 else -0.5, 0.8)
+                self._carry_stall = 0
+                continue
             if abs(brg) > 0.25:
-                self.drive(0.0, 0.20 if brg > 0 else -0.20, min(2.0, abs(brg) / 0.20))
+                # 0.20은 정지 마찰을 못 깬다(스톨 실측) — 0.35로 상향, 램프가 저크를 막는다
+                self.drive(0.0, 0.35 if brg > 0 else -0.35, min(2.0, abs(brg) / 0.35))
             else:
                 v = 0.06 if er > 0.15 else (0.03 if er > 0 else -0.03)
                 wz = max(-0.12, min(0.12, brg * 0.7))     # 전진하며 방위도 함께 좁힌다
@@ -1065,7 +1121,7 @@ class PickNode(Node):
                 zs.append(r[2])
         return zs
 
-    def holding(self):
+    def holding(self, allow_active=True):
         """물체를 쥐고 있는지 손목캠으로 판정 — 죠를 다시 움직이지 않는다.
 
         각도로는 낙하를 볼 수 없다. hold_target(접촉각-0.01)을 명령해 두면 물체가
@@ -1114,7 +1170,7 @@ class PickNode(Node):
                 self.get_logger().warning(
                     f'파지 확인(제3신호): 운반 높이 블롭 {zs_txt} — 죠 안에서 밀림, HOLDING 유지')
                 return True
-            if getattr(self, '_carrying', False):
+            if allow_active:
                 # 능동 판별 직후 유예: 매 반복 후진하면 통에서 멀어지며(실측: r 0.94까지
                 # 후퇴) 후진 저크가 물림을 더 흔들어 진짜 낙하를 유발하는 악순환이 된다.
                 # HOLDING 확정 후 12초간은 저면적을 "밀린-쥔 상태"로 간주하고 유지한다.
@@ -1153,10 +1209,43 @@ class PickNode(Node):
             f'각도={ang if ang is None else round(ang, 3)} → {"HOLDING" if held else "DROPPED"}')
         return held
 
+    def recover_dropped(self):
+        """운반 중 낙하 복구: 떨어진 큐브를 재접근·재파지하고 들기까지 마친다.
+
+        능동 판별이 낙하를 확정한 시점의 큐브는 로봇 바로 앞 바닥에 있다(판별
+        후진 10cm 포함 실측 0.3~0.5m). 뎁스 최소거리(0.30m) 밖으로 물러나 시야를
+        확보한 뒤 기존 접근·파지 파이프라인을 그대로 재사용한다. 통 기억 좌표
+        (_trash_odom)는 월드 고정이므로 유지하고, 근접 락만 풀어 재검출을 허용한다.
+        """
+        self._carry_drop = False
+        self._trash_lock = False
+        self._hold_grace = 0.0
+        # 떨어진 큐브는 반드시 바닥에 있다 — 높이 게이트를 바닥 전용으로 조여
+        # 통 몸통 오검출(z≈0.14 유령 표적)이 접근을 홀리는 것을 차단한다.
+        self._floor_only = True
+        # main()의 검증된 패턴대로 후진·재접근을 2회 재시도.
+        for attempt in range(2):
+            self.move_gripper(0.5)
+            self.move_arm(POSE_FOLDED, 2.5)
+            self.drive(-0.12, 0.0, 2.5)     # 0.3m 후진 — 큐브를 뎁스 최소거리 밖으로
+            for attr in ('_reacq_done', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
+                if hasattr(self, attr):
+                    delattr(self, attr)
+            pan = self.approach()
+            if pan is None:
+                self.get_logger().warning(f'복구 재접근 실패 (시도 {attempt + 1}/2)')
+                continue
+            if self.grasp(pan) and self.lift():
+                return True
+            self.get_logger().warning(f'복구 재파지 불성립 (시도 {attempt + 1}/2) — 재접근')
+        self.get_logger().error('복구 실패')
+        return False
+
     def drop_into_trash(self):
         """통 개구부 위에서 그리퍼를 열어 투입."""
         time.sleep(0.5)
-        if not self.holding():
+        # 개구부 코앞이라 능동 판별(10cm 후진)은 투하 위치를 망친다 — 수동 신호만
+        if not self.holding(allow_active=False):
             # 여기서 중단하지 않는다 — 이미 개구부 앞이라 투하를 진행해도 잃을 게 없다
             # (쥐고 있으면 투입 성공, 아니면 어차피 실패). 신호가 전부 사각인 상태
             # (전방캠 무소득 + 손목캠 시야 이탈)의 오판으로 중단했는데 실좌표는 통 안
@@ -1262,7 +1351,18 @@ def main(args=None):
                 ok = n.lift()
                 if ok and n.place_target == 'trash':
                     n.get_logger().info('== 5. 쓰레기통으로 운반 ==')
-                    ok = n.carry_to_trash() and n.drop_into_trash()
+                    # 운반 중 실낙하(능동 판별 확정)는 재파지로 복구한다 — 큐브가
+                    # 근처 바닥에 있고 접근·파지 파이프라인이 그대로 쓰인다.
+                    ok = False
+                    for rec in range(3):
+                        if n.carry_to_trash() and n.drop_into_trash():
+                            ok = True
+                            break
+                        if not getattr(n, '_carry_drop', False):
+                            break   # 탐색 실패 등 낙하 외 실패는 재파지로 못 고친다
+                        n.get_logger().info(f'== 5-복구. 운반 중 낙하 — 재파지 (시도 {rec + 1}/2) ==')
+                        if not n.recover_dropped():
+                            break
                 elif ok:
                     n.get_logger().info('== 5. 옮겨 놓기 (place) ==')
                     n.place()
