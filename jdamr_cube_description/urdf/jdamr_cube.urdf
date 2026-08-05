@@ -381,7 +381,7 @@
     <gazebo reference="rgbd_camera_link">
         <sensor name="rgbd_camera" type="rgbd_camera">
             <pose>0 0 0 0 0 0</pose>
-            <update_rate>2</update_rate><!-- 고정팔 3배속: 주행 모드 시 15 -->
+            <update_rate>15</update_rate>
             <always_on>true</always_on>
             <visualize>true</visualize>
             <topic>rgbd_camera</topic>
