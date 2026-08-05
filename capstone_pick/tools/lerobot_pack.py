@@ -19,7 +19,7 @@ LIMIT = int(sys.argv[sys.argv.index('--limit') + 1]) if '--limit' in sys.argv el
 SRC = sys.argv[sys.argv.index('--src') + 1] if '--src' in sys.argv else 'collect'
 # 카메라 디렉터리 → 데이터셋 피처 키. 규칙 기반 수집은 로봇 탑재 카메라를 쓴다.
 CAMS = ({'front': 'observation.images.front', 'wrist': 'observation.images.wrist'}
-        if SRC == 'rule_collect' else
+        if SRC.startswith('rule_collect') else
         {'demo_up': 'observation.images.up', 'demo_side': 'observation.images.side'})
 TASK = "Pick up the cube and place it aside."
 JOINTS = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper']

@@ -262,6 +262,8 @@ def run_episode(node, ep, color, speed):
     # 채점: 큐브가 실제로 옮겨졌는가. 시연자가 "성공했다"고 말하는 것(returncode 0)만
     # 믿으면 안 된다 — 허공을 집고도 자기는 성공으로 판정하는 경우가 있어서,
     # 시뮬 참값으로 물리적 이동을 함께 확인한다. 두 조건을 모두 만족해야 성공이다.
+    if len(rec['state']) < 30:
+        print(f'[ep{ep}] 프레임 부족({len(rec["state"])}) — sim 시계 정지 의심', flush=True)
     fin = gz_xyz(name) or start
     moved = math.hypot(fin[0] - start[0], fin[1] - start[1])
     success = bool(proc.returncode == 0 and moved > 0.05)
@@ -287,7 +289,12 @@ def run_episode(node, ep, color, speed):
     #   action = [s1, s2, s3, …, sT-1]   ← 한 칸씩 당기고 마지막은 복제해 길이를 맞춘다
     # 마지막을 복제하는 이유: 마지막 시점에는 '다음'이 없는데 길이는 같아야 하고,
     # 의미상으로도 "여기서 멈춰 있어라"가 되어 자연스럽다.
-    action = np.vstack([state[1:], state[-1:]])   # action[t] = state[t+1] (BC 관례)
+    # action[t] = state[t+K] (0.5초 앞 목표). K=1(다음 틱)은 20Hz에서 관절 차이가
+    # 0.0038rad로 노이즈 수준이라 "가만히 있기"가 최적해가 되어 학습이 무너진다
+    # (실측: loss 0.1인데 평가 0/10). K=10이면 0.037rad로 10배 신호가 되고,
+    # ACT의 chunk 100(5초)이 미래 궤적을 담는 구조와도 맞는다.
+    K = 10
+    action = np.vstack([state[K:], np.repeat(state[-1:], K, axis=0)])
     np.save(os.path.join(d, 'state.npy'), state)
     np.save(os.path.join(d, 'action.npy'), action)
     meta = {'episode': ep, 'frames': n, 'moved_mm': round(moved * 1000, 1), 'success': True,
@@ -309,6 +316,15 @@ def main():
     os.makedirs(OUT_ROOT, exist_ok=True)
     rclpy.init()          # ROS2 초기화 — 노드를 만들기 전에 반드시 한 번
     node = Rec()
+    # /clock 수신 대기 — use_sim_time 노드는 클록이 없으면 now()가 0에 멈춰 틱이
+    # 올라가지 않고 첫 프레임만 기록된다(병렬 워커1 실측: 전 에피소드 1프레임).
+    t0 = time.time()
+    while time.time() - t0 < 30 and node.sim_now() == 0.0:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    if node.sim_now() == 0.0:
+        print('/clock 미수신 — 시뮬 확인 필요', flush=True)
+        rclpy.shutdown()
+        return
     # 첫 메시지들이 도착할 때까지 잠깐 돌린다. 이 예열이 없으면 1번 에피소드 초반
     # 프레임이 비어 있거나 관절이 전부 0.0으로 기록된다.
     t0 = time.time()
