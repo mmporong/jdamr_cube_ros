@@ -62,8 +62,8 @@ class UiNode(Node):
         self.rgb = self.depth = self.wrist = None
         self.odom_xy_yaw = None
         self.grip_angle = None
-        self.create_subscription(Image, '/demo_up/image_raw', self._rgb_cb, 1)
-        self.create_subscription(Image, '/demo_side/image_raw', self._side_cb, 1)
+        self.create_subscription(Image, '/rgbd_camera/image', self._rgb_cb, 1)
+        self.create_subscription(Image, '/rgbd_camera/depth_image', self._depth_cb, 1)
         self.create_subscription(Image, '/wrist_camera/image_raw', self._wrist_cb, 1)
         self.create_subscription(Odometry, '/odom', self._odom_cb, 10)
         self.create_subscription(JointState, '/joint_states', self._joint_cb, 10)
@@ -76,10 +76,10 @@ class UiNode(Node):
         with self.lock:
             self.rgb = img
 
-    def _side_cb(self, msg):
-        img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+    def _depth_cb(self, msg):
+        d = self.bridge.imgmsg_to_cv2(msg)
         with self.lock:
-            self.depth = img   # 표시 슬롯 재사용 (측면 관측 카메라)
+            self.depth = d
 
     def _wrist_cb(self, msg):
         img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -195,8 +195,8 @@ class App:
         # 2×2 격자: [RGB+인식박스][뎁스] / [손목][제어]
         cams = tk.Frame(main)
         cams.grid(row=0, column=0, sticky='n')
-        self.rgb_label = self._cam_panel(cams, '관측 상공 (demo_up)', 0, 0)
-        self.depth_label = self._cam_panel(cams, '관측 측면 (demo_side)', 0, 1)
+        self.rgb_label = self._cam_panel(cams, '비전 RGB (인식 박스)', 0, 0)
+        self.depth_label = self._cam_panel(cams, '비전 뎁스', 0, 1)
         self.wrist_label = self._cam_panel(cams, '손목 카메라', 1, 0)
 
         # 제어 (격자 우하단)
@@ -400,7 +400,7 @@ class App:
             oxy = self.node.odom_xy_yaw
             ga = self.node.grip_angle
         for i, (lbl, img) in enumerate(((self.rgb_label, None if rgb is None else overlay_detections(rgb)),
-                                        (self.depth_label, depth),
+                                        (self.depth_label, None if depth is None else depth_to_bgr(depth)),
                                         (self.wrist_label, wrist))):
             if img is not None:
                 self._photos[i] = bgr_to_photo(img)

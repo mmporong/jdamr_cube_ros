@@ -685,7 +685,7 @@
             <topic>wrist_camera/image_raw</topic>
             <gz_frame_id>arm_wrist_camera_link</gz_frame_id>
             <camera>
-                <horizontal_fov>1.047</horizontal_fov>
+                <horizontal_fov>1.518</horizontal_fov>
                 <image>
                     <width>640</width>
                     <height>480</height>

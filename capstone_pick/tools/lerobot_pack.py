@@ -16,7 +16,12 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(TOOLS, 'logs',
                    sys.argv[sys.argv.index('--out') + 1] if '--out' in sys.argv else 'lerobot_ds')
 LIMIT = int(sys.argv[sys.argv.index('--limit') + 1]) if '--limit' in sys.argv else 10**9
-TASK = "Pick up the lego block and put it in the box."
+SRC = sys.argv[sys.argv.index('--src') + 1] if '--src' in sys.argv else 'collect'
+# 카메라 디렉터리 → 데이터셋 피처 키. 규칙 기반 수집은 로봇 탑재 카메라를 쓴다.
+CAMS = ({'front': 'observation.images.front', 'wrist': 'observation.images.wrist'}
+        if SRC == 'rule_collect' else
+        {'demo_up': 'observation.images.up', 'demo_side': 'observation.images.side'})
+TASK = "Pick up the cube and place it aside."
 JOINTS = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper']
 
 
@@ -24,7 +29,7 @@ def main():
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     eps = []
-    for m in sorted(glob.glob(os.path.join(TOOLS, 'logs', 'collect', 'ep*', 'meta.json'))):
+    for m in sorted(glob.glob(os.path.join(TOOLS, 'logs', SRC, 'ep*', 'meta.json'))):
         meta = json.load(open(m))
         if '--all' in sys.argv or meta.get('success') or meta.get('lifted'):
             eps.append((os.path.dirname(m), meta))
@@ -36,30 +41,22 @@ def main():
     if os.path.exists(OUT):
         import shutil
         shutil.rmtree(OUT)
-    features = {
-        'observation.images.up': {'dtype': 'video', 'shape': (480, 640, 3),
-                                  'names': ['height', 'width', 'channels']},
-        'observation.images.side': {'dtype': 'video', 'shape': (480, 640, 3),
-                                    'names': ['height', 'width', 'channels']},
-        'observation.state': {'dtype': 'float32', 'shape': (6,), 'names': JOINTS},
-        'action': {'dtype': 'float32', 'shape': (6,), 'names': JOINTS},
-    }
-    ds = LeRobotDataset.create('local/so101_sim_pickplace', fps=20, features=features,
+    features = {k: {'dtype': 'video', 'shape': (480, 640, 3),
+                    'names': ['height', 'width', 'channels']} for k in CAMS.values()}
+    features['observation.state'] = {'dtype': 'float32', 'shape': (6,), 'names': JOINTS}
+    features['action'] = {'dtype': 'float32', 'shape': (6,), 'names': JOINTS}
+    ds = LeRobotDataset.create('local/so101_rule_pick', fps=20, features=features,
                                root=OUT, robot_type='so101_sim', use_videos=True)
     for d, meta in eps:
         state = np.load(os.path.join(d, 'state.npy')).astype(np.float32)
         action = np.load(os.path.join(d, 'action.npy')).astype(np.float32)
-        ups = sorted(glob.glob(os.path.join(d, 'demo_up', '*.jpg')))
-        sides = sorted(glob.glob(os.path.join(d, 'demo_side', '*.jpg')))
-        n = min(len(state), len(action), len(ups), len(sides))
+        files = {cam: sorted(glob.glob(os.path.join(d, cam, '*.jpg'))) for cam in CAMS}
+        n = min([len(state), len(action)] + [len(v) for v in files.values()])
         for i in range(n):
-            ds.add_frame({
-                'observation.images.up': cv2.cvtColor(cv2.imread(ups[i]), cv2.COLOR_BGR2RGB),
-                'observation.images.side': cv2.cvtColor(cv2.imread(sides[i]), cv2.COLOR_BGR2RGB),
-                'observation.state': state[i],
-                'action': action[i],
-                'task': TASK,
-            })
+            frame = {CAMS[cam]: cv2.cvtColor(cv2.imread(files[cam][i]), cv2.COLOR_BGR2RGB)
+                     for cam in CAMS}
+            frame.update({'observation.state': state[i], 'action': action[i], 'task': TASK})
+            ds.add_frame(frame)
         ds.save_episode()
         print(f'  {os.path.basename(d)}: {n}프레임 저장 (success={meta.get("success")})')
     print(f'완료 → {OUT}')

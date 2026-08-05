@@ -7,7 +7,7 @@
 실행 (환경 순서 중요 — conda 먼저, ROS 나중):
   source ~/miniforge3/etc/profile.d/conda.sh && conda activate lerobot && \
   source /opt/ros/jazzy/setup.bash && source ~/jdamr_cube_ws/install/setup.bash && \
-  python tools/act_eval.py --ckpt logs/act_v1/checkpoints/last/pretrained_model --trials 10
+  python tools/act_eval.py --ckpt logs/act_rule_v1/checkpoints/last/pretrained_model --trials 10
 """
 import argparse
 import glob
@@ -26,9 +26,10 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 POSE_RE = re.compile(r'\[([-\d.eE+ ]+)\]')
 AJ = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex', 'arm_wrist_flex', 'arm_wrist_roll']
 BASE = (0.3, 0.0)
-START = [0.04, -1.74, 1.68, 1.24, -1.31]   # 시연 공통 시작 자세(rest 근방)
+START = [0.0, -0.4, 1.0, 0.2, 0.0]         # 규칙 기반 픽의 시작 자세(POSE_FOLDED)
+CAMS = {'front': '/rgbd_camera/image', 'wrist': '/wrist_camera/image_raw'}
 FPS = 20.0
-TRIAL_SEC = 18.0
+TRIAL_SEC = 60.0
 
 
 def sh(cmd):
@@ -51,45 +52,38 @@ def gz_xyz(model):
 
 
 def spawn_scene(cx, cy, cz, yaw):
-    for name in ('demo_cube', 'demo_stand'):
-        svc('/world/room/remove', 'gz.msgs.Entity', f'name: "{name}" type: MODEL')
+    """규칙 기반 수집과 동일한 무대: 로봇 원점, 바닥에 3cm 큐브."""
+    name = 'pick_blue'
+    for n in ('pick_object', 'pick_object_green', 'pick_object_blue', 'pick_object_orange',
+              'pick_table', 'pick_blue', 'pick_red', 'pick_green', 'demo_cube', 'demo_stand'):
+        svc('/world/room/remove', 'gz.msgs.Entity', f'name: "{n}" type: MODEL')
     svc('/world/room/set_pose', 'gz.msgs.Pose',
         f'name: "jdamr_cube" position {{x: {BASE[0]} y: {BASE[1]} z: 0.03}} orientation {{w: 1}}')
     for _ in range(10):
-        left = sh('gz model --list')
-        if 'demo_stand' not in left and 'demo_cube' not in left:
+        if name not in sh('gz model --list'):
             break
         time.sleep(0.5)
-    half = 0.0057
-    top = cz - half
-    stand = ('<sdf version="1.6"><model name="demo_stand"><static>true</static>'
-             f'<pose>{cx} {cy} {top / 2} 0 0 0</pose>'
-             '<link name="l"><collision name="c"><geometry>'
-             f'<box><size>0.6 0.6 {top}</size></box></geometry></collision>'
-             '<visual name="v"><geometry>'
-             f'<box><size>0.6 0.6 {top}</size></box></geometry>'
-             '<material><ambient>0.92 0.92 0.92 1</ambient><diffuse>0.92 0.92 0.92 1</diffuse></material></visual></link></model></sdf>')
-    req = 'sdf: "' + stand.replace('"', '\\"') + '"'
-    if 'true' not in svc('/world/room/create', 'gz.msgs.EntityFactory', req):
-        time.sleep(1)
-        svc('/world/room/create', 'gz.msgs.EntityFactory', req)
-    c = ('<sdf version="1.6"><model name="demo_cube">'
-         f'<pose>{cx} {cy} {cz} 0 0 {yaw}</pose>'
-         '<link name="link"><inertial><mass>0.0025</mass>'
-         '<inertia><ixx>3e-7</ixx><ixy>0</ixy><ixz>0</ixz><iyy>3e-7</iyy><iyz>0</iyz><izz>3e-7</izz></inertia></inertial>'
-         '<collision name="c"><geometry><box><size>0.0318 0.0158 0.0114</size></box></geometry>'
+    c = (f'<sdf version="1.6"><model name="{name}">'
+         f'<pose>{cx} {cy} 0.015 0 0 {yaw}</pose>'
+         '<link name="link"><inertial><mass>0.04</mass>'
+         '<inertia><ixx>4e-6</ixx><ixy>0</ixy><ixz>0</ixz><iyy>4e-6</iyy><iyz>0</iyz><izz>4e-6</izz></inertia></inertial>'
+         '<collision name="c"><geometry><box><size>0.03 0.03 0.03</size></box></geometry>'
          '<surface><friction><ode><mu>3.0</mu><mu2>3.0</mu2></ode>'
          '<torsional><coefficient>1.0</coefficient><use_patch_radius>true</use_patch_radius>'
-         '<patch_radius>0.008</patch_radius></torsional></friction></surface></collision>'
-         '<visual name="v"><geometry><box><size>0.0318 0.0158 0.0114</size></box></geometry>'
-         '<material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material></visual></link></model></sdf>')
-    svc('/world/room/create', 'gz.msgs.EntityFactory', 'sdf: "' + c.replace('"', '\\"') + '"')
-    time.sleep(1)
+         '<patch_radius>0.01</patch_radius></torsional></friction></surface></collision>'
+         '<visual name="v"><geometry><box><size>0.03 0.03 0.03</size></box></geometry>'
+         '<material><ambient>0.1 0.2 0.9 1</ambient><diffuse>0.1 0.2 0.9 1</diffuse></material>'
+         '</visual></link></model></sdf>')
+    r = svc('/world/room/create', 'gz.msgs.EntityFactory', 'sdf: "' + c.replace('"', '\\"') + '"')
+    if 'true' not in r:
+        time.sleep(1)
+        svc('/world/room/create', 'gz.msgs.EntityFactory', 'sdf: "' + c.replace('"', '\\"') + '"')
+    time.sleep(1.5)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--ckpt', default=os.path.join(TOOLS, 'logs/act_v1/checkpoints/last/pretrained_model'))
+    ap.add_argument('--ckpt', default=os.path.join(TOOLS, 'logs/act_rule_v1/checkpoints/last/pretrained_model'))
     ap.add_argument('--trials', type=int, default=10)
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
@@ -116,8 +110,8 @@ def main():
     st = {}
     node.create_subscription(JointState, '/joint_states',
                              lambda m: st.update(dict(zip(m.name, m.position))), 10)
-    for cam in ('demo_up', 'demo_side'):
-        node.create_subscription(Image, f'/{cam}/image_raw',
+    for cam, topic in CAMS.items():
+        node.create_subscription(Image, topic,
                                  (lambda c: lambda m: obs.__setitem__(c, m))(cam),
                                  qos_profile_sensor_data)
     traj = node.create_publisher(JointTrajectory, '/arm_controller/joint_trajectory', 10)
@@ -150,7 +144,7 @@ def main():
 
     # 스폰 분포: 성공 에피소드들의 실제 스폰에서 샘플 (+지터 5mm)
     spawns = []
-    for m in glob.glob(os.path.join(TOOLS, 'logs/collect/ep*/meta.json')):
+    for m in glob.glob(os.path.join(TOOLS, 'logs/rule_collect/ep*/meta.json')):
         d = json.load(open(m))
         if d.get('success'):
             spawns.append(d['spawn'])
@@ -163,7 +157,7 @@ def main():
         s = random.choice(spawns)
         cx = s[0] + random.uniform(-0.005, 0.005)
         cy = s[1] + random.uniform(-0.005, 0.005)
-        cz, yaw = s[2], (s[3] if len(s) > 3 else 0.0)
+        cz, yaw = 0.015, random.uniform(-0.3, 0.3)
         spawn_scene(cx, cy, cz, yaw)
         gripper_cmd(0.2)
         # 시작 자세 도달 보장 — 학습 분포의 시작점(rest)에서 출발하지 않으면
@@ -193,7 +187,7 @@ def main():
         zlog = os.path.join(TOOLS, 'logs', 'eval_z.log')
         open(zlog, 'w').close()
         zp = subprocess.Popen(['bash', '-c',
-            f'for i in $(seq 1 60); do gz model -m demo_cube -p 2>/dev/null | '
+            f'for i in $(seq 1 60); do gz model -m pick_blue -p 2>/dev/null | '
             f'grep -A2 Pose | sed -n 2p >> {zlog}; sleep 0.3; done'])
 
         sim0 = node.get_clock().now().nanoseconds / 1e9
@@ -205,11 +199,11 @@ def main():
             if el > TRIAL_SEC:
                 break
             tick = int(el * FPS)
-            if tick <= last_tick or 'demo_up' not in obs or 'demo_side' not in obs:
+            if tick <= last_tick or len(obs) < len(CAMS):
                 continue
             last_tick = tick
             imgs = {}
-            for cam in ('demo_up', 'demo_side'):
+            for cam in CAMS:
                 m = obs[cam]
                 # cv_bridge는 conda numpy2와 ABI 충돌(코어 덤프 실측) — 수동 디코드.
                 # gz image_bridge는 rgb8을 발행하므로 정책 입력(RGB)과 그대로 정합.
@@ -219,8 +213,8 @@ def main():
                 imgs[cam] = torch.from_numpy(im.copy()).permute(2, 0, 1).float().div(255).unsqueeze(0).to(device)
             state = torch.tensor([[st.get(j, 0.0) for j in AJ] + [st.get('arm_gripper', 0.0)]],
                                  dtype=torch.float32).to(device)
-            batch = {'observation.images.up': imgs['demo_up'],
-                     'observation.images.side': imgs['demo_side'],
+            batch = {'observation.images.front': imgs['front'],
+                     'observation.images.wrist': imgs['wrist'],
                      'observation.state': state}
             with torch.no_grad():
                 action = policy.select_action(batch).squeeze(0).cpu().numpy()
@@ -236,7 +230,7 @@ def main():
             v = ln.strip().strip('[]').split()
             if len(v) >= 3:
                 max_z = max(max_z, float(v[2]))
-        fin = gz_xyz('demo_cube') or [cx, cy, cz]
+        fin = gz_xyz('pick_blue') or [cx, cy, cz]
         moved = math.hypot(fin[0] - cx, fin[1] - cy)
         lifted = max_z - cz > 0.025
         on_floor = fin[2] < cz - 0.05
