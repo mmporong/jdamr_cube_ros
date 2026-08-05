@@ -74,8 +74,8 @@ source /opt/ros/jazzy/setup.bash
 source ~/jdamr_cube_ws/install/setup.bash
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST GZ_PARTITION=lim-capstone
 unset ROS_DOMAIN_ID
-timeout 1800 python "$TOOLS/act_eval.py" --ckpt "$CKPT" --trials 10 --out "$RESULT" 2>&1 \
-  | grep -E "^\[[0-9]+/|성공률" | tee -a "$LOG"
+# 필터 금지: 에러가 가려지면 실패를 못 본다(실측: 평가가 1분 만에 죽은 것을 놓침)
+timeout 1800 python "$TOOLS/act_eval.py" --ckpt "$CKPT" --trials 10 --out "$RESULT" 2>&1 | tee -a "$LOG" | grep -E "^\[[0-9]+/|성공률|Error|Traceback"
 
 systemctl --user stop capstone-sim 2>/dev/null
 say "야간 체인 종료 (시뮬 정지)"

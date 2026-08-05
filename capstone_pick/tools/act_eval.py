@@ -100,6 +100,13 @@ def main():
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     policy = ACTPolicy.from_pretrained(args.ckpt)
+    # 실행 길이 축소: chunk 100틱(5초)을 그대로 실행하면 그 사이 관측이 반영되지
+    # 않아 5초짜리 개루프가 반복되며 발산한다(실측: 정책이 시연 범위를 wrist
+    # 99.8%·roll 95.8% 이탈, 60초 중 1155틱을 그리퍼 연 채로 배회).
+    # 짧게 끊어 자주 재추론하면 폐루프가 된다.
+    n_steps = int(os.environ.get('ACT_N_ACTION_STEPS', '10'))
+    policy.config.n_action_steps = n_steps
+    print(f'실행 길이 n_action_steps = {n_steps} (chunk {policy.config.chunk_size})')
     policy.to(device).eval()
     print(f'정책 로드: {args.ckpt} ({device})')
 
@@ -186,13 +193,15 @@ def main():
         # 백그라운드 레고 z 추적
         zlog = os.path.join(TOOLS, 'logs', 'eval_z.log')
         open(zlog, 'w').close()
+        # 시행 전체를 덮도록 샘플 수를 늘린다 — 60샘플×0.3s = wall 18초라
+        # 60초 시행의 후반 들림을 통째로 놓쳤다(리뷰 U01-F06, 확인됨)
         zp = subprocess.Popen(['bash', '-c',
-            f'for i in $(seq 1 60); do gz model -m pick_blue -p 2>/dev/null | '
+            f'for i in $(seq 1 400); do gz model -m pick_blue -p 2>/dev/null | '
             f'grep -A2 Pose | sed -n 2p >> {zlog}; sleep 0.3; done'])
 
         sim0 = node.get_clock().now().nanoseconds / 1e9
         last_tick = -1
-        traj = []   # [el, state6, action6] — 실패 진단용
+        traj_log = []   # [el, state6, action6] — 실패 진단용 (traj는 퍼블리셔라 이름 분리)
         deadline = time.time() + TRIAL_SEC * 2 + 10
         while time.time() < deadline:
             rclpy.spin_once(node, timeout_sec=0.01)
@@ -222,8 +231,8 @@ def main():
             if tick % 40 == 0:
                 cur = [round(st.get(j, 0.0), 2) for j in AJ]
                 print(f'  t{tick}: state={cur} → action={[round(float(v), 2) for v in action]}')
-            traj.append(np.concatenate([[el], state.squeeze(0).cpu().numpy(), action]))
-            move_arm(action[:5], 0.1)
+            traj_log.append(np.concatenate([[el], state.squeeze(0).cpu().numpy(), action]))
+            move_arm(action[:5], 0.05)   # 명령 주기(20Hz)와 궤적 horizon 정합 (리뷰 U01-F04)
             gripper_cmd(action[5])
         zp.terminate()
 
@@ -237,8 +246,8 @@ def main():
         lifted = max_z - cz > 0.025
         on_floor = fin[2] < cz - 0.05
         succ = bool(lifted and moved > 0.04 and not on_floor)
-        if traj:
-            np.save(os.path.join(TOOLS, 'logs', f'eval_traj_{t}.npy'), np.array(traj))
+        if traj_log:
+            np.save(os.path.join(TOOLS, 'logs', f'eval_traj_{t}.npy'), np.array(traj_log))
         results.append({'trial': t, 'spawn': [round(cx, 3), round(cy, 3), round(cz, 3)],
                         'lift_mm': round((max_z - cz) * 1000, 1), 'moved_mm': round(moved * 1000, 1),
                         'final': [round(v, 3) for v in fin], 'success': succ})
