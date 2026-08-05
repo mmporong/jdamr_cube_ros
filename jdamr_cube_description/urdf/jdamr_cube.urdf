@@ -381,7 +381,7 @@
     <gazebo reference="rgbd_camera_link">
         <sensor name="rgbd_camera" type="rgbd_camera">
             <pose>0 0 0 0 0 0</pose>
-            <update_rate>15</update_rate>
+            <update_rate>10</update_rate>
             <always_on>true</always_on>
             <visualize>true</visualize>
             <topic>rgbd_camera</topic>
@@ -679,7 +679,7 @@
     <gazebo reference="arm_wrist_camera_link">
         <sensor name="wrist_camera" type="camera">
             <pose>0 0 0 0 0 0</pose>
-            <update_rate>15</update_rate>
+            <update_rate>10</update_rate>
             <always_on>true</always_on>
             <visualize>true</visualize>
             <topic>wrist_camera/image_raw</topic>

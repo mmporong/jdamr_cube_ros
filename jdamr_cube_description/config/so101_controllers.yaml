@@ -1,7 +1,9 @@
 controller_manager:
   ros__parameters:
     use_sim_time: true
-    update_rate: 1000  # Hz, jdamr_cube_gazebo world의 physics max_step_size(0.001s)와 동일
+    update_rate: 1000  # Hz, world의 physics max_step_size(0.001s)와 동일
+    # 물리 스텝 4ms·8ms를 시도했으나 접촉이 깨져 물체가 1m 이상 튕겼다(실측 2026-08-05).
+    # 3cm 큐브를 작은 그리퍼로 무는 접촉은 1ms가 필수 — 배속은 병렬 인스턴스로 얻을 것.
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
