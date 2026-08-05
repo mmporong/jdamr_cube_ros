@@ -284,7 +284,7 @@ def main():
     if '--record' in sys.argv:
         rec = {'dir': os.path.join(os.path.dirname(npy), 'collect', f'ep{ep}'),
                'demo_up': [], 'demo_side': [], 'state': [], 'action': [], 'fi': [], 'last_fi': -1}
-    deadline = time.time() + 60
+    deadline = time.time() + 240
     while time.time() < deadline:
         rclpy.spin_once(n, timeout_sec=0.01)
         el = (n.sim_now() - sim0 - 0.2) / slow
@@ -294,10 +294,13 @@ def main():
             break
         fi = min(len(R) - 1, int(el * FPS))
         if rec is not None and fi > rec['last_fi'] and 'demo_up' in n.imgs and 'demo_side' in n.imgs:
+            # 루프 내 디코드 금지 — 틱당 2장 디코드가 spin을 굶겨 노드 클록이 기어가고
+            # (60초 wall에 el 1.6초 실측) wall 데드라인이 루프를 조기 사살해 전 에피소드가
+            # 앞부분만 기록됐다(그리퍼 닫힘 명령 유실 포함). 원시 메시지만 잡아둔다.
             rec['last_fi'] = fi
             rec['fi'].append(fi)
-            rec['demo_up'].append(n.bridge.imgmsg_to_cv2(n.imgs['demo_up'], 'bgr8'))
-            rec['demo_side'].append(n.bridge.imgmsg_to_cv2(n.imgs['demo_side'], 'bgr8'))
+            rec['demo_up'].append(n.imgs['demo_up'])
+            rec['demo_side'].append(n.imgs['demo_side'])
             rec['state'].append([n.st.get(j, 0.0) for j in AJ] + [n.st.get('arm_gripper', 0.0)])
             rec['action'].append(R[fi].tolist())
         if abs(R[fi, 5] - grip_state) > 0.015:
@@ -309,12 +312,14 @@ def main():
             a = n.st.get('arm_gripper')
             if a is not None:
                 stall = a if stall is None else min(stall, a)
+    print(f'  [루프종료] el={el:.2f} fi={fi} 사유={"el초과" if el > len(R) / FPS + 1.0 else "wall데드라인"}')
     zproc.terminate()
     if rec is not None:
         os.makedirs(rec['dir'], exist_ok=True)
         for cam in ('demo_up', 'demo_side'):
             os.makedirs(os.path.join(rec['dir'], cam), exist_ok=True)
-            for i, im in enumerate(rec[cam]):
+            for i, msg in enumerate(rec[cam]):
+                im = n.bridge.imgmsg_to_cv2(msg, 'bgr8')
                 cv2.imwrite(os.path.join(rec['dir'], cam, f'{i:06d}.jpg'), im)
         np.save(os.path.join(rec['dir'], 'fi.npy'), np.array(rec['fi']))
         np.save(os.path.join(rec['dir'], 'state.npy'), np.array(rec['state']))
