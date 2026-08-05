@@ -7,7 +7,7 @@
 실행 (환경 순서 중요 — conda 먼저, ROS 나중):
   source ~/miniforge3/etc/profile.d/conda.sh && conda activate lerobot && \
   source /opt/ros/jazzy/setup.bash && source ~/jdamr_cube_ws/install/setup.bash && \
-  python tools/act_eval.py --ckpt logs/act_rule_v1/checkpoints/last/pretrained_model --trials 10
+  python tools/act_eval.py --ckpt logs/act_rule_v2/checkpoints/last/pretrained_model --trials 10
 """
 import argparse
 import glob
@@ -83,7 +83,7 @@ def spawn_scene(cx, cy, cz, yaw):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--ckpt', default=os.path.join(TOOLS, 'logs/act_rule_v1/checkpoints/last/pretrained_model'))
+    ap.add_argument('--ckpt', default=os.path.join(TOOLS, 'logs/act_rule_v2/checkpoints/last/pretrained_model'))
     ap.add_argument('--trials', type=int, default=10)
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
@@ -192,6 +192,7 @@ def main():
 
         sim0 = node.get_clock().now().nanoseconds / 1e9
         last_tick = -1
+        traj = []   # [el, state6, action6] — 실패 진단용
         deadline = time.time() + TRIAL_SEC * 2 + 10
         while time.time() < deadline:
             rclpy.spin_once(node, timeout_sec=0.01)
@@ -221,6 +222,7 @@ def main():
             if tick % 40 == 0:
                 cur = [round(st.get(j, 0.0), 2) for j in AJ]
                 print(f'  t{tick}: state={cur} → action={[round(float(v), 2) for v in action]}')
+            traj.append(np.concatenate([[el], state.squeeze(0).cpu().numpy(), action]))
             move_arm(action[:5], 0.1)
             gripper_cmd(action[5])
         zp.terminate()
@@ -235,6 +237,8 @@ def main():
         lifted = max_z - cz > 0.025
         on_floor = fin[2] < cz - 0.05
         succ = bool(lifted and moved > 0.04 and not on_floor)
+        if traj:
+            np.save(os.path.join(TOOLS, 'logs', f'eval_traj_{t}.npy'), np.array(traj))
         results.append({'trial': t, 'spawn': [round(cx, 3), round(cy, 3), round(cz, 3)],
                         'lift_mm': round((max_z - cz) * 1000, 1), 'moved_mm': round(moved * 1000, 1),
                         'final': [round(v, 3) for v in fin], 'success': succ})
