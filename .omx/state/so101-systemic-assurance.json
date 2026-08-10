@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "workflow": "ralplan",
+  "task_slug": "so101-systemic-assurance",
+  "status": "complete",
+  "planning_terminal": "complete",
+  "created_utc": "2026-08-07T03:27:52Z",
+  "completed_utc": "2026-08-07T03:43:35Z",
+  "source_root": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros",
+  "source_git_head": "9b1f92858ba0a1dac397c3d8b9bb160725135dfe",
+  "source_worktree_dirty": true,
+  "source_mutation_by_ralplan": false,
+  "planning_artifacts": {
+    "context": ".omx/context/so101-systemic-assurance-20260807T032752Z.md",
+    "context_sha256": "ea51d3059218d45eafd7fdfc166e8a553879df875d3eddd2fbf36672f70f5e92",
+    "research": ".omx/context/research-so101-lerobot-v061.md",
+    "research_sha256": "aa275de87276035a0960e2d503ad2dce32a6a45b81d17a8ae46c15bbd9a37d7d",
+    "prd": ".omx/plans/prd-so101-systemic-assurance.md",
+    "prd_sha256": "385a989df0647b02c377ab1f513b760a689b9f45afa505d66ed9603145ad10c3",
+    "test_spec": ".omx/specs/test-spec-so101-systemic-assurance.md",
+    "test_spec_sha256": "2d3ffc89240151ca118b59d760cad2da4ac1491d046b6759db6bdd004e839ac8"
+  },
+  "ralplan_architect_review": {
+    "path": ".omx/context/ralplan-architect-review-so101-systemic-assurance-iteration-4.md",
+    "sha256": "994210bcde6b52c64366129e6377ce9a60e0947a6d3c9757f948950d7fd111e2",
+    "verdict": "APPROVE",
+    "review_mode": "leader_fallback",
+    "native_agent_approval": false,
+    "native_agent": "/root/so101_architect_review",
+    "native_agent_status": "interrupted_after_single_60_second_timeout_no_verdict"
+  },
+  "ralplan_critic_review": {
+    "path": ".omx/context/ralplan-critic-review-so101-systemic-assurance-iteration-2.md",
+    "sha256": "daf49b2fbdc6414b6111dcfb9bac07a005c00d1a5a0ded12040dcb684ef698ae",
+    "verdict": "APPROVE",
+    "review_mode": "leader_fallback",
+    "native_agent_approval": false,
+    "native_agent": "/root/so101_critic_review",
+    "native_agent_status": "interrupted_after_single_60_second_timeout_no_verdict"
+  },
+  "ralplan_consensus_gate": {
+    "complete": true,
+    "review_order": [
+      "architect",
+      "critic"
+    ],
+    "exact_prd_sha256": "385a989df0647b02c377ab1f513b760a689b9f45afa505d66ed9603145ad10c3",
+    "exact_test_spec_sha256": "2d3ffc89240151ca118b59d760cad2da4ac1491d046b6759db6bdd004e839ac8",
+    "completion_basis": "documented_leader_fallback_after_native_single_wait_timeouts",
+    "timeout_treated_as_approval": false
+  },
+  "consensus_artifact": {
+    "path": ".omx/context/ralplan-consensus-so101-systemic-assurance.md",
+    "sha256": "4ac18f89f20aa143bf6d66460af8cd5d457fc5c7333f538dd92f06178304a360"
+  },
+  "handoff": {
+    "path": ".omx/context/HANDOFF-so101-systemic-assurance.md",
+    "sha256": "c15072ddd6ce21f3c5d5cf0a3e2a504c3309c21c7e55a4df290778781db8cb61"
+  },
+  "final_verification": {
+    "path": ".omx/context/final-verification-so101-systemic-assurance.md",
+    "sha256": "c177406c26633de91322d24ef0224fd2090fd186071120eac3cac4d08f3d8572",
+    "verdict": "PASS",
+    "review_mode": "leader_fallback",
+    "native_verifier_approval": false,
+    "native_verifier_status": "interrupted_after_single_60_second_timeout_no_verdict"
+  },
+  "execution_authorized": false,
+  "hardware_authorized": false,
+  "next_action": "Start a separate execution workflow at P0/T00 only; preserve all current user changes and legacy artifacts."
+}

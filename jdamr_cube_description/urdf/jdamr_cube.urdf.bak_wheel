@@ -62,9 +62,9 @@
             </geometry>
         </collision>
         <inertial>
-            <mass value="1.0"/>
+            <mass value="0.0625"/>
             <origin rpy="1.570795 0 0" xyz="0 0 0"/>
-            <inertia ixx="0.001615" ixy="0.0" ixz="0.0" iyy="0.002812" iyz="0.0" izz="0.001615"/>
+            <inertia ixx="0.00009" ixy="0.0" ixz="0.0" iyy="0.00009" iyz="0.0" izz="0.00009"/>
         </inertial>
     </link>
 
@@ -91,9 +91,9 @@
             </geometry>
         </collision>
         <inertial>
-            <mass value="1.0"/>
+            <mass value="0.0625"/>
             <origin rpy="1.570795 0 0" xyz="0 0 0"/>
-            <inertia ixx="0.001615" ixy="0.0" ixz="0.0" iyy="0.002812" iyz="0.0" izz="0.001615"/>
+            <inertia ixx="0.00009" ixy="0.0" ixz="0.0" iyy="0.00009" iyz="0.0" izz="0.00009"/>
         </inertial>
     </link>
 
@@ -127,11 +127,11 @@
          (직진은 100%). 그 결과 approach가 같은 방위각을 10회 반복하며 제자리였다. -->
     <gazebo reference="left_wheel_link">
         <mu1>1.0</mu1>
-        <mu2>0.2</mu2>
+        <mu2>0.1</mu2>
     </gazebo>
     <gazebo reference="right_wheel_link">
         <mu1>1.0</mu1>
-        <mu2>0.2</mu2>
+        <mu2>0.1</mu2>
     </gazebo>
     
     <joint name="caster_rear_joint" type="fixed">
@@ -672,15 +672,7 @@
     <joint name="arm_wrist_camera_joint" type="fixed">
         <parent link="arm_wrist_link"/>
         <child link="arm_wrist_camera_link"/>
-        <!-- pitch 0.628rad = 36° 아래로 (현재 값). 파지 자세에서 카메라가 큐브보다
-             28mm 위에 있어 수평으로는 시야를 벗어났다(실측: 포켓 정위치 검출 불가).
-             실물 SO-101 손목 마운트도 같은 이유로 기울여 쓴다(표준 설계 50°).
-             기울이면 하강 후에도 큐브가 보여 비전으로 죠 중앙 정렬이 가능하다.
-
-             주의: 한때 55°로 키웠다가 36°로 되돌렸는데 주석만 55°로 남아 있었다.
-             WRIST_REF·GRASP_REF·*_PX_PER_M 이 전부 이 틸트 기준으로 잰 값이라,
-             각도를 바꾸면 pocket_scan.py를 다시 돌려 그 상수들을 전부 재야 한다. -->
-        <origin xyz="0 -0.11 0.03" rpy="0 0.628 -1.5708"/>
+        <origin xyz="0 -0.11 0.03" rpy="0 0 -1.5708"/>
     </joint>
 
     <link name="arm_wrist_camera_link">
@@ -940,12 +932,6 @@
                 <param name="initial_value">0.0</param>
             </state_interface>
             <state_interface name="velocity"/>
-            <!-- effort: 실물 SO-101이 파지를 판정하는 신호다. Feetech STS3215의
-                 present load에 해당하고, 물체를 물면 죠가 못 닫혀 부하가 유지된다.
-                 종전에는 이게 없어 손목캠 블롭 '면적'으로 대신 판정했는데, 면적은
-                 렌즈와의 거리를 재는 값이라 바닥에 놓인 큐브가 코앞에 있을 때도
-                 똑같이 크게 나와 가짜 성공을 냈다(실측 42000). -->
-            <state_interface name="effort"/>
         </joint>
     </ros2_control>
 

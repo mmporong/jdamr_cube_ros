@@ -93,8 +93,10 @@ main()을 먼저 보고 필요한 함수로 내려가는 편이 빠르다.
 이 구조가 이 프로젝트에서 가장 배울 만한 부분이다. 센서 하나로 판정이 안 될 때
 "더 좋은 센서"가 아니라 "실패 방식이 다른 신호를 겹치는" 접근을 택했다.
 """
+import json
 import math
 import os
+import subprocess
 import time
 
 import cv2
@@ -106,8 +108,11 @@ from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image, JointState
+from std_msgs.msg import Float64
 from tf2_geometry_msgs import do_transform_point
 from tf2_ros import Buffer, TransformListener
+
+from capstone_pick import kinematics as K
 
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from trajectory_msgs.msg import JointTrajectoryPoint
@@ -122,16 +127,34 @@ GRIPPER_CLOSED = -0.17
 GRIP_HOLD_THRESHOLD = -0.05        # 조임 후 각도가 이보다 크면(덜 닫힘) 접촉은 있었다는 뜻
 # 물림 판정 구간. 아래로는 허공 닫힘(-0.17)·모서리 헛집기(-0.07)·미닫힘(0.0)을,
 # 위로는 열린 상태(0.5+)를 걸러낸다.
-# 상한 0.30: 접지 상실(손끝-바닥 간섭) 수정 후의 정상 파지는 0.08~0.23에 모이고
-# (게이트 6회 실측, 2026-08-03), 얕은 걸침은 0.34+에서 나타난다. 한때 0.40으로
-# 넓혔던 것은 미세 주행이 죽어 정렬이 어긋나던 시기의 보상이었다.
-GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.05, 0.30
+# 상한 0.55: 종전 0.30은 3cm 큐브 시절 값이다. 월드가 4cm로 돌아온 뒤로는 큐브가
+# 두꺼운 만큼 죠가 덜 닫힌 채 멈추는데, 그걸 전부 '얕은 걸침'으로 버리고 있었다.
+# 포켓 스윕 실측(2026-08-07, tools/pocket_scan.py): 큐브 x=0.365~0.405 다섯 자리
+# 전부 실제로 들어올려졌고(gz 좌표 z>0.05) 그때 물림각이 0.408~0.445였다.
+# 즉 진짜 파지가 매번 실패로 판정되고, 이어지는 '재물림'이 큐브를 밀어내 망쳤다.
+# 하한 0.32: 4cm 큐브를 죠 사이에 제대로 물면 그 두께만큼 벌어진 채 멈춘다. 그보다
+# 더 닫혔다면 큐브가 죠 사이에 없다는 뜻이다(모서리 걸침·빈손에 가까움).
+# 실측 대조 — 각도 / 들기 후 능동 판별(10cm 후진 시 블롭이 함께 움직이는지):
+#     0.341 0.381 0.407 0.436  → 전부 HOLDING 유지, 투입까지 성공
+#     0.299 0.222              → 둘 다 DROPPED (블롭 134~146px 뒤로 멀어짐)
+# 종전 0.05로는 이 둘을 통과시켜 운반을 다 하고 나서야 실패했다. 여기서 걸러
+# 곧바로 재파지하는 편이 훨씬 싸다.
+GRIP_HOLD_MIN, GRIP_HOLD_MAX = 0.32, 0.55
+# 물림 판정의 1차 신호는 그리퍼 관절 부하다(gripped 참조). 실측 물림 |10.0| 대
+# 빈손 |0.001|이라 임계는 어디를 잡아도 되지만, 흔들림 여유로 1.0을 쓴다.
+GRIP_LOAD_MIN = 1.0
+# 접촉각에서 이만큼만 더 조인다. 크게 잡으면 죠가 큐브를 뚫고, 0으로 두면 위치
+# 오차가 없어 물림이 헐거워진다. 4cm 큐브 물림각이 0.38~0.45이므로 0.05는 약 12%.
+GRIP_HOLD_MARGIN = 0.05
 # 쥐고 있는지를 손목캠 블롭 면적으로 판정하는 임계(px). 실측(운반 자세):
 # 쥔 상태 36721 / 큐브가 바닥에 떨어진 상태 6079 / 빈손 0. 6배 차이라 중간값보다
 # 낮게 잡아도 안전하다. 쥐고 있으면 큐브가 렌즈 앞 몇 cm에 고정되므로 팔 자세가
 # 바뀌어도 이 값은 유지된다.
 # FOV 87도에서는 같은 물체가 (tan30/tan43.5)^2 = 0.37배 면적으로 보인다.
 # 60도 기준 15000 → 5500 (실측 검증 대상).
+# 큐브를 4cm→3cm로 줄이면서 손목캠에 잡히는 면적이 (3/4)²=0.56배가 됐다.
+# 5500(4cm 기준)을 그대로 두었더니 실제로 쥐고 있는데도(그리퍼 0.277 유지)
+# 면적 2254 < 5500으로 "놓쳤다"고 오판해 성공 직전에 실패 처리됐다(실측).
 HOLD_AREA_MIN = 5500.0
 # 실측 근거: 3cm 큐브 정상 파지는 항상 +0.07 이상, 모서리 헛집기는 -0.07 부근(가짜 성공 사례)
 ARM_JOINTS = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex',
@@ -155,9 +178,33 @@ POSE_PRE_FLOOR = dict(zip(ARM_JOINTS, [0.0, 0.85, 0.15, 0.58, 0.0]))    # 바닥
 # 툴 수직 하향)을 지키도록 lift 감소분만큼 올린 0.28 — lift만 줄이면 죠 평면이
 # 2.9° 기울어 들기·운반 내내 유지된다(lift()의 wrist 보상이 합을 보존하므로).
 POSE_GRASP_FLOOR = dict(zip(ARM_JOINTS, [0.0, 1.15, 0.15, 0.28, 0.0]))  # 바닥 파지
-# 포켓 스윕 실측(2026-07-29): 0.361은 하강이 큐브를 3.5mm 밀어내고, 0.381은 밀림 0에
-# 물림각 +0.273으로 가장 깊다(0.401은 얕게 물림 +0.142, 0.421은 놓침).
-POCKET_FLOOR = (0.381, 0.000)   # 바닥 모드 파지 포켓 [m, base_footprint]
+# 포켓 스윕 실측(2026-08-07, tools/pocket_scan.py — 4cm 큐브, 자세 1.15/0.28):
+#     x  0.365 0.375 0.385 0.395 0.405 | 0.415 0.425
+#     들림  O     O     O     O     O   |   X     X
+#     물림각 .418  .445  .421  .409  .408 | -.170 -.170
+# 성립 구간이 40mm나 되고 그 중앙이 0.385다. 종전 0.381은 구자세(1.20/0.23) 스윕
+# 값이었다. 구간이 이만큼 넓다는 것이 중요하다 — 접근·정렬 정밀도가 ±20mm면 충분해서
+# 하강 후 미세 보정에 매달릴 이유가 없다.
+#
+# 조준은 중앙(0.385)이 아니라 구간 위쪽 0.400으로 한다. 남는 오차의 부호가 중요하기
+# 때문이다: 큐브가 멀면 팔을 뻗어 메울 수 있고(실측 +11/+45mm 둘 다 파지 성공),
+# 가까우면 팔을 당겨야 하는데 그건 세 번 다 허공이었다(-22/-28/-45mm). 접근 잔차가
+# ±45mm이므로 조준을 위로 밀어 '가까움' 쪽으로 떨어지는 빈도를 줄인다.
+# 조준은 WRIST_REF를 교정한 그 자리(0.385)로 둔다. 한때 0.400·0.430으로 옮겨 봤는데,
+# 손목캠 기준점이 0.385에서 잰 값이라 조준을 옮긴 만큼 그대로 잔차로 나타난다
+# (0.430 조준 → 손목캠 +48mm). 접근 잔차는 계통 편향이 아니라 분산이 크다(±45mm) —
+# 조준으로는 못 없애고, 아래 파지 단계가 그 분산을 흡수해야 한다.
+# 2026-08-10 재측정 (grasp_ref_scan.py): 성립 구간 0.385~0.425, 중앙 0.405.
+# 종전 0.385는 이 구간의 **하단 경계**였다. 기준점을 관절 보간 경로(pocket_scan)에서
+# 쟀는데 파이프라인은 직교 하강을 쓰고, 그쪽이 아랫턱을 24mm 더 앞에 둔다
+# (아랫턱 x 0.344 대 0.368). 죠가 앞에 있으니 큐브도 그만큼 앞이어야 물린다.
+# IK 전환(2026-08-11): 이제 '포켓'은 파지가 성립하는 유일한 점이 아니라
+# **IK 작업공간의 중앙**이다. 접근은 큐브를 이 근처로만 데려오면 되고, 나머지는
+# 팔이 흡수한다. 실측 성공 구간은 전후 0.29~0.41, 좌우 ±0.05(ik_grasp_probe).
+POCKET_FLOOR = (0.350, 0.000)   # IK 작업공간 중앙 [m, base_footprint]
+# 파지가 **실측으로 검증된** 범위 (ik_grasp_probe.py, 시도 가능 지점 10/11).
+# IK 해가 존재하는 범위보다 좁다 — 해가 있어도 실제로 물리는 것은 별개다.
+IK_X_MIN, IK_X_MAX, IK_Y_MAX = 0.29, 0.41, 0.055
 FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 모드
 # ---- 쓰레기통 투입 (2026-07-29 실측) ----
 # 통 = 16cm 정사각, 벽 높이 0.18m, 개구부 13.6cm. 회색이라 색상(H)은 무의미하고
@@ -166,6 +213,18 @@ TRASH_S_MAX, TRASH_V_LO, TRASH_V_HI = 45, 45, 115
 TRASH_D_LO, TRASH_D_HI = 0.35, 2.0   # 상한을 넓히면 원경 벽이 통과 한 덩어리로 붙는다(실측)
 TRASH_Z_LO, TRASH_Z_HI = 0.02, 0.30
 TRASH_MIN_AREA = 400
+# ---- 쓰레기통 마커 (ArUco) ----
+# HSV 회색 덩어리 검출은 거리·자세에 따라 +20~237mm로 흔들리고 방향 정보가 아예 없어,
+# 도착 판정이 수렴해도 팔이 통과 100° 어긋난 방향으로 뻗었다(실측). 피듀셜 마커는
+# solvePnP로 6-DoF 자세를 주고 한 변 길이가 기지값이라 정확도 근거가 명확하다 —
+# 물류 로봇 도킹의 표준. 실측 정확도: 거리 ±25mm, 방위 ±2°.
+TRASH_ARUCO_DICT = cv2.aruco.DICT_4X4_50
+TRASH_ARUCO_ID = 0               # 통 마커 id — 월드의 trash_marker와 일치해야 한다
+ARUCO_FAIL_DIR = os.path.expanduser('~/capstone_tools/logs/aruco_miss')
+TRASH_ARUCO_SIZE = 0.10          # 마커 한 변 [m] — 월드의 trash_marker와 일치해야 한다
+# 마커 중심에서 본 통 중심의 위치 [마커 좌표계: x=오른쪽, y=위, z=마커 앞으로].
+# 마커는 통 뒤 0.09m·위 0.13m에 세워져 있다(gen_aruco_sdf.py 기본값).
+TRASH_MARKER_TO_CENTER = (0.0, -0.13, 0.09)
 # 앞면 → 중심 반깊이. 0.08은 과소 보정이었다 — 착지가 일관되게 짧았다
 # (실측: 직선 51mm, 회전 114mm 부족). 0.115로 올려 계통 편향을 제거한다.
 TRASH_HALF = 0.115
@@ -179,21 +238,29 @@ POSE_CARRY = dict(zip(ARM_JOINTS, [0.0, 0.15, 0.15, 1.28, 0.0]))
 POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.0)
 # 통 중심이 이 거리에 오면 그리퍼가 개구부 바로 위. 0.364→0.344: 짧은 착지
 # 편향 보정의 나머지 절반 — 중심 초과 리치 46+20=66mm로 개구부 반경(68mm) 안.
-TRASH_POCKET_X = 0.344
+# ArUco 마커 기반으로 바뀌면서 정지 거리를 0.344 → 0.500으로 늘렸다.
+# 종전에는 통 앞 0.344m까지 차체로 파고들었는데, 그 거리에서는 통이 카메라 프레임
+# 아래로 잘려 검출이 안 되고(실측 미검출) 마지막 0.17m를 오도메트리 추측으로 갔다.
+# 그 추측이 10cm 어긋나 큐브가 통에서 0.20~0.55m 떨어진 곳에 떨어졌다(실좌표 확인).
+# 지금은 검출이 확실한 거리(ArUco 오차 ±25mm)에서 멈추고 나머지를 팔로 뻗는다 —
+# 팔은 야코비안으로 mm 단위 제어가 되고 차체는 안 된다.
+TRASH_POCKET_X = 0.500
 # 투하 자세: 운반 자세(x=0.364)로는 통 중심에 9.6cm 못 미쳐 통 앞 바닥에 떨어졌다(실측).
 # 로봇 전면(0.275)과 통 벽 때문에 더 접근할 수 없으므로 팔을 뻗어 채운다. 이 자세는
 # 그리퍼가 기울어 물체를 놓지만, 이미 통 개구부 위이므로 그대로 투입이 된다.
-POSE_DROP = dict(zip(ARM_JOINTS, [0.0, 0.05, -0.30, 0.60, 0.0]))   # 리치 x=0.410
+# 리치 스윕 실측(2026-08-07): 죠 높이 0.13~0.32m 조건에서 최대 전방 리치가
+# 0.528m(자세 0.35/-0.20/0.30, 죠 z=0.271). 통 벽(0.09)보다 한참 위라 걸리지 않는다.
+# 정지 거리 0.500m와 28mm 여유 — 통 개구부 반경 68mm 안이다.
+POSE_DROP = dict(zip(ARM_JOINTS, [0.0, 0.35, -0.20, 0.30, 0.0]))   # 리치 x=0.528
 # 손목 카메라 최종 정렬(바닥 모드) — 접근 비전은 근접(<0.45m)에서 팔·시야각에 가려지므로
 # 마지막 정렬은 손목 RGB로. 실측(2026-07-29, 바닥 호버): 손목캠은 90° 회전 장착이라
 # px=전후거리(82px/cm), py=좌우(67px/cm). pan 1rad당 py -1740px(포켓 반경 0.26m×6700px/m와 일치).
-# 아래 세 값은 포켓 0.381에서 직접 실측(2026-07-29). 이전 포켓(0.361) 값을 게인으로
-# 환산해 썼더니 기준이 46px 어긋나 정렬이 큐브 모서리로 수렴했다 — 포켓을 옮기면 반드시 다시 잰다.
-# 포켓 정위치 큐브의 블롭 중심. 좌우(y) 기준은 "큐브가 로봇 정면(y=0)에 있고 pan=0인
-# 상태"를 5프레임 중앙값으로 직접 재서 정한 값이다 — 종전 320.2는 40px 어긋나 있어
-# 정렬 루프가 매번 큐브 중심을 벗어난 곳으로 수렴했다(성공/실패가 갈린 주원인).
-WRIST_REF = (374.0, 288.3)
-WRIST_PX_PER_M = 3842.0         # 전후 1m당 px — 포켓 0.361/0.401 두 점으로 산출
+# 포켓 0.385에 실제로 큐브를 놓고 상공 자세에서 직접 잰 값(2026-08-07, pocket_scan.py).
+# 포켓·상공기준·하강기준을 각각 다른 날 다른 자세에서 재는 바람에 서로 25mm 어긋나
+# 있었고, 그 차이를 '하강 후퇴 보정'으로 덧대다 오히려 큐브를 지나쳤다. 이제 셋을
+# 한 번의 스윕에서 뽑으므로 중간 보정이 필요 없다 — 포켓을 옮기면 셋 다 다시 잰다.
+WRIST_REF = (497.1, 78.2)
+WRIST_PX_PER_M = 4054.0         # 전후 1m당 px — 같은 스윕 7점 회귀
 # 위 세 상수는 손목캠 FOV 87도(RealSense D405 규격) 기준 실측(2026-08-05, wrist_calib.py).
 # FOV 60도 시절 값은 (412.9,360.6)/6073/2000 — FOV를 바꾸면 반드시 재실측할 것.
 # pan 게인: 호버 자세에서 pan을 -0.1~+0.1로 돌려 잰 값(423.7→168.2px / 0.2rad).
@@ -203,7 +270,54 @@ WRIST_PX_PER_M = 3842.0         # 전후 1m당 px — 포켓 0.361/0.401 두 점
 # 비선형이다(pan -0.10/-0.05/+0.05/+0.10에서 568/757/2905/1736). 상수 하나로 맞출 수
 # 없으므로 큰 쪽에 가깝게 잡아 보정을 보수적으로 만든다 — 작게 잡으면 오버슈트해
 # 정렬이 진동한다(종전 1277에서 blob y가 215~448로 흔들렸다).
-WRIST_PY_PER_PAN = 907.0
+WRIST_PY_PER_PAN = 641.0
+# 하강(파지) 자세 기준 — 손목캠을 36° 기울인 뒤로는 내려간 상태에서도 큐브가 보인다.
+# 위 WRIST_REF와 같은 스윕에서, 큐브가 포켓 0.385에 있고 팔이 명목 파지 자세로 내려간
+# 상태에서 잰 값이다. 종전 379.2는 상공 기준과 25mm 어긋나 있었다 — 상공에서 잘 맞춰
+# 내려와도 여기서는 "아직 멀다"고 읽혀 죠가 큐브를 지나칠 때까지 밀었다.
+GRASP_REF = (536.1, 174.4)
+GRASP_PX_PER_M = 4772.0         # 직교 하강 경로 5점 회귀 (종전 2365는 관절 보간 기준이라 2배 어긋났다)
+# 전후 1m를 팔로 움직이는 관절 조합 (높이 불변). 파지 중에는 차체를 못 쓰므로
+# — 팔이 내려간 상태에서 차체를 밀면 죠가 큐브를 쳐낸다 — 팔로 해결해야 한다.
+# 2026-08-07 야코비안 실측(파지 자세 기준):
+#     lift  1rad당 전후 -56mm / 높이 -123mm
+#     elbow 1rad당 전후 -130mm / 높이 -37mm
+# 두 방향이 충분히 달라 높이를 유지한 채 전후만 뽑을 수 있다.
+# 전후 +10mm = lift +0.0269, elbow -0.0886 → 1m당 아래 값.
+REACH_LIFT_PER_M = 2.69
+REACH_ELBOW_PER_M = -8.86
+# 같은 계산을 상공(호버) 자세에서도 한다. 팔이 더 펴져 있어 감도가 4배 다르므로
+# 파지 자세 값을 그대로 쓰면 4배 과보정된다.
+# 2026-08-07 야코비안 실측(POSE_PRE_FLOOR 기준):
+#     lift  1rad당 전후 -221mm / 높이 -165mm
+#     elbow 1rad당 전후 -273mm / 높이 -54mm
+HOVER_LIFT_PER_M = 1.631
+HOVER_ELBOW_PER_M = -4.983
+# 하강은 수직이 아니다. TF 실측(2026-08-07):
+#   PRE_FLOOR   죠 x=0.3602 z= 0.0500
+#   GRASP_FLOOR 죠 x=0.3352 z=-0.0007   → x -25.0mm / z -50.7mm
+# 즉 26° 기울어진 직선이라, 표준 파지(MoveIt Grasps)가 요구하는 "pre-grasp는 grasp에서
+# 접근축으로만 떨어진 자세"를 우리 자세족은 만족하지 않는다.
+# 그렇다고 이 25mm를 하강 자세에 따로 얹을 필요는 없다 — 상공 기준(WRIST_REF)과
+# 포켓(POCKET_FLOOR)을 같은 스윕에서 재면 후퇴량이 이미 그 안에 들어 있기 때문이다.
+# 한때 따로 얹었다가 25mm를 두 번 세어 죠가 큐브를 지나쳤다(허공 파지 3/3).
+# 파지 성립 구간이 40mm라 이 정도 경사는 그 안에서 흡수된다.
+# 팔로 메울 수 있는 전후 한계. 이보다 크면 관절이 자세족을 벗어나 죠 평면이 기울므로
+# 접근 단계로 되돌린다.
+REACH_LIMIT = 0.045
+# 이 안쪽이면 아예 손대지 않는다. 포켓 성립 구간이 40mm(±20mm)라 그 안에서는
+# 보정이 이득이 없고, 팔을 움직인 만큼 기준점만 흐려진다.
+REACH_DEADZONE = 0.020
+# 파지 성립 구간(0.365~0.405)의 반폭. 하강 후 이보다 어긋나 있으면 닫아도 허공이다.
+POCKET_HALF = 0.020
+# 하강은 큐브 뒤쪽에서 시작한다. 큐브 바로 위로 내리면 아랫턱이 큐브 윗면에 얹히거나
+# 큐브를 앞뒤로 쳐낸다 — 아무리 x를 잘 맞춰도 '지나가는 경로'가 큐브를 관통한다.
+# 뒤로 물러난 자리에서 바닥까지 내린 다음, 바닥 높이에서 수평으로 밀고 들어간다.
+# 죠가 큐브 윗면 위를 지나갈 일이 없어진다. 40mm는 큐브 한 변(40mm)만큼이다.
+DESCEND_BACKOFF = 0.040
+# 상공 정렬 + 죠 안착 + 재물림을 합친 누적 상한. 계수가 한 점 선형화라 이보다 멀리
+# 뻗으면 '높이 불변'이 깨진다(관절 한계 자체는 여유가 있다).
+REACH_TOTAL_MAX = 0.080
 # 큐브 기울기 정렬: 손목캠 minAreaRect 각도는 큐브 yaw와 1:1 반전(실측: +20도→rect 70).
 # 카메라는 roll 관절 앞단이라 롤을 돌려도 측정 불변 — 측정·제어 분리.
 WRIST_RECT_REF = 90.0           # 정렬 큐브의 rect 각 (실측)
@@ -277,6 +391,15 @@ class PickNode(Node):
         self.creep = float(self.declare_parameter('creep', 0.025).value)
         # 놓을 곳: side(옆 바닥) | trash(쓰레기통 투입)
         self.place_target = str(self.declare_parameter('place_target', 'side').value).strip().lower()
+        # 단계별 추적 기록. 로그를 더 많이 찍는 것이 아니라, 단계마다 '로봇의 믿음'과
+        # '실제(시뮬 좌표)'를 한 줄로 나란히 남긴다 — 오늘 가짜 성공(로그는 전 구간
+        # HOLDING인데 큐브는 바닥 그대로)을 잡은 것이 실좌표였고, 관절값·각도·면적을
+        # 아무리 자세히 찍어도 그건 못 잡는다. 시행끼리 표로 비교하려고 JSONL로 쓴다.
+        self.use_ik = bool(self.declare_parameter('use_ik', True).value)
+        self.trace_path = str(self.declare_parameter(
+            'trace', os.path.expanduser('~/capstone_tools/logs/trace.jsonl')).value)
+        self._t0 = time.time()
+        self._trace_target = f'pick_object_{target_color}'
         # 검출기: yolo(기본, 시뮬 자동라벨 파인튜닝 모델) / hsv(폴백·orange·pink용)
         self.detector = str(self.declare_parameter('detector', 'yolo').value).strip().lower()
         self.yolo = None
@@ -291,7 +414,6 @@ class PickNode(Node):
             self.yolo_cls = {v: k for k, v in self.yolo.names.items()}[f'{target_color}_box']
         self.get_logger().info(
             f'speed_scale={self.scale} target_color={target_color} detector={self.detector}')
-        self.hold_target = GRIPPER_CLOSED  # 파지 시 최초 접촉각-0.03으로 갱신됨
         self.bridge = CvBridge()
         self.color = None
         self.depth = None
@@ -309,6 +431,9 @@ class PickNode(Node):
         self.arm_client = ActionClient(self, FollowJointTrajectory,
                                        'arm_controller/follow_joint_trajectory')
         self.grip_client = ActionClient(self, GripperCommand, 'gripper_controller/gripper_cmd')
+        # 모방학습 수집용: 그리퍼 목표(Goal_Position)를 토픽으로도 남긴다.
+        # 액션 goal은 서버 내부에만 있어 외부 수집기가 관측할 수 없다.
+        self._grip_cmd_pub = self.create_publisher(Float64, 'capstone/gripper_cmd', 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -333,8 +458,78 @@ class PickNode(Node):
 
     def _joint_cb(self, m):
         if 'arm_gripper' in m.name:
-            self.gripper_angle = m.position[m.name.index('arm_gripper')]
-        self.joint_pos = {n: p for n, p in zip(m.name, m.position) if n in ARM_JOINTS}
+            i = m.name.index('arm_gripper')
+            self.gripper_angle = m.position[i]
+            # 그리퍼 부하 = 파지 판정의 1차 신호. 실물 SO-101이 Feetech 서보의
+            # present load로 판정하는 것과 같은 값이다(URDF의 effort state interface).
+            self.gripper_effort = m.effort[i] if len(m.effort) > i else None
+        # /joint_states에는 퍼블리셔가 둘이다 — joint_state_broadcaster(팔·그리퍼)와
+        # ros_gz_bridge(바퀴 2개만). 종전처럼 통째로 덮어쓰면 바퀴 메시지가 도착할
+        # 때마다 팔 관절이 빈 dict가 되고, 그 순간을 읽은 쪽은 "관절 상태 미수신"으로
+        # 물러난다(실측: _reach_arm이 3회 연속 보정을 건너뛰어 얕은 걸침으로 직행).
+        # 갱신분만 병합해 마지막으로 받은 팔 각도를 유지한다.
+        upd = {n: p for n, p in zip(m.name, m.position) if n in ARM_JOINTS}
+        if upd:
+            self.joint_pos = {**(getattr(self, 'joint_pos', None) or {}), **upd}
+
+    # ---- 단계별 추적 ----
+    def _gz_pose(self, model):
+        """시뮬의 실좌표 — 판정용 정답지. 제어에는 절대 쓰지 않는다.
+
+        실물에는 없는 정보다. 여기서만(디버그 계층) 읽어 '로봇이 그렇게 믿었나'와
+        '실제로 그랬나'를 대조한다.
+        """
+        try:
+            out = subprocess.run(['gz', 'model', '-m', model, '-p'],
+                                 capture_output=True, text=True, timeout=8).stdout
+        except Exception:
+            return None
+        L = out.splitlines()
+        for i, l in enumerate(L):
+            if '- Pose' in l and i + 1 < len(L):
+                try:
+                    v = [float(x) for x in L[i + 1].strip().strip('[]').split()]
+                    return [round(x, 4) for x in v[:3]]
+                except ValueError:
+                    continue
+        return None
+
+    def _trace(self, stage, truth=True, **extra):
+        """단계 경계에서 믿음과 실제를 한 줄로 남긴다 (JSONL).
+
+        한 줄에 다 담는 이유는 시행끼리 표로 놓고 비교하기 위해서다. 로그를 길게
+        찍으면 한 번의 실패는 읽을 수 있어도 5회를 나란히 놓고 '어느 단계에서
+        갈렸나'를 볼 수 없다.
+        """
+        jp = getattr(self, 'joint_pos', None) or {}
+        row = {
+            't': round(time.time() - self._t0, 1),
+            'stage': stage,
+            # 로봇의 믿음
+            'joints': {k: round(v, 3) for k, v in sorted(jp.items())},
+            'grip_ang': None if self.gripper_angle is None else round(self.gripper_angle, 3),
+            'grip_load': None if getattr(self, 'gripper_effort', None) is None
+                         else round(self.gripper_effort, 3),
+            'odom': None if self.odom is None else [round(v, 3) for v in self.odom],
+            'jaw': None,
+        }
+        try:
+            t = self.tf_buffer.lookup_transform(
+                'base_footprint', 'arm_gripper_frame_link', rclpy.time.Time())
+            p = t.transform.translation
+            row['jaw'] = [round(p.x, 4), round(p.y, 4), round(p.z, 4)]
+        except Exception:
+            pass
+        row.update(extra)
+        if truth:      # 실제 (시뮬만 가능, 0.6초)
+            row['cube_gz'] = self._gz_pose(self._trace_target)
+            row['robot_gz'] = self._gz_pose('jdamr_cube')
+        try:
+            os.makedirs(os.path.dirname(self.trace_path), exist_ok=True)
+            with open(self.trace_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(row, ensure_ascii=False) + '\n')
+        except OSError as e:
+            self.get_logger().warning(f'추적 기록 실패: {e}')
 
     def spin_until(self, pred, sec):
         """조건 pred()가 참이 될 때까지 최대 sec초 동안 메시지를 처리한다. 참이면 True.
@@ -532,9 +727,15 @@ class PickNode(Node):
         return self.wait_arm_settled(merged)
 
     def wait_arm_settled(self, target, tol=0.04, timeout=6.0):
-        """팔 관절이 목표 각도에 실제 도달할 때까지 대기."""
+        """팔 관절이 목표 각도에 실제 도달할 때까지 대기.
+
+        미달일 때 **어느 관절이 얼마나** 어긋났는지 함께 남긴다. 종전에는 최대
+        오차 하나만 찍었는데, 하강이 0.265rad 어긋난 채 끝나도 그것이 어깨가
+        바닥에 눌린 것인지 손목이 한계에 걸린 것인지 구분할 수 없었다 — 그
+        구분 없이는 파지 실패의 원인을 짚을 수 없다.
+        """
         t0 = time.time()
-        worst = None
+        worst, jp = None, None
         while time.time() - t0 < timeout:
             rclpy.spin_once(self, timeout_sec=0.05)
             jp = getattr(self, 'joint_pos', None)
@@ -543,18 +744,49 @@ class PickNode(Node):
             worst = max(abs(jp.get(j, target[j]) - target[j]) for j in target)
             if worst < tol:
                 return True
-        self.get_logger().warning(f'자세 도달 미완 (최대 오차 {worst if worst else float("nan"):.3f}rad)')
+        detail = ''
+        if jp:
+            bad = sorted(((abs(jp.get(j, target[j]) - target[j]), j) for j in target),
+                         reverse=True)
+            detail = ' — ' + ', '.join(
+                f'{j.replace("arm_", "")} 목표{target[j]:+.2f} 실제{jp.get(j, float("nan")):+.2f}'
+                f'({e:+.3f})' for e, j in bad[:3] if e >= tol)
+        self.get_logger().warning(
+            f'자세 도달 미완 (최대 오차 {float("nan") if worst is None else worst:.3f}rad){detail}')
         return False
 
-    def gripped(self, angle):
-        """물림 판정: 그리퍼 각도가 '물체 두께에 해당하는 구간'에 있는가.
+    def gripped(self, angle=None):
+        """물림 판정 — 그리퍼 관절 부하로 본다. 각도는 보조.
 
-        하한만 두면 아예 닫히지 않은 상태(각도 0 부근)까지 성공으로 새어 나가고
-        (실측: 명령 0.0 / 각도 -0.000인데 HOLDING 오판), 명령 대비 잔여각으로 보면
-        유지용 재조임이 목표에 도달하는 순간 0이 되어 오판한다. 구간 판정이 둘 다 피한다.
-        실측: 3cm 큐브 물림 0.07~0.40 / 허공 완전닫힘 -0.17 / 모서리 헛집기 -0.07 / 열림 0.5+
+        표준 방식이다. 죠에 '완전 닫힘'을 계속 명령해 두면, 물체가 막고 있는 동안은
+        위치 오차가 남아 부하가 실리고 물체가 빠지면 죠가 끝까지 닫혀 부하가 사라진다.
+        실물 SO-101이 Feetech 서보의 present load로 파지를 판정하는 것과 같은 신호다.
+
+        실측(2026-08-07, tools/grip_signal_probe.py + effort_drop.py):
+            죠 열림          각도 +1.200  effort  +0.003
+            큐브 물림        각도 +0.406  effort -10.000
+            운반 중 유지     각도 +0.291  effort -10.000
+            큐브 이탈        각도 -0.170  effort  -0.001
+        1만 배 갈리고, 낙하 시점에 곧바로 죽는다.
+
+        각도를 1차로 쓸 수 없는 이유가 둘 있다.
+          · 조인 시간에 따라 변한다 — 같은 큐브·같은 자리인데 1.5초 뒤 0.42,
+            10초 뒤 0.26이었다. 시간에 의존하는 값을 임계로 쓸 수 없다.
+          · 접촉각을 유지 목표로 명령하면 그때부터 각도는 자기가 명령한 값이다.
+            그 방식에서는 큐브를 빼앗아도 각도·부하가 그대로였다(가짜 성공의 원인).
         """
-        return angle is not None and GRIP_HOLD_MIN < angle < GRIP_HOLD_MAX
+        eff = getattr(self, 'gripper_effort', None)
+        if angle is None:
+            angle = getattr(self, 'gripper_angle', None)
+        # 두 신호를 함께 본다. 부하만 보면 "뭔가 끼었다"까지만 알고 "제대로 물었나"는
+        # 모른다 — 큐브가 43도 돌아간 채 대각선(5.7cm)으로 걸리면 부하는 -10.0인데
+        # 물림각이 0.78이고 들다가 빠진다(실측). 각도가 물체 두께를 말해 주므로,
+        # 4cm 큐브의 정상 물림 구간(0.32~0.55)을 벗어나면 잘못 문 것이다.
+        width_ok = angle is None or GRIP_HOLD_MIN < angle < GRIP_HOLD_MAX
+        if eff is not None:
+            return abs(eff) > GRIP_LOAD_MIN and width_ok
+        # effort 미노출(구 URDF)일 때는 각도 구간만으로 판정한다
+        return angle is not None and width_ok
 
     def move_gripper(self, position, wait=True, effort=10.0):
         """그리퍼를 position 각도로 움직인다. 큰 값이 열림, 작은 값이 닫힘.
@@ -572,6 +804,10 @@ class PickNode(Node):
         시간 예산을 넘겨 중단됐다(실측). 유지 명령은 도착만 하면 된다.
         """
         self._last_grip_cmd = float(position)
+        # 모방학습 수집용: 그리퍼 목표를 토픽으로도 남긴다. 액션 goal은 서버
+        # 내부에만 있어 외부 수집기가 볼 수 없다 — 실물에서 리더암 명령을
+        # 기록하는 것과 같은 역할이고, LeRobot의 action(Goal_Position)에 해당한다.
+        self._grip_cmd_pub.publish(Float64(data=float(position)))
         if not self.grip_client.wait_for_server(timeout_sec=10.0):
             return False
         g = GripperCommand.Goal()
@@ -615,6 +851,7 @@ class PickNode(Node):
         #   ② 최소 펄스를 길게 두면 미세 조정이 초속 8mm의 너무 느린 명령이 되어
         #      정지 마찰을 못 이기고 아예 안 움직인다(정렬 실패 → 파지가 허공을 집음)
         # 그래서 시간을 고정하지 않고, 속도를 [하한, 상한] 안에 두고 시간으로 이동량을 맞춘다.
+        a0 = self.odom[2] if self.odom else None   # 회전 미달 보정용 시작 각
         s = min(self.scale, 4.0)          # 주행 배율 상한 (팔 배율은 제한하지 않는다)
         t = Twist()
         dur = sec / s
@@ -627,10 +864,23 @@ class PickNode(Node):
             dur = max(dur, abs(wz) * sec / w)
             t.angular.z = w if wz > 0 else -w
         dur *= 1.2                        # 가감속 손실 보상
-        if vx:
-            t.linear.x = vx * sec / dur   # 늘어난 시간에 맞춰 속도 재계산 (이동량 불변)
-        if wz:
-            t.angular.z = wz * sec / dur
+        tv = vx * sec / dur if vx else 0.0   # 늘어난 시간에 맞춰 속도 재계산 (이동량 불변)
+        tw = wz * sec / dur if wz else 0.0
+        # 위에서 하한(0.06 / 0.25)을 걸어놨는데 이동량 보존으로 다시 그 아래로
+        # 떨어지면 정지 마찰을 못 이겨 통째로 무변위가 된다. 실측: approach가
+        # 0.125rad/s로 회전 명령을 내 방위각 -21.8도가 13회 연속 고정이었다
+        # (같은 명령을 0.209rad/s로 주면 97% 달성). 하한을 지키고 시간을 줄여
+        # 이동량을 맞춘다 — 속도×시간이 불변이므로 결과는 같다.
+        shrink = 1.0
+        if vx and abs(tv) < 0.06:
+            shrink = max(shrink, 0.06 / abs(tv))
+        if wz and abs(tw) < 0.25:
+            shrink = max(shrink, 0.25 / abs(tw))
+        if shrink > 1.0:
+            dur /= shrink
+            tv *= shrink
+            tw *= shrink
+        t.linear.x, t.angular.z = tv, tw
         # 운반 중에는 사다리꼴 속도 프로파일로 저크를 없앤다. 즉발 시작·정지의 회전
         # 관성이 물림을 흐트러뜨린다 — 실측: 회전 누적 74도에서 큐브가 죠 안에서
         # 미끄러져(실좌표 z=0.21로 쥔 상태 유지) 손목캠 면적이 51724→8103으로 급감,
@@ -658,6 +908,43 @@ class PickNode(Node):
             time.sleep(0.03)
         self.cmd_pub.publish(Twist())
         time.sleep(0.5)
+        # 회전은 명령만으로 재현되지 않는다. 마찰을 어떻게 튜닝해도 같은 명령이
+        # 71%/30%로 갈린다(실측, mu2=0.1 2회 반복). 15kg 차체의 정지 마찰이
+        # 비선형이기 때문이다. 접근 정렬은 회전 정확도에 직결되므로 — 미달분을
+        # 그대로 두면 approach가 같은 방위각을 수십 회 반복하며 제자리가 된다 —
+        # 실제로 돈 각을 재서 부족분을 채운다. 직진(drive_dist)과 같은 방식이다.
+        if wz and a0 is not None and abs(wz * sec) > 0.03:
+            self._turn_fill(wz * sec, a0)
+
+    def _turn_fill(self, goal, a0, tol=0.03, max_iter=4):
+        """drive()가 목표만큼 못 돌았으면 odom을 보며 남은 각을 채운다."""
+        sign = 1.0 if goal > 0 else -1.0
+        target = abs(goal)
+
+        def turned():
+            if self.odom is None:
+                return target          # 못 재면 더 돌지 않는다(폭주 방지)
+            return abs(math.atan2(math.sin(self.odom[2] - a0),
+                                  math.cos(self.odom[2] - a0)))
+
+        for _ in range(max_iter):
+            rest = target - turned()
+            if rest < tol:
+                break
+            deadline = time.time() + min(1.5, rest / 0.3 + 0.3)
+            while time.time() < deadline:
+                t = Twist()
+                t.angular.z = sign * 0.3
+                self.cmd_pub.publish(t)
+                rclpy.spin_once(self, timeout_sec=0.02)
+                if turned() >= target - tol * 0.5:
+                    break
+            self.cmd_pub.publish(Twist())
+            time.sleep(0.25)
+        got = turned()
+        if abs(got - target) > tol:
+            self.get_logger().info(
+                f'회전 보정: 목표 {math.degrees(goal):+.0f}° → 실제 {math.degrees(got * sign):+.0f}°')
 
     # ---- 2) Approach: 비전 재인식 폐루프 (odom 기반 스톨 감지 포함) ----
     def approach(self, max_iter=40):
@@ -687,6 +974,7 @@ class PickNode(Node):
         """
         prev_odom = None
         stall_n = 0
+        self._reacq_cnt = 0      # 이번 접근에서 '추측항법 수렴' 후 재관측을 시도한 횟수
         for it in range(max_iter):
             self.spin_until(lambda: self.odom is not None, 5.0)
             # 스톨 = 2회 연속 무이동일 때만 (짧은 회전은 관성으로 1회 무이동이 정상 — 오판 방지)
@@ -738,6 +1026,9 @@ class PickNode(Node):
                 self._miss = 0
                 self._last_seen = it
                 xb, yb, zb, dbg = loc
+                # IK 파지가 쓸 실측 좌표. 종전처럼 '포켓이라는 한 점'에 갖다 놓는
+                # 대신, 큐브가 **어디 있든** 그 좌표를 IK에 넣어 팔이 흡수한다.
+                self._cube_base = (xb, yb, max(0.0, zb))
                 if zb > 0.001 and not getattr(self, '_mode_locked', False):
                     # 첫 실검출의 높이로 받침대/바닥 모드 결정 (이후 고정)
                     self.floor_mode = zb < FLOOR_Z_MAX
@@ -761,21 +1052,45 @@ class PickNode(Node):
                 f'd={dbg[2]:.2f} | er={er * 1000:.0f}mm brg={math.degrees(brg):.1f}deg')
             # 바닥 모드는 ±30mm면 합격 — 잔여 오차는 손목캠 정렬(pan+미세주행)이 마무리.
             # 좁은 공차로 범퍼 코앞에서 전후 왕복하다 물체를 미는 것 방지.
-            tol = 0.030 if self.floor_mode else 0.012
-            if abs(er) < tol and abs(brg) < 0.30 and (real or it - getattr(self, "_last_seen", -99) <= 8):
-                if not real and not getattr(self, '_reacq_done', False):
-                    # 추측항법만으로 수렴 — 정지 상태에서 한 번 재관측 (주행 중 비전 상실 드리프트 보정)
-                    self._reacq_done = True
-                    self.get_logger().info('수렴(추측항법) — 정지 재관측 시도')
-                    time.sleep(1.0)
-                    prev_odom = None  # 의도적 정지 — 다음 반복 스톨 오판 방지
-                    continue
+            tol = 0.045 if self.floor_mode else 0.012   # IK가 흡수하므로 넓혀도 된다
+            # 방위 임계는 **IK 좌우 범위에서 역산**한다. 종전 0.30rad(17도)은 큐브를
+            # y=±0.11m까지 벌려 놓는데, 파지가 검증된 범위는 ±0.05m다(ik_grasp_probe).
+            # 실측: 접근이 y=+0.087에 두고 끝나 IK 해는 나왔지만 허공을 물었다.
+            brg_tol = 0.15 if self.floor_mode else 0.30
+            if abs(er) < tol and abs(brg) < brg_tol and (real or it - getattr(self, "_last_seen", -99) <= 8):
+                if not real:
+                    # 접근 종료는 실측으로 내려야 한다. 추측항법 좌표로 끝내면 큐브가
+                    # 포켓 밖에 남는다 — 실좌표 대조: 접근 종료 시 큐브까지 0.341 /
+                    # 0.354 / 0.363m(전부 파지 실패), 0.394m(성공). 포켓은 0.385이고
+                    # 파지 성립 구간은 그 ±20mm라, 34mm 어긋남이 곧 실패였다.
+                    # 종전에는 재관측을 한 번만 시도하고, 그 재관측이 실패해도
+                    # 플래그 때문에 다음 회차에 그냥 통과했다(로그의 '[6] 추정 추적'
+                    # 직후 파지 진입이 그 경로다).
+                    n_try = getattr(self, '_reacq_cnt', 0)
+                    if n_try < 2:
+                        self._reacq_cnt = n_try + 1
+                        if n_try == 0:
+                            # 주행 중 비전 상실 드리프트 보정 — 멈춰서 다시 본다
+                            self.get_logger().info('수렴(추측항법) — 정지 재관측 시도')
+                            time.sleep(1.0)
+                        else:
+                            # 포켓(0.385m)은 전방캠 근접 사각의 경계라 큐브가 화면
+                            # 하단으로 잘린다(실측 px y=472/480). 물러나야 다시 보인다.
+                            self.get_logger().info('수렴(추측항법) — 후진해 시야 확보 후 재관측')
+                            self.drive(-0.10, 0.0, 2.0)
+                        prev_odom = None  # 의도적 정지 — 다음 반복 스톨 오판 방지
+                        continue
+                    self.get_logger().warning(
+                        '실측 없이 접근 종료 — 추측 좌표로 파지 진입(정확도 낮음)')
                 self._anchor_odom = self.odom
                 return -(brg - PAN_BASE_BEARING)
             if abs(brg) > 0.30:
                 # 맹회전은 저속으로 (고속 회전 슬립이 yaw 추정을 무너뜨려 지그재그 발진)
                 wz = 0.25 if real else 0.10
-                self.drive(0.0, wz if brg > 0 else -wz, min(2.0, abs(brg) / wz))
+                # 게인 0.5: 한 번에 목표각을 다 돌면 관성으로 넘어가 반대편으로
+                # 같은 만큼 벗어난다 — 실측: brg가 +26.9°↔-26.7°를 정확히 왕복하며
+                # 수렴하지 않았다. 절반씩 접근하면 오버슈트 없이 수렴한다.
+                self.drive(0.0, wz if brg > 0 else -wz, min(2.0, 0.5 * abs(brg) / wz))
             else:
                 # 맹구간 직진 위주 — 잔여 방위는 파지 단계의 pan 회전과 손목캠 정렬이 흡수
                 v = 0.08 if er > 0.2 else (0.04 if er > 0 else -0.04)
@@ -784,6 +1099,56 @@ class PickNode(Node):
         return None
 
     # ---- 손목 카메라 최종 정렬 (바닥 모드): 좌우=pan, 전후=미세 주행 ----
+    def drive_dist(self, dist, tol=0.006, max_iter=6):
+        """목표 거리만큼 '실제로' 이동할 때까지 odom을 보며 반복한다.
+
+        짧은 저속 펄스는 정지 마찰에 먹힌다. 실측(15kg 차체):
+
+            0.03 m/s × 1.73s (52mm 명령) → 실제 0.2mm  (달성률 0%)
+            0.03 m/s × 0.67s (20mm 명령) → 실제 0.0mm  (0%)
+            0.15 m/s × 0.35s (52mm 명령) → 실제 5.1mm  (10%)
+            0.15 m/s × 4.0s (600mm 명령) → 실제 175mm  (100%, odom 오차 1mm)
+
+        즉 '얼마나 오래 명령했나'가 아니라 '움직이기 시작했나'가 관건이다.
+        그래서 명령하고 끝내지 않고, 실제 이동량을 재서 남은 거리를 다시 민다.
+        이 보정이 없으면 손목캠이 "52mm 더 가라"고 해도 차체가 제자리라
+        팔만 무리하게 뻗다 바닥에 막히고 허공을 문다(실측: 파지 실패 3/3).
+
+        반환값은 실제로 이동한 거리(부호 포함, m).
+        """
+        if abs(dist) < tol:
+            return 0.0
+        self.spin_until(lambda: self.odom is not None, 3.0)
+        if self.odom is None:
+            self.get_logger().warning('drive_dist: odom 없음 — 이동 생략')
+            return 0.0
+        x0, y0 = self.odom[0], self.odom[1]
+        sign = 1.0 if dist > 0 else -1.0
+        target = abs(dist)
+
+        def moved():
+            return math.hypot(self.odom[0] - x0, self.odom[1] - y0)
+
+        for _ in range(max_iter):
+            rest = target - moved()
+            if rest < tol:
+                break
+            # 정지 마찰을 넘길 만큼의 속도로 밀되, 목표에 닿으면 즉시 멈춘다.
+            v = sign * 0.12
+            deadline = time.time() + min(2.0, rest / 0.12 + 0.5)
+            while time.time() < deadline:
+                m = Twist()
+                m.linear.x = v
+                self.cmd_pub.publish(m)
+                self.spin_until(lambda: False, 0.05)
+                if moved() >= target - tol * 0.5:
+                    break
+            self.cmd_pub.publish(Twist())
+            self.spin_until(lambda: False, 0.3)
+        got = moved()
+        self.get_logger().info(f'차체 이동: 목표 {dist * 1000:+.0f}mm → 실제 {got * sign * 1000:+.0f}mm')
+        return got * sign
+
     def wrist_align(self, pan, pre):
         """호버 자세에서 손목 RGB로 물체 중간이 파지선(WRIST_REF)에 오도록 정렬한다.
 
@@ -792,13 +1157,35 @@ class PickNode(Node):
         맞춰둔 위치가 어긋난다(물체 중점을 벗어나 얕게 물림).
         손목캠은 roll 관절 앞단에 있어 롤을 돌려도 측정 기준이 변하지 않으므로,
         roll을 먼저 적용해도 이후 위치 측정은 그대로 유효하다(실측 확인).
+
+        좌우(pan)뿐 아니라 전후도 여기서 맞춘다. 접근 주행은 근접에서 비전을 잃고
+        마지막 2~3스텝을 추측항법으로 끝내므로(로그: px=(0,0) d=0.00) odom 드리프트가
+        그대로 남는다 — 접근이 er=+5mm라고 판정한 순간 손목캠은 +30mm를 봤다.
+        가까이서 보는 손목캠이 옳으므로 전후 권한도 손목캠에 준다. 차체는 쓰지 않고
+        (내려간 팔 앞에서 차체를 밀면 죠가 큐브를 쳐낸다) lift·elbow 조합으로 뻗는다.
+
+        반환값의 reach는 이렇게 뻗은 전후량[m]이다. 호출부는 하강 자세에도 같은 양을
+        반영해야 한다 — 상공에서만 뻗고 고정된 파지 자세로 내려가면 도로 제자리다.
         """
         roll = 0.0
+        pose = dict(pre)
+        reach = 0.0
         ang = self._wrist_cube_angle()
         if ang is not None and abs(ang) > 0.06:
             roll = max(-0.8, min(0.8, ROLL_SIGN * ang))
             self.get_logger().info(f'큐브 기울기 {math.degrees(ang):+.0f}도 → 롤 먼저 정렬 {roll:+.2f}rad')
-            self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.5)
+            # 상공 측정은 절대 yaw다(실측: roll을 바꿔도 산포 0.1도). 그래서 한 번 재고
+            # 그만큼 돌리면 끝이고, 재측정으로는 품질을 확인할 수 없다 — 값이 안 변하니까.
+            # 대신 **도달**을 확인한다. roll이 명령을 못 따라간 사례가 있었고(목표 -0.68에
+            # -0.08로 고착), 그 상태로 내려가면 대각선으로 문다. 하강 후에는 죠가 큐브를
+            # 가려 각도를 다시 잴 수 없으므로 여기가 마지막 기회다.
+            if not self.move_arm({**pose, 'arm_shoulder_pan': pan,
+                                  'arm_wrist_roll': roll}, 1.5):
+                got = (self.joint_pos or {}).get('arm_wrist_roll')
+                self.get_logger().warning(
+                    f'  롤 도달 미달 (목표 {roll:+.2f} 실제 '
+                    f'{"?" if got is None else f"{got:+.2f}"}) — 한 번 더 명령')
+                self.move_arm({'arm_wrist_roll': roll}, 1.2)
             time.sleep(0.4)
 
         # pan 게인은 방향·크기에 따라 568~2905 px/rad로 비선형이라(실측) 상수로는 어느
@@ -813,6 +1200,7 @@ class PickNode(Node):
                     # 첫 관측부터 없음 = 추측항법이 포켓 포착 범위 밖에 내렸다는 뜻.
                     # 맹목 하강은 허공 파지가 보장된다(실측: 복구 재파지 2회 연속
                     # -0.170) — 하강하지 말고 실패를 알려 재접근을 태운다.
+                    self.last_grasp_fail = '손목캠 물체 미검출(하강 전)'
                     self.get_logger().warning('손목캠: 물체 미검출 — 맹목 하강 대신 재접근 요청')
                     return None
                 self.get_logger().info('손목캠: 물체 미검출 — 정렬 생략')
@@ -825,12 +1213,17 @@ class PickNode(Node):
             dpan = 0.9 * (best[1] - WRIST_REF[1]) / gain
             self.get_logger().info(
                 f'손목캠 정렬[{i}]: blob=({best[0]:.0f},{best[1]:.0f}) '
-                f'전후 {dr * 1000:+.0f}mm, pan 보정 {dpan:+.3f}rad (게인 {gain:.0f})')
+                f'전후 {dr * 1000:+.0f}mm(팔 {reach * 1000:+.0f}), '
+                f'pan 보정 {dpan:+.3f}rad (게인 {gain:.0f})')
             # 좌우 임계 0.004rad ≈ 포켓 반경 0.222m에서 0.9mm. 죠 중앙에 물리려면
             # 이 수준이어야 하고, 5프레임 중앙값을 쓰므로 이 임계까지 측정이 견딘다.
-            if abs(dr) < 0.005 and abs(dpan) < 0.004:
+            # 전후 임계는 보정 데드존과 같은 값이어야 한다. 임계가 데드존보다 작으면
+            # 그 사이 구간은 수렴 판정도 못 받고 보정도 안 되어 루프만 10회 소진한다
+            # (실측: 전후 -12mm가 10회 내내 그대로였다).
+            if abs(dr) <= REACH_DEADZONE and abs(dpan) < 0.004:
                 self.get_logger().info(
-                    f'정렬 수렴({i + 1}회): 전후 {dr * 1000:+.1f}mm, 좌우 {dpan:+.4f}rad')
+                    f'정렬 수렴({i + 1}회): 전후 {dr * 1000:+.1f}mm, 좌우 {dpan:+.4f}rad, '
+                    f'팔 리치 {reach * 1000:+.0f}mm')
                 break
             prev_y = best[1]
             prev_applied = 0.0
@@ -843,12 +1236,247 @@ class PickNode(Node):
                 prev_applied = new_pan - pan      # 관절 한계에 걸린 만큼은 빼고 기록
                 pan = new_pan
                 # roll을 유지한 채 pan만 조정 (roll을 빼면 정렬 기준이 다시 어긋난다)
-                self.move_arm({**pre, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.2)
+                self.move_arm({**pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.2)
                 time.sleep(0.3)
-            if abs(dr) >= 0.005:
-                step = max(-0.05, min(0.05, dr))
-                self.drive(0.03 if step > 0 else -0.03, 0.0, abs(step) / 0.03)
-        return pan, roll
+            # 전후는 팔로 뻗어 맞춘다. 차체는 건드리지 않는다 — 팔이 물체 위에 있는
+            # 상태에서 차체를 밀면 죠가 큐브를 쳐서 밀어낸다(실측: 아랫턱이 닿은 뒤에도
+            # 계속 밀어 큐브가 굴러감).
+            # 큐브가 포켓보다 가까우면(dr<0) 팔을 당기지 않는다 — 당기면 죠가 큐브
+            # 앞으로 빠져 허공을 문다(실측: -22/-28/-45mm 세 번 모두 허공).
+            # 그렇다고 재접근으로 돌리지도 않는다. 그건 한 번 시도하면 끝날 일을
+            # 사이클 전체로 키우는 거래였다 — 접근 잔차 분산(±45mm)이 접근 허용오차
+            # (±30mm)보다 커서 재접근해도 같은 자리에 서고, 실측에서 3회 연속 사이클을
+            # 통째로 소진했다. 파지 실패는 부하 신호가 즉시·정확히 잡아내므로 싸다.
+            # 그냥 내려가서 시도한다.
+            if dr > REACH_DEADZONE:
+                # 남은 양을 다 뻗지 않고 70%만: 팔이 앞으로 나가면 손목캠도 함께
+                # 나가므로 측정과 제어가 같은 방향으로 얽힌다. 덜 뻗어 수렴시킨다.
+                want = max(0.0, min(REACH_LIMIT, reach + 0.7 * dr))
+                step = want - reach
+                if abs(step) <= 0.001 and abs(reach) >= REACH_LIMIT - 1e-9:
+                    # 팔을 끝까지 뻗었는데도 남았다. 재접근으로 돌리지 않고 이대로
+                    # 내려가 시도한다(위 주석과 같은 이유). 남은 오차를 로그에 남겨
+                    # 실패했을 때 원인을 되짚을 수 있게 한다.
+                    self.get_logger().warning(
+                        f'전후 오차 {dr * 1000:+.0f}mm — 팔 리치 포화'
+                        f'({reach * 1000:+.0f}mm), 이대로 하강해 시도')
+                    break
+                if abs(step) > 0.001:
+                    reach = want
+                    pose['arm_shoulder_lift'] = pre['arm_shoulder_lift'] + HOVER_LIFT_PER_M * reach
+                    pose['arm_elbow_flex'] = pre['arm_elbow_flex'] + HOVER_ELBOW_PER_M * reach
+                    # 자세족 불변식(lift+elbow+wrist≈1.58)을 지켜 죠 평면을 수직으로 유지
+                    pose['arm_wrist_flex'] = pre['arm_wrist_flex'] \
+                        - (HOVER_LIFT_PER_M + HOVER_ELBOW_PER_M) * reach
+                    self.move_arm({**pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}, 1.2)
+                    time.sleep(0.3)
+        return pan, roll, reach
+
+    def _reach_arm(self, s, sec=1.0):
+        """내려간 자세에서 죠를 전후로 s[m]만큼 옮긴다 (높이 유지). 성공하면 True.
+
+        lift 하나만 쓰면 전후 10mm에 높이가 10mm 넘게 딸려 온다 — 파지 높이는 바닥
+        접촉 경계(1.17)에서 0.02 여유뿐이라 그걸로는 못 쓴다. elbow를 반대로 섞어
+        높이 성분을 상쇄한 것이 아래 조합이다.
+
+        누적 기준은 측정각(joint_pos)이 아니라 직전 명령(_last_arm)이다. 측정 기준으로
+        더하면 추종오차(wait_arm_settled 허용 0.04rad = 리치 15mm)와 중력 처짐이 호출
+        때마다 목표에 눌러앉아 래칫이 된다.
+        """
+        cur = dict(getattr(self, '_last_arm', None) or self.joint_pos or {})
+        if len(cur) < 5:
+            self.get_logger().warning('팔 리치: 팔 자세 미확정 — 보정 생략')
+            return False
+        # REACH_* 계수는 파지 자세 한 점에서 잰 국소 선형화다. 멀리 뻗을수록
+        # '높이 불변' 가정이 조용히 깨지므로 누적에 상한을 둔다.
+        total = getattr(self, '_reach_applied', 0.0) + s
+        if abs(total) > REACH_TOTAL_MAX:
+            self.get_logger().warning(
+                f'팔 리치 누적 {total * 1000:+.0f}mm — 선형화 유효범위 초과, 중단')
+            return False
+        ok = self.move_arm({
+            'arm_shoulder_lift': cur['arm_shoulder_lift'] + REACH_LIFT_PER_M * s,
+            'arm_elbow_flex': cur['arm_elbow_flex'] + REACH_ELBOW_PER_M * s,
+            # 자세족 불변식을 지켜 죠 평면이 기울지 않게 한다
+            'arm_wrist_flex': cur['arm_wrist_flex']
+                              - (REACH_LIFT_PER_M + REACH_ELBOW_PER_M) * s,
+        }, sec)
+        self._reach_applied = total
+        # 접지 가드: 리치는 높이를 유지하도록 짜였으므로 경계도 같은 양만큼 올라간다.
+        lift_now = (self.joint_pos or {}).get('arm_shoulder_lift')
+        gate = 1.17 + REACH_LIFT_PER_M * total
+        if self.floor_mode and lift_now is not None and lift_now > gate:
+            self.get_logger().warning(
+                f'리치 후 lift={lift_now:.3f} > {gate:.3f} — 손끝 바닥 간섭 구간')
+        time.sleep(0.3)
+        return ok
+
+    def _tcp(self):
+        """죠(TCP)의 base_footprint 좌표. 못 읽으면 None."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                'base_footprint', 'arm_gripper_frame_link', rclpy.time.Time())
+            p = t.transform.translation
+            return p.x, p.y, p.z
+        except Exception:
+            return None
+
+    def _descend_vertical(self, hover, descended, steps=4, keep_x=None):
+        """TCP의 x를 붙들고 z만 내린다 — 직교 직선 하강.
+
+        관절 보간으로 내리면 죠가 26° 기울어진 직선을 그린다(TF 실측: 상공 x=0.3602
+        → 파지 x=0.3352, 25mm 후퇴). 그 경로가 큐브를 앞뒤로 쓸고 지나가 아랫턱이
+        큐브를 쳐낸다. 포켓 위치로 도착점을 맞춰도 **지나가는 경로**는 그대로라
+        소용이 없다 — 표준 파지(MoveIt Grasps)가 접근을 직교 직선으로 하는 이유다.
+
+        각 단계에서 TF로 실제 x를 읽어 되돌리므로 야코비안 계수 오차에 강하다.
+        계수는 자세마다 달라지는데(상공 -221mm/rad, 파지 -56mm/rad) 폐루프라
+        틀린 만큼 한 번 더 당기면 된다.
+        """
+        t0 = self._tcp()
+        if t0 is None:
+            self.get_logger().warning('하강: TCP 조회 실패 — 관절 보간으로 진행')
+            self.move_arm(descended, 4.0)
+            return
+        # 유지할 x를 밖에서 정할 수 있다. 큐브 뒤에서 내릴 때는 '뒤로 물린 x'를
+        # 붙들어야 한다 — 상공 x를 붙들면 뒤로 물리는 목표와 서로 당겨 어긋남이
+        # 커진다(실측: 의도 40mm인데 최종 60mm).
+        if keep_x is None:
+            keep_x = t0[0]
+        self.get_logger().info(f'수직 하강 시작: x={keep_x:.3f} 유지, z {t0[2]:+.3f} → 목표')
+        for i in range(1, steps + 1):
+            t = i / steps
+            pose = {j: hover.get(j, 0.0) + (descended[j] - hover.get(j, 0.0)) * t
+                    for j in ARM_JOINTS}
+            self.move_arm(pose, 1.2)
+            # 이 단계에서 벌어진 x 어긋남을 팔로 되돌린다 (차체는 쓰지 않는다)
+            for _ in range(2):
+                cur = self._tcp()
+                if cur is None:
+                    break
+                dx = keep_x - cur[0]
+                if abs(dx) < 0.004:
+                    break
+                self._reach_arm(max(-0.03, min(0.03, dx)), sec=0.8)
+            cur = self._tcp()
+            if cur:
+                self.get_logger().info(
+                    f'  하강[{i}/{steps}]: x={cur[0]:+.3f} (어긋남 {(cur[0] - keep_x) * 1000:+.0f}mm) '
+                    f'z={cur[2]:+.3f}')
+
+    def _ready_to_close(self, roll):
+        """닫기 직전 합격 조건을 **한 번에** 검사한다. (통과여부, 사유목록, 새 roll)
+
+        조건을 하나씩 따로 검사하고 따로 고치다 보니, 전후를 고치면 각도를 놓치고
+        각도를 고치면 높이를 놓쳤다. 합격 기준을 한 곳에 모아 전부 통과할 때만 닫는다.
+
+        기준 (docs/18-판정-규칙.md와 같은 값):
+          전후   손목캠 blob x vs GRASP_REF   ±POCKET_HALF
+          좌우   손목캠 blob y vs GRASP_REF   ±POCKET_HALF (같은 폭 — 미검증, 아래 참조)
+          각도   큐브 yaw vs 현재 손목 roll   ±0.15rad (약 9도)
+          높이   실측 lift가 명령 lift에 도달  ±0.03rad
+
+        좌우 폭에 대해: 실패 시행들의 좌우가 -8~-18mm였고 성공은 -1mm라, 좌우를
+        훨씬 좁게(6mm) 죄어 봤다가 되돌렸다. 이유가 셋이다.
+          · 그 값들은 전부 하강이 리치만큼 밀린 자세에서 잰 것이다(위 하강 검사 주석).
+            전제가 틀린 데이터로 임계를 정하면 잘못된 상수가 굳는다.
+          · 6mm는 GRASP_PX_PER_M 기준 ±14px인데, blob y 산포는 그보다 훨씬 크다
+            (`_wrist_blob` 주석의 실측 ±100px/단일프레임).
+          · 좌우 오차를 m로 바꿀 때 **전후용** px/m를 쓰고 있다. 손목캠이 36° 기울어
+            전후·좌우 스케일이 다르므로(파일 상단 실측 82 vs 67 px/cm) 이 환산부터 틀렸다.
+        좌우를 죄려면 하강 자세에서 좌우 성립 폭과 px/m를 먼저 실측해야 한다.
+        """
+        bad = []
+        best = self._wrist_blob(frames=3)
+        if best is None:
+            return False, ['큐브 미검출'], roll
+        dr = (best[0] - GRASP_REF[0]) / GRASP_PX_PER_M
+        dy = (best[1] - GRASP_REF[1]) / GRASP_PX_PER_M
+        if abs(dr) > POCKET_HALF:
+            bad.append(f'전후 {dr * 1000:+.0f}mm')
+        if abs(dy) > POCKET_HALF:
+            bad.append(f'좌우 {dy * 1000:+.0f}mm')
+        # 각도는 **여기서 재지 않는다.** 하강 자세에서는 죠가 큐브를 감싸 마스크가
+        # 죠 사이 좁은 틈만 잡고, 그 형상의 주축이 큐브 yaw를 더 이상 반영하지 않는다.
+        #   실측(roll_convention_probe.py, 큐브 yaw 30° 고정):
+        #     상공  roll 0/0.25/0.50/-0.25 → 23.3/23.2/23.2/23.2  (산포 0.1도, 안정)
+        #     하강  같은 조건            →  7.7/ -0.0/ -0.0/ 21.3  (불규칙, 0에서 포화)
+        # 이 값으로 판정하면 이미 맞춰 놓은 roll을 "어긋남"으로 읽고 0으로 되돌린다
+        # (실측: 롤 +0.50 정렬 → 닫기 전 점검 "각도 -29도" → roll을 0으로 → 대각선
+        # 물림 0.58). roll 정렬은 측정이 안정적인 상공에서 wrist_align이 끝낸다.
+        d_ang = None
+        if d_ang is not None and abs(d_ang) > 0.15:
+            bad.append(f'각도 {math.degrees(d_ang):+.0f}도')
+        # 높이: 하강이 실제로 끝났나
+        want = (self._last_arm or {}).get('arm_shoulder_lift')
+        got = (self.joint_pos or {}).get('arm_shoulder_lift')
+        if want is not None and got is not None and abs(want - got) > 0.03:
+            bad.append(f'하강 미달 {want - got:+.3f}rad')
+        self.get_logger().info(
+            f'닫기 전 점검: 전후 {dr * 1000:+.0f}mm 좌우 {dy * 1000:+.0f}mm '
+            f'각도 {"—" if d_ang is None else f"{math.degrees(d_ang):+.0f}도"} '
+            f'→ {"통과" if not bad else " / ".join(bad)}')
+        # 각도만 어긋난 경우는 제자리에서 고칠 수 있다 — 손목만 돌리면 된다
+        if d_ang is not None and abs(d_ang) > 0.15 and len(bad) == 1:
+            new_roll = max(-0.8, min(0.8, roll + d_ang))
+            self.get_logger().info(f'  각도 보정: roll {roll:+.2f} → {new_roll:+.2f}')
+            # **도달을 확인한다.** roll이 명령을 못 따라간 사례가 실측으로 있다
+            # (목표 -0.68에 -0.08로 30초 고착). 도달을 안 보고 통과시키면
+            # 큐브를 대각선으로 물어 들다가 놓친다.
+            if not self.move_arm({'arm_wrist_roll': new_roll}, 1.0):
+                self.get_logger().warning('  각도 보정 미도달 — 닫지 않는다')
+                return False, ['각도 보정 미도달'], roll
+            time.sleep(0.3)
+            return True, [], new_roll
+        return (not bad), bad, roll
+
+    def _seat_into_jaws(self, tries=2, tol=0.015):
+        """하강한 자세에서 손목캠으로 남은 오차를 확인하고, 크면 조금만 민다.
+
+        핵심은 "밀어서 완벽하게 맞추지 않는다"이다. 큐브는 고정돼 있지 않아
+        밀면 도망간다 — 아랫턱이 닿은 뒤에도 계속 밀면 큐브가 앞으로 굴러가
+        파지 위치가 오히려 무너진다(실측). tol 이내면 그대로 잡는다. 죠에는
+        그만한 여유가 있고, 닫힘이 큐브를 고정 죠 쪽으로 쓸어담아 물기 때문이다.
+
+        tol이 15mm로 큰 이유: 포켓 스윕에서 파지 성립 구간이 40mm였다(0.365~0.405).
+        여기서 mm를 다투는 것은 이득이 없고, 시도할수록 큐브를 밀 위험만 늘어난다.
+        이 단계는 "크게 어긋났을 때만 되돌리는" 보험이다.
+
+        손목캠을 36° 기울인 뒤로는 하강 상태에서도 큐브가 보이므로(실측 면적
+        27k~37k) 오차를 눈으로 확인할 수 있다. 못 보면 종전 고정값으로 물러선다.
+        """
+        prev = None
+        for i in range(tries):
+            best = self._wrist_blob(frames=3)
+            if best is None:
+                if i == 0 and self.creep > 0.001:
+                    # 첫 관측부터 못 보면 눈이 없는 것이다. 아무것도 안 하고 닫으면
+                    # 하강 후퇴량(25mm)을 그대로 안은 채 죠 끝단으로 물어 미끄러진다.
+                    # 종전의 고정 creep으로 물러서되, 차체가 아니라 팔로 뻗는다.
+                    self.get_logger().info(
+                        f'죠 안착: 큐브 미검출 — 고정 {self.creep * 1000:.0f}mm 폴백(팔)')
+                    self._reach_arm(self.creep)
+                else:
+                    self.get_logger().info('죠 안착: 큐브 미검출 — 현 자세로 잡는다')
+                return True      # 눈이 없으면 판단 보류 — 닫아 보고 부하로 가린다
+            dr = (best[0] - GRASP_REF[0]) / GRASP_PX_PER_M      # +면 큐브가 멀다
+            self.get_logger().info(
+                f'죠 안착[{i}]: blob=({best[0]:.0f},{best[1]:.0f}) 전후 {dr * 1000:+.0f}mm')
+            if abs(dr) < tol:
+                self.get_logger().info(f'죠 안착 완료: 잔여 {dr * 1000:+.1f}mm')
+                return True
+            # 오차가 줄지 않으면 죠가 이미 큐브에 닿은 것이다. 더 뻗으면 큐브를
+            # 밀어내므로 멈춘다 — 닿았으면 그게 안착 완료다.
+            if prev is not None and abs(dr) > abs(prev) - 0.002:
+                self.get_logger().info(
+                    f'죠 접촉 감지: 오차 {prev * 1000:+.0f}→{dr * 1000:+.0f}mm — 그대로 잡는다')
+                return True
+            prev = dr
+            # 팔만 움직인다. 차체는 건드리지 않는다(밀면 큐브가 도망간다).
+            if not self._reach_arm(max(-0.02, min(0.02, dr))):   # 한 번에 20mm까지
+                return False
+        # 시도를 다 쓰고도 남았다 — 마지막 측정값으로 판단한다
+        return prev is not None and abs(prev) < POCKET_HALF
 
     def _wrist_blob(self, frames=5):
         """손목캠에서 가장 큰 색 블롭의 중심을 여러 프레임의 중앙값으로 구한다.
@@ -878,7 +1506,10 @@ class PickNode(Node):
                 xs.append(best[0])
                 ys.append(best[1])
                 areas.append(best[2])
-        if len(xs) < 3:      # 과반이 안 잡히면 측정으로 쓰지 않는다
+        # 과반이 안 잡히면 측정으로 쓰지 않는다. 하드코딩 3이면 frames=3 호출에서
+        # '3장 전부 성공'을 요구하게 되어(허용 실패 0) 우연한 1프레임 누락이
+        # 곧바로 '큐브 미검출 → 재접근'이 된다.
+        if len(xs) < max(2, frames // 2 + 1):
             return None
         return (float(np.median(xs)), float(np.median(ys)), float(np.median(areas)))
 
@@ -905,6 +1536,84 @@ class PickNode(Node):
         return -math.radians(delta)  # 실측: 이미지 각 = 큐브 yaw의 반전
 
     # ---- 3~5) Grasp / Verify / Lift ----
+    def _cube_now(self):
+        """큐브의 **현재** base_footprint 좌표.
+
+        `_cube_base`는 관측 시점의 base 좌표라 로봇이 움직이면 무효가 된다 —
+        접근하며 전진한 만큼 그대로 어긋난다(실측: 저장값으로 파지하니 큐브가
+        y=+0.234에 있는 것으로 읽혔다). `_obj_odom`은 world 좌표라 고정이므로,
+        그걸 지금 오도메트리로 되돌려 쓴다. approach()의 추측항법과 같은 변환이다.
+        """
+        o = getattr(self, '_obj_odom', None)
+        base = getattr(self, '_cube_base', None)
+        if o is None or not self.odom:
+            return base
+        ox, oy = o
+        x, y, yaw = self.odom
+        dx, dy = ox - x, oy - y
+        cz = base[2] if base else 0.0125
+        return (math.cos(yaw) * dx + math.sin(yaw) * dy,
+                -math.sin(yaw) * dx + math.cos(yaw) * dy, cz)
+
+    def _grasp_ik(self, cube_yaw=0.0):
+        """실측 큐브 좌표로 역기구학 파지. 물었으면 True.
+
+        종전 `grasp()`와 무엇이 다른가. 저 함수는 팔을 **고정 자세**로만 움직이고
+        큐브가 포켓이라는 한 점에 와 있기를 전제한다. 그래서 주행 잔차(±45mm)가
+        파지 성립 구간(40mm)을 넘으면 구조적으로 실패했고, 부족분을 손목캠 픽셀
+        기준점으로 메우다 상수 스무 개가 서로 무효화했다.
+
+        여기서는 큐브가 **어디 있든** 그 좌표를 IK에 넣는다. 실측 성공 범위는
+        전후 0.29~0.41m, 좌우 ±0.05m(`ik_grasp_probe.py`, 시도 가능 지점 10/11).
+
+        경로는 두 구간이다 — 큐브 밖에서 수직으로 내린 뒤 같은 높이에서 수평으로
+        밀어 넣는다. 파지 위치가 큐브 반폭보다 안쪽이라 한 번에 내리면 죠가
+        큐브 윗면을 찌른다(`kinematics.descend_path` 주석 참조).
+        """
+        c = self._cube_now()
+        if c is None:
+            self.get_logger().warning('IK 파지: 큐브 실측 좌표가 없다 — 재접근 필요')
+            self.last_grasp_fail = 'IK 파지 좌표 없음'
+            return False
+        cx, cy, cz = c
+        # 파지가 **실측으로 검증된** 범위인지 먼저 본다. IK 해가 있어도 그 밖이면
+        # 허공을 문다(실측: y=+0.087에서 해는 나왔으나 실패). 재접근이 더 싸다.
+        if not (IK_X_MIN <= cx <= IK_X_MAX) or abs(cy) > IK_Y_MAX:
+            self.get_logger().warning(
+                f'IK 검증 범위 밖 (큐브 {cx:.3f},{cy:+.3f}) — 닫지 않고 재접근 '
+                f'[전후 {IK_X_MIN}~{IK_X_MAX}, 좌우 ±{IK_Y_MAX}]')
+            self.last_grasp_fail = 'IK 검증 범위 밖'
+            return False
+        path = K.descend_path(cx, cy, max(cz, 0.010), cube_yaw)
+        if path is None:
+            self.get_logger().warning(
+                f'IK 해 없음 (큐브 {cx:.3f},{cy:+.3f},{cz:.3f}) — 작업공간 밖, 재접근 필요')
+            self.last_grasp_fail = 'IK 해 없음'
+            return False
+        self.get_logger().info(
+            f'IK 파지: 큐브 ({cx:.3f},{cy:+.3f},{cz:.3f}) 경로 {len(path)}점')
+        self.last_grasp_angle = None
+        self.last_grasp_fail = None
+        self.move_gripper(1.2)
+        self.move_arm(dict(zip(ARM_JOINTS, path[0])), 3.0)
+        for q in path[1:]:
+            self.move_arm(dict(zip(ARM_JOINTS, q)), 1.2)
+        time.sleep(0.4)
+        self.move_gripper(GRIPPER_CLOSED)
+        time.sleep(1.5)
+        ang = getattr(self, 'gripper_angle', None)
+        eff = getattr(self, 'gripper_effort', None)
+        self.last_grasp_angle = ang
+        # 판정은 **부하**가 주다. 25mm 큐브의 물림각은 0.0~0.2로 완전 닫힘(-0.17)과
+        # 가까워 각도만으로는 허공과 구분이 안 된다(40mm 기준의 0.32~0.55와 다른 대역).
+        held = eff is not None and abs(eff) > GRIP_LOAD_MIN and (ang is None or ang > -0.15)
+        self.get_logger().info(
+            f'  닫힘 신호: 각도={ang if ang is None else round(ang, 3)} '
+            f'부하={eff if eff is None else round(eff, 2)} → {"HOLDING" if held else "EMPTY"}')
+        if not held:
+            self.last_grasp_fail = f'물지 못함(각도 {ang}, 부하 {eff})'
+        return held
+
     def grasp(self, pan):
         """물체 위에서 내려가 죠를 닫고, 실제로 물었는지까지 판정한다. 물었으면 True.
 
@@ -927,6 +1636,18 @@ class PickNode(Node):
         ⑦의 재시도는 실패 양상을 구분한다. 각도가 상한을 넘으면(얕은 걸침) 죠가
         물체 위로 올라탄 것이라 더 밀어 넣고, 그 외에는 열었다 다시 닫는다.
         """
+        # 바닥 모드는 역기구학으로 잡는다(2026-08-11 전환). 종전 고정 자세 경로는
+        # `use_ik:=false`로 되돌릴 수 있게 남겨 둔다 — 받침대 모드는 아직 그쪽이다.
+        if self.floor_mode and self.use_ik:
+            return self._grasp_ik()
+
+        # 실패 사유는 이번 시도의 것만 남긴다. 종전에는 닫기 루프 끝에서만
+        # last_grasp_angle을 채웠는데, 손목캠 미검출이나 죠 안착 실패로 **닫기 전에**
+        # 빠져나오면 직전 사이클의 각도가 그대로 남아 있었다. 그래서 닫지도 않은
+        # 사이클이 '완전 닫힘 = 허공, 각도=-0.170'으로 보고됐다 — 사유를 남기려고
+        # 만든 로그가 거짓말을 하는 셈이다.
+        self.last_grasp_angle = None
+        self.last_grasp_fail = None
         pre = POSE_PRE_FLOOR if self.floor_mode else POSE_PRE
         grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
         self.move_arm({**pre, 'arm_shoulder_pan': pan}, 3.0)
@@ -943,49 +1664,116 @@ class PickNode(Node):
             if abs(fwd) > 0.005:
                 v = -0.03 if fwd > 0 else 0.03
                 self.drive(v, 0.0, min(2.5, abs(fwd) / 0.03 + 0.1))
-        roll = 0.0
+        roll, reach = 0.0, 0.0
+        pose_hover = dict(pre)        # 직교 하강의 출발 자세 (상공)
+        self._reach_applied = 0.0     # 이번 파지의 누적 리치 — lift()가 기준으로 쓴다
         if self.floor_mode:
             # 근접 비전 사각을 손목 RGB로 보완: 물체 중간이 파지선에 오도록 pan 정렬 + 기울기 롤 정렬
             aligned = self.wrist_align(pan, pre)
             if aligned is None:
                 return False    # 손목캠이 물체를 전혀 못 봄 — 재접근이 답이다
-            pan, roll = aligned
+            pan, roll, reach = aligned
         self.get_logger().info('수직 하강' + (' (바닥 모드)' if self.floor_mode else ''))
         descended = {**grasp_pose, 'arm_shoulder_pan': pan, 'arm_wrist_roll': roll}
-        self.move_arm(descended, 3.0)
+        if self.floor_mode and abs(reach) > 0.001:
+            # 상공에서 팔로 뻗어 맞춘 전후량을 하강 자세에도 그대로 옮긴다. 하강 후퇴는
+            # 따로 더하지 않는다 — 포켓·상공기준을 같은 스윕에서 재서 이미 포함돼 있다.
+            # 감도는 상공과 다르므로(펴진 정도가 달라 4배 차이) 파지 자세 계수를 쓴다.
+            total = reach
+            descended['arm_shoulder_lift'] = \
+                grasp_pose['arm_shoulder_lift'] + REACH_LIFT_PER_M * total
+            descended['arm_elbow_flex'] = \
+                grasp_pose['arm_elbow_flex'] + REACH_ELBOW_PER_M * total
+            descended['arm_wrist_flex'] = grasp_pose['arm_wrist_flex'] \
+                - (REACH_LIFT_PER_M + REACH_ELBOW_PER_M) * total
+            self._reach_applied = total
+            self.get_logger().info(f'하강 자세에 상공 리치 {total * 1000:+.0f}mm 반영')
+        # 하강은 천천히·끝까지. 실측에서 '자세 도달 미완 0.075~0.142rad'가 반복됐는데,
+        # lift 0.142rad는 죠 높이 17mm에 해당해 큐브를 스치는 높이가 된다(사진 확인).
+        if self.floor_mode:
+            # 큐브 뒤로 물러난 자리에서 직교 직선으로 내린다. 두 가지를 동시에 피한다:
+            #   · 관절 보간의 호 → 죠가 앞뒤로 쓸며 큐브를 쳐낸다
+            #   · 큐브 바로 위 하강 → 아랫턱이 큐브 윗면에 얹힌다
+            # 뒤로 물려 내리는 방식은 쓰지 않는다. 아랫턱이 큐브 윗면을 지나가는 문제는
+            # 직교 직선 하강만으로 해결됐고(어긋남 25mm → 0~2mm), 거기에 뒤로물림을
+            # 더했더니 GRASP_REF가 무효가 됐다 — 그 기준점은 명목 하강 자세에서 잰
+            # 값이라, 40mm 뒤에서 기어들어온 자세에서는 같은 픽셀이 다른 위치를 뜻한다.
+            # 실측: 뒤로물림 없이 1사이클 파지 성공(물림각 0.448) / 넣은 뒤 3사이클
+            # 모두 실패(물림각 0.575~0.827, 대각선 걸림).
+            self._descend_vertical({**pose_hover, 'arm_shoulder_pan': pan,
+                                    'arm_wrist_roll': roll}, descended)
+        else:
+            self.move_arm(descended, 4.0)
         # 하강이 끝나기 전에 닫으면 큐브 상단을 스치며 얕게 물거나 밀어낸다.
-        self.wait_arm_settled(descended, timeout=8.0)
+        # 목표는 `descended`가 아니라 **실제로 명령한 마지막 자세**(_last_arm)다.
+        # `_descend_vertical`은 x를 유지하려고 단계마다 `_reach_arm`으로 lift·elbow·
+        # wrist에 오프셋을 얹는데, 그 오프셋이 빠진 `descended`를 목표로 검사하면
+        # 리치가 조금이라도 걸린 순간 구조적으로 통과할 수 없다.
+        #   실측: '자세 도달 미완 0.265rad (elbow 목표+0.15 실제-0.12)'.
+        #   0.265 / REACH_ELBOW_PER_M(8.86) = 29.9mm — `_reach_arm` 1회 상한 30mm와 일치.
+        # 게다가 이어지는 재명령이 `descended`로 되돌리면서, 직교 하강으로 어렵게
+        # 맞춰 둔 x를 25~30mm 뒤로 밀어낸다 — 직교 하강을 도입한 목적 자체가 무효가 된다.
+        want = dict(self._last_arm or descended)
+        if not self.wait_arm_settled(want, tol=0.02, timeout=12.0):
+            self.get_logger().warning('하강 미완 — 한 번 더 명령')
+            self.move_arm(want, 2.5)
+            self.wait_arm_settled(want, tol=0.03, timeout=8.0)
         # 접지 가드: 도달 허용오차(0.04)가 접촉 경계 여유(0.02)보다 크므로 실측 lift를
         # 감시한다. 1.17을 넘으면 손끝이 바닥을 눌러 바퀴가 헛도는 상태로 회귀한 것.
         lift_now = getattr(self, 'joint_pos', {}).get('arm_shoulder_lift')
-        if self.floor_mode and lift_now is not None and lift_now > 1.17:
+        # 리치 보정은 높이를 유지한 채 lift를 올리므로(elbow가 상쇄) 경계도 같이 올라간다.
+        # 안 올리면 정상 자세인데도 매번 간섭 경고가 뜬다.
+        lift_gate = 1.17 + REACH_LIFT_PER_M * reach
+        if self.floor_mode and lift_now is not None and lift_now > lift_gate:
             self.get_logger().warning(
-                f'파지 자세 lift={lift_now:.3f} > 1.17 — 손끝 바닥 간섭 구간, 접지 상실 위험')
+                f'파지 자세 lift={lift_now:.3f} > {lift_gate:.3f} — 손끝 바닥 간섭 구간, 접지 상실 위험')
         # 하강은 수직이 아니다: 상공 자세와 파지 자세의 죠 x가 25mm 차이 난다
         # (2026-08-03 실측, 새 파지 자세 1.15/0.28 기준. 구자세 1.20/0.23에서는 40mm).
         # 상공에서 큐브 중심에 맞춰 놓아도 내려오면 그만큼 뒤로 물러나 큐브가 죠
         # 끝단에만 걸리고, 들다가 미끄러진다. 열린 죠로 그 차이만큼 전진해 큐브를
         # 죠 안쪽까지 넣는다 — creep 기본값 25mm가 이 후퇴량과 정확히 일치한다.
-        # 파지 자세에서는 큐브가 손목캠 시야를 벗어나므로(실측: 포켓 0.381 검출
-        # 불가) 여기서는 비전 대신 실측 거리를 쓴다.
+        # 손목캠을 36° 기울인 뒤로는 내려간 상태에서도 큐브가 보이므로(실측 면적
+        # 27k~37k) 고정 25mm가 아니라 실제로 보이는 오차만큼 뻗는다. 안 보일 때만
+        # 25mm 폴백으로 물러선다. creep은 그 폴백 값 겸 기능 on/off 스위치다.
         if self.floor_mode and self.creep > 0.001:
-            self.get_logger().info(f'죠 안쪽으로 밀어 넣기: {self.creep * 1000:.0f}mm 전진')
-            self.drive(0.03, 0.0, self.creep / 0.03)
-            time.sleep(0.3)
+            seated = self._seat_into_jaws()
+            ok, why, roll = self._ready_to_close(roll)
+            if seated and not ok:
+                self.get_logger().warning(f'닫기 보류 — {" / ".join(why)}')
+                seated = False
+            if not seated:
+                # 큐브가 죠 사이에 없다는 것을 이미 봤다. 그대로 닫으면 허공을 문다
+                # (실측: 죠 안착 -78mm를 측정해 놓고 닫아 부하 -0.0). 확인하고도
+                # 무시하느니 열어 두고 재접근하는 편이 싸다 — 부하 판정이 실패를
+                # 정확히 잡아 주므로 재시도 비용이 예측 가능하다.
+                self.last_grasp_fail = f'죠 안착 실패({" / ".join(why) if why else "미확인"})'
+                self.get_logger().warning('죠 안착 실패 — 큐브가 죠 사이에 없다, 닫지 않고 재접근')
+                self.move_gripper(1.0)
+                return False
         angle = None
         for attempt in range(3):
             self.get_logger().info(f'그리퍼 닫기 (시도 {attempt + 1})')
-            self.move_gripper(GRIPPER_CLOSED)
+            # 닫는 힘 10.0 → 7.5 (25% 감소). 세게 물면 큐브를 죠 밖으로 튕겨내거나
+            # 모서리를 파고들어 얕게 걸린다. 유지력(30.0)은 그대로 둔다 — 물고 난
+            # 뒤에는 놓치지 않는 쪽이 중요하다.
+            self.move_gripper(GRIPPER_CLOSED, effort=7.5)
             time.sleep(1.0)
-            self.gripper_angle = None
+            self.gripper_angle = self.gripper_effort = None
             self.spin_until(lambda: self.gripper_angle is not None, 5.0)
-            angle = self.gripper_angle
+            angle, load = self.gripper_angle, self.gripper_effort
+            self.get_logger().info(
+                f'  닫힘 신호: 각도={angle if angle is None else round(angle, 3)} '
+                f'부하={load if load is None else round(load, 3)}')
             if self.gripped(angle):
-                # 파고듦 방지: 최초 접촉각-0.01을 절대 바닥으로 고정 (이후 재조임도 이 값만 사용)
-                self.hold_target = max(GRIPPER_CLOSED, angle - 0.01)
-                # 유지력은 닫을 때보다 높게. 닫는 순간 effort를 올리면 강체 큐브를
-                # 튕겨내지만(과거 실측), 이미 문 뒤의 유지는 다르다 — effort 10으로는
-                # 들기 하중에 죠가 밀려 벌어졌다(실측: 0.184로 물고 첫 단계에 0.287).
+                # 유지 목표는 접촉각 바로 안쪽으로 묶는다. 완전 닫힘(-0.17)을 계속
+                # 명령하면 시뮬 접촉이 실물 서보처럼 토크 한계에서 멈추지 않아 죠가
+                # 큐브를 끝까지 뚫고 지나간다 — 실측(들어올리는 동안):
+                #     0.385 → 0.332 → 0.283 → 0.044 → -0.170(완전 닫힘, 큐브 이탈)
+                # 부하를 운반 내내 살리려면 도달 불가능한 목표가 필요한데, 이 물리
+                # 모델에서 도달 불가능한 목표는 결국 큐브를 부수며 도달한다. 그래서
+                # 부하는 '파지 순간'의 신호로만 쓰고, 운반 중 확인은 전방캠으로 잰
+                # 큐브 높이가 맡는다(holding 참조). 침투는 아래 여유만큼으로 끝난다.
+                self.hold_target = max(GRIPPER_CLOSED, angle - GRIP_HOLD_MARGIN)
                 self.move_gripper(self.hold_target, effort=30.0)
                 time.sleep(0.3)
                 break
@@ -993,25 +1781,31 @@ class PickNode(Node):
                 # 얕게 걸친 상태 — 큐브가 죠 사이가 아니라 죠 앞에 있어 죠가 큐브 위로
                 # 올라탄 것이다(실측: 0.347/0.349/0.350이 반복되고 전부 제자리).
                 # 물러나면 더 멀어지고, 상공으로 올려 다시 내려오면 하강 후퇴(25mm)가
-                # 되풀이된다. 파지 자세를 유지한 채 열고 더 밀어 넣는다.
+                # 되풀이된다. 파지 자세를 유지한 채 열고 더 뻗는다.
+                # 차체가 아니라 팔로 뻗는다 — 죠가 큐브 위에 올라탄 상태에서 차체를
+                # 밀면 아랫턱이 큐브를 그대로 밀어내 버린다(실측: 계속 밀어 굴러감).
                 # 전진량은 1cm까지만: 2cm로 두 번 밀었더니 큐브가 4cm 밀려나
                 # 허공을 물었다(실측 -0.170).
-                self.get_logger().info(f'얕은 걸침(각도={angle:.3f}) — 더 밀어 넣어 재물림')
+                self.get_logger().info(f'얕은 걸침(각도={angle:.3f}) — 팔로 더 뻗어 재물림')
                 self.move_gripper(1.0)
                 time.sleep(0.4)
-                self.drive(0.02, 0.0, 0.5)
-                time.sleep(0.3)
+                self._reach_arm(0.01, sec=0.8)
                 continue
             self.get_logger().info(f'얕은 물림(각도={angle}) — 재물림')
             self.move_gripper(0.5)
             time.sleep(0.6)
+        # 판정 직전에 부하를 새로 받는다 — 유지 명령 직후의 값이라야 의미가 있다
+        self.gripper_effort = None
+        self.spin_until(lambda: self.gripper_effort is not None, 2.0)
         held = self.gripped(angle)
+        load = self.gripper_effort
         # 판정에 쓴 각도를 보존한다 — 이후 재열림(move_gripper 0.5/1.0)으로
         # self.gripper_angle이 열림값으로 덮이므로, main의 실패 사유 로그는 이 값을 봐야 한다
         self.last_grasp_angle = angle
         self.get_logger().info(
-            f'파지 검증: 그리퍼 각도={angle if angle is not None else float("nan"):.3f} '
-            f'(임계 {GRIP_HOLD_THRESHOLD}) → {"HOLDING" if held else "EMPTY"}')
+            f'파지 검증: 부하={load if load is None else round(load, 3)} '
+            f'(임계 {GRIP_LOAD_MIN}) 각도={angle if angle is None else round(angle, 3)} '
+            f'→ {"HOLDING" if held else "EMPTY"}')
         if held and not self.floor_mode:
             # 바닥 모드는 자세 급변(원-모션 상승) 없이 곧장 계단 들기로 (실검증 방식)
             self.get_logger().info('수직 상승')
@@ -1039,8 +1833,123 @@ class PickNode(Node):
         r22 = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
         return r20 * px + r21 * py + r22 * pz + t.z
 
+    def _locate_trash_aruco(self):
+        """마커로 통 중심을 잡는다. base_footprint 좌표, 실패 시 None.
+
+        임계값이 없다 — 마커 네 꼭짓점과 기지 크기(TRASH_ARUCO_SIZE)로 solvePnP를
+        풀면 6-DoF 자세가 나온다. 통 중심은 마커에서 고정 변환만큼 떨어진 곳이고,
+        그 변환을 마커 자세로 회전시키므로 비스듬히 봐도 성립한다.
+        """
+        self.color = None
+        if not self.spin_until(
+                lambda: self.color is not None and self.cam_info is not None, 3.0):
+            self._aruco_fail('영상없음')
+            return None
+        frame = self.color
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        d = cv2.aruco.getPredefinedDictionary(TRASH_ARUCO_DICT)
+        if hasattr(cv2.aruco, 'ArucoDetector'):                 # OpenCV 4.7+
+            corners, ids, _ = cv2.aruco.ArucoDetector(
+                d, cv2.aruco.DetectorParameters()).detectMarkers(gray)
+        else:                                                   # 4.6 이하
+            corners, ids, _ = cv2.aruco.detectMarkers(
+                gray, d, parameters=cv2.aruco.DetectorParameters_create())
+        if ids is None or len(ids) == 0:
+            self._aruco_fail('마커없음', frame)
+            return None
+        # 통 마커는 id 0이다(gen_aruco_sdf.py). 다른 마커가 잡히면 그걸 통으로
+        # 쓰지 않는다 — 종전에는 corners[0]을 무조건 써서 조용히 엉뚱한 곳으로 갔다.
+        flat = [int(v) for v in ids.flatten()]
+        idx = flat.index(TRASH_ARUCO_ID) if TRASH_ARUCO_ID in flat else None
+        if idx is None:
+            self._aruco_fail(f'다른 마커만 검출{flat}', frame)
+            return None
+        k = np.array(self.cam_info.k, dtype=np.float64).reshape(3, 3)
+        dist = (np.array(self.cam_info.d, dtype=np.float64)
+                if len(self.cam_info.d) else np.zeros(5))
+        h = TRASH_ARUCO_SIZE / 2.0
+        obj = np.array([[-h, h, 0], [h, h, 0], [h, -h, 0], [-h, -h, 0]], dtype=np.float64)
+        # solvePnP는 입력이 나쁘면 False가 아니라 예외를 던진다. 여기서 안 막으면
+        # 운반 루프를 뚫고 나가 실행 전체가 종료된다 — 통을 한 번 못 본 것치고 비싸다.
+        try:
+            ok, rvec, tvec = cv2.solvePnP(
+                obj, corners[idx].reshape(4, 2).astype(np.float64),
+                k, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+        except cv2.error as e:
+            self._aruco_fail(f'solvePnP예외({str(e)[:40]})', frame)
+            return None
+        if not ok:
+            self._aruco_fail('solvePnP실패', frame)
+            return None
+        # 통 중심 = 마커 원점 + 마커자세 × 고정 오프셋
+        rot, _ = cv2.Rodrigues(rvec)
+        c = rot @ np.array(TRASH_MARKER_TO_CENTER, dtype=np.float64).reshape(3, 1) + tvec
+        # 광학(X=우, Y=하, Z=전) → 링크(x=전, y=좌, z=상). 이 변환을 빼면 높이가
+        # 0.13m 대신 1.2m로 나온다(실측) — _pixel_to_base와 같은 규약이다.
+        ox, oy, oz = float(c[0]), float(c[1]), float(c[2])
+        p = PointStamped()
+        p.header.frame_id = CAMERA_FRAME
+        p.point.x, p.point.y, p.point.z = oz, -ox, -oy
+        if not self.spin_until(
+                lambda: self.tf_buffer.can_transform('base_footprint', CAMERA_FRAME,
+                                                     rclpy.time.Time()), 2.0):
+            self._aruco_fail('TF없음', frame)
+            return None
+        try:
+            tf = self.tf_buffer.lookup_transform('base_footprint', CAMERA_FRAME,
+                                                 rclpy.time.Time())
+        except Exception as e:
+            self._aruco_fail(f'TF조회실패({type(e).__name__})', frame)
+            return None
+        q = do_transform_point(p, tf).point
+        self._aruco_miss = 0
+        self.get_logger().info(
+            f'쓰레기통(마커 id={TRASH_ARUCO_ID}): base=({q.x:.3f},{q.y:.3f},{q.z:.3f}) '
+            f'r={math.hypot(q.x, q.y):.3f}')
+        return q.x, q.y
+
+    def _aruco_fail(self, why, frame=None):
+        """마커 검출 실패 사유를 남긴다. 실패 프레임은 처음 몇 장만 저장한다.
+
+        "운반 루프에서는 매번 None인데 단독 호출로는 잡힌다"는 상태를 사유 없이
+        보고 있었다. 실패는 네 갈래(영상없음/마커없음/solvePnP실패/TF없음)이고
+        어느 갈래인지에 따라 손볼 곳이 완전히 다르다 — 마커없음이면 시야·가림 문제,
+        TF없음이면 좌표계 문제다. 사유를 안 남기면 그 구분을 못 한다.
+        """
+        n = getattr(self, '_aruco_miss', 0) + 1
+        self._aruco_miss = n
+        path = ''
+        # 저장 한도는 실행 단위로 센다. `_aruco_miss`는 검출에 성공하면 0으로
+        # 돌아가므로 그걸로 한도를 세면 한 실행 안에서도 파일이 계속 덮어써진다.
+        saved = getattr(self, '_aruco_saved', 0)
+        if frame is not None and saved < 6:
+            try:
+                os.makedirs(ARUCO_FAIL_DIR, exist_ok=True)
+                # 사유를 파일명에 넣는다 — 이미지만 봐서는 네 갈래 중 어느 것인지 모른다.
+                # 시각을 붙여 이전 실행의 증거를 덮어쓰지 않는다.
+                safe = why.replace('/', '_').replace(' ', '')[:24]
+                path = os.path.join(
+                    ARUCO_FAIL_DIR, f'{time.strftime("%m%d_%H%M%S")}_{safe}.png')
+                cv2.imwrite(path, frame)
+                self._aruco_saved = saved + 1
+                path = f' → {path}'
+            except Exception:
+                path = ''
+        self.get_logger().info(f'마커 미검출({why}) {n}회차{path}')
+
     def locate_trash(self):
-        """쓰레기통 중심의 base_footprint 좌표. 실패 시 None."""
+        """쓰레기통 중심의 base_footprint 좌표. 실패 시 None.
+
+        마커를 먼저 본다. 못 보면 종전 HSV 회색 덩어리 방식으로 물러선다 —
+        마커가 없는 환경(실물 초기 세팅 등)에서도 최소한 굴러가게 두기 위해서다.
+        """
+        m = self._locate_trash_aruco()
+        if m is not None:
+            self._trash_from_marker = True
+            return m
+        # 마커로 잡은 값인지 HSV 폴백인지 호출부가 알아야 한다. 둘은 신뢰도가
+        # 전혀 다르다 — 마커는 ±25mm/±2°인데 HSV는 방향 정보가 없고 +20~237mm로 튄다.
+        self._trash_from_marker = False
         self.color = self.depth = None
         if not self.spin_until(
                 lambda: self.color is not None and self.depth is not None
@@ -1080,8 +1989,14 @@ class PickNode(Node):
                 rejected.append(f'면적{a}:통높이픽셀{n_sel}')
                 continue
             # 통은 높이 0.18m 구조물 — 물체용 기본 게이트(0.20)로는 상단이 걸린다
+            # 깊이는 중앙값이 아니라 하위 15퍼센타일을 쓴다. 통은 속이 빈 상자라
+            # 선택된 픽셀에 앞벽·바닥·먼 안쪽벽이 모두 섞이는데, 중앙값을 쓰면
+            # 통 중심이나 뒤쪽이 '앞면'으로 나온다. 거기에 TRASH_HALF(앞면→중심)를
+            # 또 더하니 이중 계산이 되어 거리가 +156~301mm 과대평가됐다(실측).
+            # 우리가 원하는 앞면은 가장 가까운 표면이므로 낮은 퍼센타일이 맞다
+            # (최솟값은 뎁스 노이즈 한 점에 끌려가므로 쓰지 않는다).
             loc = self._pixel_to_base(float(us[sel].mean()), float(vs[sel].mean()),
-                                      float(np.median(ds[sel])), z_gate=(-0.10, 0.60))
+                                      float(np.percentile(ds[sel], 15)), z_gate=(-0.10, 0.60))
             if loc is None:
                 rejected.append(f'면적{a}:역투영실패')
                 continue
@@ -1107,6 +2022,8 @@ class PickNode(Node):
         # 검출되고, 근접해 가려지는 구간은 근접 락(추측 접근)이 담당한다.
         self._carry_drop = False
         self._reseat_cnt = 0
+        self._marker_seek = 0            # 도착 직전 마커 확인 탐색 횟수
+        self._trash_from_marker = False  # 아직 아무것도 못 봤다
         if not self.holding():
             self._carry_drop = True   # 들기 직후 낙하도 재파지로 복구 가능
             self.get_logger().error('운반 시작 시 물체 없음')
@@ -1115,6 +2032,12 @@ class PickNode(Node):
         # _carrying: drive()가 사다리꼴 프로파일(저크 제거)을 켜는 플래그
         carry_scale, self.scale = self.scale, 1.0
         self._carrying = True
+        # 팔을 옆으로 뺀다. 정면 자세로 두면 팔이 화면 중앙을 가려 검출이 통이 아니라
+        # 자기 팔을 잡는다 — 실측(trash_probe.py): 로봇 위치를 0.64m~0.17m로 바꿔도
+        # 검출값이 (+0.311,-0.01)로 고정이었고, 팔을 빼자 위치에 따라 변하며 검출률이
+        # 1/5 → 3~4/5로 올랐다. POSE_CARRY_SCAN은 이 목적으로 정의돼 있었는데 참조가
+        # 한 곳도 없었다. pan 회전만이라 쥔 물체는 흔들리지 않는다(place에서 검증된 동작).
+        self.move_arm({'arm_shoulder_pan': POSE_CARRY_SCAN['arm_shoulder_pan']}, 2.0)
         try:
             return self._carry_loop(max_iter)
         finally:
@@ -1179,7 +2102,11 @@ class PickNode(Node):
             # 근접에서는 통이 화면을 채워 마스크가 한쪽 벽으로 치우치고 방위가 편향된다
             # (실측: 락을 0.42로 늦추니 r 0.60·brg 14도에서 고착해 반복 소진). 그래서
             # 0.60에서 락을 걸고 이후는 오도메트리로 추측한다.
-            if not near_lock and r < 0.60 and getattr(self, '_trash_odom', None):
+            # 락 임계를 0.60 → 0.35로 낮췄다. 정지 거리가 0.50이므로 정상 경로에서는
+            # 락이 걸리지 않고, 마지막까지 마커를 보며 간다. 종전에는 0.60에서 락을
+            # 걸고 0.17m를 오도메트리로 갔는데 그 추측이 10cm 어긋났다(실좌표 확인).
+            # 마커를 아예 못 보는 상황에서만 옛 경로로 물러선다.
+            if not near_lock and r < 0.35 and getattr(self, '_trash_odom', None):
                 self._lock_trash_pose()
                 self._trash_lock = True
                 self.get_logger().info(f'근접 락 (r={r:.3f}) — 이후 추측 접근')
@@ -1188,6 +2115,32 @@ class PickNode(Node):
             # 개구부 13.6cm 기준 거리 0.4m에서 허용 방위는 약 9.6도 — 임계를 그 안쪽으로 둔다.
             # 좁게 잡으면 회전만 반복하다 전진을 못 한다(실측: 3.4도 임계에서 예산 소진).
             if abs(er) < 0.025 and abs(brg) < 0.10:
+                # **최종 도착은 마커로만 인정한다.** HSV 덩어리는 방향 정보가 없고
+                # 프레임마다 튄다 — 실측: 같은 통을 연속으로 보면서 y가 0.167 →
+                # -0.007로 17cm 튀었고, 그 한 프레임이 도착 조건을 통과시켜 팔을
+                # 엉뚱한 곳에 뻗었다(큐브가 통에서 0.183m 떨어진 바닥에 떨어짐).
+                # 마커가 안 보이는 건 대개 통을 정면으로 안 보고 있어서다 —
+                # 통 앞 0.5m에서 정면이면 pan -1.0에서도 잡힌다(carry_pan_probe 실측).
+                # 그래서 제자리에서 조금씩 돌며 마커를 찾은 뒤 다시 판정한다.
+                if not getattr(self, '_trash_from_marker', False):
+                    n_seek = getattr(self, '_marker_seek', 0)
+                    if n_seek < 8:
+                        self._marker_seek = n_seek + 1
+                        # 좌우로 번갈아 넓혀 가며 훑는다(0 → +12° → -12° → +24° …)
+                        step = math.radians(12) * ((n_seek + 2) // 2)
+                        wz = step if n_seek % 2 == 0 else -step
+                        self.get_logger().info(
+                            f'[{it}] 도착 조건 충족했으나 마커 미확인 — '
+                            f'{math.degrees(wz):+.0f}도 돌려 마커 탐색 ({n_seek + 1}/8)')
+                        self.drive(0.0, 0.4 if wz > 0 else -0.4, min(2.0, abs(wz) / 0.4))
+                        continue
+                    self.get_logger().warning(
+                        '마커를 못 찾은 채 도착 판정 — HSV 좌표로 투입(정확도 낮음)')
+                # 투입 자세·리치는 pan=0 기준 실측값이므로 정면으로 되돌린다
+                self.move_arm({'arm_shoulder_pan': 0.0}, 2.0)
+                self._trace('통 도착', er_mm=round(er * 1000), brg_deg=round(math.degrees(brg), 1),
+                            marker=bool(getattr(self, '_trash_from_marker', False)),
+                            trash_odom=[round(v, 3) for v in (self._trash_odom or (0, 0))])
                 return True
             if not self.holding():
                 # 능동 판별이 확정한 실낙하 — 큐브는 근처 바닥에 있다. 복구 루프가
@@ -1227,7 +2180,11 @@ class PickNode(Node):
                 # 0.20은 정지 마찰을 못 깬다(스톨 실측) — 0.35로 상향, 램프가 저크를 막는다
                 self.drive(0.0, 0.35 if brg > 0 else -0.35, min(2.0, abs(brg) / 0.35))
             else:
-                v = 0.06 if er > 0.15 else (0.03 if er > 0 else -0.03)
+                # 먼 구간은 빠르게 좁힌다. 0.06m/s 고정은 통까지 1.4m를 가기에
+                # 너무 느려 — 램프까지 겹쳐 실효 8% — 70회 반복을 소진하고도
+                # 67mm밖에 못 갔다(실측). 0.15m/s는 단독 측정에서 86% 달성.
+                # 통 근처(0.5m 이내)에서는 다시 늦춰 물림을 흔들지 않는다.
+                v = (0.15 if er > 0.5 else 0.06) if er > 0.15 else (0.03 if er > 0 else -0.03)
                 wz = max(-0.12, min(0.12, brg * 0.7))     # 전진하며 방위도 함께 좁힌다
                 self.drive(v, wz, min(3.0, abs(er) / abs(v) + 0.2))
         self.get_logger().error('쓰레기통 접근 반복 소진')
@@ -1352,17 +2309,36 @@ class PickNode(Node):
         return zs
 
     def holding(self, allow_active=True):
-        """물체를 쥐고 있는지 손목캠으로 판정 — 죠를 다시 움직이지 않는다.
+        """물체를 쥐고 있는지 판정 — 1차 신호는 그리퍼 관절 부하다.
 
-        각도로는 낙하를 볼 수 없다. hold_target(접촉각-0.01)을 명령해 두면 물체가
-        빠져도 그리퍼가 그 각도를 유지하기 때문이다(가짜 성공의 원인). 살짝 더 조여
-        보는 능동 확인은 그 동작 자체가 물체를 밀어내고 운반 중 죠를 떨게 만들었다.
-        손목캠은 둘 다 피한다 — 쥐고 있으면 큐브가 렌즈 앞에 고정돼 화면을 크게 채우고,
-        떨어지면 바닥으로 멀어져 면적이 6분의 1로 준다(실측 36721 대 6079).
+        '완전 닫힘'을 계속 명령해 두므로, 물체가 막고 있는 동안은 위치 오차가 남아
+        부하가 실리고 빠지는 순간 죠가 끝까지 닫혀 부하가 사라진다. 죠를 다시 움직일
+        필요가 없고(능동 확인은 물체를 밀어낸다), 팔 자세·roll과도 무관하다.
+        실측: 운반 중 -10.0 유지 / 큐브 이탈 즉시 -0.001.
+
+        종전 1차 신호였던 손목캠 면적은 **거리를 재는 값이지 파지를 재는 값이 아니다.**
+        바닥에 놓인 큐브가 로봇 코앞에 있으면 쥔 것과 같은 면적이 나온다
+        (실측: 큐브가 바닥에 그대로인데 면적 42000, 전 구간 HOLDING 오판 → 가짜 성공).
+        면적은 부하를 못 읽을 때의 폴백으로만 남긴다.
         """
-        self.gripper_angle = None
+        self.gripper_angle = self.gripper_effort = None
         self.spin_until(lambda: self.gripper_angle is not None, 3.0)
         ang = self.gripper_angle
+        # 1차 신호: 큐브의 실제 높이. 쥐고 있으면 운반 자세 높이(z≈0.19)에, 놓치면
+        # 바닥(z≈0.015)에 있다 — 물리량을 직접 재므로 자기충족이 없다.
+        # 부하는 여기서 쓰지 않는다: 유지 목표에 도달하면 위치 오차가 0이 되어 부하도
+        # 0이 되기 때문이다(파지 '순간'에만 유효한 신호다).
+        zs = self._front_target_heights()
+        if zs:
+            self._last_hold_area = None
+            if any(z > 0.10 for z in zs):
+                self.get_logger().info(
+                    f'파지 확인(높이): {[round(z, 3) for z in zs]} → HOLDING')
+                return True
+            if all(z < 0.06 for z in zs):
+                self.get_logger().info(
+                    f'파지 확인(높이): {[round(z, 3) for z in zs]} 바닥 → DROPPED')
+                return False
         roll = float(getattr(self, '_last_arm', {}).get('arm_wrist_roll', 0.0) or 0.0)
         if abs(roll) >= 0.1:
             # 기울기 정렬로 손목이 돌아간 상태에서는 큐브가 손목캠 시야를 벗어난다
@@ -1422,8 +2398,9 @@ class PickNode(Node):
                 b1 = self._wrist_blob(frames=3)
                 if b0 is not None and b1 is not None:
                     shift = math.hypot(b1[0] - b0[0], b1[1] - b0[1])
-                    # 임계 130px: 쥔 상태 실측 75px(죠 안 유격·프레임 노이즈 포함) vs
-                    # 낙하 실측 249px — 두 실측의 중간보다 약간 아래
+                    # 임계 190px: 4cm 큐브 기준은 130px였다(쥔 75 vs 낙하 249).
+                    # 3cm로 줄이자 블롭이 작아져 중심 추정이 더 흔들린다 — 쥔 상태
+                    # 실측이 136px까지 올라가 130 임계를 넘겨 낙하로 오판했다.
                     held2 = shift < 130.0
                     if held2:
                         self._hold_grace = time.time() + 12.0
@@ -1473,7 +2450,7 @@ class PickNode(Node):
             self.move_gripper(0.5)
             self.move_arm(POSE_FOLDED, 2.5)
             self.drive(-0.12, 0.0, 2.5)     # 0.3m 후진 — 큐브를 뎁스 최소거리 밖으로
-            for attr in ('_reacq_done', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
+            for attr in ('_reacq_cnt', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
                 if hasattr(self, attr):
                     delattr(self, attr)
             pan = self.approach()
@@ -1542,7 +2519,17 @@ class PickNode(Node):
         # 계단식 들기 + wrist 보상(lift 감소분 = wrist 증가분): 그리퍼 절대 피치 유지.
         # 시작 자세는 모드의 파지 자세 — 받침대(0.48/0.9), 바닥(1.15/0.28) 공용.
         grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
-        lift0, wrist0 = grasp_pose['arm_shoulder_lift'], grasp_pose['arm_wrist_flex']
+        lift0 = grasp_pose['arm_shoulder_lift']
+        elbow0 = grasp_pose['arm_elbow_flex']
+        wrist0 = grasp_pose['arm_wrist_flex']
+        # 파지 중 팔로 뻗은 누적 리치(r0)를 계단마다 얹었다가 서서히 0으로 뺀다.
+        #   · 처음 두 계단은 그대로 유지 — 물체가 바닥을 떠나는 순간에 자세가 급변하면
+        #     그때가 가장 잘 빠진다. 명목 자세로 한 번에 되돌리면 죠가 최대 23° 기운다.
+        #   · 그 뒤로는 되돌린다 — 뻗은 채로 손목 보상(lift 감소분=wrist 증가분)을
+        #     계속하면 wrist_flex가 한계 1.658을 넘는다. 실측(리치 76mm): 목표 1.953이
+        #     한계에 잘려 추종오차가 0.109→0.293rad로 커졌고, 죠가 기운 채 운반하다
+        #     큐브를 놓쳤다. 끝 자세는 리치 0 = POSE_CARRY와 정확히 같아진다.
+        r0 = getattr(self, '_reach_applied', 0.0) or 0.0
         # 물체가 바닥을 떠나는 첫 순간에 하중이 걸려 가장 잘 미끄러진다 — 초반 두 단계를
         # 잘게 올려 대응한다. 그리퍼는 파지 때 정한 목표를 그대로 유지한다(재조임 없음).
         lf, k = lift0, 0
@@ -1550,7 +2537,14 @@ class PickNode(Node):
             step = 0.02 if k < 2 else 0.07      # 초반만 미세하게
             lf = max(0.15, lf - step)
             wf = wrist0 + (lift0 - lf)
-            self.move_arm({'arm_shoulder_lift': lf, 'arm_wrist_flex': wf}, 1.5)
+            r = r0 if k < 2 else max(0.0, r0 * (1.0 - (k - 1) / 4.0))
+            # elbow를 명시적으로 준다. 빼면 move_arm이 직전 명령(리치가 섞인 값)을
+            # 그대로 물려받아 lift·wrist만 명목으로 점프하고 자세족 불변식이 깨진다.
+            self.move_arm({
+                'arm_shoulder_lift': lf + REACH_LIFT_PER_M * r,
+                'arm_elbow_flex': elbow0 + REACH_ELBOW_PER_M * r,
+                'arm_wrist_flex': wf - (REACH_LIFT_PER_M + REACH_ELBOW_PER_M) * r,
+            }, 1.5)
             time.sleep(0.2)
             # 파지 때 정한 절대 목표를 그대로 다시 주장한다. 값이 같으므로 죠는
             # 움직이지 않고(덜렁거림 없음), 하중에 밀려 벌어졌을 때만 되돌아온다.
@@ -1558,10 +2552,15 @@ class PickNode(Node):
             # 절대 목표 반복은 그 문제가 없다.
             # 완료를 기다리지 않는다 — 계단 수만큼 액션 왕복을 기다리면 전체 실행이
             # 400초 예산을 넘겨 중단됐다(실측). 유지 명령은 도착만 하면 된다.
-            self.move_gripper(self.hold_target, wait=False, effort=30.0)
-            self.gripper_angle = None
+            # 파지 때 정한 절대 목표를 그대로 반복한다. 값이 같으므로 죠는 더 닫히지
+            # 않는다 — 완전 닫힘을 반복하면 계단마다 조금씩 파고들어 큐브가 빠진다.
+            self.move_gripper(getattr(self, 'hold_target', GRIPPER_CLOSED),
+                              wait=False, effort=30.0)
+            self.gripper_angle = self.gripper_effort = None
             self.spin_until(lambda: self.gripper_angle is not None, 3.0)
-            self.get_logger().info(f'  step lift={lf:.2f}: 그리퍼 각도={self.gripper_angle:.3f}')
+            self.get_logger().info(
+                f'  step lift={lf:.2f}: 각도={self.gripper_angle:.3f} '
+                f'부하={self.gripper_effort if self.gripper_effort is None else round(self.gripper_effort, 2)}')
             k += 1
         time.sleep(0.5)
         # 손목 roll을 원위치로 돌린다. 기울기 정렬로 돌아간 상태에서는 큐브가 손목캠
@@ -1612,6 +2611,7 @@ def main(args=None):
         n.get_logger().info('== 1. 초기화: 접힘 자세 ==')
         n.move_gripper(0.0)
         n.move_arm(POSE_FOLDED, 3.0)
+        n._trace('시작')
         # 파지 실패 시 자동 재시도: 후진해 비전 재획득 후 재접근 (맹주행 드리프트 회복)
         for cycle in range(3):
             if n.skip_approach and cycle == 0:
@@ -1622,10 +2622,11 @@ def main(args=None):
             else:
                 n.get_logger().info(f'== 2. 비전 접근 주행 (사이클 {cycle + 1}) ==')
                 pan = n.approach()
+            n._trace('접근 종료', cycle=cycle + 1, pan=None if pan is None else round(pan, 3))
             if pan is None:
                 n.get_logger().error('접근 실패')
                 if cycle < 2:
-                    for attr in ('_reacq_done', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
+                    for attr in ('_reacq_cnt', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
                         if hasattr(n, attr):
                             delattr(n, attr)
                     n.move_arm(POSE_FOLDED, 2.5)
@@ -1633,9 +2634,12 @@ def main(args=None):
                 break
             n.get_logger().info(f'== 3. 파지 (pan={math.degrees(pan):.1f}deg) ==')
             held = n.grasp(pan)
+            n._trace('파지 종료', 판정=('HOLDING' if held else 'EMPTY'),
+                     reach=round(getattr(n, '_reach_applied', 0.0) or 0.0, 3))
             if held:
                 n.get_logger().info('== 4. 들어올리기 ==')
                 ok = n.lift()
+                n._trace('들기 종료', 판정=('HOLDING' if ok else 'DROPPED'))
                 if ok and n.place_target == 'trash':
                     n.get_logger().info('== 5. 쓰레기통으로 운반 ==')
                     # 운반 중 실낙하(능동 판별 확정)는 재파지로 복구한다 — 큐브가
@@ -1644,7 +2648,9 @@ def main(args=None):
                     for rec in range(3):
                         if n.carry_to_trash() and n.drop_into_trash():
                             ok = True
+                            n._trace('투입 종료', 판정='성공주장')
                             break
+                        n._trace('투입 실패', rec=rec + 1)
                         if not getattr(n, '_carry_drop', False):
                             break   # 탐색 실패 등 낙하 외 실패는 재파지로 못 고친다
                         n.get_logger().info(f'== 5-복구. 운반 중 낙하 — 재파지 (시도 {rec + 1}/2) ==')
@@ -1657,7 +2663,11 @@ def main(args=None):
             # 실패 양상 구분 — 판정 시점의 각도(last_grasp_angle)로. 현재 joint값은
             # grasp()가 실패 후 죠를 다시 열어 두므로(0.5/1.0) 열림값이라 쓸 수 없다.
             a = getattr(n, 'last_grasp_angle', None)
-            if a is None:
+            fail = getattr(n, 'last_grasp_fail', None)
+            if fail:
+                # 닫기 전에 빠져나온 경우 — 각도로 분류하면 거짓 진단이 된다
+                n.get_logger().error(f'파지 실패 ({fail} — 죠를 닫지 않았다)')
+            elif a is None:
                 n.get_logger().error('파지 실패 (각도 미수신)')
             elif a >= GRIP_HOLD_MAX:
                 n.get_logger().error(f'파지 실패 (얕은 걸침 각도={a:.3f} — 물체가 죠 사이에 못 들어옴)')
@@ -1670,10 +2680,13 @@ def main(args=None):
                 n.move_gripper(0.5)
                 n.move_arm(POSE_FOLDED, 2.5)
                 n.drive(-0.12, 0.0, 3.0)
-                for attr in ('_reacq_done', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
+                for attr in ('_reacq_cnt', '_arm_aside', '_miss', '_obj_odom', '_target_px'):
                     if hasattr(n, attr):
                         delattr(n, attr)
         n.get_logger().info('=== PICK_SUCCESS ===' if ok else '=== PICK_FAIL ===')
+        # 마지막 줄에 '코드의 주장'과 '실좌표'를 나란히 남긴다. 이 둘이 어긋나면
+        # 판정 신호가 틀린 것이고, 그때는 성공률 숫자 자체를 믿으면 안 된다.
+        n._trace('종료', 코드주장=('PICK_SUCCESS' if ok else 'PICK_FAIL'))
     finally:
         n.destroy_node()
         if rclpy.ok():      # 중단 신호로 이미 내려간 뒤 다시 부르면 RCLError가 난다

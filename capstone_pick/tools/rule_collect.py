@@ -56,17 +56,32 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
+from control_msgs.msg import JointTrajectoryControllerState
 from sensor_msgs.msg import Image, JointState
+from std_msgs.msg import Float64
 from cv_bridge import CvBridge
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
-OUT_ROOT = os.path.join(TOOLS, 'logs', 'rule_collect_static')
+# 버전을 나눠 실험할 수 있게 밖으로 뺐다.
+#   COLLECT_OUT     저장 폴더 (기본 rule_std)
+#   COLLECT_YAW_MAX 큐브 기울기 상한 rad (기본 0.3 = ±17°)
+#                   큐브는 정사각형이라 90° 대칭이므로 0.785(±45°)면 전 각도를 덮는다.
+OUT_ROOT = os.path.join(TOOLS, 'logs', os.environ.get('COLLECT_OUT', 'rule_std'))
+YAW_MAX = float(os.environ.get('COLLECT_YAW_MAX', '0.3'))
+EP_TIMEOUT = float(os.environ.get('COLLECT_EP_TIMEOUT', '180'))   # 에피소드 상한(시뮬 초)
+# 놓을 곳: side(옆 바닥, 주행 불필요) | trash(휴지통 투입, 운반 주행 포함)
+PLACE = os.environ.get('COLLECT_PLACE', 'side')
 POSE_RE = re.compile(r'\[([-\d.eE+ ]+)\]')   # `gz model -p` 출력에서 [x y z] 꼴을 뽑는다
 # 기록할 관절. 그리퍼(arm_gripper)는 여기 없고 아래에서 따로 붙여 6개가 된다.
 AJ = ['arm_shoulder_pan', 'arm_shoulder_lift', 'arm_elbow_flex', 'arm_wrist_flex', 'arm_wrist_roll']
 # 관측 카메라 둘. 전방은 '판이 어떻게 생겼나', 손목은 '손끝이 어디 있나'를 본다.
 # 사람이 물건을 집을 때 눈으로 위치를 잡고 손을 보며 미세 조정하는 것과 같은 구성이다.
 CAMS = {'front': '/rgbd_camera/image', 'wrist': '/wrist_camera/image_raw'}
+# LeRobot 표준 (so_follower.py): observation.state = Present_Position(측정),
+# action = Goal_Position(모터에 보낸 목표). 시뮬에서는 컨트롤러가 추종하는
+# reference가 Goal_Position에 해당하고, /joint_states가 Present_Position이다.
+# 이전에는 action을 state[t+k]로 파생시켰는데, 그러면 정책이 이미지를 볼 이유가
+# 없어져 "현재 자세 복사"만 학습한다(실측: 평가에서 팔이 표류하며 배회).
 FPS = 20.0   # 기록 주기. 시뮬 시각 기준이라 실행이 느려져도 프레임 간격은 일정하다.
 COLOR_RGBA = {'blue': '0.1 0.2 0.9 1', 'red': '0.9 0.1 0.1 1', 'green': '0.1 0.8 0.1 1'}
 
@@ -177,6 +192,14 @@ class Rec(Node):
         # 관절 상태: 이름 배열과 각도 배열이 따로 오므로 zip으로 묶어 사전에 넣는다.
         self.create_subscription(JointState, '/joint_states',
                                  lambda m: self.st.update(dict(zip(m.name, m.position))), 10)
+        # action 소스: 컨트롤러가 추종 중인 목표 위치(reference) + 그리퍼 명령
+        self.ref = {}
+        self.grip_cmd = None
+        self.create_subscription(
+            JointTrajectoryControllerState, '/arm_controller/controller_state',
+            lambda m: self.ref.update(dict(zip(m.joint_names, m.reference.positions))), 10)
+        self.create_subscription(Float64, '/capstone/gripper_cmd',
+                                 lambda m: setattr(self, 'grip_cmd', m.data), 10)
         for key, topic in CAMS.items():
             self.create_subscription(
                 Image, topic,
@@ -221,18 +244,24 @@ def run_episode(node, ep, color, speed):
     # 물체를 처음부터 팔이 닿는 곳에 두면 action(관절 6)이 전체 행동을 표현한다.
     x = 0.3 + random.uniform(0.355, 0.405)      # 로봇 기준 포켓 거리
     y = random.uniform(-0.035, 0.035)
-    yaw = random.uniform(-0.3, 0.3)
+    yaw = random.uniform(-YAW_MAX, YAW_MAX)
     name = stage(color, x, y, yaw)
     start = gz_xyz(name) or [x, y, 0.015]
 
     env = dict(os.environ)
+    # 시연자 로그를 남긴다. DEVNULL로 버리면 실패 원인을 사후에 볼 수 없다
+    # (실측: 휴지통 투입 0/3인데 어디서 막혔는지 확인할 방법이 없었다).
+    logd = os.path.join(TOOLS, 'logs', 'picklog')
+    os.makedirs(logd, exist_ok=True)
+    picklog = open(os.path.join(logd, f'{os.path.basename(OUT_ROOT)}_ep{ep:03d}.log'), 'w')
     proc = subprocess.Popen(
         ['ros2', 'run', 'capstone_pick', 'pick', '--ros-args',
          '-p', f'target_color:={color}', '-p', f'speed_scale:={speed}',
-         '-p', 'skip_approach:=true', '-p', 'floor:=true'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+         '-p', 'skip_approach:=true', '-p', 'floor:=true',
+         '-p', f'place_target:={PLACE}'],
+        stdout=picklog, stderr=subprocess.STDOUT, env=env)
 
-    rec = {'front': [], 'wrist': [], 'state': []}
+    rec = {'front': [], 'wrist': [], 'state': [], 'action': []}
     t0 = node.sim_now()
     last_tick = -1
     # 시연자 프로세스가 살아 있는 동안 계속 돈다. poll()이 None이면 아직 실행 중.
@@ -241,8 +270,10 @@ def run_episode(node, ep, color, speed):
         # 이걸 안 부르면 메시지가 도착해도 영원히 옛날 값만 보인다.
         rclpy.spin_once(node, timeout_sec=0.01)
         el = node.sim_now() - t0
-        if el > 180:
-            # 시연자가 무한 탐색에 빠진 경우의 안전장치 (시뮬 시각 3분)
+        if el > EP_TIMEOUT:
+            # 시연자가 무한 탐색에 빠진 경우의 안전장치 (시뮬 시각 기준)
+            # ±45° 회전 큐브는 정렬 반복이 늘어 3분을 넘기는 편이 나온다 —
+            # 192mm 옮겨 성공해놓고 잘린 사례가 실측됐다.
             proc.terminate()
             break
         # 경과 시간을 20Hz 칸으로 나눈 번호. 같은 칸에서는 이미 담았으므로 건너뛴다.
@@ -257,7 +288,11 @@ def run_episode(node, ep, color, speed):
         rec['wrist'].append(node.imgs['wrist'])
         # 관절 5개 + 그리퍼 1개 = 6차원. 아직 안 받은 관절은 0.0으로 채운다.
         rec['state'].append([node.st.get(j, 0.0) for j in AJ] + [node.st.get('arm_gripper', 0.0)])
+        rec['action'].append([node.ref.get(j, node.st.get(j, 0.0)) for j in AJ]
+                             + [node.grip_cmd if node.grip_cmd is not None
+                                else node.st.get('arm_gripper', 0.0)])
     proc.wait(timeout=10)
+    picklog.close()
 
     # 채점: 큐브가 실제로 옮겨졌는가. 시연자가 "성공했다"고 말하는 것(returncode 0)만
     # 믿으면 안 된다 — 허공을 집고도 자기는 성공으로 판정하는 경우가 있어서,
@@ -268,8 +303,10 @@ def run_episode(node, ep, color, speed):
     moved = math.hypot(fin[0] - start[0], fin[1] - start[1])
     success = bool(proc.returncode == 0 and moved > 0.05)
     n = len(rec['state'])
-    print(f'[ep{ep}] {n}프레임 | 이동 {moved * 1000:.0f}mm | rc={proc.returncode} | '
-          f'{"성공" if success else "실패"}', flush=True)
+    # yaw를 함께 찍는다. 실패한 편은 저장되지 않아 meta가 남지 않으므로,
+    # 각도가 실패 원인인지 보려면 로그에 있어야 한다.
+    print(f'[ep{ep}] {n}프레임 | yaw {math.degrees(yaw):+.0f}° | 이동 {moved * 1000:.0f}mm | '
+          f'rc={proc.returncode} | {"성공" if success else "실패"}', flush=True)
     if not success or n < 30:
         return False, {'episode': ep, 'frames': n, 'moved_mm': round(moved * 1000, 1),
                        'success': False}
@@ -282,23 +319,14 @@ def run_episode(node, ep, color, speed):
             cv2.imwrite(os.path.join(d, cam, f'{i:06d}.jpg'),
                         node.bridge.imgmsg_to_cv2(msg, 'bgr8'))
     state = np.array(rec['state'], dtype=np.float32)
-    # 이 한 줄이 학습 데이터의 성격을 정한다 (state-as-action).
-    # 정답 행동을 "다음 순간의 관절 각도"로 둔다. 정책은 지금 화면과 지금 자세를
-    # 보고 "다음에 어디로 가야 하나"를 맞히도록 학습된다.
-    #   state  = [s0, s1, s2, …, sT-1]
-    #   action = [s1, s2, s3, …, sT-1]   ← 한 칸씩 당기고 마지막은 복제해 길이를 맞춘다
-    # 마지막을 복제하는 이유: 마지막 시점에는 '다음'이 없는데 길이는 같아야 하고,
-    # 의미상으로도 "여기서 멈춰 있어라"가 되어 자연스럽다.
-    # action[t] = state[t+K] (0.5초 앞 목표). K=1(다음 틱)은 20Hz에서 관절 차이가
-    # 0.0038rad로 노이즈 수준이라 "가만히 있기"가 최적해가 되어 학습이 무너진다
-    # (실측: loss 0.1인데 평가 0/10). K=10이면 0.037rad로 10배 신호가 되고,
-    # ACT의 chunk 100(5초)이 미래 궤적을 담는 구조와도 맞는다.
-    K = 10
-    action = np.vstack([state[K:], np.repeat(state[-1:], K, axis=0)])
+    action = np.array(rec['action'], dtype=np.float32)
     np.save(os.path.join(d, 'state.npy'), state)
     np.save(os.path.join(d, 'action.npy'), action)
+    # yaw를 남겨야 각도별 성공률을 나중에 볼 수 있다. 앞선 수집물에는 이 값이
+    # 없어서 "큐브가 비스듬할 때 잘 잡는가"를 사후에 확인할 수 없었다.
     meta = {'episode': ep, 'frames': n, 'moved_mm': round(moved * 1000, 1), 'success': True,
             'color': color, 'spawn': [round(v, 4) for v in start],
+            'spawn_yaw': round(yaw, 4), 'yaw_max': YAW_MAX,
             'final': [round(v, 4) for v in fin]}
     json.dump(meta, open(os.path.join(d, 'meta.json'), 'w'), ensure_ascii=False, indent=1)
     return True, meta

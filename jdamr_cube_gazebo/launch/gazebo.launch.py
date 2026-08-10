@@ -92,11 +92,18 @@ def generate_launch_description():
         launch_arguments={'gz_args': ['-r -s -v2 ', world]}.items(),
         condition=UnlessCondition(gui))
 
+    # respawn: 이 노드가 죽으면 TF 트리가 통째로 사라지고, 그 뒤로는 물체를 봐도
+    # base_footprint로 변환을 못 해 "TF 대기 실패 → 물체 미검출"이 무한 반복된다
+    # (실측 2026-08-07: 3회 검증 중 2회가 이 상태로 접근조차 못 했다). 며칠에 걸쳐
+    # 재발했고 원인이 외부 SIGTERM으로 보여 자동 복구를 건다 — 시뮬 하네스에서
+    # TF는 단일 실패점이라 살아나는 쪽이 옳다.
     robot_state_publisher_node = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         name='robot_state_publisher',
         output='screen',
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[{
             'robot_description': robot_description_content,
             'use_sim_time': use_sim_time,

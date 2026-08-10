@@ -29,7 +29,10 @@ BASE = (0.3, 0.0)
 START = [0.0, -0.4, 1.0, 0.2, 0.0]         # 규칙 기반 픽의 시작 자세(POSE_FOLDED)
 CAMS = {'front': '/rgbd_camera/image', 'wrist': '/wrist_camera/image_raw'}
 FPS = 20.0
-TRIAL_SEC = 60.0
+# 시연 길이(31.6~48.4초, 중앙 37.2초)에 맞춘다. 60초로 두면 태스크를 마친 뒤
+# 23초가 남아 정책이 파지를 다시 시도한다 — 학습 데이터에 '완료 후' 상황이
+# 없으므로 큐브가 사라진 자리를 집으려 든다. 정책 결함이 아니라 평가 설정 문제다.
+TRIAL_SEC = 45.0
 
 
 def sh(cmd):
@@ -97,18 +100,24 @@ def main():
     from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
     from control_msgs.action import GripperCommand
     from lerobot.policies.act.modeling_act import ACTPolicy
+    from lerobot.policies.factory import make_pre_post_processors
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     policy = ACTPolicy.from_pretrained(args.ckpt)
-    # 실행 길이 축소: chunk 100틱(5초)을 그대로 실행하면 그 사이 관측이 반영되지
-    # 않아 5초짜리 개루프가 반복되며 발산한다(실측: 정책이 시연 범위를 wrist
-    # 99.8%·roll 95.8% 이탈, 60초 중 1155틱을 그리퍼 연 채로 배회).
-    # 짧게 끊어 자주 재추론하면 폐루프가 된다.
-    n_steps = int(os.environ.get('ACT_N_ACTION_STEPS', '10'))
-    policy.config.n_action_steps = n_steps
-    print(f'실행 길이 n_action_steps = {n_steps} (chunk {policy.config.chunk_size})')
+    # 공식 평가 경로는 preprocessor → select_action → postprocessor 다.
+    # (lerobot_eval.py:288-300) state/action 정규화는 MEAN_STD이고 그 통계는
+    # 체크포인트에 저장돼 있다. 이 두 단계를 건너뛰면 정규화된 숫자가 그대로
+    # 관절 명령이 되어, 학습이 아무리 잘 돼도 로봇은 엉뚱하게 움직인다.
+    # 실측: 같은 정책·같은 데이터에서 재현 오차 0.5566 rad → 0.0262 rad (21배).
+    preprocessor, postprocessor = make_pre_post_processors(
+        policy_cfg=policy.config, pretrained_path=args.ckpt)
+    # 기본은 학습 설정 그대로(ACT 표준). 실험할 때만 환경변수로 덮어쓴다.
+    if os.environ.get('ACT_N_ACTION_STEPS'):
+        policy.config.n_action_steps = int(os.environ['ACT_N_ACTION_STEPS'])
+    print(f'실행 길이 n_action_steps = {policy.config.n_action_steps} '
+          f'(chunk {policy.config.chunk_size})')
     policy.to(device).eval()
-    print(f'정책 로드: {args.ckpt} ({device})')
+    print(f'정책 로드: {args.ckpt} ({device}) + processor 적용')
 
     rclpy.init()
     node = Node('act_eval')
@@ -139,9 +148,23 @@ def main():
         jt.points = [pt]
         traj.publish(jt)
 
+    last_grip = {'pos': None, 't': 0.0}
+
     def gripper_cmd(pos):
+        """그리퍼 목표는 실제로 바뀔 때만 보낸다.
+
+        20Hz로 매 틱 goal을 던지면 액션 서버에서 목표가 겹치거나 서로 취소되어,
+        관측된 개폐 동작을 정책 탓으로 돌릴 수 없다(2차 검수 R2-U05-F05).
+        같은 값이면 0.5초에 한 번만 재전송해 유지 의도만 갱신한다.
+        """
+        p = max(float(pos), -0.035)
+        now = time.time()
+        if (last_grip['pos'] is not None
+                and abs(p - last_grip['pos']) < 0.01 and now - last_grip['t'] < 0.5):
+            return
+        last_grip['pos'], last_grip['t'] = p, now
         g = GripperCommand.Goal()
-        g.command.position = max(float(pos), -0.035)
+        g.command.position = p
         g.command.max_effort = 5.0
         grip.send_goal_async(g)
         rclpy.spin_once(node, timeout_sec=0.02)
@@ -149,15 +172,20 @@ def main():
     spin(2)
     grip.wait_for_server(timeout_sec=15)
 
-    # 스폰 분포: 성공 에피소드들의 실제 스폰에서 샘플 (+지터 5mm)
+    # 스폰 분포: 학습에 쓴 그 수집물에서 샘플 (+지터 5mm).
+    # 소스가 학습 데이터와 어긋나면 분포 밖에서 시험하면서 정책 탓을 하게 된다
+    # (2차 검수 R2-U05-F02: 10회 중 7회가 학습 스폰 박스 밖이었다).
+    src = os.environ.get('ACT_SPAWN_SRC', 'rule_std')
     spawns = []
-    for m in glob.glob(os.path.join(TOOLS, 'logs/rule_collect/ep*/meta.json')):
+    for m in glob.glob(os.path.join(TOOLS, 'logs', src, 'ep*/meta.json')):
         d = json.load(open(m))
         if d.get('success'):
             spawns.append(d['spawn'])
     if not spawns:
-        raise SystemExit('성공 스폰 분포 없음')
-    print(f'스폰 분포: 성공 {len(spawns)}편 기반')
+        raise SystemExit(f'성공 스폰 분포 없음 (logs/{src})')
+    xs = [s[0] for s in spawns]; ys = [s[1] for s in spawns]
+    print(f'스폰 분포: logs/{src} 성공 {len(spawns)}편 '
+          f'(x {min(xs):.4f}~{max(xs):.4f}, y {min(ys):.4f}~{max(ys):.4f})')
 
     results = []
     for t in range(args.trials):
@@ -221,13 +249,21 @@ def main():
                 if m.encoding == 'bgr8':
                     im = im[:, :, ::-1]
                 imgs[cam] = torch.from_numpy(im.copy()).permute(2, 0, 1).float().div(255).unsqueeze(0).to(device)
-            state = torch.tensor([[st.get(j, 0.0) for j in AJ] + [st.get('arm_gripper', 0.0)]],
-                                 dtype=torch.float32).to(device)
+            # 관절이 하나라도 안 왔으면 이 틱은 버린다. 예전처럼 0.0으로 채우면
+            # 정책이 존재하지 않는 자세를 보고 판단한다(2차 검수 R2-U05-F04).
+            need = AJ + ['arm_gripper']
+            if not all(j in st for j in need):
+                continue
+            state = torch.tensor([[st[j] for j in need]], dtype=torch.float32).to(device)
             batch = {'observation.images.front': imgs['front'],
                      'observation.images.wrist': imgs['wrist'],
                      'observation.state': state}
-            with torch.no_grad():
-                action = policy.select_action(batch).squeeze(0).cpu().numpy()
+            with torch.inference_mode():
+                action = postprocessor(policy.select_action(preprocessor(batch)))
+            action = action.squeeze(0).cpu().numpy()
+            if not np.all(np.isfinite(action)):
+                print(f'  t{tick}: 비정상 예측 {action} — 이 틱 건너뜀')
+                continue
             if tick % 40 == 0:
                 cur = [round(st.get(j, 0.0), 2) for j in AJ]
                 print(f'  t{tick}: state={cur} → action={[round(float(v), 2) for v in action]}')
@@ -243,16 +279,24 @@ def main():
                 max_z = max(max_z, float(v[2]))
         fin = gz_xyz('pick_blue') or [cx, cy, cz]
         moved = math.hypot(fin[0] - cx, fin[1] - cy)
-        lifted = max_z - cz > 0.025
-        on_floor = fin[2] < cz - 0.05
-        succ = bool(lifted and moved > 0.04 and not on_floor)
+        # 판정은 시연(rule_collect.py:287 `moved > 0.05`)과 같은 기준을 쓰되,
+        # 밀어내기를 배제하기 위해 '들림'을 함께 요구한다.
+        # 시연 태스크는 집어서 옮긴 뒤 '놓는' 것으로 끝난다(그리퍼 명령이 0.80으로
+        # 종료). 따라서 최종 파지(held)를 성공 조건에 넣으면 시연을 정확히
+        # 재현한 시행까지 실패로 셌다 — 실측으로 확인하고 되돌린 기준이다.
+        lifted = max_z - cz > 0.025      # 실제로 들어올렸나 (밀기 배제)
+        held = fin[2] - cz > 0.02        # 끝날 때도 들고 있나 (진단용)
+        succ = bool(lifted and moved > 0.05)
         if traj_log:
             np.save(os.path.join(TOOLS, 'logs', f'eval_traj_{t}.npy'), np.array(traj_log))
         results.append({'trial': t, 'spawn': [round(cx, 3), round(cy, 3), round(cz, 3)],
                         'lift_mm': round((max_z - cz) * 1000, 1), 'moved_mm': round(moved * 1000, 1),
-                        'final': [round(v, 3) for v in fin], 'success': succ})
-        print(f"[{t + 1}/{args.trials}] lift={results[-1]['lift_mm']}mm moved={results[-1]['moved_mm']}mm "
-              f"{'성공' if succ else '실패'}")
+                        'final': [round(v, 3) for v in fin], 'lifted': lifted, 'held': held,
+                        'success': succ})
+        tag = '성공' if succ else ('이동부족' if lifted else
+                                 ('밀기만' if moved > 0.01 else '실패'))
+        print(f"[{t + 1}/{args.trials}] lift={results[-1]['lift_mm']}mm "
+              f"moved={results[-1]['moved_mm']}mm 최종z={fin[2]:.3f} {tag}")
 
     score = sum(r['success'] for r in results) / len(results)
     out = {'pass': score >= 0.5, 'score': score, 'trials': len(results), 'detail': results,

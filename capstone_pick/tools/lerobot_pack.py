@@ -17,12 +17,21 @@ OUT = os.path.join(TOOLS, 'logs',
                    sys.argv[sys.argv.index('--out') + 1] if '--out' in sys.argv else 'lerobot_ds')
 LIMIT = int(sys.argv[sys.argv.index('--limit') + 1]) if '--limit' in sys.argv else 10**9
 SRC = sys.argv[sys.argv.index('--src') + 1] if '--src' in sys.argv else 'collect'
-# 카메라 디렉터리 → 데이터셋 피처 키. 규칙 기반 수집은 로봇 탑재 카메라를 쓴다.
-CAMS = ({'front': 'observation.images.front', 'wrist': 'observation.images.wrist'}
-        if SRC.startswith('rule_collect') else
-        {'demo_up': 'observation.images.up', 'demo_side': 'observation.images.side'})
 TASK = "Pick up the cube and place it aside."
 JOINTS = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper']
+
+
+def detect_cams(ep_dir):
+    """에피소드 폴더에 실제로 있는 이미지 디렉터리로 카메라 피처를 정한다.
+
+    소스 폴더 이름으로 분기하던 예전 방식은 이름이 바뀌자(rule_collect→rule_std)
+    존재하지 않는 카메라를 찾아 0프레임을 만들고 조용히 죽었다. 실물을 본다.
+    """
+    cams = sorted(os.path.basename(p) for p in glob.glob(os.path.join(ep_dir, '*'))
+                  if os.path.isdir(p) and glob.glob(os.path.join(p, '*.jpg')))
+    if not cams:
+        sys.exit(f'카메라 디렉터리를 찾지 못함: {ep_dir}')
+    return {c: f'observation.images.{c}' for c in cams}
 
 
 def main():
@@ -37,6 +46,8 @@ def main():
     if not eps:
         sys.exit('패킹할 에피소드 없음 (성공 0건이면 --all)')
     print(f'패킹 대상 {len(eps)}개: ' + ', '.join(os.path.basename(d) for d, _ in eps))
+    CAMS = detect_cams(eps[0][0])
+    print(f'카메라: {", ".join(CAMS)}')
 
     if os.path.exists(OUT):
         import shutil
@@ -52,6 +63,10 @@ def main():
         action = np.load(os.path.join(d, 'action.npy')).astype(np.float32)
         files = {cam: sorted(glob.glob(os.path.join(d, cam, '*.jpg'))) for cam in CAMS}
         n = min([len(state), len(action)] + [len(v) for v in files.values()])
+        if n == 0:
+            sys.exit(f'{os.path.basename(d)}: 프레임 0 — 패킹 중단 '
+                     f'(state={len(state)} action={len(action)} '
+                     f'{ {c: len(v) for c, v in files.items()} })')
         for i in range(n):
             frame = {CAMS[cam]: cv2.cvtColor(cv2.imread(files[cam][i]), cv2.COLOR_BGR2RGB)
                      for cam in CAMS}
