@@ -218,6 +218,14 @@ WRIST_SERVO_REF = (341.4, 42.0)
 WRIST_SERVO_FWD = 3091.0        # 전후 1m당 blob x [px]
 WRIST_SERVO_LAT = -2554.0       # 좌우 1m당 blob y [px]
 WRIST_SERVO_TOL = 0.003         # 이보다 작으면 보정을 멈춘다 [m]
+# 완전 닫힘(-0.17)과 '물체를 물어 벌어진 상태'를 가르는 선. 25mm 큐브의 물림각은
+# 0.05~0.2라 여유가 크다. 물체를 놓치면 죠가 끝까지 닫히므로 이 하나로 구분된다.
+GRIP_EMPTY_MAX = -0.10
+# 큐브 중심 높이는 **크기에서 정한다.** 비전 z는 0.005~0.013으로 튀는데(뎁스 노이즈)
+# 그 값을 그대로 쓰면 죠가 2~3mm 어긋나게 내려가 물림이 얕아진다 — 실측: cz=0.010으로
+# 잡아 물림각 0.043(계산상 0.15)이 나왔고 들다가 놓쳤다. 물체 크기는 아는 값이다.
+CUBE_SIZE = 0.025
+CUBE_CZ = CUBE_SIZE / 2.0
 FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 모드
 # ---- 쓰레기통 투입 (2026-07-29 실측) ----
 # 통 = 16cm 정사각, 벽 높이 0.18m, 개구부 13.6cm. 회색이라 색상(H)은 무의미하고
@@ -1712,8 +1720,8 @@ class PickNode(Node):
             self.get_logger().warning('IK 파지: 큐브 실측 좌표가 없다 — 재접근 필요')
             self.last_grasp_fail = 'IK 파지 좌표 없음'
             return False
-        cx, cy, cz = c
-        cz = max(cz, 0.010)
+        cx, cy, _ = c
+        cz = CUBE_CZ        # 비전 z를 믿지 않는다 (위 주석 참조)
         # 손목캠으로 좌표를 보정한다 — 접근이 넘긴 값은 추측이라 좌우가 어긋난다
         cx, cy = self._servo_correct(cx, cy, cz)
         # 파지가 **실측으로 검증된** 범위인지 먼저 본다. IK 해가 있어도 그 밖이면
@@ -2486,6 +2494,30 @@ class PickNode(Node):
                 zs.append(r[2])
         return zs
 
+    def _holding_ik(self):
+        """IK 경로의 파지 유지 판정 — **그리퍼 각도**로 본다.
+
+        놓치면 죠가 끝까지 닫혀 -0.17이 되고, 쥐고 있으면 물체 두께만큼 벌어져
+        있다. 25mm 큐브의 물림각은 0.05~0.2라 구분이 확실하다.
+
+        전방캠 높이(종전 1차 신호)를 쓰지 않는 이유: 손목캠 서보 이후 팔 자세가
+        달라져 큐브가 전방캠 시야를 벗어난다 — 실측에서 `면적 0 → DROPPED`로
+        오판했는데 같은 순간 부하는 -10.0으로 제대로 물고 있었다.
+        부하도 1차로 못 쓴다. 유지 목표에 도달하면 위치 오차가 0이 되어 부하가
+        사라지기 때문이다(파지 '순간'에만 유효 — docs/18 참조).
+        """
+        self.gripper_angle = None
+        self.spin_until(lambda: self.gripper_angle is not None, 3.0)
+        ang = self.gripper_angle
+        if ang is None:
+            self.get_logger().info('파지 확인(각도): 각도 미수신 — 유지로 본다')
+            return True
+        held = ang > GRIP_EMPTY_MAX
+        self.get_logger().info(
+            f'파지 확인(각도): {ang:.3f} (빈손 기준 {GRIP_EMPTY_MAX}) '
+            f'→ {"HOLDING" if held else "DROPPED"}')
+        return held
+
     def holding(self, allow_active=True):
         """물체를 쥐고 있는지 판정 — 1차 신호는 그리퍼 관절 부하다.
 
@@ -2499,6 +2531,9 @@ class PickNode(Node):
         (실측: 큐브가 바닥에 그대로인데 면적 42000, 전 구간 HOLDING 오판 → 가짜 성공).
         면적은 부하를 못 읽을 때의 폴백으로만 남긴다.
         """
+        # IK로 잡았으면 각도로 판정한다(위 _holding_ik 주석 참조)
+        if self.use_ik and getattr(self, '_ik_grasped', False):
+            return self._holding_ik()
         self.gripper_angle = self.gripper_effort = None
         self.spin_until(lambda: self.gripper_angle is not None, 3.0)
         ang = self.gripper_angle
