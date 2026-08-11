@@ -224,8 +224,13 @@ GRIP_EMPTY_MAX = -0.10
 # 큐브 중심 높이는 **크기에서 정한다.** 비전 z는 0.005~0.013으로 튀는데(뎁스 노이즈)
 # 그 값을 그대로 쓰면 죠가 2~3mm 어긋나게 내려가 물림이 얕아진다 — 실측: cz=0.010으로
 # 잡아 물림각 0.043(계산상 0.15)이 나왔고 들다가 놓쳤다. 물체 크기는 아는 값이다.
-CUBE_SIZE = 0.025
+CUBE_SIZE = 0.030
 CUBE_CZ = CUBE_SIZE / 2.0
+# 운반 자세도 **IK로** 만든다. 고정 자세(POSE_CARRY)로 전환하면 죠 각도가 급변해
+# 물체가 빠진다 — docs/18에 이미 기록된 함정이고, IK 경로에서 그 연속성이 깨졌다
+# (실측: 물림각 0.219로 제대로 물어 놓고 전환 순간 -0.170으로 놓쳤다).
+# 든 큐브를 로봇 기준 이 위치에 둔다는 뜻이다.
+CARRY_X, CARRY_UP = 0.330, 0.180
 FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 모드
 # ---- 쓰레기통 투입 (2026-07-29 실측) ----
 # 통 = 16cm 정사각, 벽 높이 0.18m, 개구부 13.6cm. 회색이라 색상(H)은 무의미하고
@@ -1119,7 +1124,20 @@ class PickNode(Node):
             # 방위를 먼저 끝내고 직진만 하면 전진 중에는 큐브가 화면 중앙 쪽에 남는다.
             # 종전에는 잔여 방위를 파지 단계의 손목캠 정렬이 흡수한다는 전제였는데,
             # IK로 바뀌면서 그 정렬 자체가 없어졌으므로 접근이 방위까지 책임져야 한다.
-            if abs(brg) > brg_tol:
+            # 세 구간으로 나눈다. 핵심은 **근접에서 회전하지 않는 것**이다.
+            #   먼 구간   호를 그려 방위와 거리를 함께 좁힌다. 이 거리에서는 큐브가
+            #             화면 중앙 쪽이라 돌아도 시야를 벗어나지 않는다.
+            #   정렬 구간 아직 큐브가 보이는 거리에서 방위만 맞춘다.
+            #   근접 구간 직진만. 여기서 돌면 큐브가 시야 밖으로 나가고, 그때부터
+            #             오도메트리 추측이라 좌우가 수십 mm 어긋난다(실측 38mm).
+            # 회전·전진을 완전히 분리했더니 직진할수록 방위가 다시 벌어져(같은 좌우
+            # 오차가 가까울수록 큰 각이 된다) **마지막에 회전이 남았다.** 그 회전이
+            # 근접에서 일어나 큐브를 놓쳤다. 멀리서 미리 좁혀야 그게 없어진다.
+            if er > 0.15:
+                v = 0.08
+                wz = max(-0.30, min(0.30, brg * 0.9)) if real else 0.0
+                self.drive(v, wz, min(3.0, abs(er) / v + 0.2))
+            elif abs(brg) > brg_tol:
                 # 맹회전은 저속으로 (고속 회전 슬립이 yaw 추정을 무너뜨려 지그재그 발진)
                 wz = 0.25 if real else 0.10
                 # 게인 0.5: 한 번에 목표각을 다 돌면 관성으로 넘어가 반대편으로
@@ -1127,8 +1145,8 @@ class PickNode(Node):
                 # 수렴하지 않았다. 절반씩 접근하면 오버슈트 없이 수렴한다.
                 self.drive(0.0, wz if brg > 0 else -wz, min(2.0, 0.5 * abs(brg) / wz))
             else:
-                # 방위가 이미 맞았으므로 **직진만** 한다(wz=0).
-                v = 0.08 if er > 0.2 else (0.04 if er > 0 else -0.04)
+                # 근접: **직진만** 한다(wz=0). 관측을 유지하는 것이 목적이다.
+                v = 0.04 if er > 0 else -0.04
                 self.drive(v, 0.0, min(3.0, abs(er) / abs(v) + 0.2))
         return None
 
@@ -1752,8 +1770,13 @@ class PickNode(Node):
         for q in path[1:]:
             self.move_arm(dict(zip(ARM_JOINTS, q)), 1.2)
         time.sleep(0.4)
-        self.move_gripper(GRIPPER_CLOSED)
-        time.sleep(1.5)
+        # **살살 닫는다.** 강체 큐브는 순간 힘이 크면 죠에 튕겨 자리를 벗어난다.
+        # 두 단계로 나눠 먼저 약한 힘으로 접촉을 만들고, 닿은 뒤에 쥐는 힘을 올린다.
+        # (종전 코드의 '닫기 10 · 유지 30' 분리와 같은 취지를 IK 경로에 옮긴 것)
+        self.move_gripper(GRIPPER_CLOSED, effort=4.0)
+        time.sleep(0.8)
+        self.move_gripper(GRIPPER_CLOSED, wait=False, effort=30.0)
+        time.sleep(1.2)
         ang = getattr(self, 'gripper_angle', None)
         eff = getattr(self, 'gripper_effort', None)
         self.last_grasp_angle = ang
@@ -1788,9 +1811,22 @@ class PickNode(Node):
             if q is None:
                 break
             self.move_arm(dict(zip(ARM_JOINTS, q)), 1.5)
-            self.move_gripper(GRIPPER_CLOSED, wait=False, effort=30.0)
-        # 운반 자세로 — 여기서부터는 종전 경로와 같다
-        self.move_arm(POSE_CARRY, 2.5)
+            # 매 단계 재조이지 않는다. 팔 단독 프로브는 재조임 없이 6/6이었는데
+            # 여기서는 재조임을 넣고 들다가 놓쳤다(물림각 0.108 → -0.170).
+            # 25mm 큐브는 가벼워 재조임의 순간 힘에 튕겨 나가는 것으로 보인다.
+        # 운반 자세에 들어가기 직전에 **유지력**을 건다. 들기 중에는 재조임이
+        # 큐브를 튕겨내지만(실측), 운반 중에는 반대로 유지력이 없으면 회전 관성에
+        # 미끄러져 나간다 — 실측: 물림각이 0.287에서 0.116으로 서서히 줄다가
+        # 35도 회전 직후 -0.170(완전 닫힘)이 됐다. 종전 코드가 '닫기 10, 유지 30'으로
+        # 나눠 쓴 이유가 이것이다.
+        self.move_gripper(GRIPPER_CLOSED, wait=False, effort=30.0)
+        # 운반 자세도 IK로 만든다. 고정 자세로 전환하면 죠 각도가 급변해 빠진다.
+        carry = K.grasp_q(CARRY_X, 0.0, CUBE_CZ, up=CARRY_UP)
+        if carry is not None:
+            self.move_arm(dict(zip(ARM_JOINTS, carry)), 2.5)
+            self._ik_carry = carry
+        else:
+            self.move_arm(POSE_CARRY, 2.5)
         time.sleep(0.5)
         return self.holding()
 
@@ -2275,6 +2311,10 @@ class PickNode(Node):
                 continue
             miss = 0
             approached += 1
+            # 운반 중 유지력을 다시 주장한다. 같은 절대 목표를 반복하므로 죠는
+            # 움직이지 않고, 하중이나 회전 관성에 밀려 벌어졌을 때만 되돌아온다.
+            if self.use_ik and getattr(self, '_ik_grasped', False) and approached % 3 == 1:
+                self.move_gripper(GRIPPER_CLOSED, wait=False, effort=30.0)
             tx, ty = loc
             r = math.hypot(tx, ty)
             brg = math.atan2(ty, tx)

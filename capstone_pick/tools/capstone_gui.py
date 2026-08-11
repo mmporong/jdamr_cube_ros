@@ -332,6 +332,43 @@ class Panel:
     def _put(self, text, tag=''):
         self.q.put((text, tag))
 
+    def _tail_external(self):
+        """**외부에서 돌린 실행의 로그도 보여준다.**
+
+        패널의 [실행]으로 띄운 프로세스는 stdout을 직접 읽지만, 터미널에서
+        `ros2 run capstone_pick pick ... | tee -a <이 파일>`처럼 직접 돌리면
+        패널에는 아무것도 안 보였다. 같은 로그 파일을 tail해서 그 경우도 화면에
+        올린다. 자기 프로세스가 도는 동안은 건너뛴다 — 그때는 stdout으로 이미
+        같은 줄이 들어오므로 두 번 찍힌다.
+        """
+        pos = os.path.getsize(LOG_PATH) if os.path.exists(LOG_PATH) else 0
+        while True:
+            time.sleep(0.4)
+            try:
+                if not os.path.exists(LOG_PATH):
+                    continue
+                size = os.path.getsize(LOG_PATH)
+                if self.proc and self.proc.poll() is None:
+                    pos = size          # 자기 실행 중 — 위치만 따라간다
+                    continue
+                if size < pos:          # 파일이 새로 만들어졌다
+                    pos = 0
+                if size == pos:
+                    continue
+                with open(LOG_PATH, 'r', errors='replace') as f:
+                    f.seek(pos)
+                    chunk = f.read()
+                    pos = f.tell()
+                for line in chunk.splitlines():
+                    t = line.rstrip()
+                    if not t:
+                        continue
+                    tag = 'err' if ('ERROR' in t or 'FAIL' in t) else (
+                        'ok' if ('SUCCESS' in t or 'HOLDING' in t) else '')
+                    self.q.put((t, tag))
+            except Exception:
+                continue
+
     def _drain(self):
         try:
             while True:
@@ -371,4 +408,5 @@ if __name__ == '__main__':
         root.destroy()
 
     root.protocol('WM_DELETE_WINDOW', _close)
+    threading.Thread(target=panel._tail_external, daemon=True).start()
     root.mainloop()
