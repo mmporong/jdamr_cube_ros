@@ -201,7 +201,10 @@ POSE_GRASP_FLOOR = dict(zip(ARM_JOINTS, [0.0, 1.15, 0.15, 0.28, 0.0]))  # 바닥
 # IK 전환(2026-08-11): 이제 '포켓'은 파지가 성립하는 유일한 점이 아니라
 # **IK 작업공간의 중앙**이다. 접근은 큐브를 이 근처로만 데려오면 되고, 나머지는
 # 팔이 흡수한다. 실측 성공 구간은 전후 0.29~0.41, 좌우 ±0.05(ik_grasp_probe).
-POCKET_FLOOR = (0.350, 0.000)   # IK 작업공간 중앙 [m, base_footprint]
+# 0.350(작업공간 중앙)에서 0.395로 올렸다. 그 거리에서는 큐브가 전방캠에 계속
+# 보여 파지 직전 재관측이 가능하다 — 근접 사각으로 들어가면 추측에 의존하게 되고,
+# 그 추측이 좌우로 38.5mm 어긋났다. IK 범위(0.29~0.41)의 상단이라 여유도 있다.
+POCKET_FLOOR = (0.395, 0.000)   # 큐브가 보이는 거리 [m, base_footprint]
 # 파지가 **실측으로 검증된** 범위 (ik_grasp_probe.py, 시도 가능 지점 10/11).
 # IK 해가 존재하는 범위보다 좁다 — 해가 있어도 실제로 물리는 것은 별개다.
 IK_X_MIN, IK_X_MAX, IK_Y_MAX = 0.29, 0.41, 0.055
@@ -1084,7 +1087,14 @@ class PickNode(Node):
                         '실측 없이 접근 종료 — 추측 좌표로 파지 진입(정확도 낮음)')
                 self._anchor_odom = self.odom
                 return -(brg - PAN_BASE_BEARING)
-            if abs(brg) > 0.30:
+            # **회전과 전진을 섞지 않는다.** 섞으면 마지막 회전이 큐브를 시야 밖으로
+            # 밀어내고, 그때부터 오도메트리 추측으로 넘어가 yaw 오차가 좌우로 쌓인다.
+            #   실측: 실측 관측은 늘 y≈+0.078인데 추측은 y≈+0.018 — 60mm가 일관되게
+            #   벌어졌고, 그 추측으로 파지해 허공을 물었다.
+            # 방위를 먼저 끝내고 직진만 하면 전진 중에는 큐브가 화면 중앙 쪽에 남는다.
+            # 종전에는 잔여 방위를 파지 단계의 손목캠 정렬이 흡수한다는 전제였는데,
+            # IK로 바뀌면서 그 정렬 자체가 없어졌으므로 접근이 방위까지 책임져야 한다.
+            if abs(brg) > brg_tol:
                 # 맹회전은 저속으로 (고속 회전 슬립이 yaw 추정을 무너뜨려 지그재그 발진)
                 wz = 0.25 if real else 0.10
                 # 게인 0.5: 한 번에 목표각을 다 돌면 관성으로 넘어가 반대편으로
@@ -1092,10 +1102,9 @@ class PickNode(Node):
                 # 수렴하지 않았다. 절반씩 접근하면 오버슈트 없이 수렴한다.
                 self.drive(0.0, wz if brg > 0 else -wz, min(2.0, 0.5 * abs(brg) / wz))
             else:
-                # 맹구간 직진 위주 — 잔여 방위는 파지 단계의 pan 회전과 손목캠 정렬이 흡수
+                # 방위가 이미 맞았으므로 **직진만** 한다(wz=0).
                 v = 0.08 if er > 0.2 else (0.04 if er > 0 else -0.04)
-                wz = max(-0.15, min(0.15, brg * 0.8)) if real else 0.0
-                self.drive(v, wz, min(3.0, abs(er) / abs(v) + 0.2))
+                self.drive(v, 0.0, min(3.0, abs(er) / abs(v) + 0.2))
         return None
 
     # ---- 손목 카메라 최종 정렬 (바닥 모드): 좌우=pan, 전후=미세 주행 ----
@@ -1555,6 +1564,54 @@ class PickNode(Node):
         return (math.cos(yaw) * dx + math.sin(yaw) * dy,
                 -math.sin(yaw) * dx + math.cos(yaw) * dy, cz)
 
+    def _reobserve_cube(self):
+        """파지 직전 큐브를 **다시 본다.** 실측이면 좌표를 갱신하고 True.
+
+        오도메트리 추측은 좌우로 크게 어긋난다 — 실측 대조에서 전후는 3.9mm인데
+        좌우가 38.5mm 틀렸다(로봇이 21.7도 돌아 있던 상태). 방위가 조금 어긋나면
+        거리에 비례해 좌우로 벌어지는 yaw 누적 오차의 특징이다.
+
+        IK로 작업공간이 넓어져(전후 0.29~0.41) 큐브가 **보이는 거리에서** 멈출 수
+        있게 됐으므로, 추측 대신 한 번 더 보는 편이 정확하다. 못 보면 종전대로
+        추측 좌표를 쓰되 그 사실을 남긴다.
+        """
+        # **팔을 먼저 확실히 치운다.** 접힌 팔이 카메라 앞을 막는다(저장 화면 확인).
+        # 종전 `_arm_aside`는 pan 0.6rad(34도)인데 카메라 수평 반각이 33도라 경계에
+        # 걸쳐 여전히 가렸다. 1.2rad(69도)면 확실히 프레임 밖이다.
+        # pan 부호 규약은 approach의 팔 젖힘과 같다 — 물체가 왼쪽(y>0)이면 +pan.
+        c0 = self._cube_now()
+        aside = 1.2 if (c0 is None or c0[1] > 0) else -1.2
+        self.move_arm({'arm_shoulder_pan': aside}, 1.5)
+        time.sleep(0.4)
+        loc = self.locate_object()
+        if loc is None:
+            # 왜 못 보는지는 화면을 봐야 안다 — 계산상 보여야 하는 거리인데
+            # 안 보이면 가림·검출 임계 같은 다른 요인이다.
+            path = ''
+            if self.color is not None:
+                try:
+                    d = os.path.expanduser('~/capstone_tools/logs/reobs_miss')
+                    os.makedirs(d, exist_ok=True)
+                    path = os.path.join(d, f'{time.strftime("%H%M%S")}.png')
+                    cv2.imwrite(path, self.color)
+                    path = f' → {path}'
+                except Exception:
+                    path = ''
+            self.get_logger().info(f'  파지 전 재관측: 큐브 미검출 — 추측 좌표 사용{path}')
+            return False
+        xb, yb, zb, _ = loc
+        old = self._cube_now()
+        self._cube_base = (xb, yb, max(0.0, zb))
+        if self.odom:
+            x, y, yaw = self.odom
+            self._obj_odom = (x + math.cos(yaw) * xb - math.sin(yaw) * yb,
+                              y + math.sin(yaw) * xb + math.cos(yaw) * yb)
+        if old:
+            self.get_logger().info(
+                f'  파지 전 재관측: ({xb:.3f},{yb:+.3f}) '
+                f'— 추측 대비 전후 {(xb - old[0]) * 1000:+.0f}mm 좌우 {(yb - old[1]) * 1000:+.0f}mm')
+        return True
+
     def _grasp_ik(self, cube_yaw=0.0):
         """실측 큐브 좌표로 역기구학 파지. 물었으면 True.
 
@@ -1570,6 +1627,7 @@ class PickNode(Node):
         밀어 넣는다. 파지 위치가 큐브 반폭보다 안쪽이라 한 번에 내리면 죠가
         큐브 윗면을 찌른다(`kinematics.descend_path` 주석 참조).
         """
+        self._reobserve_cube()      # 추측 누적을 끊는다 (위 주석 참조)
         c = self._cube_now()
         if c is None:
             self.get_logger().warning('IK 파지: 큐브 실측 좌표가 없다 — 재접근 필요')
@@ -1592,6 +1650,7 @@ class PickNode(Node):
             return False
         self.get_logger().info(
             f'IK 파지: 큐브 ({cx:.3f},{cy:+.3f},{cz:.3f}) 경로 {len(path)}점')
+        self._ik_cube = (cx, cy, max(cz, 0.010))   # 들기가 쓴다
         self.last_grasp_angle = None
         self.last_grasp_fail = None
         self.move_gripper(1.2)
@@ -1612,7 +1671,34 @@ class PickNode(Node):
             f'부하={eff if eff is None else round(eff, 2)} → {"HOLDING" if held else "EMPTY"}')
         if not held:
             self.last_grasp_fail = f'물지 못함(각도 {ang}, 부하 {eff})'
+        self._ik_grasped = held
         return held
+
+    def _lift_ik(self):
+        """IK로 잡은 것은 IK로 든다. 쥔 채면 True.
+
+        종전 `lift()`는 고정 자세를 계단식으로 밟는데, 그 첫 자세가 IK 파지 자세와
+        달라 드는 순간 급변이 생긴다 — 실측: 물림각 0.072·부하 -10.0으로 제대로
+        물어 놓고 들다가 놓쳤다(DROPPED). 같은 좌표를 높이만 올려 풀면 죠의 자세가
+        유지되므로 그 급변이 없다(팔 단독 프로브에서 6/6).
+
+        한 번에 올리지 않는 이유는 종전과 같다 — 물체가 바닥을 떠나는 첫 순간에
+        하중이 걸려 가장 잘 빠진다.
+        """
+        c = getattr(self, '_ik_cube', None) or self._cube_now()
+        if c is None:
+            return self.holding()
+        cx, cy, cz = c
+        for up in (0.02, 0.05, 0.09, 0.14):
+            q = K.grasp_q(cx, cy, cz, up=up)
+            if q is None:
+                break
+            self.move_arm(dict(zip(ARM_JOINTS, q)), 1.5)
+            self.move_gripper(GRIPPER_CLOSED, wait=False, effort=30.0)
+        # 운반 자세로 — 여기서부터는 종전 경로와 같다
+        self.move_arm(POSE_CARRY, 2.5)
+        time.sleep(0.5)
+        return self.holding()
 
     def grasp(self, pan):
         """물체 위에서 내려가 죠를 닫고, 실제로 물었는지까지 판정한다. 물었으면 True.
@@ -2518,6 +2604,8 @@ class PickNode(Node):
         """
         # 계단식 들기 + wrist 보상(lift 감소분 = wrist 증가분): 그리퍼 절대 피치 유지.
         # 시작 자세는 모드의 파지 자세 — 받침대(0.48/0.9), 바닥(1.15/0.28) 공용.
+        if self.floor_mode and self.use_ik and getattr(self, '_ik_grasped', False):
+            return self._lift_ik()
         grasp_pose = POSE_GRASP_FLOOR if self.floor_mode else POSE_GRASP
         lift0 = grasp_pose['arm_shoulder_lift']
         elbow0 = grasp_pose['arm_elbow_flex']
