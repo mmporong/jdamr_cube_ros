@@ -208,6 +208,16 @@ POCKET_FLOOR = (0.395, 0.000)   # 큐브가 보이는 거리 [m, base_footprint]
 # 파지가 **실측으로 검증된** 범위 (ik_grasp_probe.py, 시도 가능 지점 10/11).
 # IK 해가 존재하는 범위보다 좁다 — 해가 있어도 실제로 물리는 것은 별개다.
 IK_X_MIN, IK_X_MAX, IK_Y_MAX = 0.29, 0.41, 0.055
+# ---- 손목캠 비주얼 서보 (2026-08-11 실측, wrist_servo_probe.py) ----
+# 전방캠은 파지 거리에서 큐브를 못 본다 — 팔 접힘 최고점(z=0.381)이 카메라(z=0.350)보다
+# 높아 카메라를 올려도 팔이 시선을 가린다. 손목캠은 팔에 달려 있어 그 문제가 없다
+# (Stretch 같은 상용 모바일 매니퓰레이터가 손목캠을 두는 이유).
+# 프리그래스프 자세에서 큐브가 목표대로 있을 때의 blob 위치와, 큐브를 옮겼을 때의 감도.
+# 축이 잘 분리된다 — 전후는 blob x, 좌우는 blob y이고 교차항이 4% 이하다.
+WRIST_SERVO_REF = (341.4, 42.0)
+WRIST_SERVO_FWD = 3091.0        # 전후 1m당 blob x [px]
+WRIST_SERVO_LAT = -2554.0       # 좌우 1m당 blob y [px]
+WRIST_SERVO_TOL = 0.003         # 이보다 작으면 보정을 멈춘다 [m]
 FLOOR_Z_MAX = 0.08              # 검출 높이가 이보다 낮으면 바닥 모드
 # ---- 쓰레기통 투입 (2026-07-29 실측) ----
 # 통 = 16cm 정사각, 벽 높이 0.18m, 개구부 13.6cm. 회색이라 색상(H)은 무의미하고
@@ -237,8 +247,14 @@ TRASH_HALF = 0.115
 # 실측: 그리퍼 x=0.353 z=0.300 → 큐브 하단 0.205 (통 벽 0.18 위 2.5cm).
 # 여유 0.6cm(lift 0.15) 자세로는 주행 흔들림에 큐브가 통 벽에 걸렸다 — 실측 확인.
 POSE_CARRY = dict(zip(ARM_JOINTS, [0.0, 0.15, 0.15, 1.28, 0.0]))
-# 운반·탐색 중에는 pan을 옆으로 빼 카메라 시야를 연다(정면 자세는 화면 중앙을 가림 — 실측 확인).
-POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.0)
+# 운반·탐색 중에는 pan을 옆으로 빼 카메라 시야를 연다.
+# -1.0(57도)에서 -1.4(80도)로 키웠다. 카메라 수평 반각이 33도인데 팔은 굵어서
+# 57도로는 프레임 가장자리에 남고, 그 회색 부분이 통 마스크(무채색·어두움)에
+# 걸린다. **팔은 로봇과 함께 도니 base 좌표가 고정**이라, 차체가 22도씩 도는데도
+# 통 관측값이 소수점까지 동일한 상태가 71회 이어졌다(실측). 진짜 통이 프레임에
+# 들어오자 면적이 228 → 825로 뛰며 방위가 23.7도에서 0.7도로 정상화됐다.
+# carry_pan_probe 실측에서도 마커 면적이 -1.0에서 4182, -1.4에서 4317로 더 컸다.
+POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.4)
 # 통 중심이 이 거리에 오면 그리퍼가 개구부 바로 위. 0.364→0.344: 짧은 착지
 # 편향 보정의 나머지 절반 — 중심 초과 리치 46+20=66mm로 개구부 반경(68mm) 안.
 # ArUco 마커 기반으로 바뀌면서 정지 거리를 0.344 → 0.500으로 늘렸다.
@@ -380,6 +396,7 @@ class PickNode(Node):
         self.scale = float(self.declare_parameter('speed_scale', 3.0).value)
         self.skip_approach = bool(self.declare_parameter('skip_approach', False).value)
         target_color = str(self.declare_parameter('target_color', 'blue').value).strip().lower()
+        self.target_color = target_color   # 디버그용 실좌표 대조에서 쓴다
         if target_color not in TARGET_COLOR_RANGES:
             self.get_logger().error(
                 f'미지원 색 "{target_color}" — 사용 가능: {sorted(TARGET_COLOR_RANGES)}')
@@ -1612,6 +1629,68 @@ class PickNode(Node):
                 f'— 추측 대비 전후 {(xb - old[0]) * 1000:+.0f}mm 좌우 {(yb - old[1]) * 1000:+.0f}mm')
         return True
 
+    def _gz_cube_base(self):
+        """큐브의 실제 base 좌표 (gz 실좌표 → 현재 로봇 자세 기준). 디버그 전용.
+
+        제어에는 쓰지 않는다 — 실물에서 못 쓰는 코드가 된다. 추측 좌표가 얼마나
+        어긋나는지 숫자로 보려고 둔다.
+        """
+        try:
+            def pose(name):
+                out = subprocess.run(['gz', 'model', '-m', name, '-p'],
+                                     capture_output=True, text=True, timeout=8).stdout
+                L = out.splitlines()
+                for i, l in enumerate(L):
+                    if '- Pose' in l and i + 2 < len(L):
+                        p_ = [float(v) for v in L[i + 1].strip().strip('[]').split()]
+                        r_ = [float(v) for v in L[i + 2].strip().strip('[]').split()]
+                        return p_, r_
+                return None, None
+            cp, _ = pose(f'pick_object_{self.target_color}')
+            rp, rr = pose('jdamr_cube')
+            if cp is None or rp is None:
+                return None
+            dx, dy = cp[0] - rp[0], cp[1] - rp[1]
+            yaw = rr[2]
+            return (math.cos(yaw) * dx + math.sin(yaw) * dy,
+                    -math.sin(yaw) * dx + math.cos(yaw) * dy)
+        except Exception:
+            return None
+
+    def _servo_correct(self, cx, cy, cz, tries=3):
+        """프리그래스프 자세에서 손목캠으로 큐브 좌표를 보정한다. (cx, cy).
+
+        접근이 넘겨준 좌표는 오도메트리 추측이라 좌우로 수십 mm 어긋난다. 그런데
+        전방캠은 파지 거리에서 큐브를 볼 수 없으므로(팔이 가림) 여기서 손목캠으로 본다.
+
+        종전 `wrist_align`과 다른 점은 **보정 대상**이다. 저쪽은 픽셀 기준점에 맞춰
+        팔 관절을 직접 움직였고, 그 기준점이 파지 자세에 얽혀 하나만 어긋나면 전부
+        무효였다. 여기서는 **큐브 좌표를 고치고 IK를 다시 푼다.** 오차를 목표에 더하고
+        다시 보는 반복이라 감도 계수가 20% 어긋나도 두세 번이면 수렴한다.
+        """
+        for i in range(tries):
+            q = K.grasp_q(cx, cy, cz, up=K.PREGRASP_UP)
+            if q is None:
+                return cx, cy
+            self.move_arm(dict(zip(ARM_JOINTS, q)), 2.0 if i == 0 else 1.2)
+            time.sleep(0.3)
+            b = self._wrist_blob(frames=5)
+            if b is None:
+                self.get_logger().info(f'  서보[{i}]: 손목캠 미검출 — 보정 중단')
+                return cx, cy
+            dfwd = (b[0] - WRIST_SERVO_REF[0]) / WRIST_SERVO_FWD
+            dlat = (b[1] - WRIST_SERVO_REF[1]) / WRIST_SERVO_LAT
+            self.get_logger().info(
+                f'  서보[{i}]: blob=({b[0]:.0f},{b[1]:.0f}) '
+                f'→ 전후 {dfwd * 1000:+.0f}mm 좌우 {dlat * 1000:+.0f}mm')
+            if abs(dfwd) < WRIST_SERVO_TOL and abs(dlat) < WRIST_SERVO_TOL:
+                break
+            # 전후·좌우는 **죠가 향한 방향** 기준이므로 base 좌표로 돌려서 더한다
+            brg = math.atan2(cy, cx - K.PAN_X)
+            cx += dfwd * math.cos(brg) - dlat * math.sin(brg)
+            cy += dfwd * math.sin(brg) + dlat * math.cos(brg)
+        return cx, cy
+
     def _grasp_ik(self, cube_yaw=0.0):
         """실측 큐브 좌표로 역기구학 파지. 물었으면 True.
 
@@ -1634,6 +1713,9 @@ class PickNode(Node):
             self.last_grasp_fail = 'IK 파지 좌표 없음'
             return False
         cx, cy, cz = c
+        cz = max(cz, 0.010)
+        # 손목캠으로 좌표를 보정한다 — 접근이 넘긴 값은 추측이라 좌우가 어긋난다
+        cx, cy = self._servo_correct(cx, cy, cz)
         # 파지가 **실측으로 검증된** 범위인지 먼저 본다. IK 해가 있어도 그 밖이면
         # 허공을 문다(실측: y=+0.087에서 해는 나왔으나 실패). 재접근이 더 싸다.
         if not (IK_X_MIN <= cx <= IK_X_MAX) or abs(cy) > IK_Y_MAX:
@@ -1642,14 +1724,18 @@ class PickNode(Node):
                 f'[전후 {IK_X_MIN}~{IK_X_MAX}, 좌우 ±{IK_Y_MAX}]')
             self.last_grasp_fail = 'IK 검증 범위 밖'
             return False
-        path = K.descend_path(cx, cy, max(cz, 0.010), cube_yaw)
+        path = K.descend_path(cx, cy, cz, cube_yaw)
         if path is None:
             self.get_logger().warning(
                 f'IK 해 없음 (큐브 {cx:.3f},{cy:+.3f},{cz:.3f}) — 작업공간 밖, 재접근 필요')
             self.last_grasp_fail = 'IK 해 없음'
             return False
+        gz = self._gz_cube_base()
         self.get_logger().info(
-            f'IK 파지: 큐브 ({cx:.3f},{cy:+.3f},{cz:.3f}) 경로 {len(path)}점')
+            f'IK 파지: 큐브 ({cx:.3f},{cy:+.3f},{cz:.3f}) 경로 {len(path)}점'
+            + ('' if gz is None else
+               f' | 실좌표 ({gz[0]:.3f},{gz[1]:+.3f}) '
+               f'오차 전후{(cx - gz[0]) * 1000:+.0f}mm 좌우{(cy - gz[1]) * 1000:+.0f}mm'))
         self._ik_cube = (cx, cy, max(cz, 0.010))   # 들기가 쓴다
         self.last_grasp_angle = None
         self.last_grasp_fail = None
@@ -2196,8 +2282,14 @@ class PickNode(Node):
                 self._lock_trash_pose()
                 self._trash_lock = True
                 self.get_logger().info(f'근접 락 (r={r:.3f}) — 이후 추측 접근')
+            # odom을 함께 찍는다. 관측값이 얼어붙었을 때 차체가 도는지 아닌지를
+            # 구분하려면 이 두 줄이 같이 있어야 한다 — 실측에서 통 좌표가 71회
+            # 소수점까지 동일했는데, 차체 회전은 별도 측정에서 99% 달성됐다.
+            od = self.odom
             self.get_logger().info(
-                f'[{it}] 통 접근: r={r:.3f} er={er * 1000:.0f}mm brg={math.degrees(brg):.1f}deg')
+                f'[{it}] 통 접근: r={r:.3f} er={er * 1000:.0f}mm brg={math.degrees(brg):.1f}deg'
+                + ('' if not od else f' | odom ({od[0]:+.3f},{od[1]:+.3f}) '
+                                     f'yaw={math.degrees(od[2]):+.1f}도'))
             # 개구부 13.6cm 기준 거리 0.4m에서 허용 방위는 약 9.6도 — 임계를 그 안쪽으로 둔다.
             # 좁게 잡으면 회전만 반복하다 전진을 못 한다(실측: 3.4도 임계에서 예산 소진).
             if abs(er) < 0.025 and abs(brg) < 0.10:
