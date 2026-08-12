@@ -46,6 +46,24 @@ def svc(req):
     return r.returncode == 0 and 'true' in r.stdout.lower()
 
 
+def cube_model():
+    """월드에 실제로 있는 픽 대상 이름. 하드코딩하면 set_pose가 조용히 실패한다."""
+    try:
+        out = subprocess.run(['gz', 'model', '--list'], capture_output=True,
+                             text=True, timeout=10).stdout
+        for ln in out.splitlines():
+            n = ln.strip().lstrip('-').strip()
+            if n.startswith('pick'):
+                return n
+    except Exception:
+        pass
+    return 'pick_object_green'
+
+
+CUBE = cube_model()
+COLOR = CUBE.split('_')[-1]
+
+
 def spin(n, sec):
     t0 = time.time()
     while time.time() - t0 < sec:
@@ -53,7 +71,7 @@ def spin(n, sec):
 
 
 def main():
-    rclpy.init(args=['--ros-args', '-p', 'detector:=hsv', '-p', 'target_color:=green',
+    rclpy.init(args=['--ros-args', '-p', 'detector:=hsv', '-p', f'target_color:={COLOR}',
                      '-p', 'place_target:=trash', '-p', 'speed_scale:=1.0'])
     n = PickNode()
     n.spin_until(lambda: getattr(n, 'joint_pos', None), 20.0)
@@ -62,8 +80,26 @@ def main():
     n.move_gripper(1.2)
     n.move_arm(POSE_FOLDED, 2.5)
     svc('name: "jdamr_cube", position: {x: 0, y: 0, z: 0.05}, orientation: {w: 1}')
-    svc(f'name: "pick_object_green", position: {{x: {CUBE_X}, y: 0.0, z: 0.02}}, '
+    svc(f'name: "{CUBE}", position: {{x: {CUBE_X}, y: 0.0, z: 0.02}}, '
         f'orientation: {{z: {math.sin(CUBE_YAW / 2):.6f}, w: {math.cos(CUBE_YAW / 2):.6f}}}')
+    time.sleep(1.5)
+    # **놓았는지 확인한다.** 앞 시행이 큐브를 통 안에 두고 끝나면 그대로 남는데,
+    # 확인 없이 진행하면 "큐브가 없는 화면"을 미검출로 기록한다(오늘 세 번 겪었다).
+    try:
+        out = subprocess.run(['gz', 'model', '-m', CUBE, '-p'],
+                             capture_output=True, text=True, timeout=15).stdout
+        L = out.splitlines()
+        pos = None
+        for i, ln in enumerate(L):
+            if '- Pose' in ln and i + 1 < len(L):
+                pos = [float(t) for t in L[i + 1].strip().strip('[]').split()]
+                break
+        if pos is None or math.hypot(pos[0] - CUBE_X, pos[1]) > 0.03:
+            print(f'큐브 배치 실패 — 실제 {pos} (목표 {CUBE_X}, 0). 측정을 중단한다.')
+            n.destroy_node(); rclpy.shutdown(); sys.exit(1)
+        print(f'큐브 배치 확인: ({pos[0]:.3f}, {pos[1]:+.3f}, {pos[2]:.3f})')
+    except Exception as e:
+        print(f'큐브 배치 확인 실패: {e}'); n.destroy_node(); rclpy.shutdown(); sys.exit(1)
     spin(n, 1.5)
     def sweep(label, base_pose, descend):
         """한 자세에서 roll을 쓸며 측정값을 본다. (roll, ang) 목록."""
@@ -127,7 +163,7 @@ def main():
         else:
             print(f'\n두 자세 모두 {v_hi} — 같은 규약으로 읽으면 된다.')
 
-    svc('name: "pick_object_green", position: {x: 0.45, y: 0.26, z: 0.02}, '
+    svc(f'name: "{CUBE}", position: {{x: 0.45, y: 0.26, z: 0.02}}, '
         'orientation: {w: 1}')
     n.move_arm(POSE_FOLDED, 3.0)
     n.destroy_node()

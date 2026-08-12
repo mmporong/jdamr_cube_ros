@@ -136,6 +136,54 @@ def test_pan_axis_matches_pick_node():
     assert abs(K.PAN_X - 0.159) < 0.001, f'PAN_X={K.PAN_X:.5f}'
 
 
+def test_reach_q_prefers_vertical():
+    """reach_q는 닿는 한도 안에서 **최소한만** 눕혀야 한다.
+
+    눕힐수록 물체가 죠에서 흘러내리므로, 가까운 곳은 수직으로 잡고 멀어질수록
+    필요한 만큼만 누워야 한다. 거리가 늘 때 피치가 단조로 커지는지(더 눕는지) 본다.
+    """
+    prev = None
+    for x in [0.36 + 0.02 * i for i in range(8)]:
+        q, p = K.reach_q(x, 0.0, 0.015, up=0.10)
+        if q is None:
+            continue
+        assert K.in_limits(q), f'x={x}에서 한계 밖 해'
+        assert K.GRASP_PITCH <= p <= K.DROP_PITCH_MAX + 1e-9, f'x={x}: 피치 {p} 범위 밖'
+        if prev is not None:
+            assert p >= prev - 1e-9, f'x={x}에서 피치가 되레 수직으로 갔다 ({prev}→{p})'
+        prev = p
+    assert prev is not None, 'reach_q가 어디서도 해를 못 냈다'
+
+
+def test_drop_path_is_continuous_and_reaches():
+    """투입 경로가 통 도착 허용오차 전 범위에서 성립하고 관절이 튀지 않는가.
+
+    고정 자세(POSE_DROP)로 점프하던 것을 좌표 보간으로 바꾼 이유가 급변 제거이므로,
+    '해가 있다'만으로는 부족하고 **인접 단계의 관절 변화가 작아야** 의미가 있다.
+    """
+    CUBE_CZ, DROP_CZ = 0.015, 0.115          # pick_node와 같은 값 (벽 0.090 + 여유 0.010 + 반폭)
+    for i in range(11):
+        r = 0.475 + 0.005 * i                # 도착 허용오차 ±25mm
+        path, pitch = K.drop_path(r, 0.0, CUBE_CZ, up=DROP_CZ - CUBE_CZ,
+                                  from_xy=(0.330, 0.0), from_up=0.180, steps=10)
+        assert path is not None, f'통 r={r:.3f}에서 투입 경로 해 없음'
+        assert all(K.in_limits(q) for q in path), f'r={r:.3f} 경로에 한계 밖 자세'
+        # 끝점에서 **큐브 중심**이 통 중심 위 목표 높이에 오는가 — 이것이 착지 지점이다.
+        # grasp_q는 TCP를 큐브 중심에서 GRASP_BACK 뒤·GRASP_DOWN 아래에 두므로 역산한다
+        # (y=0이라 접근 방위가 0, 뒤로 뺀 방향이 그대로 -x다).
+        tcp = K.fk_pos(path[-1])
+        cube_x, cube_z = tcp[0] + K.GRASP_BACK, tcp[2] + K.GRASP_DOWN
+        assert abs(cube_x - r) < 1e-3, f'r={r:.3f}: 착지 x {cube_x:.4f} — 개구부 중앙에서 벗어남'
+        assert abs(cube_z - DROP_CZ) < 1e-3, f'r={r:.3f}: 착지 높이 {cube_z:.4f}'
+        assert cube_z - 0.015 > 0.090, f'r={r:.3f}: 큐브 하단이 통 벽(0.090)보다 낮다'
+        # 인접 단계 관절 변화. 관절거리로 균등 재샘플링하므로 고르게 나와야 한다 —
+        # 계산상 최대 0.234rad(13도)이고, 0.30을 넘으면 재샘플링이 깨진 것이다.
+        # (직교 등간격이던 시절 마지막 단계가 0.72rad였다. 그 회귀를 막는 것이 목적)
+        for a, b in zip(path, path[1:]):
+            jump = max(abs(x - y) for x, y in zip(a, b))
+            assert jump < 0.30, f'r={r:.3f}: 단계 사이 관절이 {jump:.2f}rad 튀었다'
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):

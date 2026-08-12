@@ -218,6 +218,16 @@ WRIST_SERVO_REF = (341.4, 42.0)
 WRIST_SERVO_FWD = 3091.0        # 전후 1m당 blob x [px]
 WRIST_SERVO_LAT = -2554.0       # 좌우 1m당 blob y [px]
 WRIST_SERVO_TOL = 0.003         # 이보다 작으면 보정을 멈춘다 [m]
+# 손목캠이 큐브를 놓쳤을 때 팔을 옆으로 옮겨 훑는 간격 [m]. 좌우 시야가 ±20mm라
+# 25mm 간격이면 겹치며 훑어 ±62mm까지 닿는다 — 접근 잔차 ±40mm를 덮는다.
+# 가까운 쪽부터 보는 순서다(어긋남이 작을수록 흔하다).
+SERVO_SWEEP = (0.025, -0.025, 0.050, -0.050)
+# 서보 한 번에 옮기는 최대량 [m]. 반복 보정이라 한 번에 다 갈 필요가 없고,
+# blob 오검출이 통째로 목표를 흔드는 것을 막는다(실측 -99mm 사례).
+WRIST_SERVO_STEP_MAX = 0.030
+# 큐브가 검증 범위 밖일 때 차체로 메울 수 있는 최대량 [m].
+# 이보다 크게 어긋났으면 접근 자체가 실패한 것이라 재접근이 맞다.
+IK_NUDGE_MAX = 0.12
 # 완전 닫힘(-0.17)과 '물체를 물어 벌어진 상태'를 가르는 선. 25mm 큐브의 물림각은
 # 0.05~0.2라 여유가 크다. 물체를 놓치면 죠가 끝까지 닫히므로 이 하나로 구분된다.
 GRIP_EMPTY_MAX = -0.10
@@ -257,8 +267,10 @@ TRASH_HALF = 0.115
 # 운반·투하 자세 = 들어올리기가 끝나는 자세 그대로. 자세를 '전환'하면 팔꿈치가 펴지는
 # 관성으로 물체가 빠진다(계단식·저속으로 나눠도 반복 실패). 전환을 없애는 것이 해법이고,
 # pan 회전만 하는 것은 옆에 내려놓기에서 이미 검증된 동작이다.
-# 실측: 그리퍼 x=0.353 z=0.300 → 큐브 하단 0.205 (통 벽 0.18 위 2.5cm).
+# 실측: 그리퍼 x=0.353 z=0.300 → 큐브 하단 0.205.
 # 여유 0.6cm(lift 0.15) 자세로는 주행 흔들림에 큐브가 통 벽에 걸렸다 — 실측 확인.
+# ✎ 이 주석에 있던 '통 벽 0.18'은 낡은 값이다. 지금 월드의 벽 상단은 0.090이고
+#   (아래 TRASH_WALL_TOP), 이 자세의 큐브 하단 0.205는 그보다 115mm 위다.
 POSE_CARRY = dict(zip(ARM_JOINTS, [0.0, 0.15, 0.15, 1.28, 0.0]))
 # 운반·탐색 중에는 pan을 옆으로 빼 카메라 시야를 연다.
 # -1.0(57도)에서 -1.4(80도)로 키웠다. 카메라 수평 반각이 33도인데 팔은 굵어서
@@ -277,6 +289,19 @@ POSE_CARRY_SCAN = dict(POSE_CARRY, arm_shoulder_pan=-1.4)
 # 지금은 검출이 확실한 거리(ArUco 오차 ±25mm)에서 멈추고 나머지를 팔로 뻗는다 —
 # 팔은 야코비안으로 mm 단위 제어가 되고 차체는 안 된다.
 TRASH_POCKET_X = 0.500
+# ArUco 마커가 실제로 잡히는 거리 상한 [m].
+# 실측(tools/marker_range_probe.py, 2026-08-11) — 통은 두고 로봇을 옮겨 가며:
+#   0.50m ○(+10mm) · 0.90m ○(+35mm) · 1.30m ○(+60mm) · 2.00m ○(+179mm)
+# **방 안 전 구간에서 잡힌다.** 멀수록 거리 오차가 커지지만 가까워지며 정확해지므로
+# 계속 쓰면서 접근하면 된다(투입 정지 거리 0.5m에서 10mm).
+# 종전 값 0.90은 통을 엉뚱한 자리에 둔 채 잰 결과였다 — 그 측정은 폐기한다.
+MARKER_RANGE_MAX = 2.00
+# 도착 후 마커를 못 찾았을 때 제자리에서 훑는 횟수. 12도씩 벌려 8회 = ±48도.
+# 더 넓히면 로봇이 통을 등져 접근이 깨진다(실측: ±180도에서 brg 177도).
+MARKER_SEEK_MAX = 8
+# 그 회전 한 번에 허용하는 시간 [s]. 0.4rad/s이므로 8초면 180도까지 실제로 돈다.
+# 종전 상한 2.0초는 46도가 끝이라 큰 각도 명령이 전부 잘렸다(실측 180→50도).
+MARKER_SCAN_SEC_MAX = 8.0
 # 투하 자세: 운반 자세(x=0.364)로는 통 중심에 9.6cm 못 미쳐 통 앞 바닥에 떨어졌다(실측).
 # 로봇 전면(0.275)과 통 벽 때문에 더 접근할 수 없으므로 팔을 뻗어 채운다. 이 자세는
 # 그리퍼가 기울어 물체를 놓지만, 이미 통 개구부 위이므로 그대로 투입이 된다.
@@ -284,6 +309,24 @@ TRASH_POCKET_X = 0.500
 # 0.528m(자세 0.35/-0.20/0.30, 죠 z=0.271). 통 벽(0.09)보다 한참 위라 걸리지 않는다.
 # 정지 거리 0.500m와 28mm 여유 — 통 개구부 반경 68mm 안이다.
 POSE_DROP = dict(zip(ARM_JOINTS, [0.0, 0.35, -0.20, 0.30, 0.0]))   # 리치 x=0.528
+# --- IK 투입 (POSE_DROP을 대체) ---
+# 통 기하는 room.world의 trash_can 실측이다: 외곽 0.16각, 벽 두께 0.012, 벽 높이 0.09.
+# 따라서 벽 상단이 z=0.090이고 개구부는 0.136각(반폭 0.068)이다.
+# 위 POSE_DROP 주석의 '통 벽 0.18'은 지금 월드와 맞지 않는다 — 벽은 그 절반이다.
+TRASH_WALL_TOP = 0.090      # 벽 상단 [m] — 큐브 하단이 이보다 높아야 걸리지 않는다
+TRASH_OPEN_HALF = 0.068     # 개구부 반폭 [m]
+DROP_CLEAR = 0.010          # 벽 위로 남기는 여유 [m]
+# 놓는 순간의 큐브 중심 높이. 낮을수록 팔이 멀리 뻗을 수 있고(수직에 가깝게 유지),
+# 낙하 거리도 짧아 튀어나갈 여지가 준다.
+DROP_CZ = TRASH_WALL_TOP + DROP_CLEAR + CUBE_SIZE / 2.0     # 0.115
+# 운반 자세 → 투입점 보간 단계. K.drop_path가 관절거리로 균등 재샘플링하므로
+# 단계당 관절 변화가 고르다 — 계산 확인: 6단계 최대 20도, 10단계 13도, 12단계 12도.
+# 10을 넘으면 개선이 거의 없고 팔이 뻗은 채 머무는 시간만 길어진다.
+DROP_STEPS = 10
+# 투입 전 차체 정렬 임계 [rad]. 이보다 크면 돌아서 통을 정면에 둔다.
+# 0.02rad(1.1도)면 r=0.5에서 좌우 10mm — 개구부 여유(53mm) 안이라 무시해도 된다.
+# `_turn_fill`의 회전 잔차가 0.03rad이므로 그보다 더 조여 봐야 의미가 없다.
+DROP_BRG_TOL = 0.02
 # 손목 카메라 최종 정렬(바닥 모드) — 접근 비전은 근접(<0.45m)에서 팔·시야각에 가려지므로
 # 마지막 정렬은 손목 RGB로. 실측(2026-07-29, 바닥 호버): 손목캠은 90° 회전 장착이라
 # px=전후거리(82px/cm), py=좌우(67px/cm). pan 1rad당 py -1740px(포켓 반경 0.26m×6700px/m와 일치).
@@ -1683,6 +1726,59 @@ class PickNode(Node):
         except Exception:
             return None
 
+    def _nudge_into_range(self, cx, cy):
+        """큐브가 검증된 파지 범위 밖이면 **부족분만큼 차체를 앞뒤로** 옮긴다. (cx, cy).
+
+        손목캠 서보는 팔만 움직이므로 범위 자체를 벗어난 것은 못 고친다. 그런데
+        범위 밖이면 지금까지는 그냥 재접근했고, 재접근은 같은 정지 오차를 반복했다 —
+        실측에서 한 실행의 사이클 2·3이 각각 0.281과 0.437로 양쪽 밖을 오가다 끝났다.
+
+        `drive_dist`는 허용오차 6mm로 들어간다(주행 단독 측정). 재접근보다 훨씬
+        정확하고 싸다. 파지 중 차체를 움직이지 않는다는 원칙은 **죠를 닫는 동안**의
+        이야기이고, 여기는 아직 팔을 뻗기도 전이다(스윙 드리프트 보정과 같은 성격).
+        """
+        if IK_X_MIN <= cx <= IK_X_MAX:
+            return cx, cy
+        want = (IK_X_MIN + 0.03) if cx < IK_X_MIN else (IK_X_MAX - 0.03)
+        shift = cx - want
+        if abs(shift) > IK_NUDGE_MAX:
+            # 이만큼 어긋났으면 접근 자체가 실패한 것 — 재접근이 맞다
+            return cx, cy
+        self.get_logger().info(
+            f'  큐브가 검증 범위 밖({cx:.3f}, 범위 {IK_X_MIN}~{IK_X_MAX}) — '
+            f'차체를 {shift * 1000:+.0f}mm 옮겨 범위 안으로')
+        self.drive_dist(shift)
+        c = self._cube_now()
+        if c is None:
+            return cx - shift, cy
+        self.get_logger().info(f'  이동 후 큐브 ({c[0]:.3f},{c[1]:+.3f})')
+        return c[0], c[1]
+
+    def _servo_sweep(self, cx, cy, cz):
+        """손목캠 좌우 시야 밖에 있는 큐브를 **팔을 옆으로 옮겨 가며** 찾는다.
+
+        손목캠 좌우 시야는 ±20mm뿐인데(wrist_fov_probe 실측: 전후는 80mm 이상
+        보이는데 좌우는 20mm에서 끊긴다) 접근 잔차는 ±40mm다. 그래서 서보가
+        시작조차 못 하고 죠가 큐브 옆에서 닫힌다 — 실측 4회 중 3회가 이 실패였고,
+        닿은 큐브가 앞으로 66~134mm 밀려났다.
+
+        팔을 **들어도** 좌우는 안 넓어진다. 손목캠이 90도 돌아 장착돼 좌우가 화면
+        세로축인데 세로 FOV가 좁기 때문이다(같은 실측에서 80/140/200mm 전부 좌우
+        20mm). 위아래로는 못 여니 **옆으로 옮겨** 훑는다 — 팔을 옮기는 것이 곧 팬이다.
+
+        찾으면 그때의 cy, 못 찾으면 None.
+        """
+        for dy in SERVO_SWEEP:
+            q = K.grasp_q(cx, cy + dy, cz, up=K.PREGRASP_UP)
+            if q is None:
+                continue
+            self.move_arm(dict(zip(ARM_JOINTS, q)), 1.0)
+            time.sleep(0.25)
+            if self._wrist_blob(frames=3) is not None:
+                self.get_logger().info(f'  좌우 훑기: {dy * 1000:+.0f}mm에서 큐브 발견')
+                return cy + dy
+        return None
+
     def _servo_correct(self, cx, cy, cz, tries=3):
         """프리그래스프 자세에서 손목캠으로 큐브 좌표를 보정한다. (cx, cy).
 
@@ -1702,10 +1798,28 @@ class PickNode(Node):
             time.sleep(0.3)
             b = self._wrist_blob(frames=5)
             if b is None:
-                self.get_logger().info(f'  서보[{i}]: 손목캠 미검출 — 보정 중단')
-                return cx, cy
+                # 시야 밖이면 바로 포기하지 않고 좌우로 훑는다(위 _servo_sweep 참조).
+                # 종전에는 여기서 중단하고 추측 좌표 그대로 내려가 큐브를 밀어냈다.
+                cy2 = self._servo_sweep(cx, cy, cz) if i == 0 else None
+                if cy2 is None:
+                    self.get_logger().info(
+                        f'  서보[{i}]: 손목캠 미검출{"" if i else " (좌우 훑기도 실패)"} — 보정 중단')
+                    return cx, cy
+                cy = cy2
+                continue
             dfwd = (b[0] - WRIST_SERVO_REF[0]) / WRIST_SERVO_FWD
             dlat = (b[1] - WRIST_SERVO_REF[1]) / WRIST_SERVO_LAT
+            # **한 번에 옮기는 양을 묶는다.** blob이 화면 구석에 잡히면(오검출이거나
+            # 큐브가 시야 끄트머리에 걸린 것) 보정량이 통째로 튄다 — 실측:
+            # blob=(37,80)에서 전후 -99mm가 나왔고, 그 값이 그대로 더해져 큐브 좌표가
+            # 0.281이 됐다(IK 검증 범위 0.29~0.41 밖). 서보는 반복 보정이라 한 번에
+            # 다 갈 필요가 없다. 크게 어긋났으면 여러 번 나눠 가는 편이 안전하다.
+            if abs(dfwd) > WRIST_SERVO_STEP_MAX or abs(dlat) > WRIST_SERVO_STEP_MAX:
+                self.get_logger().info(
+                    f'  서보[{i}]: 보정량 과대(전후 {dfwd * 1000:+.0f}mm 좌우 '
+                    f'{dlat * 1000:+.0f}mm) — {WRIST_SERVO_STEP_MAX * 1000:.0f}mm로 제한')
+                dfwd = max(-WRIST_SERVO_STEP_MAX, min(WRIST_SERVO_STEP_MAX, dfwd))
+                dlat = max(-WRIST_SERVO_STEP_MAX, min(WRIST_SERVO_STEP_MAX, dlat))
             self.get_logger().info(
                 f'  서보[{i}]: blob=({b[0]:.0f},{b[1]:.0f}) '
                 f'→ 전후 {dfwd * 1000:+.0f}mm 좌우 {dlat * 1000:+.0f}mm')
@@ -1741,6 +1855,8 @@ class PickNode(Node):
         cx, cy, _ = c
         cz = CUBE_CZ        # 비전 z를 믿지 않는다 (위 주석 참조)
         # 손목캠으로 좌표를 보정한다 — 접근이 넘긴 값은 추측이라 좌우가 어긋난다
+        # 팔로 못 고치는 것부터 차체로 고친다 — 서보는 범위 안에서만 의미가 있다
+        cx, cy = self._nudge_into_range(cx, cy)
         cx, cy = self._servo_correct(cx, cy, cz)
         # 파지가 **실측으로 검증된** 범위인지 먼저 본다. IK 해가 있어도 그 밖이면
         # 허공을 문다(실측: y=+0.087에서 해는 나왔으나 실패). 재접근이 더 싸다.
@@ -1780,6 +1896,21 @@ class PickNode(Node):
         ang = getattr(self, 'gripper_angle', None)
         eff = getattr(self, 'gripper_effort', None)
         self.last_grasp_angle = ang
+        # **유지 목표를 접촉각 바로 안쪽으로 묶는다.** 고정 자세 경로(grasp)가 쓰던
+        # 처방인데 IK 경로에 옮겨지지 않아 여기서만 완전 닫힘(-0.17)을 계속 명령하고
+        # 있었다. 그러면 큐브가 조금 미끄러질 때마다 죠가 그만큼 더 닫히고, 더 닫히면
+        # 더 밀어내는 되먹임이 된다 — 무는 게 아니라 짜낸다.
+        # 실측(tools/lift_probe.py, 2026-08-11): 계단마다 물림각이
+        #     0.130 → -0.004 → -0.038 → -0.107 → -0.169(완전 닫힘, 이탈)
+        # 로 단조 감소했고, 유일하게 각이 유지된 시행(0.239→0.269)만 끝까지 들렸다.
+        # 30mm 큐브의 물림각이 0.25인데 -0.17을 목표로 주면 0.42rad를 초과해 조이라는
+        # 뜻이 된다. 목표를 실제 접촉각 바로 안쪽에 두면 죠가 거기서 멈춘다.
+        if ang is not None:
+            self.hold_target = max(GRIPPER_CLOSED, ang - GRIP_HOLD_MARGIN)
+            self.move_gripper(self.hold_target, wait=False, effort=30.0)
+            self.get_logger().info(
+                f'  유지 목표 {self.hold_target:+.3f} (접촉각 {ang:+.3f} 안쪽 '
+                f'{GRIP_HOLD_MARGIN:.2f}) — 완전 닫힘을 계속 명령하면 큐브를 짜낸다')
         # 판정은 **부하**가 주다. 25mm 큐브의 물림각은 0.0~0.2로 완전 닫힘(-0.17)과
         # 가까워 각도만으로는 허공과 구분이 안 된다(40mm 기준의 0.32~0.55와 다른 대역).
         held = eff is not None and abs(eff) > GRIP_LOAD_MIN and (ang is None or ang > -0.15)
@@ -1790,6 +1921,17 @@ class PickNode(Node):
             self.last_grasp_fail = f'물지 못함(각도 {ang}, 부하 {eff})'
         self._ik_grasped = held
         return held
+
+    def _hold_grip(self):
+        """쥔 힘을 다시 주장한다 — 목표는 **파지 때 정한 접촉각 안쪽**(hold_target).
+
+        같은 절대 목표를 반복하므로 죠는 움직이지 않고, 하중이나 관성에 밀려
+        벌어졌을 때만 되돌아온다. 완전 닫힘(GRIPPER_CLOSED)을 반복하면 반대가 된다 —
+        큐브가 미끄러질 때마다 죠가 더 닫히고, 더 닫히면 더 밀어내 결국 짜낸다.
+        hold_target이 아직 없으면(파지 전) 완전 닫힘으로 물러선다.
+        """
+        self.move_gripper(getattr(self, 'hold_target', GRIPPER_CLOSED),
+                          wait=False, effort=30.0)
 
     def _lift_ik(self):
         """IK로 잡은 것은 IK로 든다. 쥔 채면 True.
@@ -1806,7 +1948,7 @@ class PickNode(Node):
         if c is None:
             return self.holding()
         cx, cy, cz = c
-        for up in (0.02, 0.05, 0.09, 0.14):
+        for i, up in enumerate((0.02, 0.05, 0.09, 0.14)):
             q = K.grasp_q(cx, cy, cz, up=up)
             if q is None:
                 break
@@ -1814,12 +1956,24 @@ class PickNode(Node):
             # 매 단계 재조이지 않는다. 팔 단독 프로브는 재조임 없이 6/6이었는데
             # 여기서는 재조임을 넣고 들다가 놓쳤다(물림각 0.108 → -0.170).
             # 25mm 큐브는 가벼워 재조임의 순간 힘에 튕겨 나가는 것으로 보인다.
+            #
+            # 계단마다 물림 신호를 남긴다. 종전에는 들기 **전후**만 찍혀서
+            # "제대로 물었는데(0.249) 들고 나니 빈손(-0.170)"까지만 알 뿐,
+            # 네 계단 중 어디서 빠졌는지 알 수 없었다. 부하가 아니라 각도가
+            # 먼저 무너지는지 보면 미끄러짐인지 튕김인지 갈린다.
+            self.gripper_angle = self.gripper_effort = None
+            self.spin_until(lambda: self.gripper_angle is not None, 1.5)
+            a, e = self.gripper_angle, self.gripper_effort
+            self.get_logger().info(
+                f'  들기[{i}] up={up:.2f}m: 물림각={"?" if a is None else round(a, 3)} '
+                f'부하={"?" if e is None else round(e, 2)}'
+                + ('' if a is None or a > GRIP_EMPTY_MAX else '  ← 빈손 수준'))
         # 운반 자세에 들어가기 직전에 **유지력**을 건다. 들기 중에는 재조임이
         # 큐브를 튕겨내지만(실측), 운반 중에는 반대로 유지력이 없으면 회전 관성에
         # 미끄러져 나간다 — 실측: 물림각이 0.287에서 0.116으로 서서히 줄다가
         # 35도 회전 직후 -0.170(완전 닫힘)이 됐다. 종전 코드가 '닫기 10, 유지 30'으로
         # 나눠 쓴 이유가 이것이다.
-        self.move_gripper(GRIPPER_CLOSED, wait=False, effort=30.0)
+        self._hold_grip()
         # 운반 자세도 IK로 만든다. 고정 자세로 전환하면 죠 각도가 급변해 빠진다.
         carry = K.grasp_q(CARRY_X, 0.0, CUBE_CZ, up=CARRY_UP)
         if carry is not None:
@@ -1828,6 +1982,13 @@ class PickNode(Node):
         else:
             self.move_arm(POSE_CARRY, 2.5)
         time.sleep(0.5)
+        # 유지력을 건 직후와 운반 자세 진입 후를 나눠 찍는다. 둘 사이에서
+        # 무너지면 원인은 자세 전환이고, 유지력 직후에 이미 무너져 있으면
+        # effort=30의 순간 힘이 큐브를 튕긴 것이다 — 처방이 정반대다.
+        a, e = self.gripper_angle, self.gripper_effort
+        self.get_logger().info(
+            f'  운반 자세 진입 후: 물림각={"?" if a is None else round(a, 3)} '
+            f'부하={"?" if e is None else round(e, 2)}')
         return self.holding()
 
     def grasp(self, pan):
@@ -2254,6 +2415,9 @@ class PickNode(Node):
         # 1/5 → 3~4/5로 올랐다. POSE_CARRY_SCAN은 이 목적으로 정의돼 있었는데 참조가
         # 한 곳도 없었다. pan 회전만이라 쥔 물체는 흔들리지 않는다(place에서 검증된 동작).
         self.move_arm({'arm_shoulder_pan': POSE_CARRY_SCAN['arm_shoulder_pan']}, 2.0)
+        # ✎ 여기에 "출발 전 360도 돌며 마커 확보"(_seek_marker)를 넣었다가 뺐다.
+        #   마커는 통 주위 25%에서만 보이므로(단면) 제자리 회전으로는 못 찾고,
+        #   매번 한 바퀴를 헛돌며 시간과 방향만 잃었다. 통 인식은 다른 방법으로 푼다.
         try:
             return self._carry_loop(max_iter)
         finally:
@@ -2314,7 +2478,7 @@ class PickNode(Node):
             # 운반 중 유지력을 다시 주장한다. 같은 절대 목표를 반복하므로 죠는
             # 움직이지 않고, 하중이나 회전 관성에 밀려 벌어졌을 때만 되돌아온다.
             if self.use_ik and getattr(self, '_ik_grasped', False) and approached % 3 == 1:
-                self.move_gripper(GRIPPER_CLOSED, wait=False, effort=30.0)
+                self._hold_grip()
             tx, ty = loc
             r = math.hypot(tx, ty)
             brg = math.atan2(ty, tx)
@@ -2350,20 +2514,33 @@ class PickNode(Node):
                 # 그래서 제자리에서 조금씩 돌며 마커를 찾은 뒤 다시 판정한다.
                 if not getattr(self, '_trash_from_marker', False):
                     n_seek = getattr(self, '_marker_seek', 0)
-                    if n_seek < 8:
+                    if n_seek < MARKER_SEEK_MAX:
                         self._marker_seek = n_seek + 1
-                        # 좌우로 번갈아 넓혀 가며 훑는다(0 → +12° → -12° → +24° …)
+                        # 좌우로 번갈아 넓혀 가며 훑는다(0 → +12° → -12° → +24° …).
+                        # ✎ 30도·12회(±180도)로 넓혔다가 되돌렸다. 마커를 못 찾으면
+                        #   로봇이 반 바퀴 돌아 **통을 등진 채** 접근을 이어갔다
+                        #   (실측: 탐색 11회 뒤 brg 177.4도). 못 찾는 것보다 등지는
+                        #   쪽이 훨씬 나쁘다 — 범위는 좁게 두고 통 인식을 따로 푼다.
                         step = math.radians(12) * ((n_seek + 2) // 2)
                         wz = step if n_seek % 2 == 0 else -step
                         self.get_logger().info(
                             f'[{it}] 도착 조건 충족했으나 마커 미확인 — '
-                            f'{math.degrees(wz):+.0f}도 돌려 마커 탐색 ({n_seek + 1}/8)')
-                        self.drive(0.0, 0.4 if wz > 0 else -0.4, min(2.0, abs(wz) / 0.4))
+                            f'{math.degrees(wz):+.0f}도 돌려 마커 탐색 '
+                            f'({n_seek + 1}/{MARKER_SEEK_MAX})')
+                        # **명령한 각도를 실제로 돌 만큼 시간을 준다.** 상한 2.0초는
+                        # 0.4rad/s에서 46도가 끝이라 그보다 큰 명령이 전부 잘렸다
+                        # (실측: 180도 명령이 50도만 돌았다).
+                        self.drive(0.0, 0.4 if wz > 0 else -0.4,
+                                   min(MARKER_SCAN_SEC_MAX, abs(wz) / 0.4))
                         continue
                     self.get_logger().warning(
                         '마커를 못 찾은 채 도착 판정 — HSV 좌표로 투입(정확도 낮음)')
                 # 투입 자세·리치는 pan=0 기준 실측값이므로 정면으로 되돌린다
                 self.move_arm({'arm_shoulder_pan': 0.0}, 2.0)
+                # 멈춘 자리에서 통 중심까지의 **실제** 거리·방위를 남긴다. IK 투입은
+                # 이 값으로 목표를 잡는다 — 도착 허용오차가 ±25mm라 명목 정지 거리
+                # (TRASH_POCKET_X)를 그대로 쓰면 그만큼 개구부 중앙에서 벗어난다.
+                self._trash_r, self._trash_brg = r, brg
                 self._trace('통 도착', er_mm=round(er * 1000), brg_deg=round(math.degrees(brg), 1),
                             marker=bool(getattr(self, '_trash_from_marker', False)),
                             trash_odom=[round(v, 3) for v in (self._trash_odom or (0, 0))])
@@ -2402,9 +2579,37 @@ class PickNode(Node):
                 self.drive(0.0, 0.5 if brg > 0 else -0.5, 0.8)
                 self._carry_stall = 0
                 continue
+            # **방위는 출처에 따라 신뢰도가 다르다.** 마커는 ±2.5도인데 HSV 덩어리는
+            # 중심이 통 한쪽으로 치우쳐 프레임마다 크게 튄다 — 실측(2026-08-11):
+            # 같은 접근에서 brg가 +16 → -35 → -45 → +22도로 요동쳤고, 그 값으로
+            # 돌다 보니 yaw가 -11.8~+73.9도를 오갔다. 그러면 통이 시야에서 벗어나
+            # 마커를 영영 못 보고(그 실행에서 마커 검출 0회), HSV에 더 의존하는
+            # 악순환이 된다. 결과는 착지가 통에서 159mm 이탈 — 거리 오차는 33mm로
+            # 작았으니 방위만의 문제였다.
+            # 그래서 HSV일 때는 회전을 크게 줄여 통을 시야에 붙들어 둔다. 방향이
+            # 조금 늦게 맞아도, 마커가 한 번 잡히면 그때부터 정밀해진다.
+            # 단, 이 억제는 **마커가 잡힐 만한 거리에서만** 건다. 마커(0.10m)는 멀면
+            # 너무 작아 안 보인다 — 실측(aruco_probe)에서 0.38~0.65m는 잡히고 0.28m
+            # 이하는 프레임을 벗어난다. 먼 거리까지 HSV 회전을 묶었더니 통 쪽으로
+            # 방향을 못 잡고 79회 미검출 끝에 접근이 소진됐다(실측). 먼 구간은
+            # HSV로라도 방향을 잡아야 마커가 보이는 거리까지 갈 수 있다.
+            # ✎ 여기서 HSV 방위를 못 믿어 회전을 1/4로 묶었다가 되돌렸다.
+            #   억제하면 방위를 아예 못 좁힌다 — 실측: brg 82도인데 wz 상한이
+            #   0.03rad/s라 영원히 수렴하지 않았다. 그 실행의 HSV 방위는 82.2/82.1/
+            #   82.4/82.5로 오히려 안정적이었다. 튐은 실재하지만(다른 실행에서
+            #   ±45도) 못 도는 쪽이 확실히 더 나쁘다. 정밀도는 마커가 잡히면
+            #   그때부터 확보되므로, 마커 탐색 범위를 넓히는 쪽으로 대응한다.
+            by_marker = bool(getattr(self, '_trash_from_marker', False))
+            # ✎ 여기에 "마커 미확보면 제자리 훑기"를 넣었다가 걷어냈다. 도착 조건
+            #   검사보다 먼저 걸려서 **정상 접근을 가로챘다** — 실측: 통이 방위
+            #   82도에 있는데 훑기가 ±50도만 왕복시키며 12회를 소진했다(brg 82↔32도).
+            #   방위를 맞추는 일이 먼저고, 마커 탐색은 도착 조건을 채운 뒤에 하는
+            #   기존 `_marker_seek`가 맡는다.
             if abs(brg) > 0.25:
-                # 0.20은 정지 마찰을 못 깬다(스톨 실측) — 0.35로 상향, 램프가 저크를 막는다
-                self.drive(0.0, 0.35 if brg > 0 else -0.35, min(2.0, abs(brg) / 0.35))
+                # 0.20은 정지 마찰을 못 깬다(스톨 실측) — 0.35로 상향, 램프가 저크를 막는다.
+                # 시간 상한도 명령한 각도를 실제로 돌 만큼 준다(종전 2.0초는 40도가 끝).
+                self.drive(0.0, 0.35 if brg > 0 else -0.35,
+                           min(MARKER_SCAN_SEC_MAX, abs(brg) / 0.35))
             else:
                 # 먼 구간은 빠르게 좁힌다. 0.06m/s 고정은 통까지 1.4m를 가기에
                 # 너무 느려 — 램프까지 겹쳐 실효 8% — 70회 반복을 소진하고도
@@ -2716,6 +2921,90 @@ class PickNode(Node):
         self.get_logger().error('복구 실패')
         return False
 
+    def _drop_ik(self):
+        """개구부 중앙까지 IK로 이어 붙여 투입한다. 놓았으면 True.
+
+        종전 POSE_DROP은 고정 자세라 두 가지가 걸렸다.
+          · 운반 자세에서 관절이 한 번에 크게 튀어 죠 각도가 급변한다 — 들기에서
+            같은 이유로 큐브를 놓쳤고, 거기서는 좌표를 이어 붙여 해결했다(`_lift_ik`).
+          · 그 자세 자체가 그리퍼를 크게 눕혀 **물체가 스스로 빠지는 것에 기댄다.**
+            빠지는 방향을 제어할 수 없어 착지가 흩어졌다(실측: 통에서 0.20~0.55m).
+
+        여기서는 멈춘 자리에서 잰 통 중심(`_trash_r`)을 목표로 위치와 피치를 함께
+        보간한다. 닿는 한도 안에서 최소한만 눕히므로(`K.reach_q`) 죠가 거의 수직을
+        유지하고, 놓는 지점이 개구부 중앙으로 **정해져** 큐브가 수직으로 떨어진다.
+
+        높이를 낮게(벽 위 10mm) 잡는 것이 핵심이다. 낮을수록 같은 거리를 더 수직에
+        가까운 자세로 닿을 수 있고, 낙하 거리도 짧아 튀어나갈 여지가 준다.
+        기하 검증은 tools/drop_path_probe.py — 시뮬 없이 돈다.
+        """
+        r = float(getattr(self, '_trash_r', 0.0) or TRASH_POCKET_X)
+        brg = float(getattr(self, '_trash_brg', 0.0) or 0.0)
+        # 남은 방위는 **팔이 아니라 차체로** 흡수한다.
+        #
+        # 도착 조건이 |brg| < 0.10rad(5.7도)라 정면으로 가정하면 r=0.5에서 좌우로
+        # 최대 50mm 어긋나는데, 개구부 반폭 68mm에서 큐브 반폭 15mm를 빼면 여유가
+        # 53mm뿐이다 — 그것만으로 큐브가 통 테두리에 걸린다.
+        # 그렇다고 IK에 방위를 실을 수도 없다. pan이 돌면 어깨 오프셋(18mm) 때문에
+        # 작업평면이 밀려 도달 거리가 줄고, 여기는 팔을 최대로 뻗는 거리라 여유가
+        # 없다 — 계산: r=0.5에서 brg가 1도만 넘어도 해가 사라진다.
+        # 제자리 회전은 통까지 거리를 바꾸지 않으므로 r을 그대로 쓸 수 있다.
+        if abs(brg) > DROP_BRG_TOL:
+            self.get_logger().info(
+                f'투입 전 정렬: {math.degrees(brg):+.1f}도 회전 '
+                f'(그대로 두면 착지가 좌우로 {abs(r * math.sin(brg)) * 1000:.0f}mm 어긋난다)')
+            # 개회로 회전 자체는 odom 없이도 된다 — odom이 필요한 것은 잔차 보정뿐이라
+            # 못 잰다고 회전을 통째로 건너뛰면 안 된다(그러면 편차가 그대로 남는다).
+            a0 = self.odom[2] if self.odom else None
+            carrying, self._carrying = getattr(self, '_carrying', False), True
+            try:
+                # 회전 전후로 유지력을 다시 주장한다. 회전량이 작긴 해도 큐브를 든 채
+                # 도는 것이라, 운반 루프가 매 접근마다 하는 것과 같은 이유로 건다.
+                self._hold_grip()
+                self.drive(0.0, 0.3 if brg > 0 else -0.3, min(2.0, abs(brg) / 0.3))
+                if a0 is not None:
+                    # drive()도 내부에서 회전 잔차를 채우지만 임계가 |wz·sec| > 0.03이다.
+                    # DROP_BRG_TOL이 0.02라 그 사이(0.02~0.03) 구간은 여기서만 보정된다 —
+                    # 중복으로 보여도 지우면 그 틈이 뚫린다.
+                    self._turn_fill(brg, a0)
+                else:
+                    self.get_logger().warning('odom 없음 — 개회로 회전만, 정렬 잔차 미확인')
+                self._hold_grip()
+            finally:
+                self._carrying = carrying
+            brg = 0.0
+        path, pitch = K.drop_path(r, 0.0, CUBE_CZ, up=DROP_CZ - CUBE_CZ,
+                                  from_xy=(CARRY_X, 0.0), from_up=CARRY_UP,
+                                  steps=DROP_STEPS)
+        if path is None:
+            self.get_logger().warning(f'투입 IK 해 없음 (통 r={r:.3f}m) — 고정 자세로 폴백')
+            return False
+        self.get_logger().info(
+            f'IK 투입: 통 r={r:.3f}m 피치={math.degrees(pitch):.0f}도 '
+            f'(수직 {math.degrees(K.GRASP_PITCH):.0f}도에서 '
+            f'{math.degrees(pitch - K.GRASP_PITCH):.0f}도 눕힘) · 큐브 하단이 벽 위 '
+            f'{(DROP_CZ - CUBE_SIZE / 2.0 - TRASH_WALL_TOP) * 1000:.0f}mm · '
+            f'착지 목표는 개구부 중앙(반폭 {TRASH_OPEN_HALF * 1000:.0f}mm, '
+            f'잔여 방위 {math.degrees(brg):+.1f}도 → 좌우 '
+            f'{abs(r * math.sin(brg)) * 1000:.0f}mm)')
+        for i, q in enumerate(path):
+            self.move_arm(dict(zip(ARM_JOINTS, q)), 1.5 if i == 0 else 0.8)
+            # 뻗는 동안 유지력을 다시 주장한다. 팔이 누울수록 큐브 하중이 죠를
+            # 벌리는 쪽으로 걸린다 — 운반 중 재주장과 같은 이유, 같은 절대 목표.
+            if i % 3 == 0:
+                self._hold_grip()
+        time.sleep(0.6)
+        self.get_logger().info('개구부 중앙 위 — 그리퍼 열기')
+        # 0.8은 죠 열림 실측 3점(q=1.2→86.1mm, 0.6→42.5mm, 0→15.8mm)을 보간하면
+        # 약 55mm — 30mm 큐브에 25mm 여유다. 폴백 경로가 1.0을 쓰는 것은 그쪽이
+        # 기운 자세라 큐브를 흘려보내야 해서고, 여기서는 수직 낙하라 덜 열어도 된다.
+        # 통 안에서 죠를 크게 벌릴수록 벽에 닿을 여지만 는다.
+        self.move_gripper(0.8)
+        time.sleep(1.0)
+        self.move_arm(POSE_FOLDED, 3.0)     # 팔을 접어 통에서 빠져나옴
+        time.sleep(0.5)
+        return True
+
     def drop_into_trash(self):
         """통 개구부 위에서 그리퍼를 열어 투입."""
         time.sleep(0.5)
@@ -2726,9 +3015,12 @@ class PickNode(Node):
             # (전방캠 무소득 + 손목캠 시야 이탈)의 오판으로 중단했는데 실좌표는 통 안
             # 44mm — 쥔 채였던 사례가 실측됐다. 아래 팔 뻗기 주석과 같은 철학.
             self.get_logger().warning('투입 직전 파지 확인 실패 — 개구부 앞이므로 투하는 진행')
-        # 통 중심까지 팔을 뻗는다. 이 자세는 그리퍼가 기울어 물체가 스스로 빠질 수 있는데,
-        # 이미 개구부 위이므로 그것도 투입이다. 그래서 파지 유지를 확인하지 않는다.
-        self.get_logger().info('통 중심으로 팔 뻗기')
+        # IK로 잡고 운반한 것은 IK로 놓는다. 자세 전환이 없어 죠 각도가 유지된다.
+        if self.use_ik and getattr(self, '_ik_grasped', False) and self._drop_ik():
+            return True
+        # 폴백: 통 중심까지 팔을 뻗는다. 이 자세는 그리퍼가 기울어 물체가 스스로 빠질 수
+        # 있는데, 이미 개구부 위이므로 그것도 투입이다. 그래서 파지 유지를 확인하지 않는다.
+        self.get_logger().info('통 중심으로 팔 뻗기 (고정 자세)')
         self.move_arm(POSE_DROP, 2.0 * self.scale)
         time.sleep(0.8)
         self.get_logger().info('쓰레기통 위 — 그리퍼 열기')

@@ -22,9 +22,11 @@ import rclpy
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from capstone_pick import kinematics as K  # noqa: E402
-from capstone_pick.pick_node import ARM_JOINTS, PickNode, POSE_FOLDED  # noqa: E402
+from capstone_pick.pick_node import (ARM_JOINTS, CUBE_CZ, PickNode,  # noqa: E402
+                                     POSE_FOLDED)
 
-BASE_X, BASE_Y, CZ = 0.36, 0.0, 0.0125
+# 높이는 pick_node의 큐브 크기에서 딴다 — 0.0125는 20mm 시절 값이라 지금은 틀리다
+BASE_X, BASE_Y, CZ = 0.36, 0.0, CUBE_CZ
 UPS = [0.08, 0.14, 0.20, 0.26]                 # 팔을 큐브 위 이만큼
 OFFSETS = [0.0, 0.02, 0.04, 0.06, 0.08]        # 큐브를 이만큼 벗어나게 놓는다
 
@@ -36,6 +38,31 @@ def svc(req):
     return r.returncode == 0 and 'true' in r.stdout.lower()
 
 
+def cube_model():
+    """월드에 실제로 있는 픽 대상 모델 이름.
+
+    무대에 따라 이름이 다르다 — 월드 원본은 `pick_object_green`인데
+    `reset_and_stage.py`를 돌리면 `pick_blue`만 남는다. 이름을 하드코딩하면
+    set_pose가 조용히 실패하고, 큐브가 없는 상태를 "안 보인다"로 기록한다
+    (실측: 전 높이 ✗로 나와 자세 문제로 오진할 뻔했다). 그래서 실제 목록에서 찾는다.
+    """
+    try:
+        out = subprocess.run(['gz', 'model', '--list'], capture_output=True,
+                             text=True, timeout=10).stdout
+        for ln in out.splitlines():
+            n = ln.strip().lstrip('-').strip()
+            if n.startswith('pick'):
+                return n
+    except Exception:
+        pass
+    return 'pick_object_green'
+
+
+CUBE = cube_model()
+# 색은 모델 이름에서 딴다 — HSV 검출이 색에 걸려 있어 무대와 어긋나면 못 본다
+COLOR = CUBE.split('_')[-1]
+
+
 def spin(n, sec):
     t0 = time.time()
     while time.time() - t0 < sec:
@@ -44,14 +71,14 @@ def spin(n, sec):
 
 def seen(n, cube_x, cube_y):
     svc('name: "jdamr_cube", position: {x: 0, y: 0, z: 0.05}, orientation: {w: 1}')
-    svc(f'name: "pick_object_green", position: {{x: {cube_x:.4f}, y: {cube_y:.4f}, '
+    svc(f'name: "{CUBE}", position: {{x: {cube_x:.4f}, y: {cube_y:.4f}, '
         f'z: {CZ}}}, orientation: {{w: 1}}')
     spin(n, 0.9)
     return n._wrist_blob(frames=3) is not None
 
 
 def main():
-    rclpy.init(args=['--ros-args', '-p', 'detector:=hsv', '-p', 'target_color:=green',
+    rclpy.init(args=['--ros-args', '-p', 'detector:=hsv', '-p', f'target_color:={COLOR}',
                      '-p', 'place_target:=trash', '-p', 'speed_scale:=1.0'])
     n = PickNode()
     n.spin_until(lambda: getattr(n, 'joint_pos', None), 20.0)
@@ -94,7 +121,7 @@ def main():
         print(f'가장 넓은 탐색 높이: 큐브 위 {up * 1000:.0f}mm')
         print(f'  전후 {rf * 1000:.0f}mm / 좌우 {rl * 1000:.0f}mm 까지 보인다')
         print(f'  → 접근 잔차가 이 안에 들면 서보가 시작될 수 있다')
-    svc('name: "pick_object_green", position: {x: 0.45, y: 0.26, z: 0.0125}, orientation: {w: 1}')
+    svc(f'name: "{CUBE}", position: {{x: 0.45, y: 0.26, z: {CZ:.4f}}}, orientation: {{w: 1}}')
     n.move_arm(POSE_FOLDED, 3.0)
     n.destroy_node()
     rclpy.shutdown()

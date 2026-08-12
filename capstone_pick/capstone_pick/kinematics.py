@@ -356,6 +356,80 @@ def grasp_q(cx, cy, cz=0.015, cube_yaw=0.0, up=0.0, pitch=GRASP_PITCH, roll_sign
     return ik_best(tx, ty, tz, pitch=pitch, roll=roll_sign * rel)
 
 
+# 놓기(투입)용. 멀리 뻗을수록 팔을 눕혀야 하는데, 눕힐수록 물체가 죠에서 흘러내린다.
+# 그래서 **닿는 한도 안에서 최소한만** 눕힌다. -55도를 상한으로 두는 것은 그보다
+# 더 누우면 죠 평면 기울기가 45도를 넘어 물체가 스스로 빠지기 때문이다.
+# 종전 고정 자세(POSE_DROP)가 정확히 그 상태였고, 빠지는 방향을 제어할 수 없어
+# 착지가 통 앞 바닥으로 흩어졌다(실측: 통에서 0.20~0.55m).
+DROP_PITCH_MAX = math.radians(-55.0)
+
+
+def reach_q(cx, cy, cz=0.015, up=0.0, pitch_lo=GRASP_PITCH, pitch_hi=DROP_PITCH_MAX,
+            steps=16):
+    """(cx,cy) 위 up 높이에 닿는 자세 중 **가장 수직에 가까운** 것.
+
+    수직(GRASP_PITCH)부터 조금씩 눕히며 처음 풀리는 해를 쓴다.
+    반환 (관절각, 그때의 피치) — 어느 기울기도 안 닿으면 (None, None).
+
+    **검증 범위는 x 0.40~0.535, y=0이다**(투입이 쓰는 조건). 그 밖에서는 "멀수록 더
+    눕는다"가 깨지는 곳이 있다 — 작업공간 안쪽 경계(x≈0.31~0.33)에서 y≠0이면
+    피치가 되레 수직으로 돌아오는 역전이 나온다. 반환값이 최소-틸트 해인 것 자체는
+    훑는 순서상 항상 참이지만, 다른 목표에 재사용할 거면 그 범위에서 다시 확인할 것.
+    """
+    for i in range(steps + 1):
+        p = pitch_lo + (pitch_hi - pitch_lo) * i / steps
+        q = grasp_q(cx, cy, cz, up=up, pitch=p)
+        if q is not None:
+            return q, p
+    return None, None
+
+
+def drop_path(cx, cy, cz=0.015, up=0.0, from_xy=(0.33, 0.0), from_up=0.18, steps=6):
+    """운반 자세에서 투입 지점까지 위치와 피치를 **함께 보간한** 관절각 목록.
+
+    자세를 '전환'하지 않고 좌표를 이어 붙이는 것이 요점이다. 고정 자세로 점프하면
+    죠 각도가 급변해 물체가 빠진다 — 들기에서 이미 겪었고(`_lift_ik`) 처방이 같다.
+    피치도 함께 보간해야 죠가 서서히 누우며, 마지막 순간에만 확 눕는 일이 없다.
+
+    단계를 **관절 이동거리 기준으로 균등하게** 뽑는 것이 두 번째 요점이다. 직교
+    공간에서 등간격으로 나누면 팔을 뻗을수록(자코비안이 특이해질수록) 같은 거리에
+    관절이 훨씬 많이 움직인다 — 균등 6단계로 계산했더니 앞 단계는 elbow 0.20rad인데
+    마지막 단계만 0.72rad(41도)였다. 급변을 없애려고 보간해 놓고 끝에서 급변이
+    남는 셈이라, 촘촘히 만든 뒤 누적 관절거리를 따라 다시 고른다.
+
+    반환 (관절각 목록, 최종 피치) — 한 점이라도 안 풀리면 (None, None).
+    """
+    if steps < 1:
+        raise ValueError(f'steps는 1 이상이어야 한다 (받은 값 {steps})')
+    q_end, pitch = reach_q(cx, cy, cz, up=up)
+    if q_end is None:
+        return None, None
+    fx, fy = from_xy
+
+    def at(t):
+        return grasp_q(fx + (cx - fx) * t, fy + (cy - fy) * t, cz,
+                       up=from_up + (up - from_up) * t,
+                       pitch=GRASP_PITCH + (pitch - GRASP_PITCH) * t)
+
+    dense = []
+    for i in range(61):
+        q = at(i / 60)
+        if q is None:
+            return None, None
+        dense.append(q)
+    cum = [0.0]
+    for a, b in zip(dense, dense[1:]):
+        cum.append(cum[-1] + max(abs(x - y) for x, y in zip(a, b)))
+    total = cum[-1]
+    if total <= 1e-9:
+        return [dense[0]] * (steps + 1), pitch
+    out = []
+    for k in range(steps + 1):
+        want = total * k / steps
+        out.append(dense[min(range(len(cum)), key=lambda m: abs(cum[m] - want))])
+    return out, pitch
+
+
 def jaw_dir(q):
     """죠가 향하는 수평 방향 [rad] — 아랫턱→TCP 벡터의 xy 성분."""
     j = fk_pos(q, upto='jaw')
