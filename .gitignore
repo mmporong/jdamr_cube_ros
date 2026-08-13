@@ -64,3 +64,10 @@ build-*/
 # 세션 상태·실행 로그 (도구 산출물)
 .omc/
 capstone_pick/tools/logs/
+
+# ── 관제 대시보드가 쓰는 기록 (github.com/mmporong/robot-dashboard) ──
+# tools/ 는 ~/capstone_tools 심볼릭 링크의 실체라 여기에 데이터가 쌓인다.
+# MCAP 한 시행이 수백 MB가 되기도 한다(ros2 bag record 실기록 하나가 163MB였다).
+capstone_pick/tools/mcap/
+capstone_pick/tools/lerobot/
+capstone_pick/tools/bag_staging/

@@ -47,3 +47,18 @@ ros2 run capstone_pick pick --ros-args -p target_color:=green -p speed_scale:=4.
 ```
 
 주요 파라미터: `target_color`(blue/red/green/orange/pink) · `speed_scale`(0.5~10) · `detector`(yolo/hsv) · `floor`(바닥 모드 강제) · `skip_approach`(파지만 시험).
+
+## 함께 보는 저장소 — 관제 대시보드
+
+이 파이프라인의 **실행 기록을 되감아 다시 판정하는 화면**을 별도 저장소로 냈습니다.
+
+<https://github.com/mmporong/robot-dashboard>
+
+`pick_node.py`가 로그에 `PICK_SUCCESS`를 찍은 시행 중 **4건이 실제로는 통 밖**이었다는
+것을 그 화면이 잡아냈습니다. 판정을 로그가 아니라 Gazebo 실좌표로 다시 세기 때문입니다.
+기록은 표준 포맷(MCAP)으로 나가므로 `ros2 bag info`·Foxglove로도 열리고,
+LeRobotDataset v3.0으로도 내보냅니다.
+
+저장소를 나눈 이유는 그 화면이 **이 프로젝트 전용이 아니기 때문**입니다 —
+`core/`는 로봇도 과제도 모르고, 프로젝트별 설정 파일 하나만 갈아 끼우면 SLAM 같은
+다른 실험에도 그대로 붙습니다.
