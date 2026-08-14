@@ -40,7 +40,7 @@ def generate_launch_description():
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB0',
-                              description='LD14 시리얼 — USB 는 라이다 전용'),
+                              description='LD14P 시리얼 — USB 는 라이다 전용 (어댑터 직결)'),
         DeclareLaunchArgument('wheel_radius', default_value='0.0329',
                               description='바퀴 반지름 [m] — 2026-08-14 주행 캘리브레이션 확정(자 실측 지름 65mm 와 일치)'),
         DeclareLaunchArgument('wheel_separation', default_value='0.1836',
@@ -77,12 +77,12 @@ def generate_launch_description():
             name='ldlidar_node',
             output='screen',
             parameters=[
-                {'product_name': 'LDLiDAR_LD14'},
+                {'product_name': 'LDLiDAR_LD14P'},   # 실물 확정 — 230400 에서만 프레임 수신
                 {'laser_scan_topic_name': 'scan'},
                 {'point_cloud_2d_topic_name': 'pointcloud2d'},
                 {'frame_id': 'laser_link'},
                 {'port_name': lidar_port},
-                {'serial_baudrate': 115200},
+                {'serial_baudrate': 230400},
                 {'laser_scan_dir': True},
                 {'enable_angle_crop_func': False},
             ],
