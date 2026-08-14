@@ -83,7 +83,7 @@ def generate_launch_description():
                 {'frame_id': 'laser_link'},
                 {'port_name': lidar_port},
                 {'serial_baudrate': 230400},
-                {'laser_scan_dir': True},
+                {'laser_scan_dir': False},  # 2026-08-14 실측: +90° 회전에 스캔 -98° 이동(거울반전) → 반전
                 {'enable_angle_crop_func': False},
             ],
         ),
