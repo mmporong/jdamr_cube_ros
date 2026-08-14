@@ -62,8 +62,10 @@
 #define SCREEN_ADDRESS 0x3C
 
 // ── 규격 상수 ──
-static const uint8_t  LEFT_ID  = 1;      // ⚠ 실기에서 FD.exe Search로 재확인할 것
-static const uint8_t  RIGHT_ID = 2;      //   (2026-08-12 시연: 코드 ID2 vs 실물 ID1 사고)
+// 2026-08-14 실기 확정 — 단일 바퀴 시험으로 판정: "ID1 전진" 지령에 로봇이
+// 좌회전 = ID1 이 실물 오른쪽. 가정(좌=1)이 뒤집혀 있었다.
+static const uint8_t  LEFT_ID  = 2;
+static const uint8_t  RIGHT_ID = 1;
 static const uint32_t STATE_PERIOD_MS = 20;    // 50Hz 상태 송신
 static const uint32_t OLED_PERIOD_MS  = 500;   // A7: OLED는 0.5s + 변경시만
 static const uint32_t CMD_TIMEOUT_MS  = 400;   // A9: 워치독
@@ -109,13 +111,33 @@ static bool     watchdog_stopped = true;   // 부팅 직후는 정지 상태로 
 static uint8_t  seq = 0;
 static int16_t  cmd_left = 0, cmd_right = 0;
 static String   oled_prev = "";
+static String   oled_scan = "scan...";     // 부팅 ID 스캔 결과 (OLED 2행 고정)
+
+// 서보 생존·설정 상태.
+// 주의: 이 STS_servos 라이브러리는 읽기 타임아웃에 -1 이 아니라 0 을 돌려준다
+// (readTwoBytesRegister: rc<0 → return 0). 그래서 생존 판정은 ping() 으로만 하고,
+// 배터리가 ESP32 보다 늦게 연결되는 경우(부팅 때 setMode 유실)를 죽음→부활
+// 전이 감지로 잡아 모드를 재설정한다.
+static bool servo_ok[2] = {false, false};
+
+static void ensure_servo_config() {
+  const uint8_t ids[2] = {LEFT_ID, RIGHT_ID};
+  for (int i = 0; i < 2; i++) {
+    const bool alive = st.ping(ids[i]);
+    if (alive && !servo_ok[i]) {
+      st.setMode(ids[i], VELOCITY);        // 부활 시점에 모드 재주입
+    }
+    servo_ok[i] = alive;
+  }
+}
 
 // A11: 부호 규약의 유일한 반전 지점.
-// 좌우 서보는 좌우 대칭(미러)으로 장착되어 같은 회전 부호가 반대 주행 방향이 된다.
-// 강사원본 FORWARD 분기(LEFT +, RIGHT -)에서 확인된 규약을 이 함수 하나에 가둔다.
+// 2026-08-14 실기 확정 (관측 3건으로 유일해): ID1=실물 오른쪽(+ 가 전진),
+// ID2=실물 왼쪽(− 가 전진). 미러 반전은 왼쪽(ID2)에 있다 — 강사원본 규약
+// (LEFT +, RIGHT −)과 반대이므로 코드를 옮길 때 주의.
 static inline void set_wheel_velocity(int16_t left_fwd, int16_t right_fwd) {
-  st.setTargetVelocity(LEFT_ID,  constrain(left_fwd,  -VEL_LIMIT, VEL_LIMIT));
-  st.setTargetVelocity(RIGHT_ID, constrain((int16_t)-right_fwd, -VEL_LIMIT, VEL_LIMIT));
+  st.setTargetVelocity(LEFT_ID,  constrain((int16_t)-left_fwd, -VEL_LIMIT, VEL_LIMIT));
+  st.setTargetVelocity(RIGHT_ID, constrain(right_fwd, -VEL_LIMIT, VEL_LIMIT));
 }
 
 static void stop_motors() {
@@ -173,14 +195,17 @@ static void send_state() {
   // A6: 서보 위치는 여기서 한 번만 읽는다 (OLED도 이 값을 재사용)
   int raw[2] = { st.getCurrentPosition(LEFT_ID), st.getCurrentPosition(RIGHT_ID) };
   for (int i = 0; i < 2; i++) {
-    if (raw[i] < 0) { flags |= (1 << i); continue; }   // 읽기 실패 → 언랩 건너뜀
+    if (!servo_ok[i]) { flags |= (1 << i); continue; } // ping 실패 → 적분 제외
     int16_t r = (int16_t)(raw[i] & 0x0FFF);
     if (!pos_init[i]) { pos_last[i] = r; pos_init[i] = true; }
     int16_t d = (int16_t)((r - pos_last[i]) & 0x0FFF); // A8: 12비트 차분
     if (d > 2048) d -= 4096;                           //     부호 확장
+    // 이 라이브러리는 읽기 타임아웃을 0 으로 돌려준다 — 20ms 에 물리적으로
+    // 불가능한 점프(|d|>300, 상한 지령 68의 4배)는 글리치로 보고 버린다.
+    if (d > 300 || d < -300) { flags |= (1 << i); continue; }
     pos_last[i] = r;
-    // 우바퀴는 미러 장착이라 축 회전 + 가 로봇 후진 — 전진 = + 로 통일해 누적
-    pos_total[i] += (i == 0) ? d : -d;
+    // 왼쪽(ID2)이 미러 — 축 + 가 로봇 후진. 전진 = + 로 통일해 누적
+    pos_total[i] += (i == 0) ? -d : d;
   }
 
   imuDataGet(&stAngles, &stGyroRawData, &stAccelRawData, &stMagnRawData);
@@ -212,14 +237,17 @@ static void send_state() {
 static void update_oled(uint16_t mv) {
   String line = String("L") + cmd_left + " R" + cmd_right +
                 (watchdog_stopped ? " WD" : "") + " " + String(mv / 1000.0f, 1) + "V";
-  String txt = String("JD-AMR v2\n") + line;
+  String txt = oled_scan + "\n" + line;
   if (txt == oled_prev) return;
   oled_prev = txt;
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);  display.print("JD-AMR v2");
+  display.setCursor(0, 0);  display.print("v2 ");  display.print(oled_scan);
   display.setCursor(0, 12); display.print(line);
+  display.setCursor(0, 22);
+  display.print(servo_ok[0] ? "L:ok " : "L:-- ");
+  display.print(servo_ok[1] ? "R:ok" : "R:--");
   display.display();
 }
 
@@ -244,8 +272,16 @@ void setup() {
   }
 
   SERVO_INIT();
-  st.setMode(LEFT_ID,  VELOCITY);
-  st.setMode(RIGHT_ID, VELOCITY);
+  // 부팅 ID 스캔 — 결과를 OLED 1행에 상시 표시 (실물에서 ID 논쟁 종결용).
+  // 배터리가 아직 없으면 "ID:none" 이 뜨고, 연결되면 ensure_servo_config 가
+  // 생존을 다시 잡으면서 모드도 재설정한다.
+  oled_scan = "ID:";
+  for (uint8_t id = 1; id <= 12; id++) {
+    if (st.ping(id)) { oled_scan += String(id) + " "; }
+  }
+  if (oled_scan == "ID:") { oled_scan = "ID:none"; }
+
+  ensure_servo_config();                    // 살아 있으면 VELOCITY 모드 진입
   stop_motors();                            // A9: 첫 유효 명령 전까지 정지
 }
 
@@ -264,6 +300,13 @@ void loop() {
   if (now - t_state >= STATE_PERIOD_MS) {
     t_state = now;
     send_state();
+  }
+
+  // 1초마다 서보 생존 확인 + 부활 시 모드 재설정 (배터리 늦은 연결 대응)
+  static uint32_t t_ping = 0;
+  if (now - t_ping >= 1000) {
+    t_ping = now;
+    ensure_servo_config();
   }
 
   static uint32_t t_oled = 0;
