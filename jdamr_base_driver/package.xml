@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jdamr_base_driver</name>
+  <version>0.1.0</version>
+  <description>
+    JD-AMR Cube 실기 베이스 드라이버 (C++). ESP32 펌웨어 v2 프로토콜로
+    cmd_vel -&gt; 바퀴 속도 지령, 50Hz 상태 스트림 -&gt; odom/TF/IMU/BatteryState.
+    성능 경로(파싱·적분·발행)는 무할당, 규격은 jdamr_cube_node/protocol.py 와
+    공유 벡터로 교차 검증한다.
+  </description>
+  <maintainer email="mmporong@gmail.com">lim</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
