@@ -1,0 +1,88 @@
+"""실기 브링업 — robot_state_publisher + C++ 베이스 드라이버 + LD14.
+
+시뮬용 jdamr_cube_bringup.launch.py 와 별개 파일이다 (실기는 use_sim_time
+불가·포트·드라이버가 다르다). TF 지오메트리의 단일 출처는 URDF:
+강사원본 ld14.launch.py 의 static_transform_publisher(0,0,0.18)와 URDF
+laser_joint 가 서로 다른 값으로 이중 발행되던 것(조사기록 E7)을,
+라이다 노드를 직접 띄우고 frame_id 를 URDF 링크(laser_link)로 맞춰 없앤다.
+
+바퀴 제원은 실측 후 런치 인자로 넘긴다 (안 넘기면 드라이버가 경고):
+  ros2 launch jdamr_cube_bringup real_bringup.launch.py \
+      wheel_radius:=0.0XX wheel_separation:=0.3XX
+
+포트가 둘(ESP32·라이다) 다 USB 라 꽂는 순서에 따라 ttyUSB0/1 이 뒤바뀐다.
+고정하려면 /dev/serial/by-id/ 경로를 인자로 쓸 것:
+  base_port:=/dev/serial/by-id/usb-...ESP32... lidar_port:=/dev/serial/by-id/usb-...CP210x...
+"""
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    urdf_file = os.path.join(
+        get_package_share_directory('jdamr_cube_description'), 'urdf', 'jdamr_cube.urdf')
+    with open(urdf_file, 'r') as f:
+        robot_description = f.read()
+
+    base_port = LaunchConfiguration('base_port')
+    lidar_port = LaunchConfiguration('lidar_port')
+    wheel_radius = LaunchConfiguration('wheel_radius')
+    wheel_separation = LaunchConfiguration('wheel_separation')
+
+    return LaunchDescription([
+        DeclareLaunchArgument('base_port', default_value='/dev/ttyUSB0',
+                              description='ESP32 시리얼 포트'),
+        DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB1',
+                              description='LD14 시리얼 포트'),
+        DeclareLaunchArgument('wheel_radius', default_value='0.075',
+                              description='바퀴 반지름 [m] — 실측값으로 교체할 것'),
+        DeclareLaunchArgument('wheel_separation', default_value='0.35',
+                              description='트레드 [m] — 실측값으로 교체할 것'),
+
+        # URDF 가 모든 고정 TF(base_footprint→base_link→laser_link…)의 단일 출처
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            output='screen',
+            parameters=[{'robot_description': robot_description}],
+        ),
+
+        # C++ 베이스 드라이버 — cmd_vel↔펌웨어 v2, odom→base_footprint TF 발행
+        Node(
+            package='jdamr_base_driver',
+            executable='base_driver_node',
+            name='jdamr_base_driver',
+            output='screen',
+            parameters=[{
+                'port': base_port,
+                'wheel_radius': wheel_radius,
+                'wheel_separation': wheel_separation,
+                'base_frame': 'base_footprint',
+                'imu_frame': 'base_link',   # 보드가 base_link 에 장착 — 전용 imu_link 추가 전까지
+            }],
+        ),
+
+        # LD14 — frame_id 를 URDF 링크로. 정적 TF 는 여기서 절대 만들지 않는다 (E7)
+        Node(
+            package='ldlidar_sl_ros2',
+            executable='ldlidar_sl_ros2_node',
+            name='ldlidar_node',
+            output='screen',
+            parameters=[
+                {'product_name': 'LDLiDAR_LD14'},
+                {'laser_scan_topic_name': 'scan'},
+                {'point_cloud_2d_topic_name': 'pointcloud2d'},
+                {'frame_id': 'laser_link'},
+                {'port_name': lidar_port},
+                {'serial_baudrate': 115200},
+                {'laser_scan_dir': True},
+                {'enable_angle_crop_func': False},
+            ],
+        ),
+    ])

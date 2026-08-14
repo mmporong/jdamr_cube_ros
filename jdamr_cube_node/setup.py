@@ -24,7 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'jdamr_cube_node = jdamr_cube_node.jdamr_cube_node:main'
+            'jdamr_cube_node = jdamr_cube_node.jdamr_cube_node:main',
+            'wheel_calibration = jdamr_cube_node.wheel_calibration:main',
         ],
     },
 )
