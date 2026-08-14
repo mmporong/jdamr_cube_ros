@@ -10,9 +10,11 @@ laser_joint 가 서로 다른 값으로 이중 발행되던 것(조사기록 E7)
   ros2 launch jdamr_cube_bringup real_bringup.launch.py \
       wheel_radius:=0.0XX wheel_separation:=0.3XX
 
-포트가 둘(ESP32·라이다) 다 USB 라 꽂는 순서에 따라 ttyUSB0/1 이 뒤바뀐다.
-고정하려면 /dev/serial/by-id/ 경로를 인자로 쓸 것:
-  base_port:=/dev/serial/by-id/usb-...ESP32... lidar_port:=/dev/serial/by-id/usb-...CP210x...
+연결 구성 (2026-08-14 실물 확정):
+  ESP32 ↔ 파이 = 40핀 헤더 UART(/dev/ttyS0) — USB 케이블 불필요.
+  보드의 UART 가 헤더에 배선돼 있고 50Hz 스트림 실측으로 확인했다.
+  전제: cmdline.txt 에서 console=serial0 제거 + serial-getty mask +
+  udev 규칙(ttyS0 → dialout). USB(ttyUSB0)는 라이다 전용이 된다.
 """
 import os
 
@@ -35,10 +37,10 @@ def generate_launch_description():
     wheel_separation = LaunchConfiguration('wheel_separation')
 
     return LaunchDescription([
-        DeclareLaunchArgument('base_port', default_value='/dev/ttyUSB0',
-                              description='ESP32 시리얼 포트'),
-        DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB1',
-                              description='LD14 시리얼 포트'),
+        DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
+                              description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
+        DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB0',
+                              description='LD14 시리얼 — USB 는 라이다 전용'),
         DeclareLaunchArgument('wheel_radius', default_value='0.075',
                               description='바퀴 반지름 [m] — 실측값으로 교체할 것'),
         DeclareLaunchArgument('wheel_separation', default_value='0.35',
