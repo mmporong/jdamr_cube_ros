@@ -41,10 +41,10 @@ def generate_launch_description():
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB0',
                               description='LD14 시리얼 — USB 는 라이다 전용'),
-        DeclareLaunchArgument('wheel_radius', default_value='0.075',
-                              description='바퀴 반지름 [m] — 실측값으로 교체할 것'),
-        DeclareLaunchArgument('wheel_separation', default_value='0.35',
-                              description='트레드 [m] — 실측값으로 교체할 것'),
+        DeclareLaunchArgument('wheel_radius', default_value='0.0329',
+                              description='바퀴 반지름 [m] — 2026-08-14 주행 캘리브레이션 확정(자 실측 지름 65mm 와 일치)'),
+        DeclareLaunchArgument('wheel_separation', default_value='0.1836',
+                              description='유효 트레드 [m] — 주행 캘리브레이션 확정. 기하 중심거리는 0.20, 접지면 효과로 유효값이 작다'),
 
         # URDF 가 모든 고정 TF(base_footprint→base_link→laser_link…)의 단일 출처
         Node(
