@@ -200,7 +200,12 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
   // Calculate the number of scanning points
   if (lidar_spin_freq > 0) {
     sensor_msgs::msg::LaserScan output;
-    output.header.stamp = start_scan_time;
+    // 2026-08-14 수정: 원본은 한 바퀴 수신 완료 시각을 시작 시각으로 찍는다.
+    // ROS 규약(stamp=첫 광선 시각)에 맞춰 한 바퀴만큼 되돌린다 — 회전 중
+    // 스캔이 ~6도 미래 자세로 왜곡돼 지도가 번지던 원인.
+    double stamp_back = scan_time;
+    if (stamp_back < 0.05 || stamp_back > 0.5) stamp_back = 0.1667;
+    output.header.stamp = start_scan_time - rclcpp::Duration::from_seconds(stamp_back);
     output.header.frame_id = setting.frame_id;
     output.angle_min = angle_min;
     output.angle_max = angle_max;

@@ -5,7 +5,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <box size="0.5 0.3 0.15"/>
+                <box size="0.18 0.18 0.12"/>
             </geometry>
             <material name="red">
                 <color rgba="1 0 0 1"/>
@@ -15,7 +15,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <box size="0.5 0.3 0.15"/>
+                <box size="0.18 0.18 0.12"/>
             </geometry>
         </collision>
         
@@ -158,7 +158,7 @@
     </link>
 
     <joint name="laser_joint" type="fixed">
-        <origin xyz="0.075 0.02 0.1" rpy="0 0 0"/><!-- 2026-08-14 실측: 축중심 기준 전방 7.5cm·좌 2cm -->
+        <origin xyz="-0.075 0.02 0.1" rpy="0 0 0"/><!-- 2026-08-14 사진 판독으로 부호 확정: 축중심 기준 후방 7.5cm·좌 2cm -->
         <parent link="base_link"/>
         <child link="laser_link"/>
     </joint>

@@ -55,6 +55,15 @@ def generate_launch_description():
             parameters=[{'robot_description': robot_description}],
         ),
 
+        # 가동 관절(바퀴·팔) 기본값 0 발행 — 실기엔 관절 상태 소스가 없어
+        # RobotModel TF 가 비는 것을 막는다. 팔 구동 시 실제 퍼블리셔로 교체.
+        Node(
+            package='joint_state_publisher',
+            executable='joint_state_publisher',
+            name='joint_state_publisher',
+            output='screen',
+        ),
+
         # C++ 베이스 드라이버 — cmd_vel↔펌웨어 v2, odom→base_footprint TF 발행
         Node(
             package='jdamr_base_driver',

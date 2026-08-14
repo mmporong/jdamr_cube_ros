@@ -37,11 +37,21 @@ options = {
 
 MAP_BUILDER.use_trajectory_builder_2d = true
 TRAJECTORY_BUILDER_2D.min_range = 0.12
-TRAJECTORY_BUILDER_2D.max_range = 3.5
+-- 2026-08-14 복도 실측 반영: 캐비닛 간격이 3.5m 를 넘어 시야 크롭이
+-- 무특징 구간을 인위로 만들었다(사용자 관측). 6m 로 앵커를 잡는다.
+TRAJECTORY_BUILDER_2D.max_range = 6.0
 TRAJECTORY_BUILDER_2D.missing_data_ray_length = 3.
 TRAJECTORY_BUILDER_2D.use_imu_data = false
-TRAJECTORY_BUILDER_2D.use_online_correlative_scan_matching = true
+-- 2026-08-14 최종: 전역 상관매칭 OFF — 복도 세로축에서 틀린 정렬로 점프
+-- (가중치는 ceres 에만 적용돼 상관매칭 점프를 못 막는다). 캘리브레이션된
+-- 오도메트리(0.986/0.999)가 씨앗을 공급한다.
+TRAJECTORY_BUILDER_2D.use_online_correlative_scan_matching = false
 TRAJECTORY_BUILDER_2D.motion_filter.max_angle_radians = math.rad(0.1)
+-- 2026-08-14 복도 대응: 세로 방향 무특징 구간에서 매처가 전진을 기각
+-- (제자리 정지→턴 후 점프 실측). 오도메트리가 1% 캘리브레이션 상태라
+-- TB3 기본(10/40)보다 사전추정을 강하게 믿는다.
+TRAJECTORY_BUILDER_2D.ceres_scan_matcher.translation_weight = 40
+TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 60
 POSE_GRAPH.constraint_builder.min_score = 0.65
 POSE_GRAPH.constraint_builder.global_localization_min_score = 0.7
 
