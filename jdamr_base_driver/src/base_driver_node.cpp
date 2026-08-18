@@ -53,6 +53,12 @@ public:
     wheel_radius_ = declare_parameter<double>("wheel_radius", 0.075);
     wheel_separation_ = declare_parameter<double>("wheel_separation", 0.35);
     counts_per_rev_ = declare_parameter<int>("counts_per_rev", 4096);
+    // 좌우 유효 반지름 비 (오른쪽/왼쪽). 사출 편차로 두 바퀴 지름이 미세하게
+    // 다르면 직진 지령에도 헤딩이 일정 비율로 흐른다 — 미끄러짐이 아니라
+    // 기하 상수라 매번 같은 방향으로 휘고, 좌우를 한 값으로 캘리브레이션하면
+    // 구조적으로 못 잡는다(UMBmark 가 사각형을 양방향으로 도는 이유).
+    // 측정: 직진 L m 에 자이로 대비 헤딩 오차 dtheta 면 ratio ~= 1 + dtheta*b/L.
+    wheel_radius_ratio_ = declare_parameter<double>("wheel_radius_ratio", 1.0);
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_footprint");
     imu_frame_ = declare_parameter<std::string>("imu_frame", "imu_link");
@@ -67,6 +73,14 @@ public:
     }
 
     m_per_count_ = 2.0 * M_PI * wheel_radius_ / static_cast<double>(counts_per_rev_);
+    // 평균은 보존하고 좌우로만 갈라 준다 — 병진 스케일(캘리브레이션 결과)을
+    // 건드리지 않고 회전 편향만 없앤다.
+    m_per_count_l_ = m_per_count_ * 2.0 / (1.0 + wheel_radius_ratio_);
+    m_per_count_r_ = m_per_count_ * 2.0 * wheel_radius_ratio_ / (1.0 + wheel_radius_ratio_);
+    if (std::abs(wheel_radius_ratio_ - 1.0) > 1e-9) {
+      RCLCPP_INFO(get_logger(), "좌우 반지름 비 %.5f 적용 (L %.4e / R %.4e m/count)",
+        wheel_radius_ratio_, m_per_count_l_, m_per_count_r_);
+    }
 
     // ── 발행자 (재사용 메시지는 멤버로 선할당 — 핫패스 무할당) ──
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("odom", 10);
@@ -153,8 +167,8 @@ private:
     // 차동구동 역기구학 → counts/s
     const double vl = v - w * wheel_separation_ * 0.5;
     const double vr = v + w * wheel_separation_ * 0.5;
-    double cl = vl / m_per_count_;
-    double cr = vr / m_per_count_;
+    double cl = vl / m_per_count_l_;
+    double cr = vr / m_per_count_r_;
 
     // 포화는 비율 보존으로 — 독립 클램프는 포화 구간에서 곡률을 왜곡한다.
     const double peak = std::max(std::abs(cl), std::abs(cr));
@@ -207,8 +221,8 @@ private:
     }
     const double dt = 0.02 * static_cast<double>(gap);
 
-    const double dl = static_cast<double>(s.left_pos - prev_.left_pos) * m_per_count_;
-    const double dr = static_cast<double>(s.right_pos - prev_.right_pos) * m_per_count_;
+    const double dl = static_cast<double>(s.left_pos - prev_.left_pos) * m_per_count_l_;
+    const double dr = static_cast<double>(s.right_pos - prev_.right_pos) * m_per_count_r_;
     prev_ = s;
 
     const double ds = 0.5 * (dl + dr);
@@ -295,6 +309,8 @@ private:
   int baud_{115200}, counts_per_rev_{4096};
   double wheel_radius_{0.075}, wheel_separation_{0.35}, cmd_timeout_{0.4};
   double m_per_count_{0.0};
+  double wheel_radius_ratio_{1.0};
+  double m_per_count_l_{0.0}, m_per_count_r_{0.0};
   bool publish_tf_{true};
 
   // 통신
