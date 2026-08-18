@@ -27,6 +27,7 @@ setup(
             'jdamr_cube_node = jdamr_cube_node.jdamr_cube_node:main',
             'wheel_calibration = jdamr_cube_node.wheel_calibration:main',
             'web_teleop = jdamr_cube_node.web_teleop:main',
+            'loop_eval = jdamr_cube_node.loop_eval:main',
         ],
     },
 )

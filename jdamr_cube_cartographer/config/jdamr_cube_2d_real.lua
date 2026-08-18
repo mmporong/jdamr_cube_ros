@@ -55,4 +55,13 @@ TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 60
 POSE_GRAPH.constraint_builder.min_score = 0.65
 POSE_GRAPH.constraint_builder.global_localization_min_score = 0.7
 
+-- 2026-08-16 RFC 0018(cartographer-project/rfcs) 검증 설정 이식.
+-- 후단 최적화에서 바퀴 오도메트리의 병진과 회전을 갈라 신뢰한다:
+--   병진 1e5 — 엔코더 적산은 고해상도이고 우리 것은 실측 배율 0.986
+--   회전 1e1 — 스키드 조향은 회전에서 미끄러진다. 회전은 스캔 매칭이 맡는다
+-- 두 값의 1만 배 격차가 요점이다. 같이 높이면 복도에서 잘못된 회전까지
+-- 믿게 되고, 같이 낮추면 무특징 구간에서 전진이 기각된다.
+POSE_GRAPH.optimization_problem.odometry_translation_weight = 1e5
+POSE_GRAPH.optimization_problem.odometry_rotation_weight = 1e1
+
 return options
