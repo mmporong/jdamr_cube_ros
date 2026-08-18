@@ -92,7 +92,7 @@ def generate_launch_description():
                 {'frame_id': 'laser_link'},
                 {'port_name': lidar_port},
                 {'serial_baudrate': 230400},
-                {'laser_scan_dir': False},  # 2026-08-14 실측: +90° 회전에 스캔 -98° 이동(거울반전) → 반전
+                {'laser_scan_dir': True},   # 2026-08-18 정정: 8/14 에 False 로 뒤집은 것이 오류. 로봇이 CCW +θ 돌면 로봇 좌표계에서 세상은 −θ 도는 것이 정상인데 프로브가 그걸 거울반전으로 오판해 멀쩡한 데이터에 거울을 씌웠다(실물: 오른쪽 코너가 지도 왼쪽). 이후 지도 꼬임이 전부 여기서 왔다
                 {'enable_angle_crop_func': False},
             ],
         ),
