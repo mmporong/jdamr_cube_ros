@@ -28,6 +28,7 @@ setup(
             'wheel_calibration = jdamr_cube_node.wheel_calibration:main',
             'web_teleop = jdamr_cube_node.web_teleop:main',
             'loop_eval = jdamr_cube_node.loop_eval:main',
+            'motion_probe = jdamr_cube_node.motion_probe:main',
         ],
     },
 )

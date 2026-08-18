@@ -235,19 +235,27 @@ static void send_state() {
 
 // ── OLED (A7: 저주기 + 변경시만) ──
 static void update_oled(uint16_t mv) {
-  String line = String("L") + cmd_left + " R" + cmd_right +
-                (watchdog_stopped ? " WD" : "") + " " + String(mv / 1000.0f, 1) + "V";
-  String txt = oled_scan + "\n" + line;
+  // 128x32 3줄 배치. 현장에서 로봇 옆에 서서 보는 순서로 놓는다:
+  //   1행 전압 + 무장상태  — 충전 시점과 "왜 안 움직이나"의 답
+  //   2행 바퀴 지령        — 조종이 닿고 있는지
+  //   3행 서보 ID·건강     — 버스가 살아 있는지 (부팅 스캔 결과 상시 노출)
+  // 변경 없으면 그리지 않는다 — display() 는 I2C 전체 프레임이라 수십 ms 블로킹(A7).
+  // 전압은 0.1V 로 양자화돼 있어 미세 변동으로 매번 다시 그리지 않는다.
+  String l1 = String(mv / 1000.0f, 2) + "V  " + (watchdog_stopped ? "IDLE" : "ARM");
+  String l2 = "L" + String(cmd_left) + "  R" + String(cmd_right);
+  String l3 = oled_scan + "  " +
+              (servo_ok[0] && servo_ok[1] ? "SRV ok"
+                                          : (String("SRV ") + (servo_ok[0] ? "" : "L")
+                                                            + (servo_ok[1] ? "" : "R") + "!"));
+  String txt = l1 + "\n" + l2 + "\n" + l3;
   if (txt == oled_prev) return;
   oled_prev = txt;
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);  display.print("v2 ");  display.print(oled_scan);
-  display.setCursor(0, 12); display.print(line);
-  display.setCursor(0, 22);
-  display.print(servo_ok[0] ? "L:ok " : "L:-- ");
-  display.print(servo_ok[1] ? "R:ok" : "R:--");
+  display.setCursor(0, 0);  display.print(l1);
+  display.setCursor(0, 11); display.print(l2);
+  display.setCursor(0, 22); display.print(l3);
   display.display();
 }
 

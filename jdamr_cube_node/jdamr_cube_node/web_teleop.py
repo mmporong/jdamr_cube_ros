@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from std_msgs.msg import Empty
 
 PORT = 8080
 FRESH_SEC = 0.35          # 이 시간 안에 킵얼라이브 없으면 0 발행
@@ -52,7 +53,7 @@ PAGE = """<!DOCTYPE html>
   <span></span><button id="s">▼</button><span></span>
 </div>
 <label>속도 <input type="range" id="spd" min="20" max="100" value="60"></label>
-<div class="hint">PC: W/A/S/D 키 (누르는 동안 주행) · 폰: 버튼 홀드</div>
+<div class="hint">PC: W/A/S/D 키 (누르는 동안 주행) · 폰: 버튼 홀드<br>STOP·스페이스는 자동주행(프로브)도 중단시켜요</div>
 <script>
 const held = new Set();
 let lastSend = 0;
@@ -82,7 +83,10 @@ setInterval(() => { if (held.size) send(); }, 100);   // 킵얼라이브
 document.addEventListener("keydown", e => {
   const k = e.key.toLowerCase();
   if ("wasd".includes(k) && !e.repeat) press(k);
-  if (e.key === " ") { held.clear(); paint(); send(); }
+  if (e.key === " ") {
+    held.clear(); paint(); send();
+    fetch("/abort", { method:"POST" }).catch(()=>{});
+  }
 });
 document.addEventListener("keyup", e => {
   const k = e.key.toLowerCase();
@@ -96,6 +100,8 @@ for (const k of ["w","a","s","d"]) {
 }
 document.getElementById("stop").addEventListener("pointerdown", () => {
   held.clear(); paint(); send();
+  fetch("/abort", { method:"POST" }).catch(()=>{});   // 자동 프로브도 중단
+  document.getElementById("stat").textContent = "정지 · 자동주행 중단 요청";
 });
 window.addEventListener("blur", () => { held.clear(); paint(); send(); });
 </script></body></html>"""
@@ -105,11 +111,18 @@ class TeleopNode(Node):
     def __init__(self):
         super().__init__('web_teleop')
         self.pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        # 자동 프로브(motion_probe) 중단 신호. STOP 은 cmd_vel 0 만으로는 부족하다 —
+        # 프로브가 15Hz 로 지령을 계속 밀면 우리 0 을 덮어쓰기 때문에, 프로브 자신에게
+        # 멈추라고 알려야 한다.
+        self.abort_pub = self.create_publisher(Empty, 'probe_abort', 10)
         self._lock = threading.Lock()
         self._vx = 0.0
         self._wz = 0.0
         self._stamp = 0.0
         self.create_timer(1.0 / PUB_HZ, self._tick)
+
+    def abort(self):
+        self.abort_pub.publish(Empty())
 
     def set_cmd(self, vx, wz):
         with self._lock:
@@ -148,6 +161,11 @@ def main():
             self.wfile.write(body)
 
         def do_POST(self):
+            if self.path == '/abort':
+                node.abort()
+                self.send_response(204)
+                self.end_headers()
+                return
             try:
                 n = int(self.headers.get('Content-Length', 0))
                 d = json.loads(self.rfile.read(n) or b'{}')
