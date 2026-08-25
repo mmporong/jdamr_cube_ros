@@ -20,6 +20,7 @@
  */
 #include "ros2_api.h"
 #include "ldlidar_driver.h"
+#include "scan_utils.hpp"
 
 uint64_t GetTimestamp(void);
 
@@ -125,7 +126,9 @@ int main(int argc, char **argv) {
   rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr lidar_pub_pointcloud = 
       node->create_publisher<sensor_msgs::msg::PointCloud>(point_cloud_2d_topic_name, 10);
 
-  rclcpp::WallRate r(6); //Hz
+  // Poll well above the 6 Hz spin rate so a completed frame is collected
+  // promptly instead of aliasing with the LiDAR period and skipping scans.
+  rclcpp::WallRate r(100);
 
   ldlidar::Points2D laser_scan_points;
 
@@ -176,48 +179,33 @@ uint64_t GetTimestamp(void) {
 
 void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq, LaserScanSetting& setting,
   rclcpp::Node::SharedPtr& node, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr& lidarpub) {
-  float angle_min, angle_max, range_min, range_max, angle_increment;
-  double scan_time;
-  rclcpp::Time start_scan_time;
-  static rclcpp::Time end_scan_time;
-  static bool first_scan = true;
-
-  start_scan_time = node->now();
-  scan_time = (start_scan_time.seconds() - end_scan_time.seconds());
-
-  if (first_scan) {
-    first_scan = false;
-    end_scan_time = start_scan_time;
+  if (src.empty()) {
     return;
   }
-  // Adjust the parameters according to the demand
-  angle_min = 0;
-  angle_max = (2 * M_PI);
-  range_min = 0.02;
-  range_max = 12;
+
+  const auto publish_time = node->now();
   int beam_size = static_cast<int>(src.size());
-  angle_increment = (angle_max - angle_min) / (float)(beam_size -1);
+  const auto timing = ldlidar_ros2::ComputeScanTiming(
+      src.front().stamp, src.back().stamp, src.size(), lidar_spin_freq,
+      static_cast<uint64_t>(publish_time.nanoseconds()));
+  const double first_angle = ldlidar_ros2::PublishedAngle(
+      ANGLE_TO_RADIAN(src.front().angle), setting.laser_scan_dir);
+  const auto geometry = ldlidar_ros2::ComputeScanGeometry(
+      src.size(), setting.laser_scan_dir, first_angle);
+
   // Calculate the number of scanning points
   if (lidar_spin_freq > 0) {
     sensor_msgs::msg::LaserScan output;
-    // 2026-08-14 수정: 원본은 한 바퀴 수신 완료 시각을 시작 시각으로 찍는다.
-    // ROS 규약(stamp=첫 광선 시각)에 맞춰 한 바퀴만큼 되돌린다 — 회전 중
-    // 스캔이 ~6도 미래 자세로 왜곡돼 지도가 번지던 원인.
-    double stamp_back = scan_time;
-    if (stamp_back < 0.05 || stamp_back > 0.5) stamp_back = 0.1667;
-    output.header.stamp = start_scan_time - rclcpp::Duration::from_seconds(stamp_back);
+    output.header.stamp = rclcpp::Time(
+        static_cast<int64_t>(timing.start_stamp_ns), RCL_SYSTEM_TIME);
     output.header.frame_id = setting.frame_id;
-    output.angle_min = angle_min;
-    output.angle_max = angle_max;
-    output.range_min = range_min;
-    output.range_max = range_max;
-    output.angle_increment = angle_increment;
-    if (beam_size <= 1) {
-      output.time_increment = 0;
-    } else {
-      output.time_increment = static_cast<float>(scan_time / (double)(beam_size - 1));
-    }
-    output.scan_time = scan_time;
+    output.angle_min = static_cast<float>(geometry.angle_min);
+    output.angle_max = static_cast<float>(geometry.angle_max);
+    output.range_min = 0.02;
+    output.range_max = 12;
+    output.angle_increment = static_cast<float>(geometry.angle_increment);
+    output.time_increment = static_cast<float>(timing.time_increment);
+    output.scan_time = static_cast<float>(timing.scan_time);
     // First fill all the data with Nan
     output.ranges.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
     output.intensities.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
@@ -238,64 +226,42 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
         }
       }
 
-      float angle = ANGLE_TO_RADIAN(dir_angle); // Lidar angle unit form degree transform to radian
-      int index = static_cast<int>(ceil((angle - angle_min) / angle_increment));
+      const float angle = static_cast<float>(ldlidar_ros2::PublishedAngle(
+          ANGLE_TO_RADIAN(dir_angle), setting.laser_scan_dir));
+      int index = ldlidar_ros2::AngleToIndex(angle, geometry, src.size());
       if (index < beam_size) {
         if (index < 0) {
           RCLCPP_ERROR(node->get_logger(), "error index: %d, beam_size: %d, angle: %f, output.angle_min: %f, output.angle_increment: %f", 
-            index, beam_size, angle, angle_min, angle_increment);
+            index, beam_size, angle, output.angle_min, output.angle_increment);
         }
 
-        if (setting.laser_scan_dir) {
-          int index_anticlockwise = beam_size - index - 1;
-          // If the current content is Nan, it is assigned directly
-          if (std::isnan(output.ranges[index_anticlockwise])) {
-            output.ranges[index_anticlockwise] = range;
-          } else { // Otherwise, only when the distance is less than the current
-                    //   value, it can be re assigned
-            if (range < output.ranges[index_anticlockwise]) {
-                output.ranges[index_anticlockwise] = range;
-            }
-          }
-          output.intensities[index_anticlockwise] = intensity;
-        } else {
-          // If the current content is Nan, it is assigned directly
-          if (std::isnan(output.ranges[index])) {
+        // If the current content is Nan, it is assigned directly
+        if (std::isnan(output.ranges[index])) {
+          output.ranges[index] = range;
+        } else { // Otherwise, only when the distance is less than the current
+                // value, it can be re assigned
+          if (range < output.ranges[index]) {
             output.ranges[index] = range;
-          } else { // Otherwise, only when the distance is less than the current
-                  //   value, it can be re assigned
-            if (range < output.ranges[index]) {
-              output.ranges[index] = range;
-            }
           }
-          output.intensities[index] = intensity;
         }
+        output.intensities[index] = intensity;
       }
     }
     lidarpub->publish(output);
-    end_scan_time = start_scan_time;
   } 
 }
 
 void  ToSensorPointCloudMessagePublish(ldlidar::Points2D& src, LaserScanSetting& setting,
   rclcpp::Node::SharedPtr& node, rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr& lidarpub) {
-  
-  rclcpp::Time start_scan_time;
-  double scan_time;
-  float time_increment;
-  static rclcpp::Time end_scan_time;
-  static bool first_scan = true;
-
-  ldlidar::Points2D dst = src;
-
-  start_scan_time = node->now();
-  scan_time = (start_scan_time.seconds() - end_scan_time.seconds());
-
-  if (first_scan) {
-    first_scan = false;
-    end_scan_time = start_scan_time;
+  if (src.empty()) {
     return;
   }
+
+  ldlidar::Points2D dst = src;
+  const auto publish_time = node->now();
+  const auto timing = ldlidar_ros2::ComputeScanTiming(
+      src.front().stamp, src.back().stamp, src.size(), 0.0,
+      static_cast<uint64_t>(publish_time.nanoseconds()));
 
   if (setting.laser_scan_dir) {
     for (auto&point : dst) {
@@ -310,7 +276,8 @@ void  ToSensorPointCloudMessagePublish(ldlidar::Points2D& src, LaserScanSetting&
 
   sensor_msgs::msg::PointCloud output;
 
-  output.header.stamp = start_scan_time;
+  output.header.stamp = rclcpp::Time(
+      static_cast<int64_t>(timing.start_stamp_ns), RCL_SYSTEM_TIME);
   output.header.frame_id = setting.frame_id;
 
   sensor_msgs::msg::ChannelFloat32 defaultchannelval[3];
@@ -320,17 +287,12 @@ void  ToSensorPointCloudMessagePublish(ldlidar::Points2D& src, LaserScanSetting&
   // output.channels.assign(1, defaultchannelval);
   output.channels.push_back(defaultchannelval[0]);
 
-  if (frame_points_num <= 1) {
-    time_increment = 0;
-  } else {
-    time_increment = static_cast<float>(scan_time / (double)(frame_points_num - 1));
-  }
   defaultchannelval[1].name = std::string("timeincrement");
-  defaultchannelval[1].values.assign(1, time_increment);
+  defaultchannelval[1].values.assign(1, static_cast<float>(timing.time_increment));
   output.channels.push_back(defaultchannelval[1]);
   
   defaultchannelval[2].name = std::string("scantime");
-  defaultchannelval[2].values.assign(1, scan_time);
+  defaultchannelval[2].values.assign(1, static_cast<float>(timing.scan_time));
   output.channels.push_back(defaultchannelval[2]);
 
   geometry_msgs::msg::Point32 points_xyz_defaultval;
@@ -350,7 +312,6 @@ void  ToSensorPointCloudMessagePublish(ldlidar::Points2D& src, LaserScanSetting&
     output.channels[0].values[i] = intensity;
   }
   lidarpub->publish(output);
-  end_scan_time = start_scan_time;
 }
 
 /********************* (C) COPYRIGHT SHENZHEN LDROBOT CO., LTD *******END OF
