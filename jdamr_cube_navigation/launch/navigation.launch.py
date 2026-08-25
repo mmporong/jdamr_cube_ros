@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
@@ -50,6 +51,8 @@ def generate_launch_description():
         }.items())
 
     ld = LaunchDescription()
+    ld.add_action(SetEnvironmentVariable(
+        'FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'))
     ld.add_action(declare_map_cmd)
     ld.add_action(declare_params_file_cmd)
     ld.add_action(declare_use_sim_time_cmd)

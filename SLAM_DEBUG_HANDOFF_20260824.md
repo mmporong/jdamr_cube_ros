@@ -97,7 +97,7 @@ TB3 이식본·IMU본의 큰 순간 점프는 잘못된 backend loop constraint 
 
 - **로봇 접속**: `jdamr.local` (mDNS). **IP가 DHCP로 계속 바뀐다**(오늘 .159↔.160 반복). IP 직접 쓰지 말고 `jdamr.local` 사용. 안 풀리면 `getent hosts jdamr.local`.
 - **DDS**: `ROS_DOMAIN_ID=12`, 노트북은 `ROS_STATIC_PEERS=<로봇IP>` 또는 `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET` 필요(강의실 AP 멀티캐스트 안 흘림).
-- **파이 DDS 반복 사망**: 서비스 재기동·`ros2 daemon stop`·CLI 조회를 반복하면 FastDDS 공유메모리가 오염돼 파이 내부 토픽이 통째로 0이 된다(scan/odom/battery 다 끊김). 복구: 전체 정지 → `sudo rm -f /dev/shm/fastrtps_* /dev/shm/fastdds_* /dev/shm/sem.*` → 서비스 재기동. **확인은 CLI 말고 단일 python 노드로**(CLI가 상태를 더 흔든다). 근본 해결은 FastDDS를 UDP 전송으로 바꾸는 것(미적용).
+- **파이 DDS user-data 장애(2026-08-25 해결)**: 기본 Fast DDS 참가자는 토픽 이름을 discovery하지만 같은 파이 안의 subscriber가 scan/odom/battery 데이터를 0건 받았다. `/dev/shm`에는 삭제할 stale Fast DDS 파일도 없었다. 동일 subscriber에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 적용하자 4초 동안 scan 14건, odom 77건, battery 1건을 즉시 수신해 SHM 데이터 경로 장애로 확정했다. 실기 bringup·Cartographer·Nav2 launch와 `reset_map.sh`가 이제 노드 시작 전에 UDPv4를 기본 적용한다. 수동 실행은 `export FASTDDS_BUILTIN_TRANSPORTS=UDPv4` 후 시작한다.
 - **webteleop 부팅 미기동 버그**: systemd ordering cycle 때문에 부팅 시 `jdamr-webteleop`이 자동으로 안 뜬다. 매 부팅 후 `sudo systemctl start jdamr-webteleop` 수동 실행 필요. **영구 수정 미적용**(유닛 파일 `After=` 의존 정리 필요).
 - **웹 조종**: `http://jdamr.local:8080` (WASD/터치). 브라우저 페이지가 낡으면(IP 바뀐 뒤) 버튼이 죽은 옛 주소로 POST해 안 먹는다 → **하드리프레시(Ctrl+Shift+R)**.
 - **지도 초기화 스크립트**: 파이에 `~/reset_map.sh` (현재 지도 저장 → 8/18 성공 설정으로 카토그래퍼 재시작). `ssh lim@jdamr.local '~/reset_map.sh'`. 다른 설정은 파일명을 첫 인자로 명시한다.

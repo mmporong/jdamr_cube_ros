@@ -2,6 +2,8 @@
 
 이 패키지는 Cartographer가 갱신하는 `/map`에서 frontier를 고르고, Nav2에 한 번에 목표 하나만 전달한다. `frontier_explorer`는 시작 시 항상 `IDLE`이며 직접 `/cmd_vel`을 발행하지 않는다. 최종 속도 명령은 Collision Monitor만 `/cmd_vel`에 발행해야 한다.
 
+실기 launch는 파이에서 재현된 Fast DDS 공유메모리 user-data 장애를 피하도록 자식 노드 시작 전에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 설정한다. `real_bringup.launch.py`, `cartographer_real.launch.py`, `autonomous_mapping.launch.py`를 사용하면 별도 설정이 필요 없다. launch 밖에서 실기 ROS 노드를 직접 실행할 때도 같은 환경변수를 적용한다.
+
 ## 시작 전 안전 조건
 
 - 로봇은 바닥의 평평하고 열린 곳에 정지시킨다. 사람, 반려동물, 케이블, 계단과 낙하 지점을 작업 구역에서 치운다.

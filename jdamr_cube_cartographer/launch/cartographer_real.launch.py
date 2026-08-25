@@ -1,4 +1,5 @@
-"""실기 SLAM — 파이에서 헤드리스로 돌린다 (RViz 는 노트북에서 별도 실행).
+"""
+실기 SLAM — 파이에서 헤드리스로 돌린다 (RViz 는 노트북에서 별도 실행).
 
 전제: real_bringup.launch.py 가 이미 떠서 /scan·/odom·TF 가 살아 있다.
 시뮬용 cartographer.launch.py 와 분리한 이유: use_sim_time 과 설정 lua 가
@@ -13,14 +14,17 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import SetEnvironmentVariable
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """실기 Cartographer와 occupancy grid 노드를 구성한다."""
     config_dir = os.path.join(
         get_package_share_directory('jdamr_cube_cartographer'), 'config')
 
     return LaunchDescription([
+        SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
         Node(
             package='cartographer_ros',
             executable='cartographer_node',

@@ -18,6 +18,7 @@ source "${workspace_setup}"
 set -u
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-12}"
 export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
+export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 
 configuration_directory="$(ros2 pkg prefix jdamr_cube_cartographer)/share/jdamr_cube_cartographer/config"
 configuration_path="${configuration_directory}/${configuration_basename}"

@@ -10,6 +10,7 @@ import yaml
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PARAMS_PATH = PACKAGE_ROOT / 'config' / 'nav2_params.yaml'
 LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'autonomous_mapping.launch.py'
+NAVIGATION_LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
 BT_PATH = (
     PACKAGE_ROOT / 'behavior_trees' / 'navigate_to_pose_safe_mapping.xml')
 SETUP_PATH = PACKAGE_ROOT / 'setup.py'
@@ -43,6 +44,37 @@ def _call_name(call):
     if isinstance(function, ast.Attribute):
         return function.attr
     return ''
+
+
+def _assert_udp_transport_call(call):
+    assert _call_name(call) == 'SetEnvironmentVariable'
+    assert ast.literal_eval(call.args[0]) == 'FASTDDS_BUILTIN_TRANSPORTS'
+    assert ast.literal_eval(call.args[1]) == 'UDPv4'
+
+
+def test_physical_navigation_launches_force_fastdds_udp_transport():
+    autonomous_syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
+    description = next(
+        node.value for node in ast.walk(autonomous_syntax)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Call)
+        and _call_name(node.value) == 'LaunchDescription'
+    )
+    _assert_udp_transport_call(description.args[0].elts[0])
+
+    navigation_syntax = ast.parse(
+        NAVIGATION_LAUNCH_PATH.read_text(encoding='utf-8'))
+    add_actions = [
+        node.value for node in navigation_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == 'generate_launch_description'
+        for node in node.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and _call_name(node.value) == 'add_action'
+    ]
+    assert add_actions
+    _assert_udp_transport_call(add_actions[0].args[0])
 
 
 def test_controller_uses_forward_only_collision_aware_rpp():

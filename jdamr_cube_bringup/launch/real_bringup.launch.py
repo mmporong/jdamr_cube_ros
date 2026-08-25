@@ -21,7 +21,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -38,6 +38,9 @@ def generate_launch_description():
     wheel_separation = LaunchConfiguration('wheel_separation')
 
     return LaunchDescription([
+        # 이 파이의 Fast DDS SHM user-data 경로는 discovery 후 데이터가
+        # 전달되지 않는다. 노드를 띄우기 전에 UDP-only로 고정한다.
+        SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ydlidar_g4',
