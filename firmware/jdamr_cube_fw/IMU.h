@@ -20,8 +20,13 @@ typedef struct imu_st_sensor_data_float
   float Z;
 }IMU_ST_SENSOR_DATA_FLOAT;
 
-void imuInit();
-void imuDataGet(EulerAngles *pstAngles, 
+enum : uint8_t {
+  IMU_HEALTH_QMI8658 = 0x01,
+  IMU_HEALTH_AK09918 = 0x02,
+};
+
+uint8_t imuInit();
+uint8_t imuDataGet(EulerAngles *pstAngles,
                 IMU_ST_SENSOR_DATA_FLOAT *pstGyroRawData,
                 IMU_ST_SENSOR_DATA_FLOAT *pstAccelRawData,
                 IMU_ST_SENSOR_DATA *pstMagnRawData); 

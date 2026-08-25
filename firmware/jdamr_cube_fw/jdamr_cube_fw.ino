@@ -7,7 +7,7 @@
  *
  * 이 판이 고치는 강사원본 결함 (번호 = ~/jdamr_cube_bringup/JDAMR_Cube_조사기록.md):
  *   A1  자이로 Y/Z·지자기 3축 미전송            → 9축 전부 전송
- *   A2  가속도 ×1000 / 자이로 ×100 스케일 혼재   → 스케일을 패킷 규격에 명시(아래 표)
+ *   A2  이미 mg인 가속도에 ×1000해 int16 overflow → 단위별 포화·반올림 패커 사용
  *   A3  체크섬 항상 0x00                        → CRC-8/MAXIM 실제 계산
  *   A4  헤더 재동기화 없음                       → 바이트 단위 상태기계로 재동기
  *   A5  후진·회전 분기 부재                      → 부호 있는 바퀴별 속도라 방향 분기 자체가 없음
@@ -43,6 +43,7 @@
  *   uint16 batt_mV      배터리 전압 [mV]
  *   uint8  flags        bit0 좌서보 읽기실패  bit1 우서보 읽기실패
  *                       bit2 워치독 정지중    bit3 INA219 미검출
+ *                       bit4 QMI8658 읽기실패 bit5 AK09918 읽기실패
  *
  * 물리 제원(바퀴 지름·트레드)은 펌웨어에 두지 않는다 — 오도메트리 환산은
  * ROS 노드 파라미터가 단일 출처다 (counts/s ↔ m/s 변환은 호스트 책임).
@@ -52,6 +53,7 @@
 #include <Adafruit_SSD1306.h>
 #include <INA219_WE.h>
 #include "IMU.h"
+#include "imu_packet_units.h"
 #include "STSServoDriver.h"
 
 // ── 핀·주소 (강사원본과 동일) ──
@@ -70,11 +72,18 @@ static const uint32_t STATE_PERIOD_MS = 20;    // 50Hz 상태 송신
 static const uint32_t OLED_PERIOD_MS  = 500;   // A7: OLED는 0.5s + 변경시만
 static const uint32_t CMD_TIMEOUT_MS  = 400;   // A9: 워치독
 static const int16_t  VEL_LIMIT = 3400;        // STS3215 속도 지령 상한 [counts/s]
+static const uint8_t  FLAG_SERVO_L_ERR = 0x01;
+static const uint8_t  FLAG_SERVO_R_ERR = 0x02;
+static const uint8_t  FLAG_WATCHDOG    = 0x04;
+static const uint8_t  FLAG_NO_INA219   = 0x08;
+static const uint8_t  FLAG_QMI8658_ERR = 0x10;
+static const uint8_t  FLAG_AK09918_ERR = 0x20;
 
 HardwareSerial ServoSerial(2);
 Adafruit_SSD1306 display(128, 32, &Wire, -1);
 STSServoDriver st;
 INA219_WE *ina219 = nullptr;             // A10: 주소 스캔 후 생성
+static bool oled_available = false;
 
 // B1: 라이브러리 판본에 따라 이 줄만 고친다
 #define SERVO_INIT() st.init(255, &ServoSerial, 1000000)
@@ -189,13 +198,20 @@ static void feed_rx(uint8_t b) {
 
 // ── 상태 패킷 송신 ──
 static void send_state() {
-  uint8_t flags = watchdog_stopped ? 0x04 : 0x00;
-  if (!ina219) flags |= 0x08;
+  uint8_t flags = watchdog_stopped ? FLAG_WATCHDOG : 0x00;
+  if (!ina219) flags |= FLAG_NO_INA219;
 
   // A6: 서보 위치는 여기서 한 번만 읽는다 (OLED도 이 값을 재사용)
-  int raw[2] = { st.getCurrentPosition(LEFT_ID), st.getCurrentPosition(RIGHT_ID) };
+  int16_t raw[2] = {0, 0};
+  const bool position_ok[2] = {
+    st.getCurrentPosition(LEFT_ID, raw[0]),
+    st.getCurrentPosition(RIGHT_ID, raw[1]),
+  };
   for (int i = 0; i < 2; i++) {
-    if (!servo_ok[i]) { flags |= (1 << i); continue; } // ping 실패 → 적분 제외
+    if (!servo_ok[i] || !position_ok[i]) {
+      flags |= (1 << i);
+      continue;
+    }
     int16_t r = (int16_t)(raw[i] & 0x0FFF);
     if (!pos_init[i]) { pos_last[i] = r; pos_init[i] = true; }
     int16_t d = (int16_t)((r - pos_last[i]) & 0x0FFF); // A8: 12비트 차분
@@ -208,7 +224,10 @@ static void send_state() {
     pos_total[i] += (i == 0) ? -d : d;
   }
 
-  imuDataGet(&stAngles, &stGyroRawData, &stAccelRawData, &stMagnRawData);
+  const uint8_t imu_health =
+    imuDataGet(&stAngles, &stGyroRawData, &stAccelRawData, &stMagnRawData);
+  if (!(imu_health & IMU_HEALTH_QMI8658)) flags |= FLAG_QMI8658_ERR;
+  if (!(imu_health & IMU_HEALTH_AK09918)) flags |= FLAG_AK09918_ERR;
   uint16_t mv = ina219 ? (uint16_t)(ina219->getBusVoltage_V() * 1000.0f) : 0;
 
   uint8_t f[3 + 30 + 1];                   // 헤더2 + LEN + payload30 + crc
@@ -218,15 +237,15 @@ static void send_state() {
   memcpy(p, &pos_total[0], 4); p += 4;
   memcpy(p, &pos_total[1], 4); p += 4;
   int16_t v;
-  v = (int16_t)(stAccelRawData.X * 1000); memcpy(p, &v, 2); p += 2;  // A1·A2:
-  v = (int16_t)(stAccelRawData.Y * 1000); memcpy(p, &v, 2); p += 2;  // 9축 전부,
-  v = (int16_t)(stAccelRawData.Z * 1000); memcpy(p, &v, 2); p += 2;  // 스케일은
-  v = (int16_t)(stGyroRawData.X  * 100);  memcpy(p, &v, 2); p += 2;  // 헤더 표가
-  v = (int16_t)(stGyroRawData.Y  * 100);  memcpy(p, &v, 2); p += 2;  // 단일 규격
-  v = (int16_t)(stGyroRawData.Z  * 100);  memcpy(p, &v, 2); p += 2;
-  v = (int16_t)(stMagnRawData.s16X * 10); memcpy(p, &v, 2); p += 2;
-  v = (int16_t)(stMagnRawData.s16Y * 10); memcpy(p, &v, 2); p += 2;
-  v = (int16_t)(stMagnRawData.s16Z * 10); memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_accel_mg(stAccelRawData.X); memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_accel_mg(stAccelRawData.Y); memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_accel_mg(stAccelRawData.Z); memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_gyro_dps(stGyroRawData.X);  memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_gyro_dps(stGyroRawData.Y);  memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_gyro_dps(stGyroRawData.Z);  memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_magnetic_ut(stMagnRawData.s16X); memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_magnetic_ut(stMagnRawData.s16Y); memcpy(p, &v, 2); p += 2;
+  v = jdamr_fw::pack_magnetic_ut(stMagnRawData.s16Z); memcpy(p, &v, 2); p += 2;
   memcpy(p, &mv, 2); p += 2;
   *p++ = flags;
   f[sizeof(f) - 1] = crc8(f + 2, 31);      // A3: LEN+payload 실제 CRC
@@ -235,6 +254,7 @@ static void send_state() {
 
 // ── OLED (A7: 저주기 + 변경시만) ──
 static void update_oled(uint16_t mv) {
+  if (!oled_available) return;
   // 128x32 3줄 배치. 현장에서 로봇 옆에 서서 보는 순서로 놓는다:
   //   1행 전압 + 무장상태  — 충전 시점과 "왜 안 움직이나"의 답
   //   2행 바퀴 지령        — 조종이 닿고 있는지
@@ -256,16 +276,38 @@ static void update_oled(uint16_t mv) {
   display.setCursor(0, 0);  display.print(l1);
   display.setCursor(0, 11); display.print(l2);
   display.setCursor(0, 22); display.print(l3);
+  // The 512-byte OLED transfer needs a wider limit than sensor reads, but is
+  // still bounded below the 400 ms motor watchdog budget.
+  Wire.setTimeOut(20);
   display.display();
+  Wire.setTimeOut(3);
 }
 
 void setup() {
   Serial.begin(115200);
   ServoSerial.begin(1000000, SERIAL_8N1, S_RX, S_TX);
+
+  // Stop first: if only the ESP32 resets while servo power remains, the
+  // previous velocity target must not survive the multi-second sensor setup.
+  SERVO_INIT();
+  ensure_servo_config();
+  stop_motors();
+
   Wire.begin(S_SDA, S_SCL);
+  Wire.setClock(400000);
+  Wire.setTimeOut(20);
   delay(500);
 
-  display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
+  Wire.beginTransmission(SCREEN_ADDRESS);
+  if (Wire.endTransmission() == 0) {
+    oled_available = display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
+  }
+  if (!oled_available) {
+    Serial.println("OLED not detected; display updates disabled");
+  }
+  // Sensor transactions are short at 400 kHz. Three milliseconds bounds all
+  // I2C retry paths so a failed bus cannot starve the 400 ms motor watchdog.
+  Wire.setTimeOut(3);
   imuInit();
 
   // A10: INA219 주소 스캔 (보드 리비전별 0x40~0x45)
@@ -273,13 +315,16 @@ void setup() {
     Wire.beginTransmission(a);
     if (Wire.endTransmission() == 0) {
       static INA219_WE dev(a);
-      dev.init();
-      ina219 = &dev;
+      if (dev.init()) {
+        ina219 = &dev;
+        Serial.printf("INA219 ready at 0x%02X\n", a);
+      } else {
+        Serial.printf("INA219 init failed at 0x%02X\n", a);
+      }
       break;
     }
   }
 
-  SERVO_INIT();
   // 부팅 ID 스캔 — 결과를 OLED 1행에 상시 표시 (실물에서 ID 논쟁 종결용).
   // 배터리가 아직 없으면 "ID:none" 이 뜨고, 연결되면 ensure_servo_config 가
   // 생존을 다시 잡으면서 모드도 재설정한다.
@@ -289,7 +334,7 @@ void setup() {
   }
   if (oled_scan == "ID:") { oled_scan = "ID:none"; }
 
-  ensure_servo_config();                    // 살아 있으면 VELOCITY 모드 진입
+  ensure_servo_config();                    // 센서 초기화 중 전원 투입된 서보도 재탐지
   stop_motors();                            // A9: 첫 유효 명령 전까지 정지
 }
 

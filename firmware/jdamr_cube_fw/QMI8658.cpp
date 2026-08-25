@@ -1,4 +1,5 @@
 #include "QMI8658.h"
+#include "imu_stationary_calibration.h"
 
 #include <Wire.h>
 #include <math.h>
@@ -10,62 +11,172 @@
 
 static qmi8658_state g_imu;
 
-
-void QMI8658::write_reg(uint8_t reg,uint8_t value)
+static uint8_t sensor_address()
 {
-  Wire.beginTransmission(QMI8658_ADDR);
+	return g_imu.slave ? g_imu.slave : QMI8658_ADDR;
+}
+
+bool QMI8658::write_reg(uint8_t reg,uint8_t value)
+{
+  Wire.beginTransmission(sensor_address());
   Wire.write(reg);
   Wire.write(value);
   last_status = Wire.endTransmission();
+  return last_status == 0;
+}
+
+bool QMI8658::read_regs(uint8_t reg, uint8_t *data, size_t len)
+{
+  if (data == nullptr || len == 0 || len > 255) {
+    last_status = 4;
+    return false;
+  }
+
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    Wire.beginTransmission(sensor_address());
+    Wire.write(reg);
+    last_status = Wire.endTransmission(false);
+    if (last_status != 0) {
+      delayMicroseconds(50);
+      continue;
+    }
+
+    const size_t received = Wire.requestFrom(
+      sensor_address(), static_cast<uint8_t>(len), static_cast<uint8_t>(true));
+    if (received == len) {
+      for (size_t i = 0; i < len; ++i) {
+        data[i] = static_cast<uint8_t>(Wire.read());
+      }
+      last_status = 0;
+      return true;
+    }
+
+    while (Wire.available()) {
+      Wire.read();
+    }
+    last_status = 4;
+    delayMicroseconds(50);
+  }
+  return false;
 }
 
 uint8_t QMI8658::read_reg(uint8_t reg)
 {
-	uint8_t ret=0;
-	unsigned int retry = 0;
-
-	while((!ret) && (retry++ < 5))
-	{
-    Wire.beginTransmission(QMI8658_ADDR);
-    Wire.write(reg);
-    last_status = Wire.endTransmission();
-    Wire.requestFrom(QMI8658_ADDR, 1);
-    ret = Wire.read();
-    Wire.endTransmission();
-	}
-	return ret;
+	uint8_t value = 0;
+	read_regs(reg, &value, 1);
+	return value;
 }
 
 uint16_t QMI8658::readWord_reg(uint8_t reg)
 {
-	uint8_t retH=0;
-  uint8_t retL=0;
-
-  Wire.beginTransmission(QMI8658_ADDR);
-  Wire.write(reg);
-  last_status = Wire.endTransmission();
-  Wire.requestFrom(QMI8658_ADDR, 2);
-  retL = Wire.read();
-  retH = Wire.read();
-  Wire.endTransmission();
-
-	return ((retH << 8) | retL);
+	uint8_t data[2] = {0, 0};
+	if (!read_regs(reg, data, sizeof(data))) {
+		return 0;
+	}
+	return static_cast<uint16_t>((static_cast<uint16_t>(data[1]) << 8) | data[0]);
 }
 
-
-void QMI8658::read_sensor_data(float acc[3], float gyro[3])
+bool QMI8658::send_ctrl9_command(uint8_t command)
 {
-	unsigned char	buf_reg[12];
-	short 			raw_acc_xyz[3];
-	short 			raw_gyro_xyz[3];
+	if (!write_reg(Qmi8658Register_Ctrl9, command)) {
+		return false;
+	}
 
-	raw_acc_xyz[0] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Ax_L) ));
-	raw_acc_xyz[1] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Ay_L) ));
-	raw_acc_xyz[2] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Az_L) ));
+	const uint32_t start = micros();
+	while (static_cast<uint32_t>(micros() - start) < 100000U) {
+		const uint8_t status = read_reg(Qmi8658Register_StatusInt);
+		if (last_status == 0 && (status & 0x80U)) {
+			if (!write_reg(Qmi8658Register_Ctrl9, 0x00)) {
+				return false;
+			}
+			const uint32_t ack_start = micros();
+			while (static_cast<uint32_t>(micros() - ack_start) < 10000U) {
+				const uint8_t ack_status = read_reg(Qmi8658Register_StatusInt);
+				if (last_status == 0 && (ack_status & 0x80U) == 0) {
+					return true;
+				}
+				delayMicroseconds(50);
+			}
+			return false;
+		}
+		delayMicroseconds(100);
+	}
+	write_reg(Qmi8658Register_Ctrl9, 0x00);
+	return false;
+}
 
-	raw_gyro_xyz[0] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Gx_L) ));
-	raw_gyro_xyz[1] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Gy_L) ));
-	raw_gyro_xyz[2] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Gz_L) ));
+bool QMI8658::enable_locking_mechanism(void)
+{
+	// QMI8658C datasheet section 13: SyncSample + disabled AHB clock gating.
+	// The CTRL9 command must complete in non-SyncSample mode.  SyncSample is
+	// enabled afterwards by enableSensors(), which writes CTRL7 = 0x83.
+	sync_sample_enabled = false;
+	if (!write_reg(Qmi8658Register_Ctrl7, 0x00) ||
+	    !write_reg(Qmi8658Register_Cal1_L, 0x01) ||
+	    !send_ctrl9_command(0x12)) {
+		write_reg(Qmi8658Register_Ctrl7, 0x00);
+		return false;
+	}
+	sync_sample_enabled = true;
+	return true;
+}
+
+bool QMI8658::read_raw_sample(int16_t acc[3], int16_t gyro[3])
+{
+	if (sync_sample_enabled) {
+		uint8_t status = 0;
+		bool available = false;
+		// At 896.8 Hz, eight polls cover more than one sample interval while
+		// keeping an electrically stuck I2C bus well inside the motor watchdog.
+		for (int attempt = 0; attempt < 8; ++attempt) {
+			status = read_reg(Qmi8658Register_StatusInt);
+			if (last_status == 0 && (status & 0x01U)) {
+				available = true;
+				break;
+			}
+			delayMicroseconds(50);
+		}
+		if (!available) {
+			if (status & 0x02U) {
+				read_reg(Qmi8658Register_Gz_H);
+			}
+			return false;
+		}
+		if ((status & 0x02U) == 0) {
+			// Gyroscope ODR code 3 requires a 6 us data-lock delay.
+			delayMicroseconds(6);
+		}
+	}
+
+	uint8_t data[12];
+	if (!read_regs(Qmi8658Register_Ax_L, data, sizeof(data))) {
+		if (sync_sample_enabled) {
+			// Reading GZ_H releases a lock after a failed burst.
+			read_reg(Qmi8658Register_Gz_H);
+		}
+		return false;
+	}
+
+	for (int i = 0; i < 3; ++i) {
+		acc[i] = static_cast<int16_t>(
+			(static_cast<uint16_t>(data[2 * i + 1]) << 8) | data[2 * i]);
+		gyro[i] = static_cast<int16_t>(
+			(static_cast<uint16_t>(data[2 * i + 7]) << 8) | data[2 * i + 6]);
+	}
+	return true;
+}
+
+bool QMI8658::read_sensor_data(float acc[3], float gyro[3])
+{
+	int16_t raw_acc_xyz[3];
+	int16_t raw_gyro_xyz[3];
+	if (!read_raw_sample(raw_acc_xyz, raw_gyro_xyz)) {
+		for (int i = 0; i < 3; ++i) {
+			acc[i] = g_imu.imu[i];
+			gyro[i] = g_imu.imu[i + 3];
+		}
+		return false;
+	}
 
 #if defined(QMI8658_UINT_MG_DPS)
 	// mg
@@ -94,52 +205,24 @@ void QMI8658::read_sensor_data(float acc[3], float gyro[3])
 	gyro[1] = (float)(raw_gyro_xyz[1]*M_PI)/(g_imu.ssvt_g*180);
 	gyro[2] = (float)(raw_gyro_xyz[2]*M_PI)/(g_imu.ssvt_g*180);
 #endif
+
+	for (int i = 0; i < 3; ++i) {
+		g_imu.imu[i] = acc[i];
+		g_imu.imu[i + 3] = gyro[i];
+	}
+	return true;
 }
 
 void QMI8658::read_acc(float acc[3])
 {
-	unsigned char	buf_reg[12];
-	short 		raw_acc_xyz[3];
-
-	raw_acc_xyz[0] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Ax_L) ));
-	raw_acc_xyz[1] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Ay_L) ));
-	raw_acc_xyz[2] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Az_L) ));
-
-#if defined(QMI8658_UINT_MG_DPS)
-	// mg
-	acc[0] = (float)(raw_acc_xyz[0]*1000.0f)/g_imu.ssvt_a;
-	acc[1] = (float)(raw_acc_xyz[1]*1000.0f)/g_imu.ssvt_a;
-	acc[2] = (float)(raw_acc_xyz[2]*1000.0f)/g_imu.ssvt_a;
-#else
-	// m/s2
-  // Serial.println("m/s2");
-	acc[0] = (float)(raw_acc_xyz[0]*ONE_G)/g_imu.ssvt_a;
-	acc[1] = (float)(raw_acc_xyz[1]*ONE_G)/g_imu.ssvt_a;
-	acc[2] = (float)(raw_acc_xyz[2]*ONE_G)/g_imu.ssvt_a;
-#endif
+	float gyro[3];
+	read_sensor_data(acc, gyro);
 }
 
 void QMI8658::read_gyro(float gyro[3])
 {
-	unsigned char	buf_reg[12];
-	short 		raw_gyro_xyz[3];
-
-	raw_gyro_xyz[0] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Gx_L) ));
-	raw_gyro_xyz[1] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Gy_L) ));
-	raw_gyro_xyz[2] = (short)((unsigned short)( readWord_reg(Qmi8658Register_Gz_L) ));
-
-#if defined(QMI8658_UINT_MG_DPS)
-	// dps
-	gyro[0] = (float)(raw_gyro_xyz[0]*1.0f)/g_imu.ssvt_g;
-	gyro[1] = (float)(raw_gyro_xyz[1]*1.0f)/g_imu.ssvt_g;
-	gyro[2] = (float)(raw_gyro_xyz[2]*1.0f)/g_imu.ssvt_g;
-#else
-	// rad/s
-  // Serial.println("rad/s");
-	gyro[0] = (float)(raw_gyro_xyz[0]*M_PI)/(g_imu.ssvt_g*180);		// *pi/180
-	gyro[1] = (float)(raw_gyro_xyz[1]*M_PI)/(g_imu.ssvt_g*180);
-	gyro[2] = (float)(raw_gyro_xyz[2]*M_PI)/(g_imu.ssvt_g*180);
-#endif
+	float acc[3];
+	read_sensor_data(acc, gyro);
 }
 
 
@@ -273,7 +356,9 @@ void QMI8658::config_acc(enum qmi8658_AccRange range, enum qmi8658_AccOdr odr, e
 	ctl_dada &= 0xf0;
 	if(lpfEnable == Qmi8658Lpf_Enable)
 	{
-		ctl_dada |= A_LSP_MODE_3;
+		// 2.66% of the 896.8 Hz effective ODR = 23.9 Hz, below the
+		// 50 Hz host stream Nyquist frequency.
+		ctl_dada |= A_LSP_MODE_0;
 		ctl_dada |= 0x01;
 	}
 	else
@@ -338,7 +423,7 @@ void QMI8658::config_gyro(enum qmi8658_GyrRange range, enum qmi8658_GyrOdr odr, 
 	ctl_dada &= 0x0f;
 	if(lpfEnable == Qmi8658Lpf_Enable)
 	{
-		ctl_dada |= G_LSP_MODE_3;
+		ctl_dada |= G_LSP_MODE_0;
 		ctl_dada |= 0x10;
 	}
 	else
@@ -352,14 +437,8 @@ void QMI8658::config_gyro(enum qmi8658_GyrRange range, enum qmi8658_GyrOdr odr, 
 
 void QMI8658::enableSensors(unsigned char enableFlags)
 {
-#if defined(QMI8658_SYNC_SAMPLE_MODE)
-	qmi8658_write_reg(Qmi8658Register_Ctrl7, enableFlags | 0x80);
-#elif defined(QMI8658_USE_FIFO)
-	//qmi8658_write_reg(Qmi8658Register_Ctrl7, enableFlags|QMI8658_DRDY_DISABLE);
-	write_reg(Qmi8658Register_Ctrl7, enableFlags);
-#else
-	qmi8658_write_reg(Qmi8658Register_Ctrl7, enableFlags);
-#endif
+	const uint8_t sync_flag = sync_sample_enabled ? 0x80U : 0x00U;
+	write_reg(Qmi8658Register_Ctrl7, (enableFlags & 0x03U) | sync_flag);
 	g_imu.cfg.enSensors = enableFlags&0x03;
 
 	delay(1);
@@ -381,17 +460,18 @@ void QMI8658::config_reg(unsigned char low_power)
 		g_imu.cfg.enSensors = QMI8658_ACCGYR_ENABLE;
 		g_imu.cfg.accRange = Qmi8658AccRange_16g;
 		g_imu.cfg.accOdr = Qmi8658AccOdr_1000Hz;
-		g_imu.cfg.gyrRange = Qmi8658GyrRange_2048dps;
+		// QMI8658C Rev A defines range code 7 as N/A; use the widest valid range.
+		g_imu.cfg.gyrRange = Qmi8658GyrRange_1024dps;
 		g_imu.cfg.gyrOdr = Qmi8658GyrOdr_1000Hz;
 	}
 
 	if(g_imu.cfg.enSensors & QMI8658_ACC_ENABLE)
 	{
-		config_acc(g_imu.cfg.accRange, g_imu.cfg.accOdr, Qmi8658Lpf_Disable, Qmi8658St_Disable);
+		config_acc(g_imu.cfg.accRange, g_imu.cfg.accOdr, Qmi8658Lpf_Enable, Qmi8658St_Disable);
 	}
 	if(g_imu.cfg.enSensors & QMI8658_GYR_ENABLE)
 	{
-		config_gyro(g_imu.cfg.gyrRange, g_imu.cfg.gyrOdr, Qmi8658Lpf_Disable, Qmi8658St_Disable);
+		config_gyro(g_imu.cfg.gyrRange, g_imu.cfg.gyrOdr, Qmi8658Lpf_Enable, Qmi8658St_Disable);
 	}
 }
 
@@ -420,8 +500,9 @@ unsigned char QMI8658::get_id(void)
 			qmi8658_on_demand_cali();
 
 			g_imu.cfg.ctrl8_value = 0xc0;
-			//QMI8658_INT1_ENABLE, QMI8658_INT2_ENABLE
-			write_reg(Qmi8658Register_Ctrl1, 0x60|QMI8658_INT2_ENABLE|QMI8658_INT1_ENABLE);
+			// Address auto-increment on, little-endian output, unused INT pins off.
+			// The burst decoder below consumes Ax_L..Gz_H in little-endian order.
+			write_reg(Qmi8658Register_Ctrl1, 0x40);
 			qmi8658_revision_id = read_reg(Qmi8658Register_Revision);
 			// qmi8658_read_reg(Qmi8658Register_firmware_id, firmware_id, 3);
 			// qmi8658_read_reg(Qmi8658Register_uuid, uuid, 6);
@@ -465,12 +546,19 @@ unsigned char QMI8658::begin(void)
 		qmi8658_enable_pedometer(1);
 #endif
 		config_reg(0);
+		if (!enable_locking_mechanism()) {
+			Serial.println("QMI8658 SyncSample locking unavailable; using burst-read fallback");
+		}
 		enableSensors(g_imu.cfg.enSensors);
-    Serial.println("Position your ICM20948 flat and don't move it - calibrating...");
+    if (!dump_reg()) {
+      Serial.println("QMI8658 configuration readback failed");
+      return 0;
+    }
+    Serial.println("Keep QMI8658 still - calibrating gyro bias...");
     delay(1000);
-    autoOffsets();
-    // Serial.print();
-		dump_reg();
+    if (!autoOffsets()) {
+      return 0;
+    }
 #if defined(QMI8658_USE_CALI)
 		memset(&g_cali, 0, sizeof(g_cali));
 #endif
@@ -484,42 +572,98 @@ unsigned char QMI8658::begin(void)
 }
 
 
-void QMI8658::dump_reg(void)
+bool QMI8658::dump_reg(void)
 {
-	// unsigned char read_data[8];
+	uint8_t ctrl1 = 0;
+	uint8_t ctrl2 = 0;
+	uint8_t ctrl3 = 0;
+	uint8_t ctrl5 = 0;
+	uint8_t ctrl7 = 0;
+	const bool read_ok =
+		read_regs(Qmi8658Register_Ctrl1, &ctrl1, 1) &&
+		read_regs(Qmi8658Register_Ctrl2, &ctrl2, 1) &&
+		read_regs(Qmi8658Register_Ctrl3, &ctrl3, 1) &&
+		read_regs(Qmi8658Register_Ctrl5, &ctrl5, 1) &&
+		read_regs(Qmi8658Register_Ctrl7, &ctrl7, 1);
 
-	// qmi8658_read_reg(Qmi8658Register_Ctrl1, read_data, 8);
-	// qmi8658_log("Ctrl1[0x%x]\nCtrl2[0x%x]\nCtrl3[0x%x]\nCtrl4[0x%x]\nCtrl5[0x%x]\nCtrl6[0x%x]\nCtrl7[0x%x]\nCtrl8[0x%x]\n",
-	// 				read_data[0],read_data[1],read_data[2],read_data[3],read_data[4],read_data[5],read_data[6],read_data[7]);
+	Serial.printf(
+		"QMI8658 config CTRL1=0x%02X CTRL2=0x%02X CTRL3=0x%02X CTRL5=0x%02X CTRL7=0x%02X\n",
+		ctrl1, ctrl2, ctrl3, ctrl5, ctrl7);
+	if (!read_ok) {
+		return false;
+	}
+
+	const uint8_t expected_ctrl1 = 0x40;
+	const uint8_t expected_ctrl2 =
+		static_cast<uint8_t>(g_imu.cfg.accRange) |
+		static_cast<uint8_t>(g_imu.cfg.accOdr);
+	const uint8_t expected_ctrl3 =
+		static_cast<uint8_t>(g_imu.cfg.gyrRange) |
+		static_cast<uint8_t>(g_imu.cfg.gyrOdr);
+	const uint8_t expected_ctrl7 =
+		(g_imu.cfg.enSensors & 0x03U) | (sync_sample_enabled ? 0x80U : 0x00U);
+	return ctrl1 == expected_ctrl1 &&
+		ctrl2 == expected_ctrl2 &&
+		ctrl3 == expected_ctrl3 &&
+		ctrl5 == 0x11U &&
+		ctrl7 == expected_ctrl7;
 }
 
-void QMI8658::autoOffsets(void){
-    float acc[3],gyro[3];
+bool QMI8658::autoOffsets(void){
+    float acc[3], gyro[3];
+    TempAcc = {0};
+    TempGyr = {0};
 
-    for(int i=0; i<50; i++){
-        QMI8658::read_acc(acc);
-        TempAcc.X_Off_Err += acc[0];
-        TempAcc.Y_Off_Err += acc[1];
-        TempAcc.Z_Off_Err += acc[2];
+    jdamr_fw::ImuVector3 accel_sum_mg{0.0f, 0.0f, 0.0f};
+    jdamr_fw::ImuVector3 gyro_sum_dps{0.0f, 0.0f, 0.0f};
+
+    int samples = 0;
+    for (int attempts = 0; attempts < 200 && samples < 50; ++attempts) {
+        if (read_sensor_data(acc, gyro)) {
+            accel_sum_mg.x += acc[0];
+            accel_sum_mg.y += acc[1];
+            accel_sum_mg.z += acc[2];
+            gyro_sum_dps.x += gyro[0];
+            gyro_sum_dps.y += gyro[1];
+            gyro_sum_dps.z += gyro[2];
+            ++samples;
+        }
         delay(10);
     }
-    
-    TempAcc.X_Off_Err /= 50;
-    TempAcc.Y_Off_Err /= 50;
-    TempAcc.Z_Off_Err /= 50;
-    TempAcc.Z_Off_Err -= 980.0;
-    
-    for(int i=0; i<50; i++){
-        QMI8658::read_gyro(gyro);
-        TempGyr.X_Off_Err += gyro[0];
-        TempGyr.Y_Off_Err += gyro[1];
-        TempGyr.Z_Off_Err += gyro[2];
-        delay(1);
-    }
-    
-    TempGyr.X_Off_Err /= 50;
-    TempGyr.Y_Off_Err /= 50;
-    TempGyr.Z_Off_Err /= 50;
-    
-}
 
+	constexpr int kMinimumCalibrationSamples = 40;
+    if (samples < kMinimumCalibrationSamples) {
+        Serial.printf(
+          "QMI8658 calibration failed: only %d coherent samples (need %d)\n",
+          samples, kMinimumCalibrationSamples);
+		return false;
+    }
+
+	jdamr_fw::ImuStationaryOffsets offsets{};
+	if (!jdamr_fw::compute_stationary_offsets(
+		gyro_sum_dps, static_cast<size_t>(samples), &offsets)) {
+		return false;
+	}
+	TempAcc = {
+		offsets.accel_mg.x,
+		offsets.accel_mg.y,
+		offsets.accel_mg.z,
+	};
+	TempGyr = {
+		offsets.gyro_dps.x,
+		offsets.gyro_dps.y,
+		offsets.gyro_dps.z,
+	};
+
+	const float divisor = static_cast<float>(samples);
+	const float mean_ax = accel_sum_mg.x / divisor;
+	const float mean_ay = accel_sum_mg.y / divisor;
+	const float mean_az = accel_sum_mg.z / divisor;
+	const float accel_norm = sqrtf(
+		mean_ax * mean_ax + mean_ay * mean_ay + mean_az * mean_az);
+	Serial.printf(
+		"QMI8658 raw mean accel=(%.1f,%.1f,%.1f)mg norm=%.1fmg gyro_bias=(%.3f,%.3f,%.3f)dps samples=%d\n",
+		mean_ax, mean_ay, mean_az, accel_norm,
+		TempGyr.X_Off_Err, TempGyr.Y_Off_Err, TempGyr.Z_Off_Err, samples);
+	return true;
+}

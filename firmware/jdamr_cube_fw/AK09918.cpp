@@ -76,10 +76,17 @@ AK09918_err_type_t AK09918::isDataSkip() {
 }
 
 AK09918_err_type_t AK09918::getData(int16_t* axis_x, int16_t* axis_y, int16_t* axis_z) {
-    AK09918_err_type_t err = AK09918::getRawData(axis_x, axis_y, axis_z);
-    (*axis_x) = (*axis_x) * 15 / 100;
-    (*axis_y) = (*axis_y) * 15 / 100;
-    (*axis_z) = (*axis_z) * 15 / 100;
+    int16_t raw_x = 0;
+    int16_t raw_y = 0;
+    int16_t raw_z = 0;
+    AK09918_err_type_t err = AK09918::getRawData(&raw_x, &raw_y, &raw_z);
+    if (err != AK09918_ERR_OK) {
+        return err;
+    }
+
+    (*axis_x) = raw_x * 15 / 100;
+    (*axis_y) = raw_y * 15 / 100;
+    (*axis_z) = raw_z * 15 / 100;
 
     return err;
 }
@@ -224,7 +231,9 @@ String AK09918::strError(AK09918_err_type_t err) {
 }
 
 uint16_t AK09918::getDeviceID() {
-    AK09918::readBytes(_addr, AK09918_WIA1, 2, _buffer);
+    if (!AK09918::readBytes(_addr, AK09918_WIA1, 2, _buffer)) {
+        return 0;
+    }
     return (((uint16_t)_buffer[0]) << 8) | _buffer[1];
 }
 
@@ -238,27 +247,34 @@ uint8_t AK09918::_getRawMode() {
 
 bool AK09918::readBytes(uint8_t addr,uint8_t reg,uint8_t num,uint8_t *buf)
 {
+  if (buf == nullptr || num == 0) {
+    return false;
+  }
+
   Wire.beginTransmission(addr);
   Wire.write(reg);
-  Wire.endTransmission();
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
 
-  Wire.requestFrom(static_cast<uint8_t>(addr), static_cast<uint8_t>(num));
+  const size_t received = Wire.requestFrom(
+    static_cast<uint8_t>(addr), static_cast<uint8_t>(num), static_cast<uint8_t>(true));
+  if (received != num) {
+    while (Wire.available()) {
+      Wire.read();
+    }
+    return false;
+  }
   for (int i = 0; i < num; i++)
   {
-    buf[i] = Wire.read();
+    buf[i] = static_cast<uint8_t>(Wire.read());
   }
   return true;
 }
 
 bool AK09918::readByte(uint8_t addr,uint8_t reg ,uint8_t *buf)
 {
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.endTransmission();
-
-  Wire.requestFrom(static_cast<uint8_t>(addr), static_cast<uint8_t>(1));
-  buf[0] = Wire.read();
-  return true;
+  return readBytes(addr, reg, 1, buf);
 }
 
 bool AK09918::writeByte(uint8_t addr,uint8_t reg ,uint8_t Value)
@@ -266,7 +282,5 @@ bool AK09918::writeByte(uint8_t addr,uint8_t reg ,uint8_t Value)
   Wire.beginTransmission(addr);
   Wire.write(reg);
   Wire.write(Value);
-  Wire.endTransmission();
-  return true;
+  return Wire.endTransmission() == 0;
 }
-

@@ -124,7 +124,14 @@ bool STSServoDriver::setPositionOffset(byte const &servoId, int const &positionO
 
 int STSServoDriver::getCurrentPosition(byte const &servoId)
 {
-    return readTwoBytesRegister(servoId, STSRegisters::CURRENT_POSITION);
+    int16_t position = 0;
+    getCurrentPosition(servoId, position);
+    return position;
+}
+
+bool STSServoDriver::getCurrentPosition(byte const &servoId, int16_t &position)
+{
+    return tryReadTwoBytesRegister(servoId, STSRegisters::CURRENT_POSITION, position);
 }
 
 int STSServoDriver::getCurrentSpeed(byte const &servoId)
@@ -259,6 +266,14 @@ byte STSServoDriver::readRegister(byte const &servoId, byte const &registerId)
 
 int16_t STSServoDriver::readTwoBytesRegister(byte const &servoId, byte const &registerId)
 {
+    int16_t value = 0;
+    tryReadTwoBytesRegister(servoId, registerId, value);
+    return value;
+}
+
+bool STSServoDriver::tryReadTwoBytesRegister(
+    byte const &servoId, byte const &registerId, int16_t &decodedValue)
+{
     if (servoType_[servoId] == ServoType::UNKNOWN)
     {
         determineServoType(servoId);
@@ -269,7 +284,7 @@ int16_t STSServoDriver::readTwoBytesRegister(byte const &servoId, byte const &re
     int16_t signedValue = 0;
     int rc = readRegisters(servoId, registerId, 2, result);
     if (rc < 0)
-        return 0;
+        return false;
     switch(servoType_[servoId])
     {
         case ServoType::SCS:
@@ -278,16 +293,18 @@ int16_t STSServoDriver::readTwoBytesRegister(byte const &servoId, byte const &re
             signedValue = value & ~0x8000;
             if (value & 0x8000)
                 signedValue = -signedValue;
-            return signedValue;
+            decodedValue = signedValue;
+            return true;
         case ServoType::STS:
             value = static_cast<int16_t>(result[0] +  (result[1] << 8));
             // Bit 15 is sign
             signedValue = value & ~0x8000;
             if (value & 0x8000)
                 signedValue = -signedValue;
-            return signedValue;
+            decodedValue = signedValue;
+            return true;
         default:
-            return 0;
+            return false;
     }
 }
 

@@ -124,6 +124,12 @@ public:
     /// \return Position, in counts. 0 on failure.
     int getCurrentPosition(byte const &servoId);
 
+    /// \brief Read current position without conflating a valid zero with failure.
+    /// \param[in] servoId ID of the servo.
+    /// \param[out] position Position in counts when the read succeeds.
+    /// \return True on a complete, checksum-valid response.
+    bool getCurrentPosition(byte const &servoId, int16_t &position);
+
     /// \brief Get current servo speed.
     /// \note This function assumes that the amplification factor ANGULAR_RESOLUTION is set to 1.
     /// \param[in] servoId ID of the servo
@@ -270,6 +276,9 @@ private:
                       byte const &startRegister,
                       byte const &readLength,
                       byte *outputBuffer);
+
+    bool tryReadTwoBytesRegister(
+        byte const &servoId, byte const &registerId, int16_t &value);
 
     /// @brief Convert int to pair of bytes
     /// @param[in] value

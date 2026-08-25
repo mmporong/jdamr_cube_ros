@@ -28,10 +28,15 @@ typedef struct
 
 class QMI8658
 {
-  uint8_t last_status; // status of last I2C transmission
-  uint8_t read_reg(uint8_t reg);
+  uint8_t last_status = 0; // status of last I2C transmission
+  bool sync_sample_enabled = false;
 
-  void write_reg(uint8_t reg,uint8_t value);
+  uint8_t read_reg(uint8_t reg);
+  bool read_regs(uint8_t reg, uint8_t *data, size_t len);
+  bool write_reg(uint8_t reg,uint8_t value);
+  bool send_ctrl9_command(uint8_t command);
+  bool enable_locking_mechanism(void);
+  bool read_raw_sample(int16_t acc[3], int16_t gyro[3]);
 
 public:
   uint16_t readWord_reg(uint8_t reg);
@@ -43,7 +48,7 @@ public:
   void config_gyro(enum qmi8658_GyrRange range, enum qmi8658_GyrOdr odr,
                       enum qmi8658_LpfConfig lpfEnable, enum qmi8658_StConfig stEnable);
 
-  void read_sensor_data(float acc[3], float gyro[3]);
+  bool read_sensor_data(float acc[3], float gyro[3]);
   void read_acc(float acc[3]);
   void read_gyro(float gyro[3]);
   void read_xyz(float acc[3], float gyro[3]);
@@ -52,9 +57,9 @@ public:
   void enableSensors(unsigned char enableFlags);
   unsigned char get_id(void);
   unsigned char begin(void);
-  void dump_reg(void);
+  bool dump_reg(void);
   void qmi8658_on_demand_cali(void);
-  void autoOffsets(void);
+  bool autoOffsets(void);
 
 public:
   int16_t ax, ay, az, gx, gy, gz;

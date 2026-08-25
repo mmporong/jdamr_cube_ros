@@ -26,52 +26,70 @@ double declination_shenzhen = -3.22;
 
 float angles[3];
 float q0, q1, q2, q3; 
+static bool qmi8658_ready = false;
+static bool ak09918_ready = false;
 
-void imuInit()
+uint8_t imuInit()
 { 
-    if (qmi8658_.begin() == 0)
-	      Serial.println("qmi8658_init fail");
+    qmi8658_ready = qmi8658_.begin() != 0;
+    if (!qmi8658_ready) {
+	    Serial.println("qmi8658_init fail");
+    }
 
-    if (magnetometer_.initialize())
-        Serial.println("AK09918_init fail") ;
-    magnetometer_.switchMode(AK09918_CONTINUOUS_100HZ);
-    err = magnetometer_.isDataReady();
-    int retry_times = 0;
-    while (err != AK09918_ERR_OK) {
-        Serial.println(err);
-        Serial.println("Waiting Sensor");
-        delay(100);
-        magnetometer_.reset();
-        delay(100);
-        magnetometer_.switchMode(AK09918_CONTINUOUS_100HZ);
-        err = magnetometer_.isDataReady();
-        retry_times ++;
-        if (retry_times > 10) {
-          break;
+    err = AK09918_ERR_WRITE_FAILED;
+    for (int attempt = 0; attempt < 3 && err != AK09918_ERR_OK; ++attempt) {
+        err = magnetometer_.initialize(AK09918_CONTINUOUS_100HZ);
+        if (err != AK09918_ERR_OK) {
+            delay(10);
         }
     }
+    if (err == AK09918_ERR_OK) {
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            err = magnetometer_.isDataReady();
+            if (err == AK09918_ERR_OK) {
+                break;
+            }
+            delay(10);
+        }
+    }
+    ak09918_ready = err == AK09918_ERR_OK;
+    if (!ak09918_ready) {
+        Serial.printf("AK09918_init fail: %d\n", static_cast<int>(err));
+    } else {
+        Serial.printf("AK09918 device ID=0x%04X ready\n", magnetometer_.getDeviceID());
+    }
+
     q0 = 1.0f;  
     q1 = 0.0f;
     q2 = 0.0f;
     q3 = 0.0f;
+
+    return (qmi8658_ready ? IMU_HEALTH_QMI8658 : 0) |
+           (ak09918_ready ? IMU_HEALTH_AK09918 : 0);
 }
 
-void imuDataGet(EulerAngles *pstAngles, 
+uint8_t imuDataGet(EulerAngles *pstAngles,
                 IMU_ST_SENSOR_DATA_FLOAT *pstGyroRawData,
                 IMU_ST_SENSOR_DATA_FLOAT *pstAccelRawData,
                 IMU_ST_SENSOR_DATA *pstMagnRawData)
 {
 
-  float  acc[3], gyro[3];
+  float acc[3] = {0.0f, 0.0f, 0.0f};
+  float gyro[3] = {0.0f, 0.0f, 0.0f};
   float MotionVal[9];
+  uint8_t health = 0;
 
-  magnetometer_.getData(&x, &y, &z);
+  if (ak09918_ready && magnetometer_.getData(&x, &y, &z) == AK09918_ERR_OK) {
+    health |= IMU_HEALTH_AK09918;
+  }
 
   pstMagnRawData->s16X = x- offset_x;
   pstMagnRawData->s16Y = y- offset_y;
   pstMagnRawData->s16Z = z- offset_z;
 
-  qmi8658_.read_sensor_data(acc,gyro);
+  if (qmi8658_ready && qmi8658_.read_sensor_data(acc, gyro)) {
+    health |= IMU_HEALTH_QMI8658;
+  }
 
   MotionVal[0]=gyro[0];
   MotionVal[1]=gyro[1];
@@ -83,9 +101,17 @@ void imuDataGet(EulerAngles *pstAngles,
   MotionVal[7]=pstMagnRawData->s16Y;
   MotionVal[8]=pstMagnRawData->s16Z;
 
-  imuAHRSupdate((float)MotionVal[0] * 0.0175, (float)MotionVal[1] * 0.0175, (float)MotionVal[2] * 0.0175,
-                (float)MotionVal[3], (float)MotionVal[4], (float)MotionVal[5], 
-                (float)MotionVal[6], (float)MotionVal[7], MotionVal[8]);
+  const float accel_norm_sq =
+    MotionVal[3] * MotionVal[3] + MotionVal[4] * MotionVal[4] + MotionVal[5] * MotionVal[5];
+  const float mag_norm_sq =
+    MotionVal[6] * MotionVal[6] + MotionVal[7] * MotionVal[7] + MotionVal[8] * MotionVal[8];
+  if (health == (IMU_HEALTH_QMI8658 | IMU_HEALTH_AK09918) &&
+      accel_norm_sq > 1.0e-6f && mag_norm_sq > 1.0e-6f) {
+    imuAHRSupdate(
+      MotionVal[0] * 0.0175f, MotionVal[1] * 0.0175f, MotionVal[2] * 0.0175f,
+      MotionVal[3], MotionVal[4], MotionVal[5],
+      MotionVal[6], MotionVal[7], MotionVal[8]);
+  }
 
   pstAngles->pitch = asin(-2 * q1 * q3 + 2 * q0* q2)* 57.3; // pitch
   pstAngles->roll = atan2(2 * q2 * q3 + 2 * q0 * q1, -2 * q1 * q1 - 2 * q2* q2 + 1)* 57.3; // roll
@@ -99,7 +125,7 @@ void imuDataGet(EulerAngles *pstAngles,
   pstAccelRawData->Y = acc[1];
   pstAccelRawData->Z = acc[2];
 
-  return;  
+  return health;
 }
 
 void imuAHRSupdate(float gx, float gy, float gz, float ax, float ay, float az, float mx, float my, float mz) 
