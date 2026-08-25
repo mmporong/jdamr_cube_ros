@@ -1,6 +1,7 @@
-from setuptools import setup
-import os
 from glob import glob
+import os
+
+from setuptools import setup
 
 package_name = 'jdamr_cube_navigation'
 
@@ -14,16 +15,19 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'behavior_trees'),
+            glob('behavior_trees/*.xml')),
     ],
     install_requires=['setuptools'],
+    extras_require={'test': ['pytest']},
     zip_safe=True,
     maintainer='jdedu',
     maintainer_email='jdedu.kr@gmail.com',
     description='Nav2 기반 좌표 이동(goto pose) 컨트롤러. 저장된 맵을 로드해 목표 좌표까지 자율주행한다.',
     license='TODO: License declaration',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'frontier_explorer = jdamr_cube_navigation.frontier_explorer:main',
             'goto_pose = jdamr_cube_navigation.goto_pose:main',
         ],
     },
