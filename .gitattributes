@@ -1,0 +1,2 @@
+# Preserve the vendored YDLidar SDK exactly as imported from upstream.
+ydlidar_g4_ros2/vendor/** -whitespace

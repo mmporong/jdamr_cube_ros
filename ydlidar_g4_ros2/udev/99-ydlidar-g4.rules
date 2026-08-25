@@ -1,0 +1,2 @@
+# YDLIDAR G4 USB adapter used by JD-AMR (CP2102, serial 0001).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", GROUP="dialout", MODE="0660", SYMLINK+="ydlidar_g4"
