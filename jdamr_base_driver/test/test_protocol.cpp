@@ -75,6 +75,25 @@ TEST(Parser, StateRoundtripFromPythonBytes)
   EXPECT_FALSE(s.servo_error());
 }
 
+TEST(State, SensorHealthFlags)
+{
+  State s{};
+  s.flags = kFlagQmi8658Err | kFlagAk09918Err | kFlagNoIna219;
+  EXPECT_TRUE(s.qmi8658_error());
+  EXPECT_TRUE(s.ak09918_error());
+  EXPECT_TRUE(s.ina219_error());
+  EXPECT_FALSE(s.servo_error());
+}
+
+TEST(StateInterval, RejectsLongReconnectAndSequenceWrap)
+{
+  EXPECT_TRUE(state_interval_is_integrable(10, 11, 0.020));
+  EXPECT_TRUE(state_interval_is_integrable(250, 5, 0.220));
+  EXPECT_FALSE(state_interval_is_integrable(10, 10, 5.120));  // 256 lost frames
+  EXPECT_FALSE(state_interval_is_integrable(10, 11, 5.140));  // 257 lost frames
+  EXPECT_FALSE(state_interval_is_integrable(10, 36, 0.520));
+}
+
 TEST(Parser, ResyncAfterGarbage)
 {
   FrameParser p;

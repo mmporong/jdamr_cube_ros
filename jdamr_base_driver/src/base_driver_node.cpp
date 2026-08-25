@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -204,21 +205,31 @@ private:
   void handle_state(const State & s)
   {
     const rclcpp::Time stamp = now();
+    const auto receive_time = std::chrono::steady_clock::now();
 
     if (!have_prev_) {
       prev_ = s;
+      last_state_receive_time_ = receive_time;
       have_prev_ = true;
       return;
     }
 
     // dt 는 펌웨어 순번 기준(주기 20ms 고정)이 USB 도착 지터보다 정확하다.
     uint8_t gap = static_cast<uint8_t>(s.seq - prev_.seq);
-    if (gap == 0) {return;}                        // 중복 프레임 방어
-    if (gap > 25) {                                 // 0.5s 이상 유실 — 적분 불신
-      RCLCPP_WARN(get_logger(), "프레임 %u개 유실 — 해당 구간 적분 생략", gap);
+    const double receive_gap = std::chrono::duration<double>(
+      receive_time - last_state_receive_time_).count();
+    if (gap == 0 && receive_gap <= kMaxStateIntegrationGapSeconds) {
+      return;                                      // 짧은 중복 프레임 방어
+    }
+    if (!state_interval_is_integrable(prev_.seq, s.seq, receive_gap)) {
+      RCLCPP_WARN(get_logger(),
+        "상태 스트림 불연속(seq gap=%u, receive gap=%.3fs) — 해당 구간 적분 생략",
+        gap, receive_gap);
       prev_ = s;
+      last_state_receive_time_ = receive_time;
       return;
     }
+    last_state_receive_time_ = receive_time;
     const double dt = 0.02 * static_cast<double>(gap);
 
     const double dl = static_cast<double>(s.left_pos - prev_.left_pos) * m_per_count_l_;
@@ -260,25 +271,31 @@ private:
     }
 
     // ── IMU (스케일 규격: 펌웨어 헤더 표) ──
-    imu_msg_.header.stamp = stamp;
-    imu_msg_.linear_acceleration.x = s.accel_mg[0] * kMgToMs2;
-    imu_msg_.linear_acceleration.y = s.accel_mg[1] * kMgToMs2;
-    imu_msg_.linear_acceleration.z = s.accel_mg[2] * kMgToMs2;
-    imu_msg_.angular_velocity.x = s.gyro_cdps[0] * kCdpsToRads;
-    imu_msg_.angular_velocity.y = s.gyro_cdps[1] * kCdpsToRads;
-    imu_msg_.angular_velocity.z = s.gyro_cdps[2] * kCdpsToRads;
-    imu_pub_->publish(imu_msg_);
+    if (!s.qmi8658_error()) {
+      imu_msg_.header.stamp = stamp;
+      imu_msg_.linear_acceleration.x = s.accel_mg[0] * kMgToMs2;
+      imu_msg_.linear_acceleration.y = s.accel_mg[1] * kMgToMs2;
+      imu_msg_.linear_acceleration.z = s.accel_mg[2] * kMgToMs2;
+      imu_msg_.angular_velocity.x = s.gyro_cdps[0] * kCdpsToRads;
+      imu_msg_.angular_velocity.y = s.gyro_cdps[1] * kCdpsToRads;
+      imu_msg_.angular_velocity.z = s.gyro_cdps[2] * kCdpsToRads;
+      imu_pub_->publish(imu_msg_);
+    }
 
-    mag_msg_.header.stamp = stamp;
-    mag_msg_.magnetic_field.x = s.mag_dut[0] * kDutToTesla;
-    mag_msg_.magnetic_field.y = s.mag_dut[1] * kDutToTesla;
-    mag_msg_.magnetic_field.z = s.mag_dut[2] * kDutToTesla;
-    mag_pub_->publish(mag_msg_);
+    if (!s.ak09918_error()) {
+      mag_msg_.header.stamp = stamp;
+      mag_msg_.magnetic_field.x = s.mag_dut[0] * kDutToTesla;
+      mag_msg_.magnetic_field.y = s.mag_dut[1] * kDutToTesla;
+      mag_msg_.magnetic_field.z = s.mag_dut[2] * kDutToTesla;
+      mag_pub_->publish(mag_msg_);
+    }
 
     // ── 배터리 1Hz + 진단 ──
     if (++frame_count_ % 50 == 0) {
       batt_msg_.header.stamp = stamp;
-      batt_msg_.voltage = s.batt_mv * 1e-3f;       // C5: 실측 전압
+      batt_msg_.present = !s.ina219_error();
+      batt_msg_.voltage = s.ina219_error() ?
+        std::numeric_limits<float>::quiet_NaN() : s.batt_mv * 1e-3f;
       batt_pub_->publish(batt_msg_);
 
       const uint64_t crc = parser_.crc_errors();
@@ -289,12 +306,24 @@ private:
       }
     }
     if (s.watchdog_stopped()) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-        "펌웨어 워치독 정지 상태 — cmd_vel 스트림 확인");
+      RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 5000,
+        "펌웨어 워치독 정지 상태");
     }
     if (s.servo_error()) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
         "서보 읽기 실패 플래그 (flags=0x%02X) — 버스·ID 점검", s.flags);
+    }
+    if (s.qmi8658_error()) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
+        "QMI8658 읽기 실패 (flags=0x%02X) — IMU 발행 생략", s.flags);
+    }
+    if (s.ak09918_error()) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
+        "AK09918 읽기 실패 (flags=0x%02X) — 자력계 발행 생략", s.flags);
+    }
+    if (s.ina219_error()) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
+        "INA219 미검출 (flags=0x%02X) — 배터리 전압을 NaN/미장착으로 발행", s.flags);
     }
   }
 
@@ -330,6 +359,7 @@ private:
   bool have_prev_{false};
   double x_{0.0}, y_{0.0}, th_{0.0};
   uint64_t frame_count_{0}, last_crc_errors_{0};
+  std::chrono::steady_clock::time_point last_state_receive_time_{};
 
   // ROS 인터페이스 (핫패스 메시지는 선할당 멤버)
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;

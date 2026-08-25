@@ -5,7 +5,7 @@
 import struct
 
 from jdamr_cube_node.protocol import (
-    CMD_VELOCITY, STATE_LEN, FrameParser, crc8,
+    CMD_VELOCITY, crc8, FLAG_AK09918_ERR, FLAG_QMI8658_ERR, FrameParser,
     make_reboot_cmd, make_stop_cmd, make_velocity_cmd,
 )
 
@@ -68,3 +68,11 @@ def test_steady_stream_lossless():
     stream = b''.join(_state_frame(seq=i & 0xFF) for i in range(200))
     got = FrameParser().feed(stream)
     assert [s.seq for s in got] == [i & 0xFF for i in range(200)]
+
+
+def test_sensor_health_flags():
+    (s,) = FrameParser().feed(
+        _state_frame(flags=FLAG_QMI8658_ERR | FLAG_AK09918_ERR | 0x08))
+    assert s.qmi8658_error
+    assert s.ak09918_error
+    assert s.ina219_error

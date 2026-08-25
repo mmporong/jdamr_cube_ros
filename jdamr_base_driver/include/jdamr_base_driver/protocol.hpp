@@ -27,12 +27,15 @@ inline constexpr uint8_t kCmdReboot = 0x0F;
 inline constexpr int16_t kRebootMagic = 0x0F0F;
 inline constexpr uint8_t kStateLen = 30;
 inline constexpr size_t kCmdFrameSize = 9;  // 2 hdr + 1 len + 5 payload + 1 crc
+inline constexpr double kMaxStateIntegrationGapSeconds = 0.5;
 
 // flags 비트 (펌웨어와 동일)
 inline constexpr uint8_t kFlagServoLErr = 0x01;
 inline constexpr uint8_t kFlagServoRErr = 0x02;
 inline constexpr uint8_t kFlagWatchdog = 0x04;
 inline constexpr uint8_t kFlagNoIna219 = 0x08;
+inline constexpr uint8_t kFlagQmi8658Err = 0x10;
+inline constexpr uint8_t kFlagAk09918Err = 0x20;
 
 // ── CRC-8/MAXIM ──
 constexpr std::array<uint8_t, 256> make_crc_table()
@@ -91,7 +94,19 @@ struct State
 
   bool watchdog_stopped() const {return flags & kFlagWatchdog;}
   bool servo_error() const {return flags & (kFlagServoLErr | kFlagServoRErr);}
+  bool qmi8658_error() const {return flags & kFlagQmi8658Err;}
+  bool ak09918_error() const {return flags & kFlagAk09918Err;}
+  bool ina219_error() const {return flags & kFlagNoIna219;}
 };
+
+inline bool state_interval_is_integrable(
+  uint8_t previous_seq, uint8_t current_seq, double receive_gap_seconds)
+{
+  const uint8_t sequence_gap = static_cast<uint8_t>(current_seq - previous_seq);
+  return sequence_gap > 0 && sequence_gap <= 25 &&
+         receive_gap_seconds >= 0.0 &&
+         receive_gap_seconds <= kMaxStateIntegrationGapSeconds;
+}
 
 inline State parse_state(const uint8_t * p)
 {

@@ -8,8 +8,8 @@
 프레임 1개까지 삼킬 수 있고, 그다음 프레임부터 복구가 보장된다.
 50Hz 상태 스트림에서 최대 40ms 공백 — 오도메트리 적분에는 무해.
 """
-import struct
 from dataclasses import dataclass
+import struct
 
 HDR1, HDR2 = 0xA5, 0x5A
 CMD_STOP, CMD_VELOCITY, CMD_REBOOT = 0x00, 0x01, 0x0F
@@ -20,8 +20,10 @@ _STATE_FMT = '<Bii9hHB'   # seq, l_pos, r_pos, accel×3, gyro×3, mag×3, mV, fl
 # flags 비트 (펌웨어 헤더 표와 동일)
 FLAG_SERVO_L_ERR = 0x01
 FLAG_SERVO_R_ERR = 0x02
-FLAG_WATCHDOG    = 0x04
-FLAG_NO_INA219   = 0x08
+FLAG_WATCHDOG = 0x04
+FLAG_NO_INA219 = 0x08
+FLAG_QMI8658_ERR = 0x10
+FLAG_AK09918_ERR = 0x20
 
 
 def crc8(data: bytes) -> int:
@@ -70,6 +72,18 @@ class State:
     @property
     def servo_error(self) -> bool:
         return bool(self.flags & (FLAG_SERVO_L_ERR | FLAG_SERVO_R_ERR))
+
+    @property
+    def qmi8658_error(self) -> bool:
+        return bool(self.flags & FLAG_QMI8658_ERR)
+
+    @property
+    def ak09918_error(self) -> bool:
+        return bool(self.flags & FLAG_AK09918_ERR)
+
+    @property
+    def ina219_error(self) -> bool:
+        return bool(self.flags & FLAG_NO_INA219)
 
 
 def _parse_state(payload: bytes) -> State:
