@@ -28,7 +28,9 @@ options = {
   num_point_clouds = 0,
   lookup_transform_timeout_sec = 0.2,
   submap_publish_period_sec = 0.3,
-  pose_publish_period_sec = 5e-3,
+  -- Nav2 안전 모니터에 200 Hz TF를 밀어 넣으면 Pi에서 callback이 굶는다.
+  -- scan 10 Hz보다 빠른 20 Hz면 제어에는 충분하고 TF freshness 0.5s도 만족한다.
+  pose_publish_period_sec = 5e-2,
   trajectory_publish_period_sec = 30e-3,
   rangefinder_sampling_ratio = 1.,
   odometry_sampling_ratio = 1.,

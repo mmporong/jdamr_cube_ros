@@ -98,6 +98,13 @@ def odom_fresh_ready(received_at: float, now: float,
         0.0 <= now - received_at <= stale_seconds)
 
 
+def ros_stamp_fresh_ready(stamp_ns: int, now_ns: int,
+                          stale_seconds: float) -> bool:
+    """Return whether a ROS timestamp is finite, non-future, and fresh."""
+    age = (now_ns - stamp_ns) / 1.0e9
+    return math.isfinite(age) and 0.0 <= age <= stale_seconds
+
+
 def collision_state_ready(active: bool, received_at: float, now: float,
                           stale_seconds: float) -> bool:
     """Accept ACTIVE only while its lifecycle response remains fresh."""
@@ -540,6 +547,7 @@ class FrontierExplorer(Node):
         self._battery_voltage = math.nan
         self._odom_received = -math.inf
         self._tf_fresh = False
+        self._tf_received = -math.inf
         self._map_epoch = 0
         self._map_sequence = 0
         self._map_geometry = None
@@ -711,19 +719,24 @@ class FrontierExplorer(Node):
             future.cancel()
 
     def _refresh_tf(self) -> None:
+        current = self._monotonic()
+        maximum_age = float(self.get_parameter('tf_stale_seconds').value)
         try:
             transform = self._tf_buffer.lookup_transform(
                 'map', 'base_footprint', rclpy.time.Time())
         except Exception:
-            self._tf_fresh = False
+            self._tf_fresh = odom_fresh_ready(
+                self._tf_received, current, maximum_age)
             return
         stamp = transform.header.stamp
         stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
-        age = (self.get_clock().now().nanoseconds - stamp_ns) / 1.0e9
-        maximum_age = float(self.get_parameter('tf_stale_seconds').value)
-        self._tf_fresh = 0.0 <= age <= maximum_age
-        if not self._tf_fresh:
+        if not ros_stamp_fresh_ready(
+                stamp_ns, self.get_clock().now().nanoseconds, maximum_age):
+            self._tf_fresh = odom_fresh_ready(
+                self._tf_received, current, maximum_age)
             return
+        self._tf_received = current
+        self._tf_fresh = True
         translation = transform.transform.translation
         self._robot_pose = (
             translation.x, translation.y,
@@ -850,7 +863,7 @@ class FrontierExplorer(Node):
         if self._stop_save_pending:
             self._tick_stop_save(readiness)
             self._probe_abort = False
-            self._publish_status()
+            self._publish_status(readiness)
             return
         previous_state = self.policy.state
         decision = self.policy.tick(
@@ -862,7 +875,7 @@ class FrontierExplorer(Node):
         self._apply(decision)
         if self.policy.state == ExplorerState.SELECT:
             self._select(now)
-        self._publish_status()
+        self._publish_status(readiness)
 
     def _tick_stop_save(self, readiness: Readiness) -> None:
         """Save exactly once after stop cancellation and safe standstill."""
@@ -1349,10 +1362,10 @@ class FrontierExplorer(Node):
             self.policy.fault = 'manual map save failed'
         self._save_automatic = False
 
-    def _publish_status(self) -> None:
+    def _publish_status(self, readiness: Optional[Readiness] = None) -> None:
         msg = String()
         goal = self.policy.active_goal
-        readiness = self._readiness()
+        readiness = self._readiness() if readiness is None else readiness
         missing_items = readiness.missing()
         if self.policy.state in (
                 ExplorerState.SELECT, ExplorerState.VALIDATE_PATH,

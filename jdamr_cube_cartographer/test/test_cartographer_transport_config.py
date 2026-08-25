@@ -2,11 +2,16 @@
 
 import ast
 from pathlib import Path
+import re
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'cartographer_real.launch.py'
 RESET_PATH = PACKAGE_ROOT / 'scripts' / 'reset_map.sh'
+PHYSICAL_CONFIG_PATHS = (
+    PACKAGE_ROOT / 'config' / 'jdamr_cube_2d_real.lua',
+    PACKAGE_ROOT / 'config' / 'jdamr_cube_2d_corridor.lua',
+)
 
 
 def _call_name(call):
@@ -42,3 +47,15 @@ def test_map_reset_defaults_to_udp_transport():
 
     assert export in source
     assert source.index(export) < source.index('ros2 pkg prefix')
+
+
+def test_physical_slam_limits_pose_tf_to_twenty_hertz():
+    """A 200 Hz map-to-odom stream starves the Python safety monitor on Pi."""
+    for path in PHYSICAL_CONFIG_PATHS:
+        source = path.read_text(encoding='utf-8')
+        match = re.search(
+            r'^\s*pose_publish_period_sec\s*=\s*([^,]+),',
+            source, flags=re.MULTILINE)
+
+        assert match, path
+        assert float(match.group(1)) == 0.05, path

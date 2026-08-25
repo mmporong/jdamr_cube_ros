@@ -102,11 +102,28 @@ TB3 이식본·IMU본의 큰 순간 점프는 잘못된 backend loop constraint 
 - **웹 조종**: `http://jdamr.local:8080` (WASD/터치). 브라우저 페이지가 낡으면(IP 바뀐 뒤) 버튼이 죽은 옛 주소로 POST해 안 먹는다 → **하드리프레시(Ctrl+Shift+R)**.
 - **지도 초기화 스크립트**: 파이에 `~/reset_map.sh` (현재 지도 저장 → 8/18 성공 설정으로 카토그래퍼 재시작). `ssh lim@jdamr.local '~/reset_map.sh'`. 다른 설정은 파일명을 첫 인자로 명시한다.
 
+## 2026-08-25 자율 매핑 정적 준비 검증 완료
+
+실차는 한 번도 출발시키지 않고 `IDLE`에서만 검증했다. `/autonomy/start`는 호출하지 않았다.
+
+- Pi의 Fast DDS 공유메모리 data path 장애 때문에 실기 bringup·Cartographer·Nav2와 `reset_map.sh`는 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 노드 시작 전에 적용한다. 비대화형 실행은 `ROS_DOMAIN_ID=12`, `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`도 명시한다.
+- Cartographer의 `map -> odom` 발행을 200Hz에서 20Hz로 낮췄다. 실측 120개/6.012초, 19.96Hz였고 지도·SLAM 로그의 FATAL/earlier-point 오류는 없었다.
+- 베이스는 `/odom` 49.65Hz와 센서 스트림을 그대로 유지하면서 `odom -> base_footprint` TF만 19.88Hz로 제한했다. G4는 9.56Hz, `map -> odom`은 19.88Hz였다.
+- Nav2의 약 10개 서버를 별도 DDS 프로세스로 실행하면 Pi 4코어 load가 13.31까지 올라 탐색기 콜백이 최대 약 1초 밀렸다. 공식 `component_container_isolated` composition으로 통합하고 컨테이너 종료 시 전체 launch가 종료되도록 fail-closed 처리했다. 정착 후 측정한 1분 load는 3.53이었다.
+- composition 적용 뒤 45초 정적 소크를 2회 연속 통과했다. `/frontier_explorer/status` 448+449개가 모두 `state=IDLE`, `readiness_missing=none`이었다. `/cmd_vel` 발행자는 root `/collision_monitor` 하나뿐이고 비영점 속도 명령 0건, odom 위치 변화는 0.025mm였다.
+- controller, smoother, planner, route, behavior, velocity smoother, collision monitor, BT navigator, waypoint follower, docking, map saver lifecycle 11개가 모두 `ACTIVE`였다. 지도는 147×147@0.05m, known 10,154 cells, occupied 815 cells로 수신됐다.
+- 배터리 11.488V, IMU 약 45.9Hz, 정지 가속도 norm 평균 9.358m/s²로 현재 IMU는 사용 가능하다. 이전의 약 2g 가속도 판정은 최신 실측으로 대체한다.
+- G4 checksum 오류 12건은 13:28:42 서비스 재시작 직후 warm-up 한 시점에만 몰렸고 이후 추가 발생은 없었다. global costmap은 3분 동안 오래된 scan 2개를 버렸지만 raw scan·explorer freshness·Collision Monitor는 정상 유지됐다. 실제 감독 주행에서 재발 빈도와 정지거리를 계속 본다.
+- 컨테이너 직접 `SIGTERM` fault injection에서는 Nav2 lifecycle 정리 중 `component_container_isolated`가 SIGSEGV/apport 경로에 들어가 12초 안에 실제 exit하지 않았다. 따라서 `OnProcessExit` 전체-shutdown handler도 그동안 실행되지 않았다. Collision Monitor는 먼저 비활성화됐고 explorer는 IDLE, 베이스 watchdog은 정지를 유지했으므로 운동 안전은 fail-closed였지만, 종료 운용은 컨테이너 단독 kill이 아니라 launch process group 종료를 사용한다. 자동 teardown 지연은 후속 Jazzy/Nav2 shutdown-path 이슈로 남긴다.
+- 원격 배포 전 백업: `~/jdamr_deploy_backups/pre_base_tf20_20260825T1328.tar.gz`(SHA256 `64e5bcf3f593cf40cd0f45ebfc3d62576600e20729dc032ddde33ce6040353bf`), `~/jdamr_deploy_backups/pre_nav2_composition_20260825T1333.tar.gz`(SHA256 `b4a45da38602c36dd51a712082c67f0b4a6fd83f0cae3e85aadf2a4feef02114`).
+
+남은 게이트는 사람이 전원 차단 위치에서 감시하고 장애물·계단이 없는 평지에서 수행하는 실제 자율 주행이다. 첫 시험은 짧은 구간으로 제한하고 Collision Monitor 정지거리, G4 사각, costmap scan drop, CPU load를 함께 기록한다.
+
 ## 하드웨어 상태 (전부 정상 확인)
 
 - **배터리 3S2P** — 완충 12.6V. 오늘 9.81V로 방전됐다가(주행 불가·파이 브라운아웃의 원인) 충전기로 충전. 저전압이면 서보가 명령 무시하고 파이가 네트워크에서 사라진다. 충전은 **로봇 OFF**로, 12V 어댑터 금지(3S 리튬이온 전용 충전기 사용).
 - **서보 L·R 정상**, INA219(전압계) 정상.
-- **IMU**: 칩 살아있음(WHO_AM_I 0x05). **자이로 정상**(720° 회전 1.3% 오차). **가속도계 이상**(정지 |a|=19.28, 정상 9.81의 ~2배 + 방향 이상). 원인은 [[jdamr-oled-kills-i2c-bus]] — **불량 OLED가 I2C 버스를 끌어내려 IMU·INA219까지 죽였다. OLED를 뽑아야 IMU가 산다. 다시 꽂지 말 것.**
+- **IMU**: 칩 살아있음(WHO_AM_I 0x05), 자이로는 720° 회전에서 1.3% 오차였다. 2026-08-25 최신 정지 실측은 약 45.9Hz, 가속도 norm 평균 9.358m/s²로 정상 범위이며 **현재 사용 가능**하다. 과거 정지 |a|=19.28m/s² 판정은 최신 실측으로 대체한다. 불량 OLED가 I2C 버스를 끌어내려 IMU·INA219를 함께 죽인 이력이 있으므로 OLED는 다시 연결하지 않는다.
 - **주행 정상** — 직접 cmd_vel로 바퀴 돈다(12cm 실측). base·서보·배터리 다 정상.
 - **오도메트리 훌륭** — 폐루프 위치 오차 0.2~0.3m. 회전 환산 1.3%.
 

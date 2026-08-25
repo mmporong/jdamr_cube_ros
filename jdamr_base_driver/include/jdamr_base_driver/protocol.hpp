@@ -13,8 +13,10 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 
 namespace jdamr
 {
@@ -107,6 +109,40 @@ inline bool state_interval_is_integrable(
          receive_gap_seconds >= 0.0 &&
          receive_gap_seconds <= kMaxStateIntegrationGapSeconds;
 }
+
+// 입력 표본 주기는 유지하면서 fan-out 발행만 고정 위상으로 제한한다.
+// 지연 뒤에는 누락 횟수만큼 몰아서 발행하지 않고 최신 표본 한 번만 통과시킨다.
+class PeriodicGate
+{
+public:
+  explicit PeriodicGate(double period_seconds)
+  : period_seconds_(period_seconds)
+  {
+    if (!std::isfinite(period_seconds_) || period_seconds_ <= 0.0) {
+      throw std::invalid_argument("period_seconds must be finite and positive");
+    }
+  }
+
+  bool ready(double now_seconds)
+  {
+    if (!std::isfinite(now_seconds)) {return false;}
+    if (!initialized_) {
+      initialized_ = true;
+      next_due_seconds_ = now_seconds + period_seconds_;
+      return true;
+    }
+    if (now_seconds < next_due_seconds_) {return false;}
+    do {
+      next_due_seconds_ += period_seconds_;
+    } while (next_due_seconds_ <= now_seconds);
+    return true;
+  }
+
+private:
+  double period_seconds_;
+  double next_due_seconds_{0.0};
+  bool initialized_{false};
+};
 
 inline State parse_state(const uint8_t * p)
 {

@@ -2,7 +2,7 @@
 
 이 패키지는 Cartographer가 갱신하는 `/map`에서 frontier를 고르고, Nav2에 한 번에 목표 하나만 전달한다. `frontier_explorer`는 시작 시 항상 `IDLE`이며 직접 `/cmd_vel`을 발행하지 않는다. 최종 속도 명령은 Collision Monitor만 `/cmd_vel`에 발행해야 한다.
 
-실기 launch는 파이에서 재현된 Fast DDS 공유메모리 user-data 장애를 피하도록 자식 노드 시작 전에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 설정한다. `real_bringup.launch.py`, `cartographer_real.launch.py`, `autonomous_mapping.launch.py`를 사용하면 별도 설정이 필요 없다. launch 밖에서 실기 ROS 노드를 직접 실행할 때도 같은 환경변수를 적용한다.
+실기 launch는 파이에서 재현된 Fast DDS 공유메모리 user-data 장애를 피하도록 자식 노드 시작 전에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 설정한다. `real_bringup.launch.py`, `cartographer_real.launch.py`, `autonomous_mapping.launch.py`를 사용하면 transport 별도 설정이 필요 없다. launch 밖에서 실기 ROS 노드를 직접 실행할 때도 같은 환경변수를 적용한다. 로봇의 ROS domain은 12이며 비대화형 셸에서는 `.bashrc`가 적용되지 않을 수 있으므로 아래 실행 예시처럼 domain과 discovery 범위를 명시한다.
 
 ## 시작 전 안전 조건
 
@@ -20,10 +20,19 @@
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/jdamr_cube_ws/install/setup.bash
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-12}"
+export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
+export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=false
 ```
 
 항상 이 launch로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
+
+실기 launch는 Nav2 노드를 `component_container_isolated` 하나에 구성한다. 별도 프로세스 모드는 UDPv4에서 TF를 노드마다 복제해 Pi 4코어 load를 13 이상으로 올렸으므로 `use_composition=False`로 되돌리지 않는다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. 컨테이너가 실제 종료되면 전체 자율 매핑 launch도 종료되도록 event handler가 등록돼 있다.
+
+종료할 때 컨테이너 프로세스만 직접 `kill`하지 않는다. Jazzy의 composed lifecycle cleanup이 직접 `SIGTERM` fault injection에서 충돌하며 프로세스 종료가 지연된 사례가 있으므로, 운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다. 이 fault injection에서도 Collision Monitor는 먼저 비활성화되고 베이스 watchdog은 정지를 유지했지만, 전체 launch 자동 teardown은 프로세스가 실제 종료되기 전까지 시작되지 않았다.
+
+2026-08-25 정적 실기 검증에서 45초 소크 2회를 연속 통과했다. 상태 897개가 모두 `IDLE`·`readiness_missing=none`이었고 `/cmd_vel` 비영점 명령은 0건, odom 위치 변화는 0.025mm였다. 모든 Nav2 및 map saver lifecycle 노드가 `ACTIVE`였고 Pi load는 동일 스택에서 13.31에서 3.53으로 감소했다. 이 결과는 **출발 전 준비 상태** 검증이며 실제 자율 주행·정지거리·장애물 회피 승인을 뜻하지 않는다.
 
 `autostart:=true` 기본값은 Nav2와 map saver lifecycle 노드를 활성화할 뿐이다. explorer는 자동 출발하지 않고 `IDLE`을 유지한다. 안정 운용 API는 다음과 같다.
 

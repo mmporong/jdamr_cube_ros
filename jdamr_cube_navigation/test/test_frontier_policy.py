@@ -19,6 +19,7 @@ from jdamr_cube_navigation.frontier_explorer import (
     FrontierExtractionRequest, FrontierExtractionResult,
     FrontierExtractionWorker, manual_save_allowed, nav_callback_is_current,
     odom_fresh_ready, odom_stationary_ready, prepare_map_url_prefix, Readiness)
+from jdamr_cube_navigation.frontier_explorer import ros_stamp_fresh_ready
 
 
 HEALTHY = Readiness(
@@ -859,6 +860,75 @@ def test_wrapper_does_not_shadow_rclpy_node_clock():
         FrontierExplorer._refresh_tf)
 
 
+def test_transient_tf_lookup_failure_uses_last_verified_sample_until_ttl():
+    """One lookup miss must not invalidate a transform still inside its TTL."""
+    class MissingBuffer:
+        @staticmethod
+        def lookup_transform(*_args):
+            raise RuntimeError('temporary lookup miss')
+
+    explorer = object.__new__(FrontierExplorer)
+    explorer._tf_buffer = MissingBuffer()
+    explorer._monotonic = lambda: 10.0
+    explorer._tf_received = 9.7
+    explorer._tf_fresh = True
+    explorer.get_parameter = lambda _name: type(
+        'Parameter', (), {'value': 0.5})()
+
+    explorer._refresh_tf()
+    assert explorer._tf_fresh
+
+    explorer._tf_received = 9.4
+    explorer._refresh_tf()
+    assert not explorer._tf_fresh
+
+
+def test_transient_invalid_tf_stamp_uses_last_verified_sample_until_ttl():
+    """One bad TF timestamp must not discard a still-fresh verified sample."""
+    transform = type('TransformStamped', (), {
+        'header': type('Header', (), {
+            'stamp': type('Stamp', (), {'sec': 9, 'nanosec': 0})()})(),
+        'transform': type('Transform', (), {
+            'translation': type(
+                'Translation', (), {'x': 1.0, 'y': 2.0})(),
+            'rotation': type('Rotation', (), {
+                'w': 1.0, 'x': 0.0, 'y': 0.0, 'z': 0.0})()})()})()
+
+    class StaleBuffer:
+        @staticmethod
+        def lookup_transform(*_args):
+            return transform
+
+    explorer = object.__new__(FrontierExplorer)
+    explorer._tf_buffer = StaleBuffer()
+    explorer._monotonic = lambda: 10.0
+    explorer._tf_received = 9.7
+    explorer._tf_fresh = True
+    explorer._robot_pose = (0.0, 0.0, 0.0)
+    explorer.get_parameter = lambda _name: type(
+        'Parameter', (), {'value': 0.5})()
+    explorer.get_clock = lambda: type('Clock', (), {
+        'now': lambda _self: type(
+            'Time', (), {'nanoseconds': 10_000_000_000})()})()
+
+    explorer._refresh_tf()
+    assert explorer._tf_fresh
+    assert explorer._robot_pose == (0.0, 0.0, 0.0)
+
+    explorer._tf_received = 9.4
+    explorer._refresh_tf()
+    assert not explorer._tf_fresh
+
+
+def test_ros_stamp_freshness_rejects_future_and_stale_samples():
+    """TF header age validation is inclusive and fails closed."""
+    now_ns = 10_000_000_000
+    assert ros_stamp_fresh_ready(now_ns, now_ns, 0.5)
+    assert ros_stamp_fresh_ready(now_ns - 500_000_000, now_ns, 0.5)
+    assert not ros_stamp_fresh_ready(now_ns + 1, now_ns, 0.5)
+    assert not ros_stamp_fresh_ready(now_ns - 500_000_001, now_ns, 0.5)
+
+
 def test_main_preserves_ros_import_error_as_runtime_cause():
     """Missing ROS modules remain diagnosable when the executable is run."""
     source = inspect.getsource(frontier_explorer_module.main)
@@ -909,6 +979,30 @@ def test_cmd_vel_owner_requires_root_collision_monitor_exclusively():
     assert not command_owner_is_collision_monitor([spoofed_monitor])
     assert not command_owner_is_collision_monitor(
         [root_monitor, root_teleop])
+
+
+def test_status_can_reuse_tick_readiness_without_a_second_graph_pass(
+        monkeypatch):
+    """Status publication reuses the exact safety snapshot from the tick."""
+    monkeypatch.setattr(
+        frontier_explorer_module, 'String',
+        type('String', (), {'data': ''}), raising=False)
+    published = []
+    explorer = object.__new__(FrontierExplorer)
+    explorer.policy = ExplorerPolicy()
+    explorer._readiness = lambda: (_ for _ in ()).throw(
+        AssertionError('tick readiness must be reused'))
+    explorer._battery_voltage = 12.0
+    explorer._last_save_status = 'none'
+    explorer._frontier_count = None
+    explorer._map_sequence = 0
+    explorer._nav_send_future = None
+    explorer._nav_cancel_handle = None
+    explorer._status_pub = type('Publisher', (), {
+        'publish': lambda _self, msg: published.append(msg.data)})()
+
+    explorer._publish_status(HEALTHY)
+    assert 'readiness_missing=none' in published[-1]
 
 
 def test_blocked_extraction_does_not_block_pause_or_stop_policy():

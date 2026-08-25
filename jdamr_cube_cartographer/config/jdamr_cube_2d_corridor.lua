@@ -34,7 +34,8 @@ options = {
   num_point_clouds = 0,
   lookup_transform_timeout_sec = 1.0,    -- 스캔 stamp가 +140ms 과거라 여유
   submap_publish_period_sec = 0.3,
-  pose_publish_period_sec = 5e-3,
+  -- Pi의 Python 안전 모니터가 밀리지 않도록 map->odom TF를 20 Hz로 제한한다.
+  pose_publish_period_sec = 5e-2,
   trajectory_publish_period_sec = 30e-3,
   rangefinder_sampling_ratio = 1.,
   odometry_sampling_ratio = 1.,

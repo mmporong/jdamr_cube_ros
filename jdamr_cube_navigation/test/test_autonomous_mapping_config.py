@@ -177,6 +177,23 @@ def test_mapping_launch_uses_navigation_only_with_safe_defaults():
     assert ast.literal_eval(defaults['default_value']) == 'false'
 
 
+def test_nav2_uses_one_isolated_component_container_on_the_pi():
+    source = LAUNCH_PATH.read_text(encoding='utf-8')
+
+    assert "executable='component_container_isolated'" in source
+    assert "name='nav2_container'" in source
+    assert "'use_composition': 'True'" in source
+    assert "'container_name': 'nav2_container'" in source
+    assert 'target_action=nav2_container' in source
+    assert 'Nav2 container exited; stopping autonomous mapping' in source
+
+    action_list = source[source.index('return LaunchDescription(['):]
+    assert action_list.index('container_exit_shutdown,') < \
+        action_list.index('nav2_container,')
+    assert action_list.index('nav2_container,') < \
+        action_list.index('navigation,')
+
+
 def test_include_launch_arguments_never_receive_parameter_file_objects():
     syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
     includes = [

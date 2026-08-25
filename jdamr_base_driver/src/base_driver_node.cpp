@@ -2,7 +2,7 @@
 //
 // 구성 (스레드 2개):
 //   * 읽기 스레드: 시리얼 → FrameParser → 오도메트리 적분 → odom/TF/IMU 발행.
-//     프레임 도착(50Hz) 즉시 발행해 파이프라인 지연을 최소화한다.
+//     odom·센서는 프레임 도착(50Hz) 즉시, TF는 별도 제한 주기로 발행한다.
 //   * 실행기 스레드: cmd_vel 구독 + 20ms 송신 타이머. Nav2 가 어떤 주기로
 //     지령을 밀어도 시리얼 쓰기는 50Hz 로 코어레싱된다 (강사원본 C7 수정).
 //
@@ -64,7 +64,15 @@ public:
     base_frame_ = declare_parameter<std::string>("base_frame", "base_footprint");
     imu_frame_ = declare_parameter<std::string>("imu_frame", "imu_link");
     publish_tf_ = declare_parameter<bool>("publish_tf", true);
+    tf_publish_hz_ = declare_parameter<double>("tf_publish_hz", 20.0);
     cmd_timeout_ = declare_parameter<double>("cmd_timeout", 0.4);
+
+    if (!std::isfinite(tf_publish_hz_) ||
+      tf_publish_hz_ <= 0.0 || tf_publish_hz_ > 50.0)
+    {
+      throw std::invalid_argument("tf_publish_hz must be within (0, 50]");
+    }
+    tf_publish_gate_ = PeriodicGate(1.0 / tf_publish_hz_);
 
     if (wheel_radius_ == 0.075 || wheel_separation_ == 0.35) {   // 플레이스홀더 기본값 그대로면 경고
       RCLCPP_WARN(get_logger(),
@@ -260,7 +268,9 @@ private:
     odom_msg_.twist.twist.angular.z = dth / dt;
     odom_pub_->publish(odom_msg_);
 
-    if (publish_tf_) {
+    const double receive_seconds = std::chrono::duration<double>(
+      receive_time.time_since_epoch()).count();
+    if (publish_tf_ && tf_publish_gate_.ready(receive_seconds)) {
       tf_msg_.header.stamp = stamp;
       tf_msg_.header.frame_id = odom_frame_;
       tf_msg_.child_frame_id = base_frame_;
@@ -337,10 +347,12 @@ private:
   std::string port_, odom_frame_, base_frame_, imu_frame_;
   int baud_{115200}, counts_per_rev_{4096};
   double wheel_radius_{0.075}, wheel_separation_{0.35}, cmd_timeout_{0.4};
+  double tf_publish_hz_{20.0};
   double m_per_count_{0.0};
   double wheel_radius_ratio_{1.0};
   double m_per_count_l_{0.0}, m_per_count_r_{0.0};
   bool publish_tf_{true};
+  PeriodicGate tf_publish_gate_{0.05};
 
   // 통신
   SerialPort serial_;

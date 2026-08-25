@@ -84,6 +84,8 @@ def generate_launch_description():
                 'wheel_separation': wheel_separation,
                 'base_frame': 'base_footprint',
                 'imu_frame': 'base_link',   # 보드가 base_link 에 장착 — 전용 imu_link 추가 전까지
+                # /odom은 50Hz 유지, TF만 20Hz로 제한해 Pi의 Nav2 fan-out 부하를 줄인다.
+                'tf_publish_hz': 20.0,
             }],
         ),
 

@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "jdamr_base_driver/protocol.hpp"
@@ -92,6 +93,30 @@ TEST(StateInterval, RejectsLongReconnectAndSequenceWrap)
   EXPECT_FALSE(state_interval_is_integrable(10, 10, 5.120));  // 256 lost frames
   EXPECT_FALSE(state_interval_is_integrable(10, 11, 5.140));  // 257 lost frames
   EXPECT_FALSE(state_interval_is_integrable(10, 36, 0.520));
+}
+
+TEST(PeriodicGate, PublishesAtFixedPhaseWithoutCatchupBurst)
+{
+  PeriodicGate gate(0.05);
+  EXPECT_TRUE(gate.ready(100.000));
+  EXPECT_FALSE(gate.ready(100.020));
+  EXPECT_FALSE(gate.ready(100.040));
+  EXPECT_TRUE(gate.ready(100.061));
+  EXPECT_FALSE(gate.ready(100.080));
+  EXPECT_TRUE(gate.ready(100.101));
+
+  // A delayed caller emits once and advances past every missed deadline.
+  EXPECT_TRUE(gate.ready(100.501));
+  EXPECT_FALSE(gate.ready(100.502));
+  EXPECT_TRUE(gate.ready(100.551));
+}
+
+TEST(PeriodicGate, RejectsInvalidInputs)
+{
+  EXPECT_THROW(PeriodicGate(0.0), std::invalid_argument);
+  EXPECT_THROW(PeriodicGate(-0.05), std::invalid_argument);
+  PeriodicGate gate(0.05);
+  EXPECT_FALSE(gate.ready(std::numeric_limits<double>::quiet_NaN()));
 }
 
 TEST(Parser, ResyncAfterGarbage)
