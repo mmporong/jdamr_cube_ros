@@ -1,7 +1,8 @@
-"""실기 브링업 — robot_state_publisher + C++ 베이스 드라이버 + LD14.
+"""
+실기 브링업 — robot_state_publisher + C++ 베이스 드라이버 + YDLIDAR G4.
 
-시뮬용 jdamr_cube_bringup.launch.py 와 별개 파일이다 (실기는 use_sim_time
-불가·포트·드라이버가 다르다). TF 지오메트리의 단일 출처는 URDF:
+기본 jdamr_cube_bringup.launch.py도 이 런치로 연결되는 호환 별칭이다.
+시뮬레이션은 jdamr_cube_gazebo 패키지를 사용한다. TF 지오메트리의 단일 출처는 URDF:
 강사원본 ld14.launch.py 의 static_transform_publisher(0,0,0.18)와 URDF
 laser_joint 가 서로 다른 값으로 이중 발행되던 것(조사기록 E7)을,
 라이다 노드를 직접 띄우고 frame_id 를 URDF 링크(laser_link)로 맞춰 없앤다.
@@ -39,12 +40,16 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
-        DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB0',
-                              description='LD14P 시리얼 — USB 는 라이다 전용 (어댑터 직결)'),
+        DeclareLaunchArgument('lidar_port', default_value='/dev/ydlidar_g4',
+                              description='YDLIDAR G4 시리얼 — CP2102 어댑터 직결'),
         DeclareLaunchArgument('wheel_radius', default_value='0.0329',
-                              description='바퀴 반지름 [m] — 2026-08-14 주행 캘리브레이션 확정(자 실측 지름 65mm 와 일치)'),
+                              description=(
+                                  '바퀴 반지름 [m] — 2026-08-14 주행 캘리브레이션 확정'
+                                  '(자 실측 지름 65mm와 일치)')),
         DeclareLaunchArgument('wheel_separation', default_value='0.1836',
-                              description='유효 트레드 [m] — 주행 캘리브레이션 확정. 기하 중심거리는 0.20, 접지면 효과로 유효값이 작다'),
+                              description=(
+                                  '유효 트레드 [m] — 주행 캘리브레이션 확정. '
+                                  '기하 중심거리는 0.20m이나 접지면 효과로 유효값이 작다')),
 
         # URDF 가 모든 고정 TF(base_footprint→base_link→laser_link…)의 단일 출처
         Node(
@@ -79,21 +84,19 @@ def generate_launch_description():
             }],
         ),
 
-        # LD14 — frame_id 를 URDF 링크로. 정적 TF 는 여기서 절대 만들지 않는다 (E7)
+        # G4 — 시간 순서를 보존한 음수 angle_increment 드라이버.
+        # frame_id 는 URDF 링크로 맞추고 정적 TF 는 여기서 만들지 않는다 (E7).
         Node(
-            package='ldlidar_sl_ros2',
-            executable='ldlidar_sl_ros2_node',
-            name='ldlidar_node',
+            package='ydlidar_g4_ros2',
+            executable='ydlidar_g4_node',
+            name='ydlidar_g4_node',
             output='screen',
-            parameters=[
-                {'product_name': 'LDLiDAR_LD14P'},   # 실물 확정 — 230400 에서만 프레임 수신
-                {'laser_scan_topic_name': 'scan'},
-                {'point_cloud_2d_topic_name': 'pointcloud2d'},
-                {'frame_id': 'laser_link'},
-                {'port_name': lidar_port},
-                {'serial_baudrate': 230400},
-                {'laser_scan_dir': True},   # 2026-08-18 정정: 8/14 에 False 로 뒤집은 것이 오류. 로봇이 CCW +θ 돌면 로봇 좌표계에서 세상은 −θ 도는 것이 정상인데 프로브가 그걸 거울반전으로 오판해 멀쩡한 데이터에 거울을 씌웠다(실물: 오른쪽 코너가 지도 왼쪽). 이후 지도 꼬임이 전부 여기서 왔다
-                {'enable_angle_crop_func': False},
-            ],
+            parameters=[{
+                'port': lidar_port,
+                'frame_id': 'laser_link',
+                'scan_topic': 'scan',
+                'frequency': 10.0,
+                'sample_rate': 9.0,
+            }],
         ),
     ])

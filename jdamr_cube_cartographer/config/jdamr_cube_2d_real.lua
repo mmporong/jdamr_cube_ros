@@ -22,7 +22,9 @@ options = {
   use_landmarks = false,
   num_laser_scans = 1,
   num_multi_echo_laser_scans = 0,
-  num_subdivisions_per_laser_scan = 10,  -- 2026-08-21: 6Hz 라이다 회전왜곡(167ms/스캔) 보정 — 1이면 스캔 전체를 한 순간으로 취급해 회전 중 부챗살 번짐
+  -- 2026-08-24 회귀 기준: 강의실에서 성공한 8/18 설정과 동일하게 1을 쓴다.
+  -- 라이다 시간 계약 수정 검증이 끝날 때까지 설정 변수를 추가로 섞지 않는다.
+  num_subdivisions_per_laser_scan = 1,
   num_point_clouds = 0,
   lookup_transform_timeout_sec = 0.2,
   submap_publish_period_sec = 0.3,

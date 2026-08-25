@@ -3,14 +3,19 @@
 <package format="3">
   <name>jdamr_cube_bringup</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>JD-AMR Cube real-hardware bringup and TF configuration</description>
   <maintainer email="jdedu@todo.todo">jdedu</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
   <depend>robot_state_publisher</depend>
+  <depend>joint_state_publisher</depend>
   <depend>jdamr_cube_description</depend>
-  <depend>jdamr_cube_node</depend>
-  <depend>ldlidar_sl_ros2</depend>
+  <depend>jdamr_base_driver</depend>
+  <depend>ydlidar_g4_ros2</depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
