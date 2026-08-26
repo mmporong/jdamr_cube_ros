@@ -31,6 +31,8 @@ JD-AMR cube(차동구동 + LD14 라이다 + RGB-D)와 SO-101 5축 팔을 ROS 2 J
 
 문제와 해결 과정은 별도 문서 저장소에 있습니다 — [gazebo-so101-capstone](https://github.com/mmporong/gazebo-so101-capstone). 환경 구축 · 파지 물리 · 비전 좌표계 · 손목캠 정렬 · 바닥 파지 · YOLO 전환 · 초기 자세 · 대시보드 · 디버깅 노트 9편.
 
+2026-08-26 기준의 Physical AI 경계, sim-to-real 순서, 관련 논문별 적용 추천은 [Physical AI 포트폴리오 적용안](PORTFOLIO_20260826.md)에 정리했습니다. 문서 안의 추천 항목은 구현 완료 결과와 분리해 표시합니다.
+
 ## 측정된 결과
 
 - 비전 접근 수렴 오차 **3~6mm** (초기 거리 1m)
