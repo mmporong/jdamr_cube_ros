@@ -194,7 +194,7 @@ def test_ranking_is_deterministic_and_rewards_information_gain():
     assert first[0].score > first[-1].score
 
 
-@pytest.mark.parametrize('barrier', [50, 100])
+@pytest.mark.parametrize('barrier', [60, 100])
 def test_diagonal_corner_squeeze_is_not_reachable(barrier):
     """Neither ambiguous nor occupied diagonal gaps permit corner cuts."""
     grid = make_grid([
@@ -211,12 +211,12 @@ def test_diagonal_corner_squeeze_is_not_reachable(barrier):
     assert candidates == []
 
 
-def test_ambiguous_value_is_clearance_source_and_rejects_close_frontier():
-    """Known ambiguous occupancy contributes finite unsafe clearance."""
+def test_ambiguous_value_blocks_traversal_without_false_obstacle_halo():
+    """Ambiguous occupancy is not traversed or inflated as an obstacle."""
     grid = make_grid([
         [0, 0, 0, 0],
         [0, 0, 0, 0],
-        [0, 0, 50, -1],
+        [0, 0, 60, -1],
     ])
     core = FrontierCore(FrontierConfig(
         clearance_m=0.6,
@@ -225,9 +225,25 @@ def test_ambiguous_value_is_clearance_source_and_rejects_close_frontier():
 
     distances = core._occupied_distances(grid, 0.6)
 
-    assert math.isfinite(core._clearance_cells(distances[grid.index((2, 1))]))
-    assert core._clearance_cells(distances[grid.index((2, 1))]) == 0.5
-    assert core.extract(grid, 0.5, 0.5) == []
+    assert core._clearance_cells(distances[grid.index((2, 1))]) >= 0.6
+    assert not core.is_free(grid.value((2, 2)))
+    assert core.extract(grid, 0.5, 0.5)
+
+
+def test_default_config_reaches_cartographer_probability_frontier():
+    """Observed 49~50 cells at a Cartographer unknown edge stay usable."""
+    grid = make_grid([
+        [-1, -1, -1, -1, -1],
+        [-1, 50, 49, 50, -1],
+        [-1, 0, 0, 0, -1],
+        [-1, 0, 0, 0, -1],
+        [-1, -1, -1, -1, -1],
+    ])
+    core = FrontierCore()
+
+    assert core.config.free_threshold == 50
+    assert core.config.clearance_m == 0.10
+    assert core.extract(grid, 2.5, 2.5)
 
 
 def test_candidate_representative_satisfies_all_grid_postconditions():
@@ -406,7 +422,7 @@ def test_start_safety_is_known_free_inside_and_matches_clearance_math():
     """The local start gate matches the extraction clearance convention."""
     grid = make_grid([
         [0, 0, 0, 0, 0],
-        [0, 0, 50, 0, 0],
+        [0, 0, 100, 0, 0],
         [0, 0, 0, 0, 0],
         [0, 0, 0, 0, 0],
         [0, 0, 0, 0, 0],

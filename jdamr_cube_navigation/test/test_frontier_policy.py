@@ -148,9 +148,8 @@ def test_healthy_start_and_single_goal_invariant():
 
 
 def test_every_health_fault_cancels_and_latches_paused():
-    """Every persistent safety predicate fails closed in one tick."""
+    """Every hard motion safety predicate fails closed in one tick."""
     names = (
-        'map_fresh', 'scan_fresh', 'tf_fresh', 'odom_fresh',
         'collision_monitor_active', 'planner_ready', 'navigator_ready',
         'command_owner_ok', 'battery_ok')
     for name in names:
@@ -173,17 +172,33 @@ def test_stationary_is_start_gate_but_not_required_during_navigation():
     assert policy.state == ExplorerState.NAVIGATE
 
 
-def test_stale_odom_cancels_navigation_even_while_motion_is_expected():
-    """Only stationary is ignored while moving; odometry freshness is not."""
+def test_select_waits_for_transient_health_without_latching_pause():
+    """An idle selection cycle recovers automatically before goal creation."""
     policy = ExplorerPolicy()
-    navigating(policy)
-    moving = replace(HEALTHY, stationary=False, odom_fresh=True)
-    assert not policy.tick(0.1, moving).cancel_goal
-    stale = replace(moving, odom_fresh=False)
-    decision = policy.tick(0.2, stale)
-    assert decision.cancel_goal
-    assert policy.state == ExplorerState.PAUSED
-    assert 'odom_fresh' in decision.fault
+    assert policy.start(HEALTHY)[0]
+
+    degraded = replace(HEALTHY, tf_fresh=False)
+    decision = policy.tick(0.1, degraded)
+
+    assert degraded.motion_missing() == ()
+    assert degraded.selection_missing() == ('tf_fresh',)
+    assert not decision.cancel_goal
+    assert not decision.fault
+    assert policy.state == ExplorerState.SELECT
+
+
+def test_transient_data_gaps_block_start_but_do_not_latch_navigation():
+    """Nav2 and Collision Monitor own transient motion-data recovery."""
+    for name in ('map_fresh', 'scan_fresh', 'tf_fresh', 'odom_fresh'):
+        degraded = replace(HEALTHY, **{name: False})
+        assert not ExplorerPolicy().start(degraded)[0]
+
+        policy = ExplorerPolicy()
+        navigating(policy)
+        decision = policy.tick(0.2, degraded)
+        assert not decision.cancel_goal
+        assert not decision.fault
+        assert policy.state == ExplorerState.NAVIGATE
 
 
 def test_probe_abort_cancels_and_never_auto_resumes():
@@ -247,7 +262,7 @@ def test_completion_needs_three_distinct_maps_and_settle_then_saves_once():
 
 def test_frontier_reappearance_resets_completion_and_save_result_is_safe():
     """A frontier resets completion and a saver fault latches PAUSED."""
-    policy = ExplorerPolicy(settle_seconds=0.0)
+    policy = ExplorerPolicy(settle_seconds=0.0, empty_cycles=3)
     assert policy.start(HEALTHY)[0]
     policy.observe_frontiers(0, 1, 0.0)
     policy.observe_frontiers(0, 2, 0.1)
@@ -324,7 +339,9 @@ def test_missing_or_stale_odom_blocks_start_resume_and_manual_save():
     assert odom_stationary_ready(0.0, 0.0, 9.75, 10.0, 0.5)
     assert odom_fresh_ready(9.75, 10.0, 0.5)
     assert not odom_stationary_ready(0.011, 0.0, 9.75, 10.0, 0.5)
-    assert not odom_stationary_ready(0.0, 0.021, 9.75, 10.0, 0.5)
+    # The physical base is still at the measured two-encoder-tick yaw noise.
+    assert odom_stationary_ready(0.0, 0.027488, 9.75, 10.0, 0.5)
+    assert not odom_stationary_ready(0.0, 0.031, 9.75, 10.0, 0.5)
     stale_but_zero = replace(
         HEALTHY, odom_fresh=False, stationary=True)
     assert not ExplorerPolicy().start(stale_but_zero)[0]
@@ -800,8 +817,8 @@ def test_cancel_pending_prevents_any_frontier_or_goal_work():
     assert explorer._frontier_worker.offers == 0
 
 
-def test_unsafe_robot_start_pauses_without_empty_frontier_observation():
-    """Invalid starts are faults, not empty frontier completion samples."""
+def test_unsafe_raw_map_start_waits_without_latching_or_counting_empty():
+    """A transient raw-map start waits for the next map without a latch."""
     class Worker:
         offers = 0
 
@@ -815,7 +832,7 @@ def test_unsafe_robot_start_pauses_without_empty_frontier_observation():
     cases = (
         (GridMap(1, 1, 1.0, 0.0, 0.0, 0.0, (0,)), (-0.5, 0.5, 0.0)),
         (GridMap(1, 1, 1.0, 0.0, 0.0, 0.0, (100,)), (0.5, 0.5, 0.0)),
-        (GridMap(2, 1, 1.0, 0.0, 0.0, 0.0, (0, 50)), (0.5, 0.5, 0.0)),
+        (GridMap(2, 1, 1.0, 0.0, 0.0, 0.0, (0, 100)), (0.5, 0.5, 0.0)),
     )
     for grid, pose in cases:
         explorer = object.__new__(FrontierExplorer)
@@ -835,9 +852,10 @@ def test_unsafe_robot_start_pauses_without_empty_frontier_observation():
         explorer._apply = lambda _decision: None
 
         explorer._select(10.0)
-        assert explorer.policy.state == ExplorerState.PAUSED
-        assert 'safe known-free' in explorer.policy.fault
+        assert explorer.policy.state == ExplorerState.SELECT
+        assert explorer.policy.fault == ''
         assert explorer.policy._empty_cycles == 0
+        assert explorer._last_selected_sequence == explorer._map_sequence
         assert explorer._frontier_worker.offers == 0
 
 
@@ -1323,6 +1341,42 @@ def test_current_path_transport_errors_pause_but_stale_error_is_ignored():
         ControlledFuture(error=RuntimeError('result rpc')), token=3)
     assert explorer.policy.state == ExplorerState.PAUSED
     assert explorer.policy.fault == 'path result failed: result rpc'
+
+
+def test_nonempty_nav2_path_dispatches_without_racing_raw_map_snapshot():
+    """Nav2's synchronized costmap result is authoritative for dispatch."""
+    class Navigator:
+        def __init__(self):
+            self.goals = []
+
+        def send_goal_async(self, goal, feedback_callback):
+            self.goals.append((goal, feedback_callback))
+            return ControlledFuture()
+
+    explorer = object.__new__(FrontierExplorer)
+    explorer.policy = ExplorerPolicy()
+    assert explorer.policy.start(HEALTHY)[0]
+    assert explorer.policy.begin_validation(candidate())
+    explorer._path_token = 1
+    explorer._nav_token = 0
+    explorer._navigator = Navigator()
+    explorer._navigation_transition_pending = lambda: False
+    explorer.get_parameter = lambda _name: type(
+        'Parameter', (), {'value': False})()
+    explorer.get_clock = lambda: type('Clock', (), {
+        'now': lambda _self: frontier_explorer_module.rclpy.time.Time()})()
+    explorer._monotonic = lambda: 1.0
+    # A concurrently refreshed raw map may mark the same cells unknown even
+    # though Nav2 planned them with allow_unknown=false on its costmap snapshot.
+    explorer._map = GridMap(1, 1, 0.05, 0.0, 0.0, 0.0, (-1,))
+    path = type('Path', (), {'poses': [object()]})()
+    result = type('Result', (), {'path': path})()
+    wrapped = type('Wrapped', (), {'result': result})()
+
+    explorer._path_result(ControlledFuture(wrapped), token=1)
+
+    assert len(explorer._navigator.goals) == 1
+    assert explorer._nav_send_future is not None
 
 
 def test_path_send_and_result_request_sync_exceptions_pause():

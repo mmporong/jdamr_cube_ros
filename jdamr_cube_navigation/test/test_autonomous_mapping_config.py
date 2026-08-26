@@ -11,14 +11,57 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PARAMS_PATH = PACKAGE_ROOT / 'config' / 'nav2_params.yaml'
 LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'autonomous_mapping.launch.py'
 NAVIGATION_LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
+URDF_PATH = (
+    PACKAGE_ROOT.parent / 'jdamr_cube_description' / 'urdf' /
+    'jdamr_cube.urdf')
 BT_PATH = (
     PACKAGE_ROOT / 'behavior_trees' / 'navigate_to_pose_safe_mapping.xml')
 SETUP_PATH = PACKAGE_ROOT / 'setup.py'
 EXPLORER_PATH = (
     PACKAGE_ROOT / 'jdamr_cube_navigation' / 'frontier_explorer.py')
-EXPECTED_FOOTPRINT = [
-    [0.33, 0.25], [0.33, -0.25], [-0.25, -0.25], [-0.25, 0.25],
-]
+
+
+def _urdf_chassis_footprint():
+    root = ET.parse(URDF_PATH).getroot()
+    joints = {joint.attrib['name']: joint for joint in root.findall('joint')}
+    links = {link.attrib['name']: link for link in root.findall('link')}
+
+    def origin(joint_name):
+        return tuple(float(value) for value in
+                     joints[joint_name].find('origin').attrib['xyz'].split())
+
+    caster_radius = float(
+        links['caster_link_front'].find(
+            'collision/geometry/sphere').attrib['radius'])
+    wheel_width = float(
+        links['left_wheel_link'].find(
+            'collision/geometry/cylinder').attrib['length'])
+    front = origin('caster_front_joint')[0] + caster_radius
+    rear = origin('caster_rear_joint')[0] - caster_radius
+    left = origin('left_wheel_joint')[1] + wheel_width / 2.0
+    right = origin('right_wheel_joint')[1] - wheel_width / 2.0
+    return [
+        [round(front, 6), round(left, 6)],
+        [round(front, 6), round(right, 6)],
+        [round(rear, 6), round(right, 6)],
+        [round(rear, 6), round(left, 6)],
+    ]
+
+
+EXPECTED_FOOTPRINT = _urdf_chassis_footprint()
+
+
+def _expanded_footprint(margin):
+    front = max(point[0] for point in EXPECTED_FOOTPRINT) + margin
+    rear = min(point[0] for point in EXPECTED_FOOTPRINT) - margin
+    left = max(point[1] for point in EXPECTED_FOOTPRINT) + margin
+    right = min(point[1] for point in EXPECTED_FOOTPRINT) - margin
+    return [
+        [round(front, 6), round(left, 6)],
+        [round(front, 6), round(right, 6)],
+        [round(rear, 6), round(right, 6)],
+        [round(rear, 6), round(left, 6)],
+    ]
 
 
 def _params():
@@ -124,10 +167,30 @@ def test_collision_monitor_is_final_velocity_owner_with_fresh_scan():
 
     assert monitor['cmd_vel_in_topic'] == 'cmd_vel_smoothed'
     assert monitor['cmd_vel_out_topic'] == 'cmd_vel'
-    assert monitor['source_timeout'] <= 0.5
+    assert 1.0 <= monitor['source_timeout'] <= 2.0
+    assert monitor['transform_tolerance'] >= 0.5
     assert monitor['observation_sources'] == ['scan']
     assert monitor['scan']['type'] == 'scan'
     assert monitor['scan']['topic'] == '/scan'
+
+
+def test_progress_checker_allows_slowdown_zone_heading_alignment():
+    controller = _node_params(_params(), 'controller_server')
+    progress = controller['progress_checker']
+
+    assert progress['plugin'] == 'nav2_controller::PoseProgressChecker'
+    assert progress['required_movement_radius'] == 0.05
+    assert progress['required_movement_angle'] == 0.05
+    assert progress['movement_time_allowance'] <= 10.0
+    assert controller['FollowPath']['transform_tolerance'] >= 0.5
+
+
+def test_controller_tolerates_measured_wifi_tf_jitter_without_goal_abort():
+    controller = _node_params(_params(), 'controller_server')
+
+    assert controller['controller_frequency'] <= 10.0
+    assert controller['costmap_update_timeout'] >= 1.0
+    assert controller['failure_tolerance'] >= 2.0
 
 
 def test_collision_monitor_has_stop_slowdown_and_two_second_approach():
@@ -139,6 +202,11 @@ def test_collision_monitor_has_stop_slowdown_and_two_second_approach():
 
     assert {'stop', 'slowdown', 'approach'} <= actions.keys()
     assert actions['approach']['time_before_collision'] >= 2.0
+    assert ast.literal_eval(actions['stop']['points']) == \
+        _expanded_footprint(0.05)
+    assert ast.literal_eval(actions['slowdown']['points']) == \
+        _expanded_footprint(0.15)
+    assert actions['slowdown']['slowdown_ratio'] >= 0.60
 
 
 def test_mapping_behavior_tree_is_forward_only_but_keeps_safe_recoveries():
@@ -177,21 +245,12 @@ def test_mapping_launch_uses_navigation_only_with_safe_defaults():
     assert ast.literal_eval(defaults['default_value']) == 'false'
 
 
-def test_nav2_uses_one_isolated_component_container_on_the_pi():
+def test_nav2_uses_isolated_processes_for_physical_reliability():
     source = LAUNCH_PATH.read_text(encoding='utf-8')
 
-    assert "executable='component_container_isolated'" in source
-    assert "name='nav2_container'" in source
-    assert "'use_composition': 'True'" in source
-    assert "'container_name': 'nav2_container'" in source
-    assert 'target_action=nav2_container' in source
-    assert 'Nav2 container exited; stopping autonomous mapping' in source
-
-    action_list = source[source.index('return LaunchDescription(['):]
-    assert action_list.index('container_exit_shutdown,') < \
-        action_list.index('nav2_container,')
-    assert action_list.index('nav2_container,') < \
-        action_list.index('navigation,')
+    assert "executable='component_container_isolated'" not in source
+    assert "'use_composition': 'False'" in source
+    assert "'container_name': 'nav2_container'" not in source
 
 
 def test_include_launch_arguments_never_receive_parameter_file_objects():

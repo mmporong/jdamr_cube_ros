@@ -1,6 +1,6 @@
 # jdamr_cube 전용 Nav2 파라미터.
 # ROS 2 Jazzy에 기본 설치된 nav2_bringup/params/nav2_params.yaml을 베이스로,
-# jdamr_cube의 실제 치수(0.5 x 0.3m 몸체 + 라이다/휠 돌출부)와 저장된 맵 원점(스폰 위치 = 0,0,0)에
+# 현재 URDF의 주행부 외곽(전후 캐스터 포함 0.46 x 0.40m)과 저장된 맵 원점(스폰 위치 = 0,0,0)에
 # 맞춰 footprint, 초기 위치(initial_pose), 속도 제한만 수정했다. 나머지 항목은 Jazzy 기본값 유지.
 
 amcl:
@@ -72,20 +72,26 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    controller_frequency: 20.0
-    costmap_update_timeout: 0.30
+    # The physical robot's Wi-Fi TF stream cannot sustain a deterministic
+    # 20 Hz loop. Ten hertz avoids turning scheduling jitter into aborts.
+    controller_frequency: 10.0
+    costmap_update_timeout: 1.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # Collision Monitor owns final velocity while the controller waits
+    # through a short TF/costmap gap instead of abandoning the goal.
+    failure_tolerance: 2.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
     use_realtime_priority: false
 
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
+      plugin: "nav2_controller::PoseProgressChecker"
+      # RPP의 제자리 정렬도 정상 진행으로 인정하고 실제 정지만 빠르게 검출한다.
+      required_movement_radius: 0.05
+      required_movement_angle: 0.05
       movement_time_allowance: 10.0
     general_goal_checker:
       stateful: True
@@ -100,7 +106,8 @@ controller_server:
       max_lookahead_dist: 0.60
       lookahead_time: 1.5
       rotate_to_heading_angular_vel: 0.50
-      transform_tolerance: 0.1
+      # Wi-Fi DDS 환경의 Cartographer TF 지연(실측 약 0.18 s)을 흡수한다.
+      transform_tolerance: 0.5
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
       approach_velocity_scaling_dist: 0.60
@@ -132,8 +139,9 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      # jdamr_cube 실측 치수(base_link box 0.5 x 0.3m + 라이다/휠 돌출) 기준 사각 footprint.
-      footprint: "[[0.33, 0.25], [0.33, -0.25], [-0.25, -0.25], [-0.25, 0.25]]"
+      transform_tolerance: 0.7
+      # URDF 주행부 외곽: 캐스터 x=+-0.20/r=0.03, 휠 y=+-0.175/폭=0.05.
+      footprint: "[[0.23, 0.20], [0.23, -0.20], [-0.23, -0.20], [-0.23, 0.20]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -163,7 +171,8 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      footprint: "[[0.33, 0.25], [0.33, -0.25], [-0.25, -0.25], [-0.25, 0.25]]"
+      transform_tolerance: 0.7
+      footprint: "[[0.23, 0.20], [0.23, -0.20], [-0.23, -0.20], [-0.23, 0.20]]"
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -295,14 +304,17 @@ collision_monitor:
     cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
-    transform_tolerance: 0.2
-    source_timeout: 0.5
+    # Nav2's documented default is 2 s. The former 0.5 s threshold was below
+    # the measured DDS jitter and repeatedly stopped a clear robot.
+    transform_tolerance: 0.5
+    source_timeout: 2.0
     base_shift_correction: True
     stop_pub_timeout: 2.0
     polygons: ["StopZone", "SlowdownZone", "FootprintApproach"]
     StopZone:
       type: "polygon"
-      points: "[[0.43, 0.34], [0.43, -0.34], [-0.30, -0.34], [-0.30, 0.34]]"
+      # URDF footprint에서 각 방향 5cm만 확장한다.
+      points: "[[0.28, 0.25], [0.28, -0.25], [-0.28, -0.25], [-0.28, 0.25]]"
       action_type: "stop"
       min_points: 3
       visualize: True
@@ -310,10 +322,11 @@ collision_monitor:
       enabled: True
     SlowdownZone:
       type: "polygon"
-      points: "[[0.65, 0.45], [0.65, -0.45], [-0.38, -0.45], [-0.38, 0.45]]"
+      # URDF footprint에서 각 방향 15cm 확장한 저속 구간이다.
+      points: "[[0.38, 0.35], [0.38, -0.35], [-0.38, -0.35], [-0.38, 0.35]]"
       action_type: "slowdown"
       min_points: 3
-      slowdown_ratio: 0.35
+      slowdown_ratio: 0.60
       visualize: True
       polygon_pub_topic: "slowdown_zone"
       enabled: True

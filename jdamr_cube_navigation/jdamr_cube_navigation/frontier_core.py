@@ -85,9 +85,12 @@ class GridMap:
 class FrontierConfig:
     """Thresholds and deterministic utility weights for extraction."""
 
-    free_threshold: int = 20
+    # Cartographer의 관측 경계는 미관측(-1) 바로 안쪽에 49~50을 만든다.
+    free_threshold: int = 50
     occupied_threshold: int = 65
-    clearance_m: float = 0.60
+    # 후보 전처리 여유만 둔다. 차체 외곽과 최종 여유는 Nav2 costmap이
+    # URDF 기반 footprint로 검증하므로 여기서 차체 반경을 다시 더하지 않는다.
+    clearance_m: float = 0.10
     min_cluster_size: int = 3
     information_gain_weight: float = 1.0
     distance_weight: float = 0.20
@@ -181,8 +184,9 @@ class FrontierCore:
 
         The robot start must lie in known-free space.  Reachability, unknown
         adjacency, and frontier clustering use conservative 4-connectivity.
-        Clearance is a lower bound to the nearest known-nonfree cell boundary,
-        so ambiguous occupancy values are treated as obstacles as well.
+        Clearance is a lower bound to the nearest occupied-cell boundary.
+        Ambiguous cells remain non-traversable but do not grow a false
+        obstacle halo around otherwise free robot poses.
         """
         if not self.start_is_safe(grid, robot_x, robot_y):
             return []
@@ -232,7 +236,7 @@ class FrontierCore:
             row = y * grid.width
             for x in range(min_x, max_x + 1):
                 value = grid.data[row + x]
-                if value < 0 or value <= self.config.free_threshold:
+                if value < self.config.occupied_threshold:
                     continue
                 center_distance = max(abs(x - start_x), abs(y - start_y))
                 if self._clearance_cells(center_distance) < minimum:
@@ -243,7 +247,7 @@ class FrontierCore:
         self, grid: GridMap, minimum_clearance: float = 0.0,
     ) -> list[int]:
         """
-        Return capped Chebyshev center distances to known-nonfree cells.
+        Return capped Chebyshev center distances to occupied cells.
 
         Propagation stops after the distance needed for the configured safety
         decision.  The sentinel therefore means "at least this far", not
@@ -255,9 +259,9 @@ class FrontierCore:
         size = len(grid.data)
         distances = [sentinel] * size
         queue = deque()
-        free_threshold = self.config.free_threshold
+        occupied_threshold = self.config.occupied_threshold
         for index, value in enumerate(grid.data):
-            if value >= 0 and value > free_threshold:
+            if value >= occupied_threshold:
                 distances[index] = 0
                 queue.append(index)
 

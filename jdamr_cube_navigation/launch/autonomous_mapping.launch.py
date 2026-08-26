@@ -51,23 +51,11 @@ def generate_launch_description():
             # Include launch arguments accept substitutions, not ParameterFile.
             'params_file': rewritten_params,
             'autostart': autostart,
-            'use_composition': 'True',
-            'container_name': 'nav2_container',
+            # Keep lifecycle nodes isolated: the composed container can stall
+            # under physical scan/TF load and remove every Nav2 action server.
+            'use_composition': 'False',
         }.items(),
     )
-
-    nav2_container = Node(
-        package='rclcpp_components',
-        executable='component_container_isolated',
-        name='nav2_container',
-        output='screen',
-        parameters=[configured_params, {'autostart': autostart}],
-    )
-    container_exit_shutdown = RegisterEventHandler(OnProcessExit(
-        target_action=nav2_container,
-        on_exit=[Shutdown(
-            reason='Nav2 container exited; stopping autonomous mapping')],
-    ))
 
     map_saver = Node(
         package='nav2_map_server',
@@ -113,8 +101,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'autostart', default_value='true',
             description='Activate Nav2 and map_saver lifecycle nodes'),
-        container_exit_shutdown,
-        nav2_container,
         GroupAction(actions=[
             # Jazzy navigation_launch.py starts docking_server without a
             # cmd_vel remap. Keep it behind the smoother/collision pipeline so

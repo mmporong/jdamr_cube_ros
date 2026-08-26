@@ -21,6 +21,12 @@ from .frontier_core import (
     BlacklistEntry, FrontierCandidate, FrontierCore, GridMap)
 
 
+STATIONARY_LINEAR_SPEED_MAX = 0.01
+# The base encoder reports standstill yaw noise in 0.013744 rad/s steps.
+# Accept the measured two-step jitter while rejecting actual slow rotation.
+STATIONARY_ANGULAR_SPEED_MAX = 0.03
+
+
 class ExplorerState(str, Enum):
     """Externally visible explorer states."""
 
@@ -57,6 +63,26 @@ class Readiness:
             'command_owner_ok', 'battery_ok',
             'stationary') if not getattr(self, name))
 
+    def motion_missing(self) -> tuple[str, ...]:
+        """Return hard faults that must latch while Nav2 owns motion.
+
+        Map, scan, TF, and odometry freshness remain mandatory start gates.
+        During an active goal Nav2 handles those transient data gaps and the
+        collision monitor independently outputs zero until scan data recovers.
+        Latching the explorer on the same one-sample gap prevents automatic
+        recovery without adding a safety boundary.
+        """
+        return tuple(name for name in (
+            'collision_monitor_active', 'planner_ready', 'navigator_ready',
+            'command_owner_ok', 'battery_ok') if not getattr(self, name))
+
+    def selection_missing(self) -> tuple[str, ...]:
+        """Return health gaps that delay, but never latch, goal selection."""
+        return tuple(name for name in (
+            'map_fresh', 'scan_fresh', 'tf_fresh', 'odom_fresh',
+            'collision_monitor_active', 'planner_ready', 'navigator_ready',
+            'command_owner_ok', 'battery_ok') if not getattr(self, name))
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -87,7 +113,8 @@ def odom_stationary_ready(linear: float, angular: float,
         math.isfinite(angular) and
         math.isfinite(received_at) and
         0.0 <= now - received_at <= stale_seconds and
-        linear <= 0.01 and angular <= 0.02)
+        linear <= STATIONARY_LINEAR_SPEED_MAX and
+        angular <= STATIONARY_ANGULAR_SPEED_MAX)
 
 
 def odom_fresh_ready(received_at: float, now: float,
@@ -295,9 +322,9 @@ class ExplorerPolicy:
     """Fail-closed state machine for one-goal-at-a-time mapping."""
 
     def __init__(self, *, stall_timeout: float = 20.0,
-                 settle_seconds: float = 10.0, empty_cycles: int = 3,
-                 max_recoveries: int = 2, blacklist_seconds: float = 90.0,
-                 blacklist_radius: float = 0.75) -> None:
+                 settle_seconds: float = 10.0, empty_cycles: int = 10,
+                 max_recoveries: int = 3, blacklist_seconds: float = 30.0,
+                 blacklist_radius: float = 0.35) -> None:
         """Initialize policy thresholds without enabling exploration."""
         self.state = ExplorerState.IDLE
         self.fault = ''
@@ -352,12 +379,11 @@ class ExplorerPolicy:
                 ExplorerState.IDLE, ExplorerState.FINISHED):
             return self.pause('probe_abort')
         if self.state in (
-                ExplorerState.SELECT, ExplorerState.VALIDATE_PATH,
-                ExplorerState.NAVIGATE, ExplorerState.SETTLING):
+                ExplorerState.VALIDATE_PATH, ExplorerState.NAVIGATE,
+                ExplorerState.SETTLING):
             # Motion is expected during navigation; stationary gates only
             # start, resume, and final map saving.
-            missing = tuple(item for item in readiness.missing()
-                            if item != 'stationary')
+            missing = readiness.motion_missing()
             if missing:
                 return self.pause('readiness: ' + ','.join(missing))
         if (self.state == ExplorerState.NAVIGATE and
@@ -392,6 +418,7 @@ class ExplorerPolicy:
                 self.active_goal is None):
             return False
         self.state = ExplorerState.NAVIGATE
+        self.fault = ''
         self._best_distance = math.inf
         self._last_progress_at = now
         return True
@@ -491,6 +518,7 @@ try:
     from rclpy.action import ActionClient
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import BatteryState, LaserScan
     from std_msgs.msg import Empty, String
     from std_srvs.srv import Trigger
@@ -529,13 +557,16 @@ class FrontierExplorer(Node):
         super().__init__('frontier_explorer')
         self.declare_parameter('dry_run', False)
         self.declare_parameter('top_k', 5)
-        self.declare_parameter('map_stale_seconds', 3.0)
-        self.declare_parameter('scan_stale_seconds', 0.5)
-        self.declare_parameter('tf_stale_seconds', 0.5)
-        self.declare_parameter('odom_stale_seconds', 0.5)
-        self.declare_parameter('collision_state_stale_seconds', 1.0)
-        self.declare_parameter('cancel_timeout_seconds', 1.0)
-        self.declare_parameter('battery_stale_seconds', 2.5)
+        self.declare_parameter('map_stale_seconds', 10.0)
+        # These freshness checks gate explicit start/resume and new selection.
+        # Once Nav2 owns motion, its controller and Collision Monitor recover
+        # transient DDS gaps without requiring an operator resume.
+        self.declare_parameter('scan_stale_seconds', 2.0)
+        self.declare_parameter('tf_stale_seconds', 2.0)
+        self.declare_parameter('odom_stale_seconds', 2.0)
+        self.declare_parameter('collision_state_stale_seconds', 3.0)
+        self.declare_parameter('cancel_timeout_seconds', 3.0)
+        self.declare_parameter('battery_stale_seconds', 10.0)
         self.declare_parameter('min_battery_voltage', 10.5)
         self.declare_parameter('map_url_prefix', '/home/lim/maps/autonomous')
         self.policy = ExplorerPolicy()
@@ -599,10 +630,14 @@ class FrontierExplorer(Node):
         self._markers_pub = self.create_publisher(
             MarkerArray, '/frontier_explorer/markers', 10)
         self.create_subscription(OccupancyGrid, '/map', self._on_map, 1)
-        self.create_subscription(LaserScan, '/scan', self._on_scan, 10)
+        # Freshness observers do not need retransmission. BEST_EFFORT avoids
+        # adding two more reliable high-rate readers across the robot Wi-Fi.
+        self.create_subscription(
+            LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
         self.create_subscription(
             BatteryState, '/battery_state', self._on_battery, 10)
-        self.create_subscription(Odometry, '/odom', self._on_odom, 10)
+        self.create_subscription(
+            Odometry, '/odom', self._on_odom, qos_profile_sensor_data)
         self.create_subscription(Empty, '/probe_abort', self._on_abort, 10)
         self.create_subscription(CollisionMonitorState,
                                  '/collision_monitor_state',
@@ -771,7 +806,8 @@ class FrontierExplorer(Node):
             stationary=(
                 math.isfinite(self._linear) and
                 math.isfinite(self._angular) and
-                self._linear <= 0.01 and self._angular <= 0.02))
+                self._linear <= STATIONARY_LINEAR_SPEED_MAX and
+                self._angular <= STATIONARY_ANGULAR_SPEED_MAX))
 
     def _start(self, _request, response):
         allowed, message = exploration_transition_allowed(
@@ -873,7 +909,10 @@ class FrontierExplorer(Node):
                 self.policy.state != ExplorerState.SELECT):
             self._invalidate_selection()
         self._apply(decision)
-        if self.policy.state == ExplorerState.SELECT:
+        # SELECT owns no motion. Transient Wi-Fi TF/scan gaps should delay the
+        # next path probe, not latch PAUSED and require operator recovery.
+        if (self.policy.state == ExplorerState.SELECT and
+                not readiness.selection_missing()):
             self._select(now)
         self._publish_status(readiness)
 
@@ -908,9 +947,10 @@ class FrontierExplorer(Node):
             return
         if not self.core.start_is_safe(
                 self._map, self._robot_pose[0], self._robot_pose[1]):
-            self._invalidate_selection()
-            self._apply(self.policy.pause(
-                'robot pose is not a safe known-free start'))
+            # Cartographer can briefly classify the robot's own cell as
+            # ambiguous while a submap update arrives. SELECT owns no motion,
+            # so wait for the next map rather than latching manual recovery.
+            self._last_selected_sequence = self._map_sequence
             return
         self._frontier_worker.offer(FrontierExtractionRequest(
             token=self._selection_token,
@@ -1027,7 +1067,11 @@ class FrontierExplorer(Node):
         try:
             wrapped = future.result()
             path = wrapped.result.path
-            valid = bool(path.poses) and self._path_known_free(path.poses)
+            # The planner evaluates the path against its synchronized global
+            # costmap with allow_unknown=false.  Rechecking against the raw
+            # /map here races Cartographer's rolling map origin/update and can
+            # reject a path that Nav2 has already proven to be known-free.
+            valid = bool(path.poses)
         except Exception as error:
             self._apply(self.policy.pause(
                 f'path result failed: {error}'))
@@ -1067,16 +1111,6 @@ class FrontierExplorer(Node):
         self.policy.path_rejected()
         self._path_index += 1
         self._validate_next()
-
-    def _path_known_free(self, poses: Sequence[PoseStamped]) -> bool:
-        if self._map is None:
-            return False
-        for stamped in poses:
-            cell = self._map.world_to_cell(
-                stamped.pose.position.x, stamped.pose.position.y)
-            if cell is None or not self.core.is_free(self._map.value(cell)):
-                return False
-        return True
 
     def _nav_goal_response(self, future, token: int) -> None:
         if future is not self._nav_send_future:
