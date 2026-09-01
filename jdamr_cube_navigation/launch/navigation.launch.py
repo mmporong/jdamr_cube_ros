@@ -49,11 +49,18 @@ def generate_launch_description():
     use_keepout = LaunchConfiguration('use_keepout')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    use_composition = LaunchConfiguration('use_composition')
+    safe_bt = os.path.join(
+        package_share, 'behavior_trees', 'navigate_to_pose_safe_mapping.xml')
 
     rewritten_params = RewrittenYaml(
         source_file=params_file,
         root_key='',
         param_rewrites={
+            # waypoint_follower delegates each pose to NavigateToPose without
+            # supplying a tree path.  A blank default makes every waypoint
+            # fail with BehaviorTreeEngine "Empty Tree" before any movement.
+            'default_nav_to_pose_bt_xml': safe_bt,
             'yaml_filename': map_yaml,
             'local_costmap.local_costmap.ros__parameters.'
             'keepout_filter.enabled': use_keepout,
@@ -116,7 +123,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'params_file': rewritten_params,
             'autostart': autostart,
-            'use_composition': 'False',
+            'use_composition': use_composition,
             'slam': 'False',
             'use_localization': 'True',
         }.items(),
@@ -163,6 +170,10 @@ def generate_launch_description():
     ld.add_action(DeclareLaunchArgument(
         'autostart', default_value='true',
         description='Activate localization, navigation, and filter nodes'))
+    ld.add_action(DeclareLaunchArgument(
+        'use_composition', default_value='false',
+        description=(
+            'Compose Nav2 on the Pi to bound CPU load; keep false on laptop')))
     ld.add_action(OpaqueFunction(function=_validate_keepout))
     ld.add_action(shutdown_on_mask_exit)
     ld.add_action(shutdown_on_info_exit)

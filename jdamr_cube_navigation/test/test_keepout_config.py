@@ -1,9 +1,12 @@
 """Regression tests for saved-map keepout navigation."""
 
 import ast
+import hashlib
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from geometry_msgs.msg import TransformStamped
+from jdamr_cube_navigation.corridor_route import load_route
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
 from jdamr_cube_navigation.keepout_zone_capture import (
     order_polygon_points,
@@ -21,12 +24,23 @@ PARAMS_PATH = PACKAGE_ROOT / 'config' / 'nav2_params.yaml'
 ZONES_EXAMPLE = PACKAGE_ROOT / 'config' / 'keepout_zones.example.yaml'
 ZONES_AUTONOMOUS = (
     PACKAGE_ROOT / 'config' / 'keepout_zones.autonomous_20260826.yaml')
+ROUNDTRIP_ROUTE = (
+    PACKAGE_ROOT / 'config' / 'corridor_roundtrip.autonomous_20260826.yaml')
 NAVIGATION_LAUNCH = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
 KEEPOUT_LAUNCH = PACKAGE_ROOT / 'launch' / 'keepout_navigation.launch.py'
 CAPTURE_LAUNCH = PACKAGE_ROOT / 'launch' / 'keepout_capture.launch.py'
 REPLAY_LAUNCH = PACKAGE_ROOT / 'launch' / 'offline_replay_guard.launch.py'
+ONBOARD_LAUNCH = (
+    PACKAGE_ROOT / 'launch' / 'onboard_keepout_navigation.launch.py')
+OPERATOR_VIEW_LAUNCH = (
+    PACKAGE_ROOT / 'launch' / 'keepout_operator_view.launch.py')
 KEEPOUT_RVIZ = PACKAGE_ROOT / 'rviz' / 'keepout_navigation.rviz'
 SETUP_PATH = PACKAGE_ROOT / 'setup.py'
+ROUTE_SOURCE = (
+    PACKAGE_ROOT / 'jdamr_cube_navigation' / 'corridor_route.py')
+CORRIDOR_BT = (
+    PACKAGE_ROOT / 'behavior_trees' /
+    'navigate_to_pose_corridor_fail_fast.xml')
 
 
 def _params():
@@ -118,7 +132,8 @@ def test_keepout_launch_is_required_and_fail_closed():
     assert "name='keepout_costmap_filter_info_server'" in navigation_source
     assert "name='lifecycle_manager_keepout'" in navigation_source
     assert navigation_source.count('OnProcessExit(') == 2
-    assert "'use_composition': 'False'" in navigation_source
+    assert "'use_composition': use_composition" in navigation_source
+    assert "'use_composition', default_value='false'" in navigation_source
     assert "'slam': 'False'" in navigation_source
     assert "'use_localization': 'True'" in navigation_source
 
@@ -128,6 +143,14 @@ def test_saved_map_is_injected_into_nav2_parameters():
     source = NAVIGATION_LAUNCH.read_text(encoding='utf-8')
 
     assert "'yaml_filename': map_yaml" in source
+
+
+def test_saved_map_navigation_injects_the_safe_behavior_tree():
+    """Keep NavigateToPose and waypoint_follower from loading an empty tree."""
+    source = NAVIGATION_LAUNCH.read_text(encoding='utf-8')
+
+    assert "'default_nav_to_pose_bt_xml': safe_bt" in source
+    assert "'behavior_trees', 'navigate_to_pose_safe_mapping.xml'" in source
 
 
 def test_keepout_launch_starts_dedicated_rviz_by_default():
@@ -151,6 +174,10 @@ def test_keepout_launch_starts_dedicated_rviz_by_default():
         '/keepout_filter_mask'
     assert displays['Keepout Zones']['Enabled'] is True
     assert 0.0 < displays['Keepout Zones']['Alpha'] < 1.0
+    assert displays['Global Costmap']['Enabled'] is False
+    assert displays['Localization']['Enabled'] is True
+    assert displays['LaserScan']['Enabled'] is False
+    assert manager['Global Options']['Frame Rate'] == 10
     tool_classes = {tool['Class'] for tool in manager['Tools']}
     assert 'rviz_default_plugins/SetInitialPose' in tool_classes
     assert 'nav2_rviz_plugins/GoalTool' in tool_classes
@@ -183,6 +210,55 @@ def test_offline_replay_launch_whitelists_inputs_and_requires_isolation():
     assert "'/tf_static:=/tf_static_recorded'" in source
     for excluded in ("'/map'", "'/cmd_vel'"):
         assert excluded not in source
+
+
+def test_onboard_navigation_keeps_control_and_recording_off_wifi():
+    """Run Nav2 and evidence capture together on the robot computer."""
+    source = ONBOARD_LAUNCH.read_text(encoding='utf-8')
+
+    ast.parse(source)
+    assert "'use_rviz': 'false'" in source
+    assert "'use_composition': 'true'" in source
+    assert "'record_bag', default_value='true'" in source
+    assert "'--storage', 'mcap'" in source
+    assert "'--topics', *RECORDED_TOPICS" in source
+    assert "'ionice', '--class', 'best-effort', '--classdata', '7'" in source
+    assert "'nice', '--adjustment', '10'" in source
+    assert "'/scan'" in source
+    assert "'/odom'" in source
+    assert "'/tf'" in source
+    assert "'/joint_states'" not in source
+    assert 'onboard recorder exited; stopping navigation' in source
+    assert 'bag_output already exists' in source
+
+
+def test_operator_view_never_starts_navigation_or_recording():
+    """Let Wi-Fi clients inspect state without owning the motion loop."""
+    source = OPERATOR_VIEW_LAUNCH.read_text(encoding='utf-8')
+
+    ast.parse(source)
+    assert "name='keepout_operator_view'" in source
+    assert "executable='rviz2'" in source
+    for forbidden in (
+            'controller_server', 'bt_navigator', 'ros2 bag', 'map_server'):
+        assert forbidden not in source
+
+
+def test_corridor_route_uses_fail_fast_tree_and_continuous_guards():
+    """Never hide a corridor fault behind spin, wait, or repeated goals."""
+    source = ROUTE_SOURCE.read_text(encoding='utf-8')
+    root = ET.parse(CORRIDOR_BT).getroot()
+    tags = {element.tag for element in root.iter()}
+
+    assert 'navigate_to_pose_corridor_fail_fast.xml' in source
+    assert 'RecoveryNode' not in tags
+    assert 'Spin' not in tags
+    assert 'BackUp' not in tags
+    assert 'Wait' not in tags
+    assert 'ComputePathToPose' in tags
+    assert 'FollowPath' in tags
+    assert 'if not self._navigation_ready()' in source
+    assert "'sensor, battery, or localization guard failure'" in source
 
 
 def test_tf_replay_filter_removes_only_recorded_map_to_odom():
@@ -268,31 +344,83 @@ def test_example_requires_replacing_placeholder_before_build():
     assert not any(zone['enabled'] for zone in example['zones'])
 
 
-def test_annotated_corridor_keepout_has_two_enabled_lower_branches():
-    """Keep the two user-marked yellow branches reproducible in map frame."""
+def test_annotated_corridor_keepout_matches_the_confirmed_rviz_polygons():
+    """Keep the two user-confirmed stair branches reproducible in map frame."""
     config = yaml.safe_load(ZONES_AUTONOMOUS.read_text(encoding='utf-8'))
     zones = {zone['id']: zone for zone in config['zones']}
 
     assert config['map_yaml'].endswith(
         'maps/autonomous_20260826T161908.yaml')
     assert config['safety_margin_m'] == 0.55
-    assert config['annotation_alignment']['matched_features'] >= 55
-    assert config['verification']['expected_keepout_cells'] == 9984
+    assert config['annotation_alignment']['matched_features'] == 8
+    assert config['verification']['expected_keepout_cells'] == 9406
     assert config['connectivity_checks'] == [{
         'id': 'main_corridor_left_to_right',
         'start': [-0.002, 0.0],
         'goal': [37.498, -4.3],
         'clearance_m': 0.25,
     }]
-    assert set(zones) == {
-        'yellow_left_lower_branch',
-        'yellow_right_lower_branch',
-    }
+    assert set(zones) == {'keepout_1', 'keepout_2'}
     assert all(zone['enabled'] for zone in zones.values())
-    assert max(point[1] for point in zones[
-        'yellow_left_lower_branch']['polygon']) <= -2.55
-    assert max(point[1] for point in zones[
-        'yellow_right_lower_branch']['polygon']) <= -6.4
+    assert max(point[1] for point in zones['keepout_1']['polygon']) <= -2.22
+    assert max(point[1] for point in zones['keepout_2']['polygon']) <= -3.74
+
+
+def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
+    """Preserve the 80 m Nav2-preflighted corridor route for the next run."""
+    config = yaml.safe_load(ROUNDTRIP_ROUTE.read_text(encoding='utf-8'))
+    waypoints = config['waypoints']
+
+    assert config['planned_length_m'] == 80.047
+    assert config['sensor_freshness_s'] == 2.5
+    assert config['minimum_battery_v'] == 10.5
+    assert len(waypoints) == 20
+    assert waypoints[0]['id'] == 'outbound_02m'
+    assert waypoints[9]['id'] == 'turnaround'
+    assert waypoints[-1] == {
+        'id': 'home', 'x': 0.0, 'y': -0.1, 'yaw': 0.0}
+
+
+def test_corridor_route_is_planning_first_and_signal_safe():
+    """Do not move by default or invalidate ROS before goal cancellation."""
+    source = ROUTE_SOURCE.read_text(encoding='utf-8')
+
+    ast.parse(source)
+    assert "'--execute', action='store_true'" in source
+    assert 'ComputePathThroughPoses' in source
+    assert 'goal.behavior_tree = self.behavior_tree' in source
+    assert 'SignalHandlerOptions.NO' in source
+    assert "'sensor, battery, or localization guard failure'" in source
+    assert 'Publisher(' not in source
+
+
+def test_route_loader_rejects_a_changed_keepout_mask(tmp_path):
+    """Bind a route to the exact reviewed mask instead of only its filename."""
+    source_map = tmp_path / 'map.yaml'
+    source_map.write_text('image: map.pgm\n', encoding='utf-8')
+    mask_image = tmp_path / 'mask.pgm'
+    mask_image.write_bytes(b'P5\n1 1\n255\n\x00')
+    mask_yaml = tmp_path / 'mask.yaml'
+    mask_yaml.write_text('image: mask.pgm\n', encoding='utf-8')
+    expected_hash = hashlib.sha256(mask_image.read_bytes()).hexdigest()
+    route_yaml = tmp_path / 'route.yaml'
+    route_yaml.write_text(yaml.safe_dump({
+        'schema_version': 1,
+        'map_yaml': str(source_map),
+        'keepout_mask_yaml': str(mask_yaml),
+        'expected_mask_sha256': expected_hash,
+        'waypoints': [
+            {'id': 'start', 'x': 0.0, 'y': 0.0},
+            {'id': 'goal', 'x': 1.0, 'y': 0.0},
+        ],
+    }), encoding='utf-8')
+
+    loaded = load_route(route_yaml)
+    assert loaded['keepout_mask_image'] == mask_image
+
+    mask_image.write_bytes(b'changed')
+    with pytest.raises(ValueError, match='hash mismatch'):
+        load_route(route_yaml)
 
 
 def test_clicked_points_become_an_enabled_map_frame_zone():

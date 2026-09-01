@@ -30,7 +30,7 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 복도 반복 수집처럼 이미 저장된 지도로 이동할 때는 `keepout_navigation.launch.py`만 사용한다. 이 launch는 AMCL과 저장 지도로 위치를 잡고, 동일한 금지구역 마스크를 global/local costmap에 함께 적용하며 전용 RViz도 기본으로 연다. RViz에는 원본 지도, `/keepout_filter_mask`, AMCL 파티클, 라이다, 전역 계획 경로와 초기 위치·Nav2 목표 도구가 미리 설정돼 있다. 마스크 또는 filter info 서버가 종료되면 전체 자율주행도 종료한다. 일반 `navigation.launch.py`의 `use_keepout:=false` 상태로 복도 자율주행을 시작하지 않는다.
 
-2026-09-01 사용자 주석의 노란 두 영역은 `config/keepout_zones.autonomous_20260826.yaml`에 map-frame 다각형으로 반영했다. 왼쪽 아래 가지와 오른쪽 아래 가지의 입구를 0.55m 여유로 막고, 주 복도는 이어지도록 잡았다. 마스크 생성기는 본선의 지정 시작점 `(-0.002, 0.000)`에서 끝점 `(37.498, -4.300)`까지 0.25m 장애물 여유를 적용한 격자 연결성을 다시 계산하며, 경로가 끊기면 파일 생성을 거부한다. 현재 저장 지도에 사용할 마스크는 아래 명령으로 재생성한다.
+2026-09-01 RViz `Publish Point`로 확정한 두 영역은 `config/keepout_zones.autonomous_20260826.yaml`에 map-frame 다각형으로 반영했다. 왼쪽 계단 입구는 0.55m 팽창 뒤 경계가 실제 벽선과 일치하도록 보정했고, 오른쪽 가지도 입구 전체를 막았다. 마스크 생성기는 본선의 지정 시작점 `(-0.002, 0.000)`에서 끝점 `(37.498, -4.300)`까지 0.25m 장애물 여유를 적용한 격자 연결성을 다시 계산하며, 경로가 끊기면 파일 생성을 거부한다. 현재 저장 지도에 사용할 마스크는 아래 명령으로 재생성한다.
 
 ```bash
 cd "$HOME/jdamr_cube_ws"
@@ -38,11 +38,11 @@ source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 run jdamr_cube_navigation keepout_mask build \
   --zones "$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/keepout_zones.autonomous_20260826.yaml" \
-  --output-prefix "$HOME/maps/autonomous_20260826T161908_keepout" \
+  --output-prefix "$HOME/maps/autonomous_20260826T161908_keepout_multi" \
   --force
 ros2 run jdamr_cube_navigation keepout_mask validate \
   --map "$HOME/maps/autonomous_20260826T161908.yaml" \
-  --mask "$HOME/maps/autonomous_20260826T161908_keepout.yaml"
+  --mask "$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml"
 ```
 
 금지구역 좌표를 다시 정하려면 전용 capture launch를 실행하고 RViz의 `Publish Point`로 경계 꼭짓점을 클릭한다. 아래 예시는 네 번 클릭할 때마다 사각형 한 곳을 저장하며, 클릭 순서와 무관하게 중심점 둘레로 꼭짓점을 정렬해 교차 다각형을 방지한다. 저장 뒤 화면은 열린 상태를 유지하므로 다음 사각형을 계속 네 번 클릭할 수 있다. 모든 사각형을 다 찍은 뒤 launch 터미널에서 `Ctrl-C`로 종료한다. 완성된 사각형은 하나의 YAML에 `keepout_area_1`, `keepout_area_2` 순으로 누적되고, 미완성 클릭은 저장하지 않는다. 이 launch는 저장 지도 server, RViz, 클릭 수집기만 실행하며 planner, controller, navigator를 시작하지 않으므로 목표나 속도 명령을 보내지 않는다.
@@ -81,13 +81,80 @@ ros2 lifecycle get /keepout_costmap_filter_info_server
 ros2 topic echo --once /keepout_costmap_filter_info
 ```
 
-RViz가 필요 없는 정적 진단이나 원격 점검에서만 `use_rviz:=false`를 추가한다. 실차 주행에서는 기본값을 유지하고, RViz의 `Keepout Zones` 표시와 계획 경로가 금지구역을 침범하지 않는지 목표 전송 전에 확인한다.
+단일 PC 정적 진단에서는 `keepout_navigation.launch.py`의 RViz 기본값을 사용할 수 있다.
+파이 온보드 실차 주행에서는 아래 전용 wrapper가 `use_rviz:=false`를 강제하고, 노트북의
+view-only RViz에서 `Keepout Zones`와 계획 경로가 금지구역을 침범하지 않는지 목표 전송
+전에 확인한다.
 
 이 모드는 기존 지도를 경로 통제에만 사용한다. 실차 수집 중 Cartographer나 SLAM Toolbox mapping을 동시에 실행하지 않는다. 원시 `/scan`, `/odom`, TF를 bag으로 기록한 뒤, `offline_replay_guard.launch.py`로 `/map`과 이동 명령을 재생 목록에서 제외하고 기록된 AMCL의 `map -> odom`을 TF에서 제거한다. 새 mapping backend는 격리 domain의 빈 상태에서 실행한다. 따라서 Keepout이나 저장 지도가 새 지도 결과를 덮어쓰거나 정답으로 주입되지 않는다. 실행 절차는 `evaluation/README.md`의 "저장 지도 주행 bag의 오프라인 SLAM 재생"을 따른다.
 
+## Wi-Fi 비의존 실차 구조
+
+2026-09-01 복도 왕복에서는 노트북에서 Nav2·RViz·rosbag을 함께 실행하자 복도 끝에서
+ping 20% 손실, 평균 약 710ms, 최대 약 1.1초 지연이 발생했다. `/scan`, `/odom`, TF가
+2초 이상 늦어져 Collision Monitor가 정지했고, recorder 종료 직후 센서가 다시
+수신됐다. 이 결과로 실차의 제어 루프와 원본 데이터 수집을 Wi-Fi 건너편에서 실행하는
+구성을 폐기한다.
+
+파이에는 하드웨어 bringup이 먼저 실행돼 있어야 한다. 그 위에는 합성된
+Nav2·AMCL·Collision Monitor, 경로 실행기, 필수 토픽 MCAP recorder만 둔다. RViz,
+Cartographer·SLAM Toolbox, 그래프·통계 계산, bag 재생은 주행 중 파이에 띄우지 않는다.
+recorder는 CPU nice 10과 I/O best-effort 최저 우선순위 7로 실행해 제어 루프가 먼저
+스케줄되게 한다. 기본 기록도 `/scan`, `/odom`, TF, IMU, 제어 전·후 속도, AMCL,
+배터리, 계획, Collision Monitor 상태로 제한하며 RViz용 `/joint_states`는 제외한다.
+recorder가 예상치 않게 끝나면 navigation도 종료한다.
+
+```bash
+cd "$HOME/jdamr_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+export ROS_DOMAIN_ID=12
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
+  map:="$HOME/maps/autonomous_20260826T161908.yaml" \
+  keepout_mask:="$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml"
+```
+
+노트북은 지도·마스크·AMCL·계획 경로만 보는 저대역폭 RViz를 실행한다. 원시 LaserScan과
+전체 Global Costmap 표시는 기본 OFF이고 frame rate는 10Hz다. 필요할 때만 잠깐 켠다.
+노트북에서는 rosbag을 동시에 기록하지 않는다.
+
+```bash
+cd "$HOME/jdamr_cube_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+export ROS_DOMAIN_ID=12
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+ros2 launch jdamr_cube_navigation keepout_operator_view.launch.py
+```
+
+검증된 20-point 왕복 경로는
+`config/corridor_roundtrip.autonomous_20260826.yaml`에 저장돼 있다. 다음 두 명령도
+파이에서 실행한다. 첫 명령은 80m 전체 경로를 계획만 하고, 두 번째 명령만 실제로
+움직인다. `corridor_route`는 waypoint마다 회전·후진·대기·재시도가 없는 복도 전용
+fail-fast BT를 명시한다. 배터리·scan·odom freshness 또는 AMCL 공분산 게이트가
+깨지면 현재 목표를 취소하며 다음 waypoint를 보내지 않는다.
+
+```bash
+ros2 run jdamr_cube_navigation corridor_route \
+  --route "$HOME/jdamr_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/corridor_roundtrip.autonomous_20260826.yaml"
+ros2 run jdamr_cube_navigation corridor_route \
+  --route "$HOME/jdamr_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/corridor_roundtrip.autonomous_20260826.yaml" \
+  --execute
+```
+
+2026-09-01 노트북 기록은 106.9MiB·128,791개 메시지로 정상 종료됐지만 transport
+loss 136건과 미완주가 있어 진단용이다. 상세 수치·해시·실패 시점은
+`evaluation/20260901_CORRIDOR_KEEPOUT_RUN.md`에 고정했다. 파이 로컬 기록에서 손실 0과
+완전 왕복을 확인하기 전에는 최종 포트폴리오 데이터로 승격하지 않는다. 다음 실차에서는
+출발 전 1분 정적 소크에서 4코어 load average가 4.0 미만이고 thermal throttle이 없음을
+확인한 뒤 주행한다. 이 조건은 새 온보드 구성의 실차 검증 전까지 잠정 운용 게이트다.
+
 자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
-실기 launch는 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
+자율 매핑과 노트북 실행 기본값은 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. 다만 파이에서 저장지도 주행을 실행하는 `onboard_keepout_navigation.launch.py`만 과거 정적 소크의 CPU 실측(load 약 13 → 3.53)에 따라 composition을 사용한다. 이 모드는 컨테이너 자식만 죽이지 않고 launch process group 전체를 종료한다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
 
 운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다. Nav2 자식 프로세스 하나만 직접 `kill`하면 lifecycle 정리와 최종 정지 상태를 확인하기 어렵다.
 

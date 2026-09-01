@@ -24,6 +24,7 @@ def generate_launch_description():
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    use_composition = LaunchConfiguration('use_composition')
     use_rviz = LaunchConfiguration('use_rviz')
 
     navigation = IncludeLaunchDescription(
@@ -35,6 +36,7 @@ def generate_launch_description():
             'params_file': params_file,
             'use_sim_time': use_sim_time,
             'autostart': autostart,
+            'use_composition': use_composition,
         }.items(),
     )
     rviz = Node(
@@ -66,6 +68,9 @@ def generate_launch_description():
             'use_sim_time', default_value='false'),
         DeclareLaunchArgument(
             'autostart', default_value='true'),
+        DeclareLaunchArgument(
+            'use_composition', default_value='false',
+            description='Compose Nav2 only for the Pi onboard wrapper'),
         DeclareLaunchArgument(
             'use_rviz', default_value='true',
             description='Start the keepout-aware operator RViz view'),

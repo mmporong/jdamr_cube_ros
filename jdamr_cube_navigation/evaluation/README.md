@@ -41,18 +41,26 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 ## 다음 기록의 고정 조건
 
-아래 명령은 운영자가 안전 구역과 비상 정지를 확인한 뒤 별도 주행 세션에서만 사용한다. `<run_id>`는 실행 전에 고유한 실제 값으로 바꿔야 한다. 이 문서는 이동 명령을 포함하지 않는다.
+아래 명령은 운영자가 안전 구역과 비상 정지를 확인한 뒤 별도 주행 세션에서만 사용한다. `<run_id>`는 실행 전에 고유한 실제 값으로 바꿔야 한다. 이 문서는 이동 명령을 포함하지 않는다. 실차 Nav2가 파이에서 실행될 때 이 recorder도 반드시 파이에서 실행한다. 노트북에서 같은 고속 토픽을 추가 구독하면 약한 Wi-Fi 구간에서 TF·scan 지연이 제어 루프까지 전파될 수 있다. 저장지도 Keepout 주행은 recorder와 navigation을 함께 묶은 `onboard_keepout_navigation.launch.py`를 우선 사용한다. 파이에는 RViz, 온라인 mapping backend, bag 재생·분석을 추가로 띄우지 않는다.
 
 ```bash
 cd $HOME/jdamr_cube_ws/src/jdamr_cube_ros
 source /opt/ros/jazzy/setup.bash
+ionice --class best-effort --classdata 7 \
+nice --adjustment 10 \
 ros2 bag record \
   --storage mcap \
   --storage-config-file jdamr_cube_navigation/evaluation/mcap_writer_options.yaml \
   --qos-profile-overrides-path jdamr_cube_navigation/evaluation/qos_overrides.yaml \
   --output $HOME/jdamr_artifacts/<run_id> \
-  /scan /odom /tf /tf_static /joint_states /cmd_vel
+  /scan /odom /tf /tf_static /imu/data_raw \
+  /cmd_vel /cmd_vel_nav /amcl_pose /battery_state /plan \
+  /collision_monitor_state
 ```
+
+`/joint_states`는 RViz 바퀴 표현용이라 기본 온보드 기록에서 제외한다. MCAP 압축은 CPU를
+아끼기 위해 사용하지 않고, 1MiB chunk의 CRC와 인덱스만 보존한다. 출발 전 1분 정적
+소크에서 4코어 load average 4.0 미만과 thermal throttle 없음도 함께 확인한다.
 
 프로토콜 적격 데이터는 다음을 모두 만족해야 한다.
 

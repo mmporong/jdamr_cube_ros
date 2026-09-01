@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'frontier_explorer = jdamr_cube_navigation.frontier_explorer:main',
+            'corridor_route = jdamr_cube_navigation.corridor_route:main',
             'goto_pose = jdamr_cube_navigation.goto_pose:main',
             'keepout_mask = jdamr_cube_navigation.keepout_mask:main',
             'keepout_zone_capture = '

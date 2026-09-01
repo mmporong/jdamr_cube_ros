@@ -2,32 +2,31 @@ schema_version: 1
 map_yaml: $HOME/maps/autonomous_20260826T161908.yaml
 safety_margin_m: 0.55
 annotation_alignment:
-  source: user_marked_yellow_areas_2026-09-01
-  method: sift_homography_to_saved_pgm
-  matched_features: 60
-  note: 오른쪽이 잘린 주석 화면을 원본 지도에 외삽해 아래쪽 가지만 차단한다.
+  source: rviz_publish_point_manual_2026-09-01
+  method: two_four_point_polygons_in_map_frame
+  matched_features: 8
+  note: 왼쪽 계단 입구는 0.55m 팽창 후 경계가 벽선과 일치하도록 원점을 보정했다.
 verification:
   source_map_sha256: ee9b0911f41a7da31a92eca67d261b2a96c286f6f49d65b3d6c884fb5937fc6e
-  expected_mask_sha256: 212c64f10051db70666c3dc2ed546819da6edbf049ec8425c7eb5e79cc6e498e
-  expected_keepout_cells: 9984
+  expected_mask_sha256: 40a99481046b2ad55fd4c5d3ad3e8b3a6d245fd7c808d32571f2828d4837df28
+  expected_keepout_cells: 9406
 connectivity_checks:
   - id: main_corridor_left_to_right
     start: [-0.002, 0.000]
     goal: [37.498, -4.300]
     clearance_m: 0.25
 zones:
-  - id: yellow_left_lower_branch
+  - id: keepout_1
     enabled: true
     polygon:
-      - [7.148, -2.550]
-      - [8.498, -2.550]
-      - [8.498, -5.500]
-      - [6.698, -5.500]
-      - [6.998, -3.650]
-  - id: yellow_right_lower_branch
+      - [6.263780, -2.225145]
+      - [8.747318, -2.356887]
+      - [8.727464, -3.456606]
+      - [6.095974, -2.916945]
+  - id: keepout_2
     enabled: true
     polygon:
-      - [27.998, -6.400]
-      - [30.498, -6.400]
-      - [31.898, -8.950]
-      - [26.998, -8.950]
+      - [37.763397, -6.394963]
+      - [40.990551, -3.746852]
+      - [41.432625, -7.194964]
+      - [37.651196, -7.636807]
