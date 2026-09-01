@@ -5,7 +5,7 @@ JD-AMR cube(차동구동 + LD14 라이다 + RGB-D)와 SO-101 5축 팔을 ROS 2 J
 
 ## 이 포크에서 내가 만든 것
 
-`git diff --stat upstream/main..main` 기준입니다.
+아래 표는 2026-08-26 캡스톤 포트폴리오를 정리했을 당시의 범위입니다. 현재 저장소의 전체 변경 범위를 뜻하지 않습니다.
 
 | 범위 | 내용 |
 |---|---|
@@ -13,7 +13,7 @@ JD-AMR cube(차동구동 + LD14 라이다 + RGB-D)와 SO-101 5축 팔을 ROS 2 J
 | `jdamr_cube_description/urdf/` | **그리퍼 충돌 형상 정밀화** — STL 정점 파싱으로 경계 상자를 산출하고 손가락을 tip/mid/base 3박스로 근사. RGB-D 카메라 각도 조정 |
 | `jdamr_cube_gazebo/` | headless GPU 실행 옵션·리소스 경로·월드 배치 |
 
-커밋 22개 전부 `capstone_pick`·`description`·`gazebo` 범위입니다.
+당시 정리 대상이었던 22개 커밋은 전부 `capstone_pick`·`description`·`gazebo` 범위였습니다. 이후 추가한 SLAM 계획·인계 문서는 아래 구현 기록에서 별도로 구분합니다.
 
 ## 기반 리포에서 받은 것 (내가 만들지 않음)
 
@@ -32,6 +32,8 @@ JD-AMR cube(차동구동 + LD14 라이다 + RGB-D)와 SO-101 5축 팔을 ROS 2 J
 문제와 해결 과정은 별도 문서 저장소에 있습니다 — [gazebo-so101-capstone](https://github.com/mmporong/gazebo-so101-capstone). 환경 구축 · 파지 물리 · 비전 좌표계 · 손목캠 정렬 · 바닥 파지 · YOLO 전환 · 초기 자세 · 대시보드 · 디버깅 노트 9편.
 
 2026-08-26 기준의 Physical AI 경계, sim-to-real 순서, 관련 논문별 적용 추천은 [Physical AI 포트폴리오 적용안](PORTFOLIO_20260826.md)에 정리했습니다. 문서 안의 추천 항목은 구현 완료 결과와 분리해 표시합니다.
+
+SLAM·자율탐색 심화 작업은 [SLAM 포트폴리오 재개 가이드](README_SLAM_PORTFOLIO.md)에서 시작합니다. 전체 논문 적용 판정, 수치 기준, Phase 0~9 실행 계획은 [SLAM 포트폴리오 PRD](.omx/plans/prd-jdamr-slam-portfolio.md)에 있습니다. 현재는 이번 심화 계획 수립까지 완료됐으며 계획에 정의한 신규 evaluation harness와 새 실차 데이터 수집은 아직 시작하지 않았습니다.
 
 ## 측정된 결과
 
