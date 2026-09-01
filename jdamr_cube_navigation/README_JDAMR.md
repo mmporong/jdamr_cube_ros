@@ -101,7 +101,10 @@ controller, planner, velocity smoother, Collision Monitor, BT navigator, Keepout
 경로 실행기, 필수 토픽 MCAP recorder만 둔다. 파이 전용 launch는 쓰지 않는 smoother
 server, route server, behavior server, waypoint follower, docking server를 실행하지
 않는다. RViz, Cartographer·SLAM Toolbox, 그래프·통계 계산, bag 재생은 주행 중 파이에
-띄우지 않는다.
+띄우지 않는다. 필수 Nav2 노드는 하나의 합성 컨테이너가 아니라 독립 프로세스로 실행한다.
+실차에서 컨테이너 프로세스는 살아 있는데 AMCL·planner·navigator가 DDS graph에서 함께
+사라진 장애를 분리하고, 어느 필수 프로세스든 종료되면 전체 navigation을 종료하기 위한
+구조다.
 recorder는 CPU nice 10과 I/O best-effort 최저 우선순위 7로 실행해 제어 루프가 먼저
 스케줄되게 한다. 기본 기록도 `/scan`, `/odom`, TF, IMU, 제어 전·후 속도, AMCL,
 배터리, 계획, Collision Monitor 상태로 제한하며 RViz용 `/joint_states`는 제외한다.
@@ -136,9 +139,13 @@ ros2 launch jdamr_cube_navigation keepout_operator_view.launch.py
 검증된 20-point 왕복 경로는
 `config/corridor_roundtrip.autonomous_20260826.yaml`에 저장돼 있다. 다음 두 명령도
 파이에서 실행한다. 첫 명령은 80m 전체 경로를 계획만 하고, 두 번째 명령만 실제로
-움직인다. `corridor_route`는 waypoint마다 회전·후진·대기·재시도가 없는 복도 전용
-fail-fast BT를 명시한다. 배터리·scan·odom freshness 또는 AMCL 공분산 게이트가
-깨지면 현재 목표를 취소하며 다음 waypoint를 보내지 않는다.
+움직인다. `corridor_route`는 waypoint마다 경로를 한 번만 계산하고 따르는 복도 전용
+fail-fast BT를 명시한다. 1Hz 연속 재계획과 회전·후진·대기·재시도는 사용하지 않으며,
+planner와 controller action 응답 제한은 1,000ms다. 배터리·scan·odom freshness 또는
+AMCL 게이트가 깨지면 현재 목표를 취소하며 다음 waypoint를 보내지 않는다. 복도에서
+관측이 약한 진행축 x 공분산은 2.0, 벽 이탈과 직접 관련된 횡축 y는 1.0으로 분리한다.
+중간 재개에는 `--start-index`를 쓰되 현재 AMCL 위치와 첫 잔여 waypoint가 6m보다 멀면
+원점 초기화 오류로 보고 출발하지 않는다.
 
 ```bash
 ros2 run jdamr_cube_navigation corridor_route \
@@ -159,11 +166,25 @@ loss 136건과 미완주가 있어 진단용이다. 상세 수치·해시·실�
 생략하고 전체 왕복으로 진행한다. 실제 출발 시 작업자가 로봇 옆에서 물리 전원을 즉시
 차단할 수 있어야 한다.
 
+반복 노드 소실을 고친 독립 프로세스 판은 recorder 포함 330.747초 정적 소크에서 필수
+Nav2 노드가 모두 생존했고 bond 실패와 SIGSEGV가 없었다. 45.4MiB·49,556개 메시지의
+45/45 chunk CRC가 통과했고 비영점 속도 명령은 0건, odom 변위는 0.0253mm, 종료 뒤
+잔류 프로세스와 `/cmd_vel` 발행자는 0이었다. 반면 load1은 4.13~9.85, recorder
+transport loss는 3건이어서 부하·최종 데이터 게이트는 통과하지 못했다. 부하를 줄이려고
+두 개의 멀티스레드 컨테이너로 나눈 시험은 32초에 load1 2.19까지 내려갔지만 2분 14초에
+7.56으로 올랐고 종료 시 navigation 컨테이너가 SIGKILL을 필요로 해 채택하지 않았다.
+
+후속 네 기록도 같은 원칙으로 분류한다. `165606`과 `170550`은 합성 노드 소실 및
+AMCL 재초기화·게이트 진단용, `172141`은 23.573m의 깨끗한 부분 복귀 성공, `172738`은
+독립 프로세스에서 BT action timeout을 재현한 진단용이다. 모든 bag은 센서 노이즈·주기·
+TF 지연과 오프라인 SLAM 입력에는 사용할 수 있지만, 시작점부터 80m 전체 왕복을 한 번에
+끝낸 기록이 아니므로 프로토콜 적격 표본 수는 아직 0이다.
+
 자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
-자율 매핑과 노트북 실행 기본값은 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. 파이의 저장지도 복도 주행만 `onboard_nav2_core.launch.py`의 최소 구성 composition을 사용한다. 공식 전체 bringup 정적 시험의 load1 9.33~11.27을 1.17~1.93으로 낮췄다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
+자율 매핑, 노트북 실행과 파이 저장지도 주행은 모두 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. `onboard_nav2_core.launch.py`는 기능 수는 최소로 유지하되 필수 노드마다 process exit handler를 둔다. 과거 최소 합성 구성은 load1 1.17~1.93이었지만 실차에서 내부 노드 소실이 발생했고, 현재 독립 프로세스 구성은 생존성을 얻는 대신 load1 4.13~9.85를 기록했다. 이 상충은 다음 실차 전 별도 성능 개선 대상으로 남긴다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
 
-운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다. Nav2 자식 프로세스 하나만 직접 `kill`하면 lifecycle 정리와 최종 정지 상태를 확인하기 어렵다. Jazzy 합성 컨테이너는 종료 중 lifecycle race로 SIGSEGV를 남길 수 있으므로 종료 뒤 Nav2·recorder 잔류 0과 `/cmd_vel` publisher 0을 반드시 확인한다. 이 현상은 활성 주행 실패와 분리해서 기록하며 정상 종료 품질 개선 항목으로 남긴다.
+운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다. Nav2 자식 프로세스 하나만 직접 `kill`하면 lifecycle 정리와 최종 정지 상태를 확인하기 어렵다. 합성 컨테이너에서 확인된 lifecycle bond 실패와 종료 SIGSEGV 때문에 현재 복도 구성은 독립 프로세스로 전환했다. 종료 뒤 Nav2·recorder 잔류 0과 `/cmd_vel` publisher 0은 계속 확인한다.
 
 2026-08-26 팔 장착 전 실기 자율탐사에서는 최종 상태 `FINISHED`, `save=succeeded`, `readiness_missing=none`을 확인했다. 저장 지도는 894×212셀(0.05m/셀), 오도메트리 누적 경로는 45.018m였다. 이 결과는 당시 복도와 작업자 감시 조건에서의 자율 매핑 기록이며 안전 인증이나 무인 운전 승인을 뜻하지 않는다.
 

@@ -11,8 +11,8 @@ from launch.actions import RegisterEventHandler, SetEnvironmentVariable
 from launch.actions import Shutdown
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import ComposableNodeContainer, Node
-from launch_ros.descriptions import ComposableNode, ParameterFile
+from launch_ros.actions import Node
+from launch_ros.descriptions import ParameterFile
 from nav2_common.launch import RewrittenYaml
 
 
@@ -120,84 +120,102 @@ def generate_launch_description():
         }],
     )
 
-    nav2_container = ComposableNodeContainer(
-        package='rclcpp_components',
-        executable='component_container_isolated',
-        name='nav2_container',
-        namespace='',
+    map_server = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server',
         output='screen',
-        composable_node_descriptions=[
-            ComposableNode(
-                package='nav2_map_server',
-                plugin='nav2_map_server::MapServer',
-                name='map_server',
-                parameters=[configured_params, {'yaml_filename': map_yaml}],
-                remappings=remappings,
-            ),
-            ComposableNode(
-                package='nav2_amcl',
-                plugin='nav2_amcl::AmclNode',
-                name='amcl',
-                parameters=[configured_params],
-                remappings=remappings,
-            ),
-            ComposableNode(
-                package='nav2_controller',
-                plugin='nav2_controller::ControllerServer',
-                name='controller_server',
-                parameters=[configured_params],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-            ),
-            ComposableNode(
-                package='nav2_planner',
-                plugin='nav2_planner::PlannerServer',
-                name='planner_server',
-                parameters=[configured_params],
-                remappings=remappings,
-            ),
-            ComposableNode(
-                package='nav2_velocity_smoother',
-                plugin='nav2_velocity_smoother::VelocitySmoother',
-                name='velocity_smoother',
-                parameters=[configured_params],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-            ),
-            ComposableNode(
-                package='nav2_collision_monitor',
-                plugin='nav2_collision_monitor::CollisionMonitor',
-                name='collision_monitor',
-                parameters=[configured_params],
-                remappings=remappings,
-            ),
-            ComposableNode(
-                package='nav2_bt_navigator',
-                plugin='nav2_bt_navigator::BtNavigator',
-                name='bt_navigator',
-                parameters=[configured_params],
-                remappings=remappings,
-            ),
-            ComposableNode(
-                package='nav2_lifecycle_manager',
-                plugin='nav2_lifecycle_manager::LifecycleManager',
-                name='lifecycle_manager_localization',
-                parameters=[{
-                    'use_sim_time': use_sim_time,
-                    'autostart': autostart,
-                    'node_names': localization_nodes,
-                }],
-            ),
-            ComposableNode(
-                package='nav2_lifecycle_manager',
-                plugin='nav2_lifecycle_manager::LifecycleManager',
-                name='lifecycle_manager_navigation',
-                parameters=[{
-                    'use_sim_time': use_sim_time,
-                    'autostart': autostart,
-                    'node_names': navigation_nodes,
-                }],
-            ),
-        ],
+        parameters=[configured_params, {'yaml_filename': map_yaml}],
+        remappings=remappings,
     )
+    amcl = Node(
+        package='nav2_amcl',
+        executable='amcl',
+        name='amcl',
+        output='screen',
+        parameters=[configured_params],
+        remappings=remappings,
+    )
+    controller_server = Node(
+        package='nav2_controller',
+        executable='controller_server',
+        name='controller_server',
+        output='screen',
+        parameters=[configured_params],
+        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+    )
+    planner_server = Node(
+        package='nav2_planner',
+        executable='planner_server',
+        name='planner_server',
+        output='screen',
+        parameters=[configured_params],
+        remappings=remappings,
+    )
+    velocity_smoother = Node(
+        package='nav2_velocity_smoother',
+        executable='velocity_smoother',
+        name='velocity_smoother',
+        output='screen',
+        parameters=[configured_params],
+        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+    )
+    collision_monitor = Node(
+        package='nav2_collision_monitor',
+        executable='collision_monitor',
+        name='collision_monitor',
+        output='screen',
+        parameters=[configured_params],
+        remappings=remappings,
+    )
+    bt_navigator = Node(
+        package='nav2_bt_navigator',
+        executable='bt_navigator',
+        name='bt_navigator',
+        output='screen',
+        parameters=[configured_params],
+        remappings=remappings,
+    )
+    localization_lifecycle = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_localization',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'autostart': autostart,
+            'node_names': localization_nodes,
+        }],
+    )
+    navigation_lifecycle = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_navigation',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'autostart': autostart,
+            'node_names': navigation_nodes,
+        }],
+    )
+    required_nav2_processes = [
+        map_server,
+        amcl,
+        controller_server,
+        planner_server,
+        velocity_smoother,
+        collision_monitor,
+        bt_navigator,
+        localization_lifecycle,
+        navigation_lifecycle,
+    ]
+    required_exit_handlers = [
+        RegisterEventHandler(OnProcessExit(
+            target_action=process,
+            on_exit=_shutdown_unless_already_stopping(
+                'required Nav2 process exited; stopping navigation')))
+        for process in required_nav2_processes
+    ]
 
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
@@ -225,12 +243,9 @@ def generate_launch_description():
             target_action=keepout_info_server,
             on_exit=_shutdown_unless_already_stopping(
                 'keepout info server exited; stopping navigation'))),
-        RegisterEventHandler(OnProcessExit(
-            target_action=nav2_container,
-            on_exit=_shutdown_unless_already_stopping(
-                'minimal Nav2 container exited; stopping navigation'))),
+        *required_exit_handlers,
         keepout_mask_server,
         keepout_info_server,
         keepout_lifecycle,
-        nav2_container,
+        *required_nav2_processes,
     ])

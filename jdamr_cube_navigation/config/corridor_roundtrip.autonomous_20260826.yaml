@@ -7,6 +7,12 @@ expected_mask_sha256: 40a99481046b2ad55fd4c5d3ad3e8b3a6d245fd7c808d32571f2828d48
 planned_length_m: 80.047
 sensor_freshness_s: 2.5
 minimum_battery_v: 10.5
+# A straight corridor is weakly observable along x; keep the lateral y gate
+# strict so wall-side localization still fails closed.
+max_amcl_x_covariance: 2.0
+max_amcl_y_covariance: 1.0
+amcl_freshness_s: 60.0
+max_resume_start_distance_m: 6.0
 waypoints:
   - {id: outbound_02m, x: 2.00, y: -0.22}
   - {id: outbound_06m, x: 6.00, y: -0.38}

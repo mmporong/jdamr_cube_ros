@@ -3,10 +3,15 @@
 import ast
 import hashlib
 from pathlib import Path
+import time
 import xml.etree.ElementTree as ET
 
 from geometry_msgs.msg import TransformStamped
-from jdamr_cube_navigation.corridor_route import AMCL_QOS, load_route
+from jdamr_cube_navigation.corridor_route import (
+    AMCL_QOS,
+    CorridorRoute,
+    load_route,
+)
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
 from jdamr_cube_navigation.keepout_zone_capture import (
     order_polygon_points,
@@ -237,18 +242,18 @@ def test_onboard_navigation_keeps_control_and_recording_off_wifi():
     assert source.rfind('navigation,') < source.rfind('recorder,')
 
 
-def test_onboard_core_loads_only_corridor_required_nav2_components():
-    """Keep unused docking, route, waypoint, and smoothing servers off Pi."""
+def test_onboard_core_loads_only_corridor_required_nav2_processes():
+    """Keep unused servers off Pi and isolate each required Nav2 process."""
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
     ast.parse(source)
     for required in (
-            'nav2_map_server::MapServer', 'nav2_amcl::AmclNode',
-            'nav2_controller::ControllerServer',
-            'nav2_planner::PlannerServer',
-            'nav2_bt_navigator::BtNavigator',
-            'nav2_velocity_smoother::VelocitySmoother',
-            'nav2_collision_monitor::CollisionMonitor'):
+            "executable='map_server'", "executable='amcl'",
+            "executable='controller_server'",
+            "executable='planner_server'",
+            "executable='bt_navigator'",
+            "executable='velocity_smoother'",
+            "executable='collision_monitor'"):
         assert required in source
     for omitted in (
             'nav2_route::RouteServer', 'opennav_docking::DockingServer',
@@ -259,7 +264,8 @@ def test_onboard_core_loads_only_corridor_required_nav2_components():
     assert "'navigate_to_pose_corridor_fail_fast.xml'" in source
     assert "'yaml_filename': map_yaml" in source
     assert source.count("'keepout_filter.enabled'): 'true'") == 2
-    assert "namespace=''" in source
+    assert 'ComposableNodeContainer' not in source
+    assert 'required_exit_handlers' in source
     assert 'OpaqueFunction(function=_validate_keepout)' in source
     assert "name='keepout_filter_mask_server'" in source
     assert "name='keepout_costmap_filter_info_server'" in source
@@ -290,8 +296,23 @@ def test_corridor_route_uses_fail_fast_tree_and_continuous_guards():
     assert 'Wait' not in tags
     assert 'ComputePathToPose' in tags
     assert 'FollowPath' in tags
+    assert 'PipelineSequence' not in tags
+    assert 'RateController' not in tags
+    assert root.findall('.//ComputePathToPose')[0].attrib['server_timeout'] == '1000'
+    assert root.findall('.//FollowPath')[0].attrib['server_timeout'] == '1000'
     assert 'if not self._navigation_ready()' in source
-    assert "'sensor, battery, or localization guard failure'" in source
+    assert 'self._guard_failure()' in source
+
+
+def test_corridor_bt_matches_separate_process_response_budget():
+    """Avoid treating normal Pi DDS latency as a planner failure."""
+    config = _params()
+    navigator = config['bt_navigator']['ros__parameters']
+    planner = config['planner_server']['ros__parameters']
+
+    assert navigator['default_server_timeout'] == 1000
+    assert navigator['wait_for_service_timeout'] == 5000
+    assert planner['expected_planner_frequency'] == 1.0
 
 
 def test_tf_replay_filter_removes_only_recorded_map_to_odom():
@@ -407,6 +428,10 @@ def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
     assert config['planned_length_m'] == 80.047
     assert config['sensor_freshness_s'] == 2.5
     assert config['minimum_battery_v'] == 10.5
+    assert config['max_amcl_x_covariance'] == 2.0
+    assert config['max_amcl_y_covariance'] == 1.0
+    assert config['amcl_freshness_s'] == 60.0
+    assert config['max_resume_start_distance_m'] == 6.0
     assert len(waypoints) == 20
     assert waypoints[0]['id'] == 'outbound_02m'
     assert waypoints[9]['id'] == 'turnaround'
@@ -423,8 +448,9 @@ def test_corridor_route_is_planning_first_and_signal_safe():
     assert 'ComputePathThroughPoses' in source
     assert 'goal.behavior_tree = self.behavior_tree' in source
     assert 'SignalHandlerOptions.NO' in source
-    assert "'sensor, battery, or localization guard failure'" in source
+    assert 'self._guard_failure()' in source
     assert 'Publisher(' not in source
+    assert source.count('previous_sigint = signal.signal') == 1
 
 
 def test_corridor_route_receives_amcl_pose_when_started_after_localization():
@@ -432,6 +458,52 @@ def test_corridor_route_receives_amcl_pose_when_started_after_localization():
     assert AMCL_QOS.depth == 1
     assert AMCL_QOS.reliability == ReliabilityPolicy.RELIABLE
     assert AMCL_QOS.durability == DurabilityPolicy.TRANSIENT_LOCAL
+
+
+def test_corridor_route_uses_axis_specific_amcl_covariance_limits():
+    """Allow corridor-axis ambiguity while keeping lateral drift strict."""
+    route = object.__new__(CorridorRoute)
+    now = time.monotonic()
+    route.samples = {name: now for name in ('battery', 'odom', 'scan')}
+    route.freshness_s = 2.5
+    route.battery_voltage = 12.0
+    route.minimum_battery_v = 10.5
+    route.amcl_seen = now
+    route.amcl_covariance = (0.519, 0.151)
+    route.amcl_position = (0.0, 0.0)
+    route.max_amcl_covariance = (2.0, 1.0)
+    route.amcl_freshness_s = 60.0
+    route.max_resume_start_distance_m = 6.0
+    route.resume_start_check_pending = False
+
+    assert route._guard_failure() is None
+    route.amcl_covariance = (0.519, 1.001)
+    assert route._guard_failure() == (
+        'AMCL y covariance high: value=1.001 limit=1.000')
+
+
+def test_corridor_route_rejects_resume_after_amcl_resets_to_origin():
+    """Do not drive a remaining route from a silently reset map pose."""
+    route = object.__new__(CorridorRoute)
+    now = time.monotonic()
+    route.samples = {name: now for name in ('battery', 'odom', 'scan')}
+    route.freshness_s = 2.5
+    route.battery_voltage = 12.0
+    route.minimum_battery_v = 10.5
+    route.amcl_seen = now
+    route.amcl_covariance = (0.25, 0.25)
+    route.max_amcl_covariance = (2.0, 1.0)
+    route.amcl_freshness_s = 60.0
+    route.waypoints = [{'x': 30.0, 'y': -2.37}]
+    route.amcl_position = (0.0, 0.0)
+    route.max_resume_start_distance_m = 6.0
+    route.resume_start_check_pending = True
+
+    assert route._guard_failure() == (
+        'AMCL resume start too far: distance=30.093m limit=6.000m')
+
+    route.resume_start_check_pending = False
+    assert route._guard_failure() is None
 
 
 def test_route_loader_rejects_a_changed_keepout_mask(tmp_path):
