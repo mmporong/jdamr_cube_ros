@@ -86,7 +86,9 @@ def generate_launch_description():
             'autostart': autostart,
             # Pi 4 static-soak evidence: composition reduced load from about
             # 13 to 3.53.  Process-group shutdown remains the required stop.
-            'use_composition': 'true',
+            # nav2_bringup also interpolates this value into a PythonExpression
+            # (`not True`), so preserve Python boolean spelling here.
+            'use_composition': 'True',
             # This wrapper runs headless on the Pi.  The laptop may open the
             # low-bandwidth RViz profile without owning the control loop.
             'use_rviz': 'false',

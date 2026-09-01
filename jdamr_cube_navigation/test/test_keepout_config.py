@@ -218,7 +218,7 @@ def test_onboard_navigation_keeps_control_and_recording_off_wifi():
 
     ast.parse(source)
     assert "'use_rviz': 'false'" in source
-    assert "'use_composition': 'true'" in source
+    assert "'use_composition': 'True'" in source
     assert "'record_bag', default_value='true'" in source
     assert "'--storage', 'mcap'" in source
     assert "'--topics', *RECORDED_TOPICS" in source
