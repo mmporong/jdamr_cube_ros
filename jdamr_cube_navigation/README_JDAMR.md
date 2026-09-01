@@ -82,7 +82,7 @@ ros2 topic echo --once /keepout_costmap_filter_info
 ```
 
 단일 PC 정적 진단에서는 `keepout_navigation.launch.py`의 RViz 기본값을 사용할 수 있다.
-파이 온보드 실차 주행에서는 아래 전용 wrapper가 `use_rviz:=false`를 강제하고, 노트북의
+파이 온보드 실차 주행에서는 아래 전용 wrapper가 RViz를 포함하지 않고, 노트북의
 view-only RViz에서 `Keepout Zones`와 계획 경로가 금지구역을 침범하지 않는지 목표 전송
 전에 확인한다.
 
@@ -96,9 +96,12 @@ ping 20% 손실, 평균 약 710ms, 최대 약 1.1초 지연이 발생했다. `/s
 수신됐다. 이 결과로 실차의 제어 루프와 원본 데이터 수집을 Wi-Fi 건너편에서 실행하는
 구성을 폐기한다.
 
-파이에는 하드웨어 bringup이 먼저 실행돼 있어야 한다. 그 위에는 합성된
-Nav2·AMCL·Collision Monitor, 경로 실행기, 필수 토픽 MCAP recorder만 둔다. RViz,
-Cartographer·SLAM Toolbox, 그래프·통계 계산, bag 재생은 주행 중 파이에 띄우지 않는다.
+파이에는 하드웨어 bringup이 먼저 실행돼 있어야 한다. 그 위에는 저장 지도·AMCL,
+controller, planner, velocity smoother, Collision Monitor, BT navigator, Keepout,
+경로 실행기, 필수 토픽 MCAP recorder만 둔다. 파이 전용 launch는 쓰지 않는 smoother
+server, route server, behavior server, waypoint follower, docking server를 실행하지
+않는다. RViz, Cartographer·SLAM Toolbox, 그래프·통계 계산, bag 재생은 주행 중 파이에
+띄우지 않는다.
 recorder는 CPU nice 10과 I/O best-effort 최저 우선순위 7로 실행해 제어 루프가 먼저
 스케줄되게 한다. 기본 기록도 `/scan`, `/odom`, TF, IMU, 제어 전·후 속도, AMCL,
 배터리, 계획, Collision Monitor 상태로 제한하며 RViz용 `/joint_states`는 제외한다.
@@ -150,13 +153,16 @@ loss 136건과 미완주가 있어 진단용이다. 상세 수치·해시·실�
 `evaluation/20260901_CORRIDOR_KEEPOUT_RUN.md`에 고정했다. 파이 로컬 기록에서 손실 0과
 완전 왕복을 확인하기 전에는 최종 포트폴리오 데이터로 승격하지 않는다. 다음 실차에서는
 출발 전 1분 정적 소크에서 4코어 load average가 4.0 미만이고 thermal throttle이 없음을
-확인한 뒤 주행한다. 이 조건은 새 온보드 구성의 실차 검증 전까지 잠정 운용 게이트다.
+확인한 뒤 주행한다. 최소 온보드 구성은 107.862초 정적 소크에서 load1 1.17~1.93,
+66.2~70.6°C, throttle 0을 기록했고 MCAP 16,150개 메시지의 CRC가 통과했다. 속도 명령은
+전부 0이었고 정지 변위는 0.025mm였다. 다음 단계는 바로 80m가 아니라 계단 없는 평지의
+2~6m 감독 단거리다.
 
 자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
-자율 매핑과 노트북 실행 기본값은 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. 다만 파이에서 저장지도 주행을 실행하는 `onboard_keepout_navigation.launch.py`만 과거 정적 소크의 CPU 실측(load 약 13 → 3.53)에 따라 composition을 사용한다. 이 모드는 컨테이너 자식만 죽이지 않고 launch process group 전체를 종료한다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
+자율 매핑과 노트북 실행 기본값은 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. 파이의 저장지도 복도 주행만 `onboard_nav2_core.launch.py`의 최소 구성 composition을 사용한다. 공식 전체 bringup 정적 시험의 load1 9.33~11.27을 1.17~1.93으로 낮췄다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
 
-운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다. Nav2 자식 프로세스 하나만 직접 `kill`하면 lifecycle 정리와 최종 정지 상태를 확인하기 어렵다.
+운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다. Nav2 자식 프로세스 하나만 직접 `kill`하면 lifecycle 정리와 최종 정지 상태를 확인하기 어렵다. Jazzy 합성 컨테이너는 종료 중 lifecycle race로 SIGSEGV를 남길 수 있으므로 종료 뒤 Nav2·recorder 잔류 0과 `/cmd_vel` publisher 0을 반드시 확인한다. 이 현상은 활성 주행 실패와 분리해서 기록하며 정상 종료 품질 개선 항목으로 남긴다.
 
 2026-08-26 팔 장착 전 실기 자율탐사에서는 최종 상태 `FINISHED`, `save=succeeded`, `readiness_missing=none`을 확인했다. 저장 지도는 894×212셀(0.05m/셀), 오도메트리 누적 경로는 45.018m였다. 이 결과는 당시 복도와 작업자 감시 조건에서의 자율 매핑 기록이며 안전 인증이나 무인 운전 승인을 뜻하지 않는다.
 

@@ -29,7 +29,7 @@ Toolbox를 새로 실행하는 **오프라인 2D LiDAR SLAM 입력**으로는 �
 | 20-point 80.047m 경로 | 가능 | 다음 왕복의 동일 조건 재실행 | 완주는 아직 증명되지 않음 |
 | 현재 MCAP | 조건부 가능 | 센서 노이즈·주기·TF 지연 분석, 오프라인 2D SLAM | 136건 손실과 미완주로 최종 성능 비교에는 부적격 |
 | Visual SLAM | 현재 데이터로 불가 | 해당 없음 | 이미지·camera_info가 기록되지 않음 |
-| 새 온보드 실행 구조 | 코드·정적 검증 완료 | Wi-Fi와 무관한 제어·로컬 기록 | 다음 실차에서 부하·손실 0을 확인해야 해결 완료 |
+| 새 온보드 실행 구조 | 비주행 정적 소크 완료 | Wi-Fi와 무관한 제어·로컬 기록 | 2~6m 감독 단거리와 80m 완주가 남음 |
 
 저장 지도와 Keepout은 오프라인 SLAM에 주입하지 않는다. 재생 시 저장 `/map`과 이동
 명령을 제외하고, 기록된 AMCL의 `map -> odom`도 제거해 새 mapping backend 하나만 TF
@@ -47,11 +47,12 @@ Toolbox를 새로 실행하는 **오프라인 2D LiDAR SLAM 입력**으로는 �
 | 노트북 | 저대역폭 view-only RViz | 지도·마스크·위치·계획 확인만 수행 |
 | 주행 후 노트북 | 2D SLAM 재생·그래프·통계, 카메라를 별도 수집한 경우 Visual SLAM | 주행 중 파이 CPU·디스크와 경쟁하지 않음 |
 
-이는 무조건 노드 수가 가장 적은 커스텀 Nav2가 아니라, 검증된 공식 Nav2 lifecycle
-구성을 composition으로 묶어 **프로세스·DDS 부하를 줄인 운용 최소 구성**이다. 사용하지
-않는 Nav2 플러그인을 더 제거하는 커스텀 launch는 다음 정적 소크에서 load gate를 넘을
-때만 진행한다. 안전 서버를 사전 실차 검증 없이 빼는 것은 이번 재수집의 변경 범위를
-불필요하게 키운다.
+첫 온보드 정적 시험에서 공식 Nav2 전체 구성을 composition으로 묶어도 load1이
+9.33~11.27까지 올라 4.0 게이트를 넘었다. 그래서 복도 실행에 필요한 map server,
+AMCL, controller, planner, velocity smoother, Collision Monitor, BT navigator만 한
+컨테이너에 남겼다. 사용하지 않는 smoother server, route server, behavior server,
+waypoint follower, docking server는 파이 전용 launch에서 제외했다. Keepout mask·info와
+그 lifecycle manager는 fail-closed 감시를 위해 별도 프로세스로 유지한다.
 
 ## 문제와 해결 상태
 
@@ -62,6 +63,9 @@ Toolbox를 새로 실행하는 **오프라인 2D LiDAR SLAM 입력**으로는 �
 | 복귀 중 TF·센서 지연 | 약한 Wi-Fi에서 노트북 Nav2·RViz·rosbag의 고속 구독 fan-out | 파이의 합성 Nav2+저우선순위 필수 recorder, 노트북 view-only RViz | 구조 변경 완료, 실차 재검증 전 |
 | 복구 회전으로 상태가 불명확 | 기존 BT가 회전·대기 복구를 최대 3회 수행 | 왕복 실행기는 회전·후진·재시도 없는 fail-fast BT 사용 | 코드·회귀 테스트 완료 |
 | 지도 재생 시 TF 충돌 위험 | AMCL과 mapping backend가 모두 `map -> odom`을 발행할 수 있음 | 격리 domain에서 `/map`, 이동 명령, 기록 AMCL TF를 제거 | 오프라인 재생 가드 구현됨 |
+| 파이 load gate 초과 | Jazzy 기본 bringup이 복도에서 쓰지 않는 서버까지 10개 실행 | 파이 전용 최소 합성 launch로 5개 주행 서버만 유지 | 정적 load1 1.17~1.93 통과 |
+| launch 생성 실패 뒤 recorder 잔류 | 포함 launch보다 recorder가 먼저 시작됨 | navigation 생성 뒤 recorder를 시작하고 process-group 정리 | 재발 방지 테스트·실기 확인 |
+| 합성 종료 로그의 SIGSEGV | lifecycle manager와 합성 노드가 동시에 preshutdown하는 Jazzy 종료 race | process-group 전체 종료와 종료 뒤 `/cmd_vel`·잔류 프로세스 확인 | 운용상 정지는 확인, 정상 종료 개선은 추적 |
 | 이번 왕복 미완료 | Wi-Fi 지연 뒤 위치추정 흔들림과 controller 102 | 같은 경로를 온보드 구조로 재수집 | 미해결, 다음 실차 PASS 필요 |
 
 ## 실행 목표와 방식
@@ -136,21 +140,43 @@ Toolbox를 새로 실행하는 **오프라인 2D LiDAR SLAM 입력**으로는 �
    않는다.
 4. Nav2와 MCAP recorder를 파이에서 함께 실행하는
    `onboard_keepout_navigation.launch.py`를 추가했다. recorder가 끝나면 navigation도
-   종료해 증거 없이 계속 달리지 않는다. 파이 모드는 과거 정적 소크에서 load를 약
-   13에서 3.53으로 낮춘 composition을 사용하며, 종료는 컨테이너 단독 kill이 아니라
-   launch process group 전체 종료로 수행한다.
+   종료해 증거 없이 계속 달리지 않는다. 파이 전용 core는 복도 왕복에 필요한 Nav2
+   구성만 composition으로 실행하며, 종료는 컨테이너 단독 kill이 아니라 launch process
+   group 전체 종료로 수행한다.
 5. 노트북용 RViz는 별도 view-only launch로 분리했다. Global Costmap과 LaserScan은
    기본 OFF, frame rate는 10Hz로 낮춰 제어 루프와 무선 대역폭을 경쟁하지 않는다.
 6. 파이에는 합성 Nav2, 경로 실행기, 필수 토픽 recorder만 둔다. recorder는 CPU
    nice 10과 I/O best-effort 우선순위 7로 낮추고, RViz용 `/joint_states`는 기본
    기록에서 제외했다. 온라인 SLAM과 bag 분석은 주행 중 실행하지 않는다.
 
+## 온보드 정적 소크 결과
+
+- run id: `onboard_minimal_soak_20260901T161338`
+- 기록 시간: 107.862초
+- MCAP: 14.7MiB, 16,150 messages
+- MCAP SHA-256: `2a1f2f9fafec4713c705914d248d2e37ce2a17180c8eb57ea0c04f8b4196e231`
+- metadata SHA-256: `f982e28f058237ef3f49aebf255e940b357865b6bacff7af9f059e6dcbcd59a6`
+- 무결성: 15/15 chunk CRC, data-section CRC, summary CRC PASS
+- load1: 1.17~1.93, 온도 66.2~70.6°C, thermal throttle `0x0`
+- 주기: scan 약 9.48Hz, odom·IMU 약 50Hz
+- `/cmd_vel` 5개와 `/cmd_vel_nav` 1개는 모두 0, 비영점 명령 0건
+- odom 시작-종료 변위: 0.000025236m
+- 종료 뒤 Nav2·recorder 잔류 0, `/cmd_vel` publisher 0
+
+활성 구간에는 `bt_navigator`와 `collision_monitor`가 모두 `active [3]`이었고 root
+`/cmd_vel` 발행자는 Collision Monitor 하나였다. 종료 중 합성 컨테이너의 기존 lifecycle
+race가 SIGSEGV를 기록했지만 recorder는 cache를 flush하고 clean exit했으며 MCAP CRC와
+종료 후 명령 소유권은 정상이다. 이 문제를 숨기지 않고 정상 종료 품질 항목으로 계속
+추적하되, 다음 단계의 주행 허가는 별도 2~6m 감독 시험으로 제한한다.
+
 ## 다음 실차 PASS 조건
 
 - Nav2·AMCL·Collision Monitor·MCAP을 파이에서 실행한다.
 - 노트북은 `keepout_operator_view.launch.py`만 실행한다.
+- 먼저 계단이 없는 2~6m 평지에서 planning-only와 단일 저속 목표를 통과한다.
+- 작업자가 로봇 옆에서 물리 전원을 즉시 차단할 수 있어야 한다.
 - 파이 로컬 bag에서 transport loss 0과 필수 토픽 수를 확인한다.
-- 출발 전 1분 정적 소크에서 4코어 load average 4.0 미만, thermal throttle 없음을
-  확인한다.
+- 출발 전 1분 정적 소크의 load<4와 thermal throttle 없음은 통과했다. 주행 중에도 같은
+  항목을 계속 기록한다.
 - 전 구간 왕복 성공, 시작점 복귀, 최종 정지, 배터리 10.5V 이상을 확인한다.
 - MCAP·metadata 해시와 토픽 수를 등록한 뒤에만 최종 데이터로 승격한다.
