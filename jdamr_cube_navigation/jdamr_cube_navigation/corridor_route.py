@@ -17,11 +17,19 @@ from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import BatteryState, LaserScan
 import yaml
+
+
+AMCL_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 def _expanded_path(value, parent=None):
@@ -112,7 +120,8 @@ class CorridorRoute(Node):
         self.create_subscription(
             LaserScan, '/scan', self._scan_callback, qos_profile_sensor_data)
         self.create_subscription(
-            PoseWithCovarianceStamped, '/amcl_pose', self._amcl_callback, 10)
+            PoseWithCovarianceStamped, '/amcl_pose', self._amcl_callback,
+            AMCL_QOS)
         package_share = get_package_share_directory('jdamr_cube_navigation')
         self.behavior_tree = os.path.join(
             package_share, 'behavior_trees',

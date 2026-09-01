@@ -6,7 +6,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from geometry_msgs.msg import TransformStamped
-from jdamr_cube_navigation.corridor_route import load_route
+from jdamr_cube_navigation.corridor_route import AMCL_QOS, load_route
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
 from jdamr_cube_navigation.keepout_zone_capture import (
     order_polygon_points,
@@ -15,6 +15,7 @@ from jdamr_cube_navigation.keepout_zone_capture import (
 )
 from jdamr_cube_navigation.tf_replay_filter import filter_tf_message
 import pytest
+from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 from tf2_msgs.msg import TFMessage
 import yaml
 
@@ -424,6 +425,13 @@ def test_corridor_route_is_planning_first_and_signal_safe():
     assert 'SignalHandlerOptions.NO' in source
     assert "'sensor, battery, or localization guard failure'" in source
     assert 'Publisher(' not in source
+
+
+def test_corridor_route_receives_amcl_pose_when_started_after_localization():
+    """Read AMCL's latched pose instead of waiting for robot movement."""
+    assert AMCL_QOS.depth == 1
+    assert AMCL_QOS.reliability == ReliabilityPolicy.RELIABLE
+    assert AMCL_QOS.durability == DurabilityPolicy.TRANSIENT_LOCAL
 
 
 def test_route_loader_rejects_a_changed_keepout_mask(tmp_path):

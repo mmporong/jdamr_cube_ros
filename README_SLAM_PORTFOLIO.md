@@ -5,12 +5,13 @@
 ## 현재 상태
 
 - 계획 수립과 논문 대조는 `57ffd92`부터 이어지고 있다.
-- Phase 0 오프라인 평가 기준선과 Phase 1 실제 복도 Keepout·TF replay guard 사전구성은 2026-09-01에 구현·검증됐다. `jdamr_cube_navigation` 결과는 131 passed, 1 skipped다.
+- Phase 0 오프라인 평가 기준선과 Phase 1 실제 복도 Keepout·TF replay guard 사전구성은 2026-09-01에 구현·검증됐다. `jdamr_cube_navigation` 결과는 132 passed, 1 skipped다.
 - 평가 계약, dataset/map/calibration registry, MCAP writer 설정, QoS override, 무결성 검사 도구는 `jdamr_cube_navigation/evaluation/`에 있다.
 - 기존 G4 bag은 63,955개 메시지를 끝까지 읽고 해시와 토픽 수를 고정했지만 진단 reference일 뿐 새 합격 표본이 아니다. chunk CRC, 기록·재생 QoS, drop counter, 리프트 전 cutoff가 부족하다.
 - 2026-09-01 첫 저장지도 왕복은 복귀 중 Wi-Fi 지연으로 중단됐다. 106.9MiB·128,791개 메시지는 원인 분석과 오프라인 SLAM에는 쓸 수 있지만 transport loss 136건과 미완주 때문에 최종 비교 표본으로 승격하지 않는다.
 - 제어와 기록을 파이 안으로 옮긴 `7c78212`, 합성 인자 오류를 고친 `8b95165`, 복도에 불필요한 Nav2 서버를 제거한 `651cd16`을 반영했다.
 - 최소 온보드 구성은 107.862초 정적 소크에서 load1 1.17~1.93, 66.2~70.6°C, thermal throttle 0을 기록했다. MCAP 16,150개 메시지와 15개 chunk CRC가 통과했고 비영점 속도 명령 0건, odom 변위 0.025mm였다.
+- 늦게 시작한 경로 실행기가 AMCL의 latched pose를 놓치던 QoS 불일치를 `TRANSIENT_LOCAL` 구독으로 수정했다. 수정 뒤 최소 온보드 구성의 planning-only는 3,098 poses, 78.600m로 80m급 전체 왕복 경로를 통과했다.
 - 정적 소크 종료 뒤 프로세스 잔류와 `/cmd_vel` 발행자는 0이었다. 다만 ROS 2 Jazzy 합성 컨테이너의 종료 race가 SIGSEGV를 남기므로 정상 정지는 lifecycle 종료 후 process-group 정리, 비상 정지는 즉시 process-group 종료와 베이스 watchdog으로 구분해 계속 검증한다.
 - SO-101 PRD는 Architect 승인 상태지만 구현 시작 전이라고 선언한다. 동시에 미추적 `mobile_mission.py`가 있어 이 차이를 읽기 전용 감사 결과로 남겼고 SO-101 파일은 수정하지 않았다.
 - 프로토콜 적격 실차 표본은 아직 0회다. 현재 세션은 작업자가 로봇 옆에 있다고 확인되지 않았으므로 `real_motion_authorized: false`다.
@@ -81,7 +82,7 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 현재 Phase 0 판정은 `OFFLINE_READY`, Phase 1 비주행 판정은 `ONBOARD_STATIC_READY`다.
 
-- navigation package: 131 passed, 1 skipped
+- navigation package: 132 passed, 1 skipped
 - G4 diagnostic bag: 63,955 messages, SHA-256 `9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6`
 - QoS override: ROS 2 Jazzy 파서에서 6개 profile 통과
 - 설치 레이아웃: evaluation 파일 10개 확인
@@ -96,17 +97,16 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 ## 전체 실행 순서와 통과 조건
 
 1. **온보드 비주행 검증 — 완료:** 지도·Keepout 해시, 필수 lifecycle, 단일 `/cmd_vel` 소유자, load<4, throttle 0, MCAP CRC, 종료 뒤 프로세스 0을 확인한다.
-2. **2~6m 감독 단거리:** 같은 복도의 계단이 없는 평지에서 planning-only를 먼저 통과하고 저속 1개 목표만 실행한다. Keepout 침범 0, Collision Monitor 정지, 목표 취소, 물리 비상 정지를 확인한다.
-3. **80m 왕복 1회:** 저장 지도+AMCL+Keepout으로 자율주행하고 파이 로컬 MCAP에 transport loss 0, 전 구간 완주, 시작점 복귀, 최종 정지, 배터리 10.5V 이상을 남긴다. 온라인 mapping은 주행 중 끈다.
-4. **자율 반복 2회:** 같은 프로토콜을 두 번 더 실행해 총 3개 적격 표본을 만든다. 수동으로 세 바퀴를 도는 방식이 아니라 자율주행 재현성 시험이다.
-5. **오프라인 2D SLAM 비교:** 각 raw bag을 격리 domain의 빈 상태에서 Cartographer와 SLAM Toolbox에 동일하게 재생한다. `/map`, 이동 명령, 기록 AMCL `map→odom`은 제외하고 폐루프 오차·loop audit·처리시간을 비교한다.
-6. **센서·TF 강건성:** 정지 노이즈, 주기 jitter, LiDAR dropout, wheel slip, 시간 지연, extrinsic 오차를 실측 분포로 주입한다. 한 번에 한 변수만 바꾸고 Huber·IMU 사용 여부를 비교한다.
-7. **Sim-to-Real:** 시뮬레이션 ground truth로 ATE/RPE/NEES를 계산하고 실차 분포로 센서·마찰·지연 randomization을 적용한다. 같은 복도와 별도 held-out 환경을 분리한다.
-8. **위치추정·탐색 선택:** AMCL과 SLAM Toolbox localization, kidnapped-robot recovery를 비교한다. frontier는 distance-only, gain proxy, 반복 방문 억제 정책을 비교하고 planner/controller 교체는 실제 실패가 재현될 때만 한다.
-9. **Visual SLAM 선택 트랙:** 카메라 timestamp·intrinsic·extrinsic과 이미지 기록이 확보된 뒤에만 2D LiDAR SLAM과 별도 실험으로 수행한다. 현재 bag에는 이미지가 없어 Visual SLAM 근거로 쓰지 않는다.
-10. **포트폴리오 승격:** 동일 복도 결과와 held-out 결과, 실패 사례, 정량 지표, 재현 명령을 묶는다. SO-101에는 SLAM 코드를 복제하지 않고 localization/TF/도착 오차 계약만 연결한다.
+2. **80m급 왕복 1회:** 저장 지도+AMCL+Keepout으로 자율주행하고 파이 로컬 MCAP에 transport loss 0, 전 구간 완주, 시작점 복귀, 최종 정지, 배터리 10.5V 이상을 남긴다. 온라인 mapping은 주행 중 끈다. 사용자의 결정으로 별도 2~6m 단거리 단계는 생략한다.
+3. **자율 반복 2회:** 같은 프로토콜을 두 번 더 실행해 총 3개 적격 표본을 만든다. 수동으로 세 바퀴를 도는 방식이 아니라 자율주행 재현성 시험이다.
+4. **오프라인 2D SLAM 비교:** 각 raw bag을 격리 domain의 빈 상태에서 Cartographer와 SLAM Toolbox에 동일하게 재생한다. `/map`, 이동 명령, 기록 AMCL `map→odom`은 제외하고 폐루프 오차·loop audit·처리시간을 비교한다.
+5. **센서·TF 강건성:** 정지 노이즈, 주기 jitter, LiDAR dropout, wheel slip, 시간 지연, extrinsic 오차를 실측 분포로 주입한다. 한 번에 한 변수만 바꾸고 Huber·IMU 사용 여부를 비교한다.
+6. **Sim-to-Real:** 시뮬레이션 ground truth로 ATE/RPE/NEES를 계산하고 실차 분포로 센서·마찰·지연 randomization을 적용한다. 같은 복도와 별도 held-out 환경을 분리한다.
+7. **위치추정·탐색 선택:** AMCL과 SLAM Toolbox localization, kidnapped-robot recovery를 비교한다. frontier는 distance-only, gain proxy, 반복 방문 억제 정책을 비교하고 planner/controller 교체는 실제 실패가 재현될 때만 한다.
+8. **Visual SLAM 선택 트랙:** 카메라 timestamp·intrinsic·extrinsic과 이미지 기록이 확보된 뒤에만 2D LiDAR SLAM과 별도 실험으로 수행한다. 현재 bag에는 이미지가 없어 Visual SLAM 근거로 쓰지 않는다.
+9. **포트폴리오 승격:** 동일 복도 결과와 held-out 결과, 실패 사례, 정량 지표, 재현 명령을 묶는다. SO-101에는 SLAM 코드를 복제하지 않고 localization/TF/도착 오차 계약만 연결한다.
 
-현재 위치는 **1 완료, 2 대기**다. 2번부터는 작업자가 로봇 옆에서 비상 정지를 확보했다고 명시해야 진행한다.
+현재 위치는 **1 완료, 2의 planning-only 완료, 실주행 대기**다. 실제 출발은 작업자가 로봇 옆에서 비상 정지를 확보했다고 명시해야 진행한다.
 
 ## 실차 작업 전 중단선
 
@@ -119,4 +119,4 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 다음과 같이 요청하면 된다.
 
-> `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/README_SLAM_PORTFOLIO.md`와 `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/20260901_CORRIDOR_KEEPOUT_RUN.md`를 읽고 Phase 1의 2~6m 감독 단거리부터 이어가. 먼저 planning-only를 실행하고, 실제 이동은 내가 로봇 옆에서 비상 정지를 확보했다고 명시한 뒤에만 진행해.
+> `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/README_SLAM_PORTFOLIO.md`와 `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/20260901_CORRIDOR_KEEPOUT_RUN.md`를 읽고 planning-only를 통과한 80m급 왕복 실주행부터 이어가. 실제 이동은 내가 로봇 옆에서 비상 정지를 확보했다고 명시한 뒤에만 진행해.

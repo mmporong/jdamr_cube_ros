@@ -29,7 +29,7 @@ Toolbox를 새로 실행하는 **오프라인 2D LiDAR SLAM 입력**으로는 �
 | 20-point 80.047m 경로 | 가능 | 다음 왕복의 동일 조건 재실행 | 완주는 아직 증명되지 않음 |
 | 현재 MCAP | 조건부 가능 | 센서 노이즈·주기·TF 지연 분석, 오프라인 2D SLAM | 136건 손실과 미완주로 최종 성능 비교에는 부적격 |
 | Visual SLAM | 현재 데이터로 불가 | 해당 없음 | 이미지·camera_info가 기록되지 않음 |
-| 새 온보드 실행 구조 | 비주행 정적 소크 완료 | Wi-Fi와 무관한 제어·로컬 기록 | 2~6m 감독 단거리와 80m 완주가 남음 |
+| 새 온보드 실행 구조 | 비주행 정적 소크·전체 경로 계획 완료 | Wi-Fi와 무관한 제어·로컬 기록 | 80m급 왕복 완주가 남음 |
 
 저장 지도와 Keepout은 오프라인 SLAM에 주입하지 않는다. 재생 시 저장 `/map`과 이동
 명령을 제외하고, 기록된 AMCL의 `map -> odom`도 제거해 새 mapping backend 하나만 TF
@@ -65,6 +65,7 @@ waypoint follower, docking server는 파이 전용 launch에서 제외했다. Ke
 | 지도 재생 시 TF 충돌 위험 | AMCL과 mapping backend가 모두 `map -> odom`을 발행할 수 있음 | 격리 domain에서 `/map`, 이동 명령, 기록 AMCL TF를 제거 | 오프라인 재생 가드 구현됨 |
 | 파이 load gate 초과 | Jazzy 기본 bringup이 복도에서 쓰지 않는 서버까지 10개 실행 | 파이 전용 최소 합성 launch로 5개 주행 서버만 유지 | 정적 load1 1.17~1.93 통과 |
 | launch 생성 실패 뒤 recorder 잔류 | 포함 launch보다 recorder가 먼저 시작됨 | navigation 생성 뒤 recorder를 시작하고 process-group 정리 | 재발 방지 테스트·실기 확인 |
+| planning-only 준비 실패 | AMCL은 마지막 pose를 `TRANSIENT_LOCAL`로 보관하지만 실행기는 기본 `VOLATILE`로 늦게 구독 | AMCL pose 구독을 reliable+`TRANSIENT_LOCAL`로 일치 | 3,098 poses·78.600m 계획 통과 |
 | 합성 종료 로그의 SIGSEGV | lifecycle manager와 합성 노드가 동시에 preshutdown하는 Jazzy 종료 race | process-group 전체 종료와 종료 뒤 `/cmd_vel`·잔류 프로세스 확인 | 운용상 정지는 확인, 정상 종료 개선은 추적 |
 | 이번 왕복 미완료 | Wi-Fi 지연 뒤 위치추정 흔들림과 controller 102 | 같은 경로를 온보드 구조로 재수집 | 미해결, 다음 실차 PASS 필요 |
 
@@ -167,14 +168,16 @@ waypoint follower, docking server는 파이 전용 launch에서 제외했다. Ke
 `/cmd_vel` 발행자는 Collision Monitor 하나였다. 종료 중 합성 컨테이너의 기존 lifecycle
 race가 SIGSEGV를 기록했지만 recorder는 cache를 flush하고 clean exit했으며 MCAP CRC와
 종료 후 명령 소유권은 정상이다. 이 문제를 숨기지 않고 정상 종료 품질 항목으로 계속
-추적하되, 다음 단계의 주행 허가는 별도 2~6m 감독 시험으로 제한한다.
+추적한다. 사용자의 결정으로 별도 2~6m 단거리 시험은 생략하고, 다음 실주행은 전체
+왕복으로 진행한다. 실제 출발 시 작업자가 로봇 옆에서 물리 전원을 즉시 차단할 수 있어야
+한다.
 
 ## 다음 실차 PASS 조건
 
 - Nav2·AMCL·Collision Monitor·MCAP을 파이에서 실행한다.
 - 노트북은 `keepout_operator_view.launch.py`만 실행한다.
-- 먼저 계단이 없는 2~6m 평지에서 planning-only와 단일 저속 목표를 통과한다.
 - 작업자가 로봇 옆에서 물리 전원을 즉시 차단할 수 있어야 한다.
+- 최소 온보드 구성의 전체 왕복 planning-only는 3,098 poses·78.600m로 통과했다.
 - 파이 로컬 bag에서 transport loss 0과 필수 토픽 수를 확인한다.
 - 출발 전 1분 정적 소크의 load<4와 thermal throttle 없음은 통과했다. 주행 중에도 같은
   항목을 계속 기록한다.
