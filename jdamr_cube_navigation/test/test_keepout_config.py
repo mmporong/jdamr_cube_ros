@@ -6,6 +6,7 @@ from pathlib import Path
 from geometry_msgs.msg import TransformStamped
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
 from jdamr_cube_navigation.keepout_zone_capture import (
+    order_polygon_points,
     zone_document,
     zones_document,
 )
@@ -327,6 +328,16 @@ def test_multiple_clicked_rectangles_share_one_zone_document():
     assert document['zones'] == zones
     assert [zone['id'] for zone in document['zones']] == [
         'keepout_1', 'keepout_2']
+
+
+def test_rectangle_points_are_ordered_even_when_clicked_across_diagonal():
+    """Avoid a bow-tie mask when opposite corners are clicked in sequence."""
+    clicked = [[1.0, 2.0], [3.0, 2.0], [1.0, 0.0], [3.0, 0.0]]
+
+    ordered = order_polygon_points(clicked)
+
+    assert ordered == [
+        [1.0, 0.0], [3.0, 0.0], [3.0, 2.0], [1.0, 2.0]]
 
 
 def test_package_installs_keepout_command_and_assets():

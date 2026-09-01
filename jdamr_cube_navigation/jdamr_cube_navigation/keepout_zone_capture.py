@@ -1,6 +1,7 @@
 """Capture multiple keepout polygons from RViz Publish Point clicks."""
 
 import argparse
+from math import atan2
 import os
 from pathlib import Path
 import sys
@@ -37,6 +38,17 @@ def zones_document(map_yaml, margin, zones):
     }
 
 
+def order_polygon_points(points):
+    """Order convex polygon vertices around their centroid."""
+    center_x = sum(point[0] for point in points) / len(points)
+    center_y = sum(point[1] for point in points) / len(points)
+    return sorted(
+        points,
+        key=lambda point: atan2(
+            point[1] - center_y, point[0] - center_x),
+    )
+
+
 class ZoneCapture(Node):
     """Save one polygon after each fixed-size group of map-frame clicks."""
 
@@ -71,7 +83,7 @@ class ZoneCapture(Node):
         zone = {
             'id': f'{self.zone_id}_{zone_number}',
             'enabled': True,
-            'polygon': self.points,
+            'polygon': order_polygon_points(self.points),
         }
         self.zones.append(zone)
         document = zones_document(
