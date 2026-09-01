@@ -1,4 +1,4 @@
-"""Capture a keepout polygon from RViz Publish Point clicks."""
+"""Capture multiple keepout polygons from RViz Publish Point clicks."""
 
 import argparse
 import os
@@ -27,8 +27,18 @@ def zone_document(map_yaml, zone_id, margin, points):
     }
 
 
+def zones_document(map_yaml, margin, zones):
+    """Return a versioned document containing every completed zone."""
+    return {
+        'schema_version': 1,
+        'map_yaml': str(map_yaml),
+        'safety_margin_m': margin,
+        'zones': zones,
+    }
+
+
 class ZoneCapture(Node):
-    """Collect a fixed number of map-frame points and write one polygon."""
+    """Save one polygon after each fixed-size group of map-frame clicks."""
 
     def __init__(self, map_yaml, output, zone_id, point_count, margin):
         super().__init__('keepout_zone_capture')
@@ -38,11 +48,13 @@ class ZoneCapture(Node):
         self.point_count = point_count
         self.margin = margin
         self.points = []
+        self.zones = []
         self.create_subscription(
             PointStamped, '/clicked_point', self._clicked, 10)
         self.get_logger().info(
-            f'RViz Publish Point로 금지구역 꼭짓점 {point_count}개를 '
-            '순서대로 클릭하세요.')
+            f'RViz Publish Point로 금지구역 하나당 꼭짓점 {point_count}개를 '
+            '순서대로 클릭하세요. 저장 후 다음 구역을 계속 클릭할 수 '
+            '있으며, 모두 끝나면 이 launch를 Ctrl-C로 종료하세요.')
 
     def _clicked(self, message):
         if message.header.frame_id.lstrip('/') != 'map':
@@ -55,17 +67,27 @@ class ZoneCapture(Node):
             f'point {len(self.points)}/{self.point_count}: {point}')
         if len(self.points) < self.point_count:
             return
-        document = zone_document(
-            self.map_yaml, self.zone_id, self.margin, self.points)
+        zone_number = len(self.zones) + 1
+        zone = {
+            'id': f'{self.zone_id}_{zone_number}',
+            'enabled': True,
+            'polygon': self.points,
+        }
+        self.zones.append(zone)
+        document = zones_document(
+            self.map_yaml, self.margin, self.zones)
         self.output.parent.mkdir(parents=True, exist_ok=True)
         self.output.write_text(
             yaml.safe_dump(document, sort_keys=False), encoding='utf-8')
-        self.get_logger().info(f'금지구역 저장 완료: {self.output}')
-        rclpy.shutdown()
+        self.points = []
+        self.get_logger().info(
+            f'금지구역 {zone_number}개 저장 완료: {self.output}. '
+            f'다음 구역의 꼭짓점 {self.point_count}개를 클릭하거나, '
+            '모두 끝났으면 Ctrl-C로 종료하세요.')
 
 
 def main() -> None:
-    """Capture polygon arguments and spin until all vertices arrive."""
+    """Capture polygon groups until the operator stops the process."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--map', required=True, dest='map_yaml')
     parser.add_argument('--output', required=True)

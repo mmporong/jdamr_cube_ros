@@ -5,7 +5,10 @@ from pathlib import Path
 
 from geometry_msgs.msg import TransformStamped
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
-from jdamr_cube_navigation.keepout_zone_capture import zone_document
+from jdamr_cube_navigation.keepout_zone_capture import (
+    zone_document,
+    zones_document,
+)
 from jdamr_cube_navigation.tf_replay_filter import filter_tf_message
 import pytest
 from tf2_msgs.msg import TFMessage
@@ -302,6 +305,28 @@ def test_clicked_points_become_an_enabled_map_frame_zone():
     assert document['safety_margin_m'] == 0.55
     assert document['zones'][0]['enabled'] is True
     assert len(document['zones'][0]['polygon']) == 3
+
+
+def test_multiple_clicked_rectangles_share_one_zone_document():
+    """Keep every completed rectangle in one mask-builder input file."""
+    zones = [
+        {
+            'id': 'keepout_1',
+            'enabled': True,
+            'polygon': [[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0]],
+        },
+        {
+            'id': 'keepout_2',
+            'enabled': True,
+            'polygon': [[4.0, 4.0], [5.0, 4.0], [5.0, 5.0], [4.0, 5.0]],
+        },
+    ]
+
+    document = zones_document(Path('/tmp/map.yaml'), 0.55, zones)
+
+    assert document['zones'] == zones
+    assert [zone['id'] for zone in document['zones']] == [
+        'keepout_1', 'keepout_2']
 
 
 def test_package_installs_keepout_command_and_assets():

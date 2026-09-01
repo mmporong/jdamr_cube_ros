@@ -45,7 +45,7 @@ ros2 run jdamr_cube_navigation keepout_mask validate \
   --mask "$HOME/maps/autonomous_20260826T161908_keepout.yaml"
 ```
 
-금지구역 좌표를 다시 정하려면 전용 capture launch를 실행하고 RViz의 `Publish Point`로 경계 꼭짓점을 순서대로 클릭한다. 아래 예시는 사각형 한 곳을 네 번 클릭해 계단 금지구역으로 저장한다. 이 launch는 저장 지도 server, RViz, 클릭 수집기만 실행하며 planner, controller, navigator를 시작하지 않으므로 목표나 속도 명령을 보내지 않는다. 네 번째 점을 받으면 YAML을 저장하고 자동 종료한다.
+금지구역 좌표를 다시 정하려면 전용 capture launch를 실행하고 RViz의 `Publish Point`로 경계 꼭짓점을 순서대로 클릭한다. 아래 예시는 네 번 클릭할 때마다 사각형 한 곳을 저장한다. 저장 뒤 화면은 열린 상태를 유지하므로 다음 사각형을 계속 네 번 클릭할 수 있다. 모든 사각형을 다 찍은 뒤 launch 터미널에서 `Ctrl-C`로 종료한다. 완성된 사각형은 하나의 YAML에 `keepout_area_1`, `keepout_area_2` 순으로 누적되고, 미완성 클릭은 저장하지 않는다. 이 launch는 저장 지도 server, RViz, 클릭 수집기만 실행하며 planner, controller, navigator를 시작하지 않으므로 목표나 속도 명령을 보내지 않는다.
 
 ```bash
 cd "$HOME/jdamr_cube_ws"

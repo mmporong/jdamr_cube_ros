@@ -1,4 +1,4 @@
-"""Show a saved map in RViz and capture one keepout polygon."""
+"""Show a saved map in RViz and capture multiple keepout polygons."""
 
 import os
 
@@ -90,7 +90,7 @@ def generate_launch_description():
         )),
         RegisterEventHandler(OnProcessExit(
             target_action=capture,
-            on_exit=[Shutdown(reason='keepout polygon capture finished')],
+            on_exit=[Shutdown(reason='keepout polygon capture stopped')],
         )),
         map_server,
         lifecycle_manager,
