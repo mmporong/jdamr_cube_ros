@@ -20,7 +20,7 @@ ROS 2 Jazzy 자율주행 스택에 올린 기록. 강사 제공 코드에 결함
 학습 노트·진행 로그·이론 정리는 별도 리포에 있다:
 `physical-ai-lab/learning/M02_linux_ros2/slam_nav2/JDAMR_NEXT_SESSION.md`
 
-논문 근거의 SLAM·localization·frontier·Sim-to-Real 포트폴리오 작업은 [SLAM 포트폴리오 재개 가이드](README_SLAM_PORTFOLIO.md)에서 이어간다. 현재는 계획 수립 단계까지 완료됐으며 다음 작업은 실차 이동이 없는 Phase 0 평가 기준선 구축이다.
+논문 근거의 SLAM·localization·frontier·Sim-to-Real 포트폴리오 작업은 [SLAM 포트폴리오 재개 가이드](README_SLAM_PORTFOLIO.md)에서 이어간다. Phase 0 오프라인 평가 기준선은 구축·검증됐으며, 다음 작업은 운영자 감독 아래 동일 복도 실차 3회 데이터를 새 규약으로 수집하는 Phase 1이다.
 
 ## 실측으로 확정한 제원 (추측 금지 — 전부 한 번씩 틀렸던 값들)
 

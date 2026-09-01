@@ -64,7 +64,8 @@ class Readiness:
             'stationary') if not getattr(self, name))
 
     def motion_missing(self) -> tuple[str, ...]:
-        """Return hard faults that must latch while Nav2 owns motion.
+        """
+        Return hard faults that must latch while Nav2 owns motion.
 
         Map, scan, TF, and odometry freshness remain mandatory start gates.
         During an active goal Nav2 handles those transient data gaps and the

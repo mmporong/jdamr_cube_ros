@@ -1,0 +1,53 @@
+schema_version: 1
+datasets:
+  - dataset_id: g4_userloop_reset_20260824T175151
+    role: diagnostic_reference
+    qualification: DIAGNOSTIC_ONLY
+    protocol_qualified: false
+    uri: $HOME/jdamr_artifacts/g4_userloop_reset_20260824T175151
+    storage:
+      identifier: mcap
+      relative_file: g4_userloop_reset_20260824T175151_0.mcap
+      size_bytes: 31084464
+      sha256: 9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6
+      metadata_sha256: faed909f1ba27d3995a528ef718ffe3c0bd4e85a1e2b6643bf682b0452d8f9f1
+    capture:
+      started_at_unix_ns: 1787561518339123238
+      duration_ns: 195889382665
+      message_count: 63955
+      ros_distro: jazzy
+      backend_context: cartographer_mapping_session
+      clock_mode: wall
+    topics:
+      - {name: /tf_static, type: tf2_msgs/msg/TFMessage, messages: 1, reliability: reliable, durability: transient_local}
+      - {name: /tf, type: tf2_msgs/msg/TFMessage, messages: 48533, reliability: reliable, durability: volatile}
+      - {name: /scan, type: sensor_msgs/msg/LaserScan, messages: 1883, reliability: reliable, durability: volatile}
+      - {name: /odom, type: nav_msgs/msg/Odometry, messages: 9757, reliability: reliable, durability: volatile}
+      - {name: /joint_states, type: sensor_msgs/msg/JointState, messages: 1959, reliability: reliable, durability: volatile}
+      - {name: /cmd_vel, type: geometry_msgs/msg/Twist, messages: 1822, reliability: reliable, durability: volatile}
+    integrity:
+      inspected_at: '2026-09-01'
+      inspector: python-mcap-1.4.0
+      full_message_iteration: PASS
+      iterated_message_count: 63955
+      summary_crc: {status: VERIFIED, value: 1706017585}
+      chunk_crc: {status: UNAVAILABLE, chunks_with_crc: 0, total_chunks: 39}
+      data_section_crc: {status: UNAVAILABLE, value: 0}
+      message_index: {status: VERIFIED, records: 182}
+      chunk_index: {status: VERIFIED, records: 39}
+    qos_provenance:
+      offered_profiles: RECORDED_IN_METADATA
+      recorder_override: UNKNOWN
+      playback_override: UNKNOWN
+    drop_counters:
+      nic: UNKNOWN
+      driver: UNKNOWN
+      kernel: UNKNOWN
+    analysis_window:
+      policy: derive_from_last_nonzero_cmd_before_lift_discontinuity
+      cutoff_status: NOT_DERIVED
+    exclusion_reasons:
+      - robot lift contaminated the tail of the recording
+      - recorder and playback QoS overrides were not preserved
+      - chunk and data-section CRCs were not written
+      - NIC, driver, and kernel drop counters were not captured

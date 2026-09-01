@@ -1,11 +1,11 @@
 # PRD — JD-AMR Robust SLAM·자율탐색 포트폴리오
 
-- 상태: 실행 전 계획, 기존 SO-101/JD-AMR 계획 대조 완료
-- 기준일: 2026-08-31
+- 상태: Phase 0 오프라인 기준선 구현·검증 완료, Phase 1 실차 3회 미착수
+- 기준일: 2026-09-01
 - 예상 투자: 4~6주, 60~90시간
 - 정본 저장소: `/home/lim/jdamr_cube_ws/src/jdamr_cube_ros`
 - SO-101 연계 저장소: `/home/lim/so101-mobile-manipulation`
-- 범위: 계획·검증 설계만. 코드 수정·실차 이동·push는 하지 않고 이 계획 문서만 커밋한다.
+- 현재 실행 범위: Phase 0 평가 계약·검사 도구·테스트만 구현했다. 실차 이동과 push는 수행하지 않았다.
 
 ## 1. 목표 결과
 
@@ -27,7 +27,7 @@
 
 기존 SO-101 PRD는 폐기 대상이 아니다. 다만 SLAM 구현 정본이 아니라 SLAM/Nav2 결과를 소비하는 모바일 매니퓰레이션 통합 계획이다.
 
-- 문서상 상태는 “구현 시작 전”이다 (`/home/lim/so101-mobile-manipulation/.omx/plans/prd-so101-autonomy-pick-place.md:1-10`). 현재 작업 트리에는 별도 `mobile_mission.py`와 미션 상태 열거가 존재하므로 (`/home/lim/so101-mobile-manipulation/mobile_mission.py:36-41`), 나중에 통합 실행을 시작하기 전 문서 상태와 실제 구현을 다시 대조해야 한다.
+- PRD는 Architect 검토 승인 상태지만 본문은 구현 시작 전이라고 선언한다 (`/home/lim/so101-mobile-manipulation/.omx/plans/prd-so101-autonomy-pick-place.md:1-10`). 현재 작업 트리에는 별도 미추적 `mobile_mission.py`와 미션 상태 열거가 존재하므로 (`/home/lim/so101-mobile-manipulation/mobile_mission.py:36-41`), 나중에 통합 실행을 시작하기 전 문서 상태와 실제 구현을 다시 대조해야 한다.
 - Phase 0A는 고정 작업대에서 팔의 stationary pick/place를 검증하는 별도 트랙이다 (`/home/lim/so101-mobile-manipulation/.omx/plans/prd-so101-autonomy-pick-place.md:311-331`). SLAM 포트폴리오의 선행조건은 아니다.
 - Phase 0B는 동일 P-loop 3회, 단일 `map→odom` authority, Nav2 도착 오차와 arm capture basin 결합을 요구한다 (`/home/lim/so101-mobile-manipulation/.omx/plans/prd-so101-autonomy-pick-place.md:333-348`). 이번 SLAM 포트폴리오가 직접 채워야 할 연결 지점이다.
 - 이후 Phase 1~6은 ROS Action/arm authority, base motion gate, mission ledger, co-sim, dashboard, 감독 실차 승격 순서다 (`/home/lim/so101-mobile-manipulation/.omx/plans/prd-so101-autonomy-pick-place.md:350-450`).
@@ -129,16 +129,23 @@ Furgale의 Kalibr 계열은 camera-IMU, Lv 연구는 3D LiDAR·6DoF가 대상이
 
 ## 5. 실행 순서
 
-### Phase 0 — 기준선 봉인과 기존 계획 상태 대조 (4시간)
+### Phase 0 — 기준선 봉인과 기존 계획 상태 대조 (오프라인 완료, 2026-09-01)
 
 작업:
 
-1. 현재 navigation package를 clean build/test하고 실패를 0으로 만든다. 2026-08-31 fresh 결과는 98 tests 중 96 passed, 1 skipped, 1 failed이며, 실패는 `jdamr_cube_navigation/jdamr_cube_navigation/frontier_explorer.py:67`의 PEP257 D213이다.
+1. navigation package를 fresh build/test하고 기존 `frontier_explorer.py:67`의 PEP257 D213을 수정했다. 2026-09-01 결과는 107 tests, 0 errors, 0 failures, 1 skipped다.
 2. 기존 G4 reference bag `/home/lim/jdamr_artifacts/g4_userloop_reset_20260824T175151`을 dataset index에 진단용으로 등록한다. 이 bag은 195.889초, 63,955 messages, `/scan` 1,883, `/odom` 9,757, `/tf` 48,533개다. 마지막 리프트 뒤 scan/SLAM 급변 구간이 있으므로 raw bag은 immutable하게 보존하고, last nonzero command와 scan/pose discontinuity로 정한 pre-lift cutoff만 회귀 분석에 쓴다 (`SLAM_DEBUG_HANDOFF_20260824.md:40-47`). 이 bag과 저장 지도는 새 3회 합격 표본으로 세지 않는다.
 3. 아래 평가 골격을 JD-AMR에 둔다.
    - 새 `jdamr_cube_navigation/evaluation/experiment_manifest.schema.json`
    - 새 `jdamr_cube_navigation/evaluation/datasets.yaml`
    - 새 `jdamr_cube_navigation/evaluation/README.md`
+   - 새 `jdamr_cube_navigation/evaluation/map_registry.yaml`
+   - 새 `jdamr_cube_navigation/evaluation/calibration_registry.yaml`
+   - 새 `jdamr_cube_navigation/evaluation/mcap_writer_options.yaml`
+   - 새 `jdamr_cube_navigation/evaluation/qos_overrides.yaml`
+   - 새 `jdamr_cube_navigation/evaluation/phase0_status.yaml`
+   - 새 `jdamr_cube_navigation/evaluation/inspect_mcap.py`
+   - 새 `jdamr_cube_navigation/evaluation/requirements.txt`
 4. SO-101 PRD의 “구현 시작 전” 상태와 현재 untracked/working-tree 미션 코드를 대조하되, 이번 단계에서는 SO-101 코드를 변경하지 않는다.
 5. 새 `jdamr_cube_navigation/evaluation/map_registry.yaml`에 map 상태를 `candidate → published → deprecated`로 기록한다. quality gate 실패, map/config checksum mismatch, sensor extrinsic 변경, 구조적 환경 변경이 있으면 기존 map을 자동 선택하지 않고 candidate 재평가로 되돌린다.
 6. 새 `jdamr_cube_navigation/evaluation/calibration_registry.yaml`에 sensor pair별 static TF checksum, timestamp source, 검증일, uncertainty, `VERIFIED/UNOBSERVABLE` 상태를 기록한다. 정지·직진·CW·CCW 회전 bag을 분리해 어느 방향이 관측 불가능했는지 남긴다.
@@ -146,11 +153,18 @@ Furgale의 Kalibr 계열은 camera-IMU, Lv 연구는 3D LiDAR·6DoF가 대상이
 통과 기준:
 
 - `colcon test --packages-select jdamr_cube_navigation` 결과 failure 0.
-- 모든 등록 bag의 경로, SHA-256, topic/count, duration, sensor/backend 포함 여부가 manifest schema를 통과한다.
-- MCAP CRC/index와 record/playback QoS가 검증되고, topic count/drop counter 불일치는 명시적 실패다.
+- 모든 protocol-qualified bag의 경로, SHA-256, topic/count, duration, sensor/backend 포함 여부가 manifest schema를 통과한다. 기존 G4 bag처럼 provenance가 부족한 입력은 `DIAGNOSTIC_ONLY`로 등록하고 승격 대상에서 제외한다.
+- 새 수집에는 MCAP chunk/data/summary CRC와 index, record/playback QoS를 의무화한다. topic count/drop counter 불일치는 명시적 실패다.
 - map registry의 모든 published map은 source bags, backend/config hash, quality report로 역추적된다.
 - `UNOBSERVABLE` 또는 미검증 LiDAR-IMU pair는 IMU fusion run에 사용할 수 없다.
 - 기존 사용자 변경을 수정·스테이징하지 않는다.
+
+완료 증거:
+
+- 기존 G4 MCAP의 63,955개 메시지를 CRC 검증 모드로 끝까지 읽었고 SHA-256과 토픽 수가 dataset registry와 일치했다. 다만 chunk CRC 0/39, data-section CRC 0, QoS·drop counter 미상이라 진단 전용이다.
+- ROS 2 Jazzy API가 QoS override 6개를 파싱했다.
+- 설치 결과 `share/jdamr_cube_navigation/evaluation`에 평가 파일 10개가 포함됐다. MCAP 검사 의존성은 별도 target에 `mcap==1.4.0`, `lz4==4.4.5`, `zstandard==0.25.0`으로 고정했고 user site를 끈 상태에서 63,955개 메시지 검사를 재현했다.
+- 실차·시뮬레이터·ROS 이동 노드는 실행하지 않았다.
 
 ### Phase 1 — 동일 복도 실차 재현성 게이트 (8시간)
 

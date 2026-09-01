@@ -1,0 +1,43 @@
+schema_version: 1
+as_of: '2026-09-01'
+state: OFFLINE_READY
+real_motion_authorized: false
+
+gates:
+  navigation_package_tests: PASS
+  evaluation_schema: PASS
+  diagnostic_bag_inspection: PASS
+  qos_configuration_parse: PASS
+  install_layout: PASS
+  mcap_isolated_install: PASS
+
+verification:
+  navigation_package:
+    total: 107
+    passed: 106
+    skipped: 1
+    failures: 0
+    errors: 0
+  diagnostic_bag_messages_iterated: 63955
+  qos_profiles_parsed: 6
+  installed_evaluation_files: 10
+  mcap_python_version: 1.4.0
+  mcap_install_mode: pip_target_with_user_site_disabled
+
+diagnostic_reference:
+  dataset_id: g4_userloop_reset_20260824T175151
+  disposition: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+
+so101_audit:
+  repository: /home/lim/so101-mobile-manipulation
+  plan: .omx/plans/prd-so101-autonomy-pick-place.md
+  plan_sha256: bf3eeafe0c0fa2fe74a381c6b817778b8e9e036d8e178788326d135fd35b8b3a
+  plan_review_state: ARCHITECT_APPROVE
+  plan_declared_implementation: NOT_STARTED
+  untracked_candidate: mobile_mission.py
+  untracked_candidate_sha256: 897a81b0c0776f398d0acd26eaf29f1f6fe7a7cd7505c626bc60d7b1e21d22be
+  drift: 계획은 구현 시작 전으로 선언하지만 추적되지 않은 미션 코디네이터 후보가 존재한다.
+  conclusion: SO101은 작업팔 미션을 소유하고 JD-AMR은 이동·지도·SLAM을 소유한다. 자동 동기화는 하지 않는다.
+
+next_action: 운영자 감독 아래 Phase 1 동일 복도 3회 수집을 준비한다. 하드웨어 또는 이동 노드는 자동 실행하지 않는다.

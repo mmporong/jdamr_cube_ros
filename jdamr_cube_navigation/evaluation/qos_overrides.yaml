@@ -1,0 +1,35 @@
+/scan:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/odom:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 50
+
+/tf:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 100
+
+/tf_static:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 1
+
+/joint_states:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 20
+
+/cmd_vel:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 20

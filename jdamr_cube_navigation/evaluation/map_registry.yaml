@@ -1,0 +1,19 @@
+schema_version: 1
+allowed_states: [candidate, published, deprecated]
+state_transitions:
+  candidate: [published, deprecated]
+  published: [deprecated]
+  deprecated: []
+publication_gates:
+  - source_datasets_protocol_qualified
+  - backend_and_config_hash_present
+  - map_image_and_yaml_checksums_present
+  - quality_report_present
+  - single_map_to_odom_authority_verified
+  - manual_review_passed
+deprecation_triggers:
+  - quality_gate_failure
+  - map_or_config_checksum_mismatch
+  - sensor_extrinsic_change
+  - persistent_structural_environment_change
+maps: []

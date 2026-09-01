@@ -1,0 +1,61 @@
+schema_version: 1
+as_of: '2026-09-01'
+
+policy:
+  checksum_algorithm: sha256
+  checksum_input: '<parent>-><child>|xyz=<x>,<y>,<z>|rpy=<roll>,<pitch>,<yaw>'
+  fusion_allowed_statuses:
+    - VERIFIED
+  blocked_statuses:
+    - UNVERIFIED
+    - UNOBSERVABLE
+  notes:
+    - 센서 외부 파라미터와 시간 기준을 검증하지 않은 상태에서는 다중 센서 융합 성능을 주장하지 않는다.
+    - 동일 프레임으로 발행되는 센서도 실제 장착 위치와 시간 지연을 별도로 검증한다.
+
+calibrations:
+  - calibration_id: g4_lidar_base_link_to_laser_link_v1
+    sensor: lidar
+    source: jdamr_cube_description/urdf/jdamr_cube.urdf
+    transform_kind: static_tf
+    parent_frame: base_link
+    child_frame: laser_link
+    translation_m: [0.0, 0.0, 0.1]
+    rotation_rpy_rad: [0.0, 0.0, 3.141592653589793]
+    canonical_transform: base_link->laser_link|xyz=0,0,0.1|rpy=0,0,3.141592653589793
+    canonical_sha256: 2ece7c2666b61ee2396e8fbbc65c5a3c26aa0a665ea74e17f2e5e73e17141d7a
+    timestamp_source: driver_estimated
+    status: UNVERIFIED
+    verified_at: null
+    translation_uncertainty_m: null
+    rotation_uncertainty_rad: null
+    time_offset_uncertainty_ms: null
+    fusion_allowed: false
+    verification_needed:
+      - 평면 벽 왕복 주행으로 yaw 부호와 전방 축을 확인한다.
+      - 정지 구간과 회전 구간에서 scan-to-odom 시간 오프셋을 추정한다.
+
+  - calibration_id: g4_imu_base_link_identity_v1
+    sensor: imu
+    source: jdamr_cube_bringup/launch/real_bringup.launch.py
+    timestamp_evidence: jdamr_base_driver/src/base_driver_node.cpp
+    transform_kind: identity_frame_assignment
+    parent_frame: base_link
+    child_frame: base_link
+    translation_m: [0.0, 0.0, 0.0]
+    rotation_rpy_rad: [0.0, 0.0, 0.0]
+    canonical_transform: base_link->base_link|xyz=0,0,0|rpy=0,0,0
+    canonical_sha256: 0f8a884078e0ea3eabde307412f7c36618c943b4bab85e4ce4c98a52c79bbd6c
+    timestamp_source: ros_receipt
+    status: UNVERIFIED
+    verified_at: null
+    translation_uncertainty_m: null
+    rotation_uncertainty_rad: null
+    time_offset_uncertainty_ms: null
+    fusion_allowed: false
+    warnings:
+      - 활성 C++ 드라이버는 펌웨어 상태 수신 시각의 ROS now()를 사용한다.
+      - 비활성 레거시 Python 노드는 URDF에 없는 imu_link를 발행하므로 혼용하지 않는다.
+    verification_needed:
+      - 정지 상태 바이어스와 Allan deviation을 측정한다.
+      - 급정지·회전 데이터로 수신 지연과 드롭을 확인한다.

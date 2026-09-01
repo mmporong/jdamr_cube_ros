@@ -1,0 +1,68 @@
+# SLAM 평가 Phase 0
+
+이 디렉터리는 실제 로봇을 움직이기 전에 데이터와 실험 조건을 고정하는 오프라인 게이트다. 여기서 통과했다고 해서 센서 보정이나 실제 주행 안전이 검증된 것은 아니다.
+
+## 구성
+
+- `experiment_manifest.schema.json`: 실험마다 남겨야 할 환경·버전·센서·TF·결과·산출물 계약
+- `datasets.yaml`: rosbag의 해시, 토픽 수, 무결성, 사용 가능 범위
+- `map_registry.yaml`: 지도 후보·게시·폐기 상태와 승격 조건
+- `calibration_registry.yaml`: 센서 외부 파라미터와 시간 기준의 검증 상태
+- `mcap_writer_options.yaml`: 다음 MCAP 기록에서 CRC와 인덱스를 보존하는 저장 설정
+- `qos_overrides.yaml`: 기록·재생에 공통으로 사용할 명시적 QoS
+- `phase0_status.yaml`: 현재 오프라인 게이트와 SO101 경계 감사 결과
+- `inspect_mcap.py`: ROS 노드와 재생 없이 MCAP 전체 메시지와 CRC를 읽는 검사 도구
+
+`inspect_mcap.py`는 `requirements.txt`에 고정한 Python `mcap==1.4.0`과 압축 모듈을 사용한다. 로봇 런타임의 전역 Python 환경이나 OS 패키지를 바꾸지 않도록 평가 전용 디렉터리에 설치한다.
+
+```bash
+python3 -m pip install --disable-pip-version-check --no-input --upgrade \
+  --requirement "$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/requirements.txt" \
+  --target "$HOME/.local/share/jdamr-slam-eval/python"
+PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
+  python3 -c "import mcap; print(mcap.__version__)"
+```
+
+## 기존 G4 bag 판정
+
+`g4_userloop_reset_20260824T175151_0.mcap`은 63,955개 메시지를 끝까지 읽었고 summary CRC와 인덱스가 있다. 그러나 39개 chunk의 CRC가 모두 0이며 data-section CRC도 0이다. 당시 기록·재생 QoS와 NIC·드라이버·커널 드롭 카운터가 없고, 로봇을 든 뒤의 꼬리 구간도 분리되지 않았다. 따라서 원인 탐색에는 사용할 수 있지만 지도나 성능 결과를 승격하는 입력으로는 사용할 수 없다.
+
+`validate_crcs: PASS`는 파일에 존재하는 CRC가 일치했다는 뜻이다. `chunks_with_crc: 0`은 핵심 데이터 chunk에 검증할 CRC 자체가 없다는 뜻이므로 서로 모순되지 않는다.
+
+검사 명령은 메시지를 발행하지 않는다.
+
+```bash
+cd $HOME/jdamr_cube_ws/src/jdamr_cube_ros
+PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
+  python3 jdamr_cube_navigation/evaluation/inspect_mcap.py \
+  $HOME/jdamr_artifacts/g4_userloop_reset_20260824T175151/g4_userloop_reset_20260824T175151_0.mcap
+```
+
+## 다음 기록의 고정 조건
+
+아래 명령은 운영자가 안전 구역과 비상 정지를 확인한 뒤 별도 주행 세션에서만 사용한다. `<run_id>`는 실행 전에 고유한 실제 값으로 바꿔야 한다. 이 문서는 이동 명령을 포함하지 않는다.
+
+```bash
+cd $HOME/jdamr_cube_ws/src/jdamr_cube_ros
+source /opt/ros/jazzy/setup.bash
+ros2 bag record \
+  --storage mcap \
+  --storage-config-file jdamr_cube_navigation/evaluation/mcap_writer_options.yaml \
+  --qos-profile-overrides-path jdamr_cube_navigation/evaluation/qos_overrides.yaml \
+  --output $HOME/jdamr_artifacts/<run_id> \
+  /scan /odom /tf /tf_static /joint_states /cmd_vel
+```
+
+프로토콜 적격 데이터는 다음을 모두 만족해야 한다.
+
+1. bag SHA-256과 metadata SHA-256을 등록한다.
+2. chunk CRC, summary CRC, chunk/message index를 보존한다.
+3. 기록·재생 QoS 파일과 소프트웨어 버전을 manifest에 남긴다.
+4. NIC·드라이버·커널 드롭 카운터와 rosbag 토픽 수를 남긴다.
+5. 로봇을 들거나 센서를 가린 구간은 시간 경계로 제외한다.
+6. `map -> odom` TF 권한자는 한 개만 허용한다.
+7. `UNVERIFIED` 또는 `UNOBSERVABLE` 보정값은 센서 융합 성능 주장에 사용하지 않는다.
+
+진단 전용 데이터에서는 미상 항목을 명시한 채 보존할 수 있다. 하지만 `protocol_qualified: true` 입력에 QoS, CRC, 드롭 또는 구간 경계가 미상이라면 승격을 차단한다.
+
+설정 필드와 QoS 형식은 [rosbag2 MCAP 저장소 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/rosbag2_storage_mcap/README.md)와 [rosbag2 QoS override 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/README.md)를 기준으로 한다.

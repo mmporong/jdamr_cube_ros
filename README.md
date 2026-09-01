@@ -33,7 +33,7 @@ JD-AMR cube(차동구동 + LD14 라이다 + RGB-D)와 SO-101 5축 팔을 ROS 2 J
 
 2026-08-26 기준의 Physical AI 경계, sim-to-real 순서, 관련 논문별 적용 추천은 [Physical AI 포트폴리오 적용안](PORTFOLIO_20260826.md)에 정리했습니다. 문서 안의 추천 항목은 구현 완료 결과와 분리해 표시합니다.
 
-SLAM·자율탐색 심화 작업은 [SLAM 포트폴리오 재개 가이드](README_SLAM_PORTFOLIO.md)에서 시작합니다. 전체 논문 적용 판정, 수치 기준, Phase 0~9 실행 계획은 [SLAM 포트폴리오 PRD](.omx/plans/prd-jdamr-slam-portfolio.md)에 있습니다. 현재는 이번 심화 계획 수립까지 완료됐으며 계획에 정의한 신규 evaluation harness와 새 실차 데이터 수집은 아직 시작하지 않았습니다.
+SLAM·자율탐색 심화 작업은 [SLAM 포트폴리오 재개 가이드](README_SLAM_PORTFOLIO.md)에서 이어갑니다. 전체 논문 적용 판정, 수치 기준, Phase 0~9 실행 계획은 [SLAM 포트폴리오 PRD](.omx/plans/prd-jdamr-slam-portfolio.md)에 있습니다. Phase 0 오프라인 평가 기준선은 구축·검증됐고, 다음 단계인 동일 복도 실차 3회 수집은 아직 시작하지 않았습니다.
 
 ## 측정된 결과
 
