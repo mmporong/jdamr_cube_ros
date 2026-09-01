@@ -28,7 +28,7 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 ## 저장 지도 자율주행의 금지구역
 
-복도 반복 수집처럼 이미 저장된 지도로 이동할 때는 `keepout_navigation.launch.py`만 사용한다. 이 launch는 AMCL과 저장 지도로 위치를 잡고, 동일한 금지구역 마스크를 global/local costmap에 함께 적용한다. 마스크 또는 filter info 서버가 종료되면 전체 자율주행도 종료한다. 일반 `navigation.launch.py`의 `use_keepout:=false` 상태로 복도 자율주행을 시작하지 않는다.
+복도 반복 수집처럼 이미 저장된 지도로 이동할 때는 `keepout_navigation.launch.py`만 사용한다. 이 launch는 AMCL과 저장 지도로 위치를 잡고, 동일한 금지구역 마스크를 global/local costmap에 함께 적용하며 전용 RViz도 기본으로 연다. RViz에는 원본 지도, `/keepout_filter_mask`, AMCL 파티클, 라이다, 전역 계획 경로와 초기 위치·Nav2 목표 도구가 미리 설정돼 있다. 마스크 또는 filter info 서버가 종료되면 전체 자율주행도 종료한다. 일반 `navigation.launch.py`의 `use_keepout:=false` 상태로 복도 자율주행을 시작하지 않는다.
 
 2026-09-01 사용자 주석의 노란 두 영역은 `config/keepout_zones.autonomous_20260826.yaml`에 map-frame 다각형으로 반영했다. 왼쪽 아래 가지와 오른쪽 아래 가지의 입구를 0.55m 여유로 막고, 주 복도는 이어지도록 잡았다. 마스크 생성기는 본선의 지정 시작점 `(-0.002, 0.000)`에서 끝점 `(37.498, -4.300)`까지 0.25m 장애물 여유를 적용한 격자 연결성을 다시 계산하며, 경로가 끊기면 파일 생성을 거부한다. 현재 저장 지도에 사용할 마스크는 아래 명령으로 재생성한다.
 
@@ -80,6 +80,8 @@ ros2 lifecycle get /keepout_filter_mask_server
 ros2 lifecycle get /keepout_costmap_filter_info_server
 ros2 topic echo --once /keepout_costmap_filter_info
 ```
+
+RViz가 필요 없는 정적 진단이나 원격 점검에서만 `use_rviz:=false`를 추가한다. 실차 주행에서는 기본값을 유지하고, RViz의 `Keepout Zones` 표시와 계획 경로가 금지구역을 침범하지 않는지 목표 전송 전에 확인한다.
 
 이 모드는 기존 지도를 경로 통제에만 사용한다. 실차 수집 중 Cartographer나 SLAM Toolbox mapping을 동시에 실행하지 않는다. 원시 `/scan`, `/odom`, TF를 bag으로 기록한 뒤, `offline_replay_guard.launch.py`로 `/map`과 이동 명령을 재생 목록에서 제외하고 기록된 AMCL의 `map -> odom`을 TF에서 제거한다. 새 mapping backend는 격리 domain의 빈 상태에서 실행한다. 따라서 Keepout이나 저장 지도가 새 지도 결과를 덮어쓰거나 정답으로 주입되지 않는다. 실행 절차는 `evaluation/README.md`의 "저장 지도 주행 bag의 오프라인 SLAM 재생"을 따른다.
 

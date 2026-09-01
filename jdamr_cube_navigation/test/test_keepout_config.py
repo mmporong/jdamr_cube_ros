@@ -21,6 +21,7 @@ NAVIGATION_LAUNCH = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
 KEEPOUT_LAUNCH = PACKAGE_ROOT / 'launch' / 'keepout_navigation.launch.py'
 CAPTURE_LAUNCH = PACKAGE_ROOT / 'launch' / 'keepout_capture.launch.py'
 REPLAY_LAUNCH = PACKAGE_ROOT / 'launch' / 'offline_replay_guard.launch.py'
+KEEPOUT_RVIZ = PACKAGE_ROOT / 'rviz' / 'keepout_navigation.rviz'
 SETUP_PATH = PACKAGE_ROOT / 'setup.py'
 
 
@@ -116,6 +117,32 @@ def test_keepout_launch_is_required_and_fail_closed():
     assert "'use_composition': 'False'" in navigation_source
     assert "'slam': 'False'" in navigation_source
     assert "'use_localization': 'True'" in navigation_source
+
+
+def test_keepout_launch_starts_dedicated_rviz_by_default():
+    """Show the saved map, mask, localization, and Nav2 goal tools together."""
+    source = KEEPOUT_LAUNCH.read_text(encoding='utf-8')
+
+    ast.parse(source)
+    assert "name='keepout_navigation_rviz'" in source
+    assert "executable='rviz2'" in source
+    assert 'condition=IfCondition(use_rviz)' in source
+    assert "DeclareLaunchArgument(\n            'use_rviz', default_value='true'" in source
+    assert "'rviz', 'keepout_navigation.rviz'" in source
+
+    config = yaml.safe_load(KEEPOUT_RVIZ.read_text(encoding='utf-8'))
+    manager = config['Visualization Manager']
+    displays = {display['Name']: display for display in manager['Displays']}
+
+    assert manager['Global Options']['Fixed Frame'] == 'map'
+    assert displays['Map']['Topic']['Value'] == '/map'
+    assert displays['Keepout Zones']['Topic']['Value'] == \
+        '/keepout_filter_mask'
+    assert displays['Keepout Zones']['Enabled'] is True
+    assert 0.0 < displays['Keepout Zones']['Alpha'] < 1.0
+    tool_classes = {tool['Class'] for tool in manager['Tools']}
+    assert 'rviz_default_plugins/SetInitialPose' in tool_classes
+    assert 'nav2_rviz_plugins/GoalTool' in tool_classes
 
 
 def test_capture_launch_has_map_and_rviz_but_no_navigation_servers():
@@ -280,3 +307,4 @@ def test_package_installs_keepout_command_and_assets():
     assert 'tf_replay_filter = ' in setup_source
     assert "glob('launch/*.launch.py')" in setup_source
     assert "glob('config/*.yaml')" in setup_source
+    assert "glob('rviz/*.rviz')" in setup_source
