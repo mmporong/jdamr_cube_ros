@@ -54,6 +54,7 @@ def generate_launch_description():
         source_file=params_file,
         root_key='',
         param_rewrites={
+            'yaml_filename': map_yaml,
             'local_costmap.local_costmap.ros__parameters.'
             'keepout_filter.enabled': use_keepout,
             'global_costmap.global_costmap.ros__parameters.'

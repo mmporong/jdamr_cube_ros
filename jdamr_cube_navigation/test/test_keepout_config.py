@@ -119,6 +119,13 @@ def test_keepout_launch_is_required_and_fail_closed():
     assert "'use_localization': 'True'" in navigation_source
 
 
+def test_saved_map_is_injected_into_nav2_parameters():
+    """Keep the main map path even when nested launch argument scope is lost."""
+    source = NAVIGATION_LAUNCH.read_text(encoding='utf-8')
+
+    assert "'yaml_filename': map_yaml" in source
+
+
 def test_keepout_launch_starts_dedicated_rviz_by_default():
     """Show the saved map, mask, localization, and Nav2 goal tools together."""
     source = KEEPOUT_LAUNCH.read_text(encoding='utf-8')
