@@ -5,7 +5,7 @@
 ## 현재 상태
 
 - 계획 수립과 논문 대조는 완료됐고 `57ffd92` 커밋에 기록돼 있다.
-- Phase 0 오프라인 평가 기준선은 2026-09-01에 구현·검증됐다. `jdamr_cube_navigation` 결과는 107 tests, 0 errors, 0 failures, 1 skipped다.
+- Phase 0 오프라인 평가 기준선과 Phase 1 Keepout·TF replay guard 사전구성은 2026-09-01에 구현·검증됐다. `jdamr_cube_navigation` 결과는 118 tests, 0 errors, 0 failures, 1 skipped다.
 - 평가 계약, dataset/map/calibration registry, MCAP writer 설정, QoS override, 무결성 검사 도구는 `jdamr_cube_navigation/evaluation/`에 있다.
 - 기존 G4 bag은 63,955개 메시지를 끝까지 읽고 해시와 토픽 수를 고정했지만 진단 reference일 뿐 새 합격 표본이 아니다. chunk CRC, 기록·재생 QoS, drop counter, 리프트 전 cutoff가 부족하다.
 - SO-101 PRD는 Architect 승인 상태지만 구현 시작 전이라고 선언한다. 동시에 미추적 `mobile_mission.py`가 있어 이 차이를 읽기 전용 감사 결과로 남겼고 SO-101 파일은 수정하지 않았다.
@@ -77,7 +77,7 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 현재 Phase 0 판정은 `OFFLINE_READY`다.
 
-- navigation package: 107 tests, 0 errors, 0 failures, 1 skipped
+- navigation package: 118 tests, 0 errors, 0 failures, 1 skipped
 - G4 diagnostic bag: 63,955 messages, SHA-256 `9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6`
 - QoS override: ROS 2 Jazzy 파서에서 6개 profile 통과
 - 설치 레이아웃: evaluation 파일 10개 확인
@@ -91,7 +91,7 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 ## Phase 0 이후 순서
 
-1. 같은 복도 P-loop를 새 규약으로 실차 3회 수집한다.
+1. 같은 복도 P-loop를 새 규약으로 실차 3회 수집한다. 저장 지도+AMCL+Keepout은 안전한 반복 경로에만 사용하고 live mapping은 끈다. raw bag은 `offline_replay_guard.launch.py`로 격리 domain의 빈 SLAM 상태에서 재생하며 `/map`, 이동 명령, AMCL `map→odom`은 입력에서 제외한다.
 2. 시뮬레이션 ground-truth 기반 ATE/RPE/NEES와 loop audit 도구를 만든다.
 3. Cartographer와 SLAM Toolbox를 동일 bag으로 비교한다.
 4. LiDAR noise/dropout, odometry, Huber, 검증된 IMU를 한 변수씩 비교한다.

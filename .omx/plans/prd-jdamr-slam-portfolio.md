@@ -133,7 +133,7 @@ Furgale의 Kalibr 계열은 camera-IMU, Lv 연구는 3D LiDAR·6DoF가 대상이
 
 작업:
 
-1. navigation package를 fresh build/test하고 기존 `frontier_explorer.py:67`의 PEP257 D213을 수정했다. 2026-09-01 결과는 107 tests, 0 errors, 0 failures, 1 skipped다.
+1. navigation package를 fresh build/test하고 기존 `frontier_explorer.py:67`의 PEP257 D213을 수정했다. Phase 1 Keepout과 TF replay guard 사전구성까지 반영한 2026-09-01 결과는 118 tests, 0 errors, 0 failures, 1 skipped다.
 2. 기존 G4 reference bag `/home/lim/jdamr_artifacts/g4_userloop_reset_20260824T175151`을 dataset index에 진단용으로 등록한다. 이 bag은 195.889초, 63,955 messages, `/scan` 1,883, `/odom` 9,757, `/tf` 48,533개다. 마지막 리프트 뒤 scan/SLAM 급변 구간이 있으므로 raw bag은 immutable하게 보존하고, last nonzero command와 scan/pose discontinuity로 정한 pre-lift cutoff만 회귀 분석에 쓴다 (`SLAM_DEBUG_HANDOFF_20260824.md:40-47`). 이 bag과 저장 지도는 새 3회 합격 표본으로 세지 않는다.
 3. 아래 평가 골격을 JD-AMR에 둔다.
    - 새 `jdamr_cube_navigation/evaluation/experiment_manifest.schema.json`

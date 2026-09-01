@@ -35,6 +35,8 @@ JD-AMR cube(차동구동 + LD14 라이다 + RGB-D)와 SO-101 5축 팔을 ROS 2 J
 
 SLAM·자율탐색 심화 작업은 [SLAM 포트폴리오 재개 가이드](README_SLAM_PORTFOLIO.md)에서 이어갑니다. 전체 논문 적용 판정, 수치 기준, Phase 0~9 실행 계획은 [SLAM 포트폴리오 PRD](.omx/plans/prd-jdamr-slam-portfolio.md)에 있습니다. Phase 0 오프라인 평가 기준선은 구축·검증됐고, 다음 단계인 동일 복도 실차 3회 수집은 아직 시작하지 않았습니다.
 
+저장 지도 기반 복도 반복 주행에는 원본 지도와 분리된 Keepout mask를 사용합니다. RViz 클릭으로 금지 다각형을 만들고, global/local costmap이 함께 차단하며 filter 서버가 종료되면 주행 launch도 종료됩니다. Keepout은 경로 통제용이고 새 SLAM 지도는 raw bag에서 저장 map·이동 명령·AMCL `map→odom`을 제외한 뒤 격리된 빈 상태로 재생해 생성합니다.
+
 ## 측정된 결과
 
 - 비전 접근 수렴 오차 **3~6mm** (초기 거리 1m)

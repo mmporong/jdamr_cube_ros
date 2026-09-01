@@ -10,11 +10,13 @@ gates:
   qos_configuration_parse: PASS
   install_layout: PASS
   mcap_isolated_install: PASS
+  keepout_navigation_static: PASS
+  offline_tf_replay_guard_runtime: PASS
 
 verification:
   navigation_package:
-    total: 107
-    passed: 106
+    total: 118
+    passed: 117
     skipped: 1
     failures: 0
     errors: 0

@@ -31,6 +31,11 @@ setup(
         'console_scripts': [
             'frontier_explorer = jdamr_cube_navigation.frontier_explorer:main',
             'goto_pose = jdamr_cube_navigation.goto_pose:main',
+            'keepout_mask = jdamr_cube_navigation.keepout_mask:main',
+            'keepout_zone_capture = '
+            'jdamr_cube_navigation.keepout_zone_capture:main',
+            'tf_replay_filter = '
+            'jdamr_cube_navigation.tf_replay_filter:main',
         ],
     },
 )

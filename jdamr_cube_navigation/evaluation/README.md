@@ -12,6 +12,7 @@
 - `qos_overrides.yaml`: 기록·재생에 공통으로 사용할 명시적 QoS
 - `phase0_status.yaml`: 현재 오프라인 게이트와 SO101 경계 감사 결과
 - `inspect_mcap.py`: ROS 노드와 재생 없이 MCAP 전체 메시지와 CRC를 읽는 검사 도구
+- `../launch/offline_replay_guard.launch.py`: 저장 지도와 이동 명령을 재생하지 않고 AMCL `map -> odom`을 제거하는 launch
 
 `inspect_mcap.py`는 `requirements.txt`에 고정한 Python `mcap==1.4.0`과 압축 모듈을 사용한다. 로봇 런타임의 전역 Python 환경이나 OS 패키지를 바꾸지 않도록 평가 전용 디렉터리에 설치한다.
 
@@ -64,5 +65,20 @@ ros2 bag record \
 7. `UNVERIFIED` 또는 `UNOBSERVABLE` 보정값은 센서 융합 성능 주장에 사용하지 않는다.
 
 진단 전용 데이터에서는 미상 항목을 명시한 채 보존할 수 있다. 하지만 `protocol_qualified: true` 입력에 QoS, CRC, 드롭 또는 구간 경계가 미상이라면 승격을 차단한다.
+
+## 저장 지도 주행 bag의 오프라인 SLAM 재생
+
+저장 지도와 AMCL을 사용해 안전 경로로 수집한 bag도 새 지도 생성 입력으로 쓸 수 있다. 단, 새 mapping backend는 `use_sim_time=true`와 빈 상태로 먼저 실행하고, localization node와 저장 map server는 실행하지 않는다. 재생은 실차 domain 12가 아닌 격리 domain 199에서만 허용한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+export ROS_DOMAIN_ID=199
+ros2 launch jdamr_cube_navigation offline_replay_guard.launch.py \
+  bag:="$HOME/jdamr_artifacts/<run_id>"
+```
+
+이 launch는 `/scan`, `/odom`, `/tf`, `/tf_static`, `/imu/data_raw`, `/joint_states`만 재생한다. `/map`과 `/cmd_vel`은 재생 목록에 없으며, TF는 전용 토픽으로 우회한 뒤 기록된 `map -> odom`만 제거해서 원래 `/tf`로 전달한다. 따라서 `/tf`의 `odom -> base_footprint`와 센서 고정 TF는 보존되고, 새 mapping backend만 `map -> odom` 권한자가 된다. TF filter나 bag player가 종료되면 전체 재생도 종료한다. TF queue 유실을 막기 위해 `rate`는 실시간 1.0 이하만 허용한다.
 
 설정 필드와 QoS 형식은 [rosbag2 MCAP 저장소 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/rosbag2_storage_mcap/README.md)와 [rosbag2 QoS override 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/README.md)를 기준으로 한다.

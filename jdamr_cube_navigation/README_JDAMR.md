@@ -26,7 +26,49 @@ export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=false
 ```
 
-항상 이 launch로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
+## 저장 지도 자율주행의 금지구역
+
+복도 반복 수집처럼 이미 저장된 지도로 이동할 때는 `keepout_navigation.launch.py`만 사용한다. 이 launch는 AMCL과 저장 지도로 위치를 잡고, 동일한 금지구역 마스크를 global/local costmap에 함께 적용한다. 마스크 또는 filter info 서버가 종료되면 전체 자율주행도 종료한다. 일반 `navigation.launch.py`의 `use_keepout:=false` 상태로 복도 자율주행을 시작하지 않는다.
+
+금지구역 좌표를 모르면 전용 capture launch를 실행하고 RViz의 `Publish Point`로 경계 꼭짓점을 순서대로 클릭한다. 아래 예시는 사각형 한 곳을 네 번 클릭해 계단 금지구역으로 저장한다. 이 launch는 저장 지도 server, RViz, 클릭 수집기만 실행하며 planner, controller, navigator를 시작하지 않으므로 목표나 속도 명령을 보내지 않는다. 네 번째 점을 받으면 YAML을 저장하고 자동 종료한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch jdamr_cube_navigation keepout_capture.launch.py \
+  map:="$HOME/maps/autonomous_20260826T161908.yaml" \
+  output:="$HOME/maps/autonomous_20260826T161908_keepout_zones.yaml" \
+  zone_id:=stairs \
+  point_count:=4 \
+  margin:=0.55
+```
+
+`--margin 0.55`는 금지 다각형 바깥으로 추가 차단하는 거리다. 도구는 0.35m 미만을 거부하며, 실제 위치추정 오차가 크면 더 늘린다. 클릭 결과를 마스크로 만들고 원본 지도와 크기·해상도·원점이 같은지 검증한다.
+
+```bash
+ros2 run jdamr_cube_navigation keepout_mask build \
+  --zones "$HOME/maps/autonomous_20260826T161908_keepout_zones.yaml" \
+  --output-prefix "$HOME/maps/autonomous_20260826T161908_keepout"
+ros2 run jdamr_cube_navigation keepout_mask validate \
+  --map "$HOME/maps/autonomous_20260826T161908.yaml" \
+  --mask "$HOME/maps/autonomous_20260826T161908_keepout.yaml"
+```
+
+활성화 전에는 RViz에 `/keepout_filter_mask`를 Map display로 추가해 원본 지도와 겹쳐 보고, 두 서버가 `active`인지 확인한다. 금지구역 안 waypoint나 경로 실패는 건너뛰지 않고 전체 waypoint 실행을 중단한다.
+
+```bash
+ros2 launch jdamr_cube_navigation keepout_navigation.launch.py \
+  map:="$HOME/maps/autonomous_20260826T161908.yaml" \
+  keepout_mask:="$HOME/maps/autonomous_20260826T161908_keepout.yaml"
+ros2 lifecycle get /keepout_filter_mask_server
+ros2 lifecycle get /keepout_costmap_filter_info_server
+ros2 topic echo --once /keepout_costmap_filter_info
+```
+
+이 모드는 기존 지도를 경로 통제에만 사용한다. 실차 수집 중 Cartographer나 SLAM Toolbox mapping을 동시에 실행하지 않는다. 원시 `/scan`, `/odom`, TF를 bag으로 기록한 뒤, `offline_replay_guard.launch.py`로 `/map`과 이동 명령을 재생 목록에서 제외하고 기록된 AMCL의 `map -> odom`을 TF에서 제거한다. 새 mapping backend는 격리 domain의 빈 상태에서 실행한다. 따라서 Keepout이나 저장 지도가 새 지도 결과를 덮어쓰거나 정답으로 주입되지 않는다. 실행 절차는 `evaluation/README.md`의 "저장 지도 주행 bag의 오프라인 SLAM 재생"을 따른다.
+
+자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
 실기 launch는 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
 
