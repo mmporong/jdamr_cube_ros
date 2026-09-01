@@ -32,6 +32,8 @@ CAPTURE_LAUNCH = PACKAGE_ROOT / 'launch' / 'keepout_capture.launch.py'
 REPLAY_LAUNCH = PACKAGE_ROOT / 'launch' / 'offline_replay_guard.launch.py'
 ONBOARD_LAUNCH = (
     PACKAGE_ROOT / 'launch' / 'onboard_keepout_navigation.launch.py')
+ONBOARD_CORE_LAUNCH = (
+    PACKAGE_ROOT / 'launch' / 'onboard_nav2_core.launch.py')
 OPERATOR_VIEW_LAUNCH = (
     PACKAGE_ROOT / 'launch' / 'keepout_operator_view.launch.py')
 KEEPOUT_RVIZ = PACKAGE_ROOT / 'rviz' / 'keepout_navigation.rviz'
@@ -217,8 +219,8 @@ def test_onboard_navigation_keeps_control_and_recording_off_wifi():
     source = ONBOARD_LAUNCH.read_text(encoding='utf-8')
 
     ast.parse(source)
-    assert "'use_rviz': 'false'" in source
-    assert "'use_composition': 'True'" in source
+    assert "'onboard_nav2_core.launch.py'" in source
+    assert 'rviz2' not in source
     assert "'record_bag', default_value='true'" in source
     assert "'--storage', 'mcap'" in source
     assert "'--topics', *RECORDED_TOPICS" in source
@@ -229,7 +231,37 @@ def test_onboard_navigation_keeps_control_and_recording_off_wifi():
     assert "'/tf'" in source
     assert "'/joint_states'" not in source
     assert 'onboard recorder exited; stopping navigation' in source
+    assert 'if context.is_shutdown' in source
     assert 'bag_output already exists' in source
+    assert source.rfind('navigation,') < source.rfind('recorder,')
+
+
+def test_onboard_core_loads_only_corridor_required_nav2_components():
+    """Keep unused docking, route, waypoint, and smoothing servers off Pi."""
+    source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
+
+    ast.parse(source)
+    for required in (
+            'nav2_map_server::MapServer', 'nav2_amcl::AmclNode',
+            'nav2_controller::ControllerServer',
+            'nav2_planner::PlannerServer',
+            'nav2_bt_navigator::BtNavigator',
+            'nav2_velocity_smoother::VelocitySmoother',
+            'nav2_collision_monitor::CollisionMonitor'):
+        assert required in source
+    for omitted in (
+            'nav2_route::RouteServer', 'opennav_docking::DockingServer',
+            'nav2_smoother::SmootherServer',
+            'nav2_waypoint_follower::WaypointFollower',
+            'behavior_server::BehaviorServer'):
+        assert omitted not in source
+    assert "'navigate_to_pose_corridor_fail_fast.xml'" in source
+    assert "'yaml_filename': map_yaml" in source
+    assert source.count("'keepout_filter.enabled'): 'true'") == 2
+    assert "namespace=''" in source
+    assert 'OpaqueFunction(function=_validate_keepout)' in source
+    assert "name='keepout_filter_mask_server'" in source
+    assert "name='keepout_costmap_filter_info_server'" in source
 
 
 def test_operator_view_never_starts_navigation_or_recording():

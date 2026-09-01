@@ -56,11 +56,18 @@ def _prepare_bag_output(context):
     return []
 
 
+def _shutdown_on_recorder_exit(_event, context):
+    """Stop Nav2 only when the recorder exit did not follow shutdown."""
+    if context.is_shutdown:
+        return []
+    return [Shutdown(reason='onboard recorder exited; stopping navigation')]
+
+
 def generate_launch_description():
     """Keep the motion loop and essential recording off the Wi-Fi link."""
     package_share = get_package_share_directory('jdamr_cube_navigation')
-    keepout_launch = os.path.join(
-        package_share, 'launch', 'keepout_navigation.launch.py')
+    onboard_core_launch = os.path.join(
+        package_share, 'launch', 'onboard_nav2_core.launch.py')
     writer_options = os.path.join(
         package_share, 'evaluation', 'mcap_writer_options.yaml')
     qos_overrides = os.path.join(
@@ -77,21 +84,13 @@ def generate_launch_description():
     bag_output = LaunchConfiguration('bag_output')
 
     navigation = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(keepout_launch),
+        PythonLaunchDescriptionSource(onboard_core_launch),
         launch_arguments={
             'map': map_yaml,
             'keepout_mask': keepout_mask,
             'params_file': params_file,
             'use_sim_time': use_sim_time,
             'autostart': autostart,
-            # Pi 4 static-soak evidence: composition reduced load from about
-            # 13 to 3.53.  Process-group shutdown remains the required stop.
-            # nav2_bringup also interpolates this value into a PythonExpression
-            # (`not True`), so preserve Python boolean spelling here.
-            'use_composition': 'True',
-            # This wrapper runs headless on the Pi.  The laptop may open the
-            # low-bandwidth RViz profile without owning the control loop.
-            'use_rviz': 'false',
         }.items(),
     )
     recorder = ExecuteProcess(
@@ -114,8 +113,7 @@ def generate_launch_description():
     stop_if_recorder_exits = RegisterEventHandler(
         OnProcessExit(
             target_action=recorder,
-            on_exit=[Shutdown(
-                reason='onboard recorder exited; stopping navigation')],
+            on_exit=_shutdown_on_recorder_exit,
         ),
         condition=IfCondition(record_bag),
     )
@@ -146,6 +144,6 @@ def generate_launch_description():
             description='Absolute, not-yet-existing output directory on Pi'),
         OpaqueFunction(function=_prepare_bag_output),
         stop_if_recorder_exits,
-        recorder,
         navigation,
+        recorder,
     ])
