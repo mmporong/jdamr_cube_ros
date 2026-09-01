@@ -30,7 +30,22 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 복도 반복 수집처럼 이미 저장된 지도로 이동할 때는 `keepout_navigation.launch.py`만 사용한다. 이 launch는 AMCL과 저장 지도로 위치를 잡고, 동일한 금지구역 마스크를 global/local costmap에 함께 적용한다. 마스크 또는 filter info 서버가 종료되면 전체 자율주행도 종료한다. 일반 `navigation.launch.py`의 `use_keepout:=false` 상태로 복도 자율주행을 시작하지 않는다.
 
-금지구역 좌표를 모르면 전용 capture launch를 실행하고 RViz의 `Publish Point`로 경계 꼭짓점을 순서대로 클릭한다. 아래 예시는 사각형 한 곳을 네 번 클릭해 계단 금지구역으로 저장한다. 이 launch는 저장 지도 server, RViz, 클릭 수집기만 실행하며 planner, controller, navigator를 시작하지 않으므로 목표나 속도 명령을 보내지 않는다. 네 번째 점을 받으면 YAML을 저장하고 자동 종료한다.
+2026-09-01 사용자 주석의 노란 두 영역은 `config/keepout_zones.autonomous_20260826.yaml`에 map-frame 다각형으로 반영했다. 왼쪽 아래 가지와 오른쪽 아래 가지의 입구를 0.55m 여유로 막고, 주 복도는 이어지도록 잡았다. 마스크 생성기는 본선의 지정 시작점 `(-0.002, 0.000)`에서 끝점 `(37.498, -4.300)`까지 0.25m 장애물 여유를 적용한 격자 연결성을 다시 계산하며, 경로가 끊기면 파일 생성을 거부한다. 현재 저장 지도에 사용할 마스크는 아래 명령으로 재생성한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 run jdamr_cube_navigation keepout_mask build \
+  --zones "$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/keepout_zones.autonomous_20260826.yaml" \
+  --output-prefix "$HOME/maps/autonomous_20260826T161908_keepout" \
+  --force
+ros2 run jdamr_cube_navigation keepout_mask validate \
+  --map "$HOME/maps/autonomous_20260826T161908.yaml" \
+  --mask "$HOME/maps/autonomous_20260826T161908_keepout.yaml"
+```
+
+금지구역 좌표를 다시 정하려면 전용 capture launch를 실행하고 RViz의 `Publish Point`로 경계 꼭짓점을 순서대로 클릭한다. 아래 예시는 사각형 한 곳을 네 번 클릭해 계단 금지구역으로 저장한다. 이 launch는 저장 지도 server, RViz, 클릭 수집기만 실행하며 planner, controller, navigator를 시작하지 않으므로 목표나 속도 명령을 보내지 않는다. 네 번째 점을 받으면 YAML을 저장하고 자동 종료한다.
 
 ```bash
 cd "$HOME/jdamr_cube_ws"
@@ -44,7 +59,7 @@ ros2 launch jdamr_cube_navigation keepout_capture.launch.py \
   margin:=0.55
 ```
 
-`--margin 0.55`는 금지 다각형 바깥으로 추가 차단하는 거리다. 도구는 0.35m 미만을 거부하며, 실제 위치추정 오차가 크면 더 늘린다. 클릭 결과를 마스크로 만들고 원본 지도와 크기·해상도·원점이 같은지 검증한다.
+`margin 0.55`는 금지 다각형 바깥으로 추가 차단하는 거리다. 도구는 0.35m 미만을 거부하며, 실제 위치추정 오차가 크면 더 늘린다. 클릭 결과를 마스크로 만들고 원본 지도와 크기·해상도·원점이 같은지 검증한다.
 
 ```bash
 ros2 run jdamr_cube_navigation keepout_mask build \

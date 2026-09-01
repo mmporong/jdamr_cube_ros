@@ -37,6 +37,8 @@ SLAM·자율탐색 심화 작업은 [SLAM 포트폴리오 재개 가이드](READ
 
 저장 지도 기반 복도 반복 주행에는 원본 지도와 분리된 Keepout mask를 사용합니다. RViz 클릭으로 금지 다각형을 만들고, global/local costmap이 함께 차단하며 filter 서버가 종료되면 주행 launch도 종료됩니다. Keepout은 경로 통제용이고 새 SLAM 지도는 raw bag에서 저장 map·이동 명령·AMCL `map→odom`을 제외한 뒤 격리된 빈 상태로 재생해 생성합니다.
 
+현재 저장 지도에는 사용자 주석의 노란 두 영역을 map-frame 다각형으로 변환해 왼쪽·오른쪽 아래 가지를 차단하는 구성이 들어 있습니다. 실제 마스크 생성·검증·주행 명령은 [JD-AMR navigation 문서](jdamr_cube_navigation/README_JDAMR.md#저장-지도-자율주행의-금지구역)에 있습니다.
+
 ## 측정된 결과
 
 - 비전 접근 수렴 오차 **3~6mm** (초기 거리 1m)

@@ -11,12 +11,13 @@ gates:
   install_layout: PASS
   mcap_isolated_install: PASS
   keepout_navigation_static: PASS
+  annotated_keepout_mask_runtime: PASS
   offline_tf_replay_guard_runtime: PASS
 
 verification:
   navigation_package:
-    total: 118
-    passed: 117
+    total: 120
+    passed: 119
     skipped: 1
     failures: 0
     errors: 0

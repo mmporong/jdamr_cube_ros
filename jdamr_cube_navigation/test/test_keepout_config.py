@@ -15,6 +15,8 @@ import yaml
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PARAMS_PATH = PACKAGE_ROOT / 'config' / 'nav2_params.yaml'
 ZONES_EXAMPLE = PACKAGE_ROOT / 'config' / 'keepout_zones.example.yaml'
+ZONES_AUTONOMOUS = (
+    PACKAGE_ROOT / 'config' / 'keepout_zones.autonomous_20260826.yaml')
 NAVIGATION_LAUNCH = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
 KEEPOUT_LAUNCH = PACKAGE_ROOT / 'launch' / 'keepout_navigation.launch.py'
 CAPTURE_LAUNCH = PACKAGE_ROOT / 'launch' / 'keepout_capture.launch.py'
@@ -50,7 +52,14 @@ def _write_source_map(root):
     return map_yaml
 
 
-def _write_zones(root, map_yaml, enabled=True, margin=0.4):
+def _write_zones(
+        root, map_yaml, enabled=True, margin=0.4,
+        polygon=None, connectivity_checks=None):
+    if polygon is None:
+        polygon = [
+            [1.4, 1.4], [1.6, 1.4],
+            [1.6, 1.6], [1.4, 1.6],
+        ]
     zones_yaml = root / 'zones.yaml'
     zones_yaml.write_text(
         yaml.safe_dump({
@@ -60,11 +69,9 @@ def _write_zones(root, map_yaml, enabled=True, margin=0.4):
             'zones': [{
                 'id': 'stairs',
                 'enabled': enabled,
-                'polygon': [
-                    [1.4, 1.4], [1.6, 1.4],
-                    [1.6, 1.6], [1.4, 1.6],
-                ],
+                'polygon': polygon,
             }],
+            'connectivity_checks': connectivity_checks or [],
         }, sort_keys=False),
         encoding='utf-8',
     )
@@ -190,12 +197,64 @@ def test_mask_builder_rejects_empty_or_under_margin_zones(tmp_path):
         build_mask(narrow, tmp_path / 'narrow')
 
 
+def test_mask_builder_preserves_required_route_or_fails_closed(tmp_path):
+    """Reject a keepout polygon that disconnects a declared clear route."""
+    map_yaml = _write_source_map(tmp_path)
+    check = [{
+        'id': 'main_corridor',
+        'start': [0.5, 1.5],
+        'goal': [2.5, 1.5],
+        'clearance_m': 0.1,
+    }]
+    passable = _write_zones(
+        tmp_path, map_yaml, connectivity_checks=check)
+    report = build_mask(passable, tmp_path / 'passable')
+
+    assert report['connectivity_checks'][0]['connected'] is True
+    assert report['connectivity_checks'][0]['reachable_cells'] > 0
+
+    blocking = _write_zones(
+        tmp_path, map_yaml,
+        polygon=[[1.4, 0.0], [1.6, 0.0], [1.6, 3.0], [1.4, 3.0]],
+        connectivity_checks=check,
+    )
+    with pytest.raises(ValueError, match='disconnects main_corridor'):
+        build_mask(blocking, tmp_path / 'blocking')
+
+
 def test_example_requires_replacing_placeholder_before_build():
     """Keep the repository example non-operational until coordinates are real."""
     example = yaml.safe_load(ZONES_EXAMPLE.read_text(encoding='utf-8'))
 
     assert example['safety_margin_m'] >= 0.55
     assert not any(zone['enabled'] for zone in example['zones'])
+
+
+def test_annotated_corridor_keepout_has_two_enabled_lower_branches():
+    """Keep the two user-marked yellow branches reproducible in map frame."""
+    config = yaml.safe_load(ZONES_AUTONOMOUS.read_text(encoding='utf-8'))
+    zones = {zone['id']: zone for zone in config['zones']}
+
+    assert config['map_yaml'].endswith(
+        'maps/autonomous_20260826T161908.yaml')
+    assert config['safety_margin_m'] == 0.55
+    assert config['annotation_alignment']['matched_features'] >= 55
+    assert config['verification']['expected_keepout_cells'] == 9984
+    assert config['connectivity_checks'] == [{
+        'id': 'main_corridor_left_to_right',
+        'start': [-0.002, 0.0],
+        'goal': [37.498, -4.3],
+        'clearance_m': 0.25,
+    }]
+    assert set(zones) == {
+        'yellow_left_lower_branch',
+        'yellow_right_lower_branch',
+    }
+    assert all(zone['enabled'] for zone in zones.values())
+    assert max(point[1] for point in zones[
+        'yellow_left_lower_branch']['polygon']) <= -2.55
+    assert max(point[1] for point in zones[
+        'yellow_right_lower_branch']['polygon']) <= -6.4
 
 
 def test_clicked_points_become_an_enabled_map_frame_zone():

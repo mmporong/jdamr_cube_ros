@@ -1,6 +1,7 @@
 """Build and validate Nav2 keepout masks from map-frame polygons."""
 
 import argparse
+from collections import deque
 import hashlib
 import json
 import math
@@ -91,6 +92,8 @@ def _map_metadata(map_yaml: Path) -> dict:
         'pixels': pixels,
         'resolution': float(metadata['resolution']),
         'origin': origin,
+        'negate': int(metadata.get('negate', 0)),
+        'free_thresh': float(metadata.get('free_thresh', 0.196)),
     }
 
 
@@ -165,6 +168,144 @@ def _enabled_polygons(config: dict) -> list[tuple[str, list[list[float]]]]:
     return polygons
 
 
+def _world_to_cell(source: dict, point: Sequence[float]) -> tuple[int, int]:
+    if not isinstance(point, (list, tuple)) or len(point) != 2:
+        raise ValueError('connectivity points must contain x and y')
+    x_value, y_value = (float(value) for value in point)
+    origin_x, origin_y, _origin_yaw = source['origin']
+    column = math.floor((x_value - origin_x) / source['resolution'])
+    map_row = math.floor((y_value - origin_y) / source['resolution'])
+    row = source['height'] - 1 - map_row
+    if not (0 <= row < source['height'] and 0 <= column < source['width']):
+        raise ValueError(f'connectivity point is outside the map: {point}')
+    return row, column
+
+
+def _cleared_free_cells(
+        source: dict, mask_pixels: bytes,
+        clearance_m: float) -> bytearray:
+    width = source['width']
+    height = source['height']
+    resolution = source['resolution']
+    if clearance_m < 0.0:
+        raise ValueError('connectivity clearance_m cannot be negative')
+    if len(mask_pixels) != width * height:
+        raise ValueError('connectivity mask dimensions do not match map')
+
+    free = bytearray(width * height)
+    for index, pixel in enumerate(source['pixels']):
+        occupancy = (
+            pixel / 255.0 if source['negate'] else
+            (255 - pixel) / 255.0)
+        free[index] = int(
+            occupancy < source['free_thresh'] and mask_pixels[index] >= 128)
+
+    radius_cells = math.ceil(clearance_m / resolution)
+    offsets = [
+        (row_delta, column_delta)
+        for row_delta in range(-radius_cells, radius_cells + 1)
+        for column_delta in range(-radius_cells, radius_cells + 1)
+        if math.hypot(row_delta, column_delta) * resolution < clearance_m
+    ]
+    if len(offsets) <= 1:
+        return free
+
+    cleared = bytearray(free)
+    for row in range(height):
+        for column in range(width):
+            index = row * width + column
+            if not free[index]:
+                continue
+            for row_delta, column_delta in offsets:
+                neighbor_row = row + row_delta
+                neighbor_column = column + column_delta
+                if not (
+                        0 <= neighbor_row < height and
+                        0 <= neighbor_column < width):
+                    cleared[index] = 0
+                    break
+                neighbor = neighbor_row * width + neighbor_column
+                if not free[neighbor]:
+                    cleared[index] = 0
+                    break
+    return cleared
+
+
+def _connectivity_result(
+        source: dict, mask_pixels: bytes, check: dict) -> dict:
+    check_id = str(check.get('id', '')).strip()
+    if not check_id:
+        raise ValueError('each connectivity check requires an id')
+    clearance = float(check.get('clearance_m', 0.0))
+    start = _world_to_cell(source, check.get('start'))
+    goal = _world_to_cell(source, check.get('goal'))
+    free = _cleared_free_cells(source, mask_pixels, clearance)
+    width = source['width']
+    for label, cell in (('start', start), ('goal', goal)):
+        if not free[cell[0] * width + cell[1]]:
+            raise ValueError(
+                f'connectivity check {check_id} {label} lacks clearance')
+
+    queue = deque([start])
+    visited = bytearray(source['width'] * source['height'])
+    visited[start[0] * width + start[1]] = 1
+    reached_goal = False
+    reachable_cells = 0
+    while queue:
+        row, column = queue.popleft()
+        reachable_cells += 1
+        reached_goal = reached_goal or (row, column) == goal
+        for row_delta, column_delta in (
+                (-1, -1), (-1, 0), (-1, 1),
+                (0, -1), (0, 1),
+                (1, -1), (1, 0), (1, 1)):
+            neighbor_row = row + row_delta
+            neighbor_column = column + column_delta
+            if not (
+                    0 <= neighbor_row < source['height'] and
+                    0 <= neighbor_column < width):
+                continue
+            neighbor = neighbor_row * width + neighbor_column
+            if row_delta and column_delta:
+                horizontal = row * width + neighbor_column
+                vertical = neighbor_row * width + column
+                if not free[horizontal] or not free[vertical]:
+                    continue
+            if free[neighbor] and not visited[neighbor]:
+                visited[neighbor] = 1
+                queue.append((neighbor_row, neighbor_column))
+
+    return {
+        'id': check_id,
+        'start': [float(value) for value in check['start']],
+        'goal': [float(value) for value in check['goal']],
+        'clearance_m': clearance,
+        'connected': reached_goal,
+        'reachable_cells': reachable_cells,
+    }
+
+
+def validate_connectivity(
+        source: dict, mask_pixels: bytes, checks: Sequence[dict]) -> list[dict]:
+    """Require configured clear paths to survive mask application."""
+    if not isinstance(checks, list):
+        raise ValueError('connectivity_checks must be a list')
+    results = []
+    no_keepout = bytes([FREE_PIXEL]) * (source['width'] * source['height'])
+    for check in checks:
+        baseline = _connectivity_result(source, no_keepout, check)
+        if not baseline['connected']:
+            raise ValueError(
+                f"connectivity check {baseline['id']} is absent in source map")
+        masked = _connectivity_result(source, mask_pixels, check)
+        if not masked['connected']:
+            raise ValueError(
+                f"keepout mask disconnects {masked['id']}")
+        masked['baseline_reachable_cells'] = baseline['reachable_cells']
+        results.append(masked)
+    return results
+
+
 def validate_mask(
         mask_yaml: Path, source_map_yaml: Path | None = None) -> dict:
     """Validate geometry alignment and non-empty keepout content."""
@@ -233,6 +374,8 @@ def build_mask(
 
     if KEEPOUT_PIXEL not in pixels:
         raise ValueError('enabled zones do not overlap the source map')
+    connectivity = validate_connectivity(
+        source, bytes(pixels), config.get('connectivity_checks', []))
     _write_pgm(output_image, width, height, bytes(pixels))
     mask_metadata = {
         'image': output_image.name,
@@ -250,6 +393,7 @@ def build_mask(
         'zones_yaml': str(zones_yaml),
         'zones': [zone_id for zone_id, _polygon in polygons],
         'safety_margin_m': margin,
+        'connectivity_checks': connectivity,
     })
     output_report.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + '\n',

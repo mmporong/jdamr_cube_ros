@@ -1,0 +1,33 @@
+schema_version: 1
+map_yaml: $HOME/maps/autonomous_20260826T161908.yaml
+safety_margin_m: 0.55
+annotation_alignment:
+  source: user_marked_yellow_areas_2026-09-01
+  method: sift_homography_to_saved_pgm
+  matched_features: 60
+  note: 오른쪽이 잘린 주석 화면을 원본 지도에 외삽해 아래쪽 가지만 차단한다.
+verification:
+  source_map_sha256: ee9b0911f41a7da31a92eca67d261b2a96c286f6f49d65b3d6c884fb5937fc6e
+  expected_mask_sha256: 212c64f10051db70666c3dc2ed546819da6edbf049ec8425c7eb5e79cc6e498e
+  expected_keepout_cells: 9984
+connectivity_checks:
+  - id: main_corridor_left_to_right
+    start: [-0.002, 0.000]
+    goal: [37.498, -4.300]
+    clearance_m: 0.25
+zones:
+  - id: yellow_left_lower_branch
+    enabled: true
+    polygon:
+      - [7.148, -2.550]
+      - [8.498, -2.550]
+      - [8.498, -5.500]
+      - [6.698, -5.500]
+      - [6.998, -3.650]
+  - id: yellow_right_lower_branch
+    enabled: true
+    polygon:
+      - [27.998, -6.400]
+      - [30.498, -6.400]
+      - [31.898, -8.950]
+      - [26.998, -8.950]
