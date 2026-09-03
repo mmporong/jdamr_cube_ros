@@ -195,6 +195,57 @@ python3 soak_metrics.py --evaluate <run_id>.per_process.tsv --cores 4
 기록 게이트와 부하 게이트는 2026-09-03 소크에서 모두 통과했다. 다음은 80m 왕복
 실주행이다.
 
+## 포트폴리오로 보여줄 수 있는 것
+
+면접에서 화면을 열어 설명할 수 있는 단위로 정리한다. 전부 이 저장소 안에 있고
+회귀 테스트가 붙어 있다.
+
+### 그림
+
+| 파일 | 내용 |
+|---|---|
+| `$HOME/jdamr_artifacts/portfolio/corridor_route_map.png` | 저장 지도 + 계단 금지구역 2곳 + 20 waypoint 경로 |
+| `$HOME/jdamr_artifacts/portfolio/corridor_route_with_drive.png` | 위 그림에 2026-09-01 실제 주행 궤적(AMCL) 중첩 |
+
+RViz 화면 캡처 대신 `evaluation/render_route_map.py`로 파일에서 다시 그린다. 세션이
+끝나도 커밋 해시만으로 같은 그림을 재생성할 수 있고, 가려진 창이 잘못 캡처되는 문제도
+없다.
+
+```bash
+python3 evaluation/render_route_map.py \
+  --output "$HOME/jdamr_artifacts/portfolio/corridor_route_map.png"
+python3 evaluation/render_route_map.py \
+  --output "$HOME/jdamr_artifacts/portfolio/corridor_route_with_drive.png" \
+  --trajectory-bag "$HOME/jdamr_artifacts/corridor_keepout_onboard_20260901T172141/corridor_keepout_onboard_20260901T172141_0.mcap"
+```
+
+### 노드와 도구
+
+| 대상 | 해결한 문제 | 이야기할 거리 |
+|---|---|---|
+| `frontier_explorer` (1,507줄) + `frontier_core` (560줄) | 자율 탐사 정책 | ROS 의존을 분리해 탐사 로직만 단위 테스트한다. distance-only 기준선과 gain proxy를 비교 대상으로 둔다 |
+| `corridor_route` | fail-closed 경로 실행기 | 사전 전체 계획, 배터리·센서 freshness·AMCL 축별 공분산 게이트, 재개 시 6m 거리 제한. 게이트 실패는 수치와 함께 로그에 남는다 |
+| `keepout_zone_capture` + `keepout_mask` | 운영자가 그린 금지구역을 마스크로 | 꼭짓점 순서 자동 보정, 0.55m 팽창, 해시 고정, 연결성 검사 |
+| `tf_replay_filter` | 오프라인 재생 시 TF 권한 충돌 | 기록된 AMCL `map→odom`을 제거해 새 mapping backend 하나만 권한자가 되게 한다. 이게 없으면 재생 결과가 기존 지도의 복사본이 된다 |
+| `soak_metrics` | 자원 게이트 판정 | load average가 대기 스레드를 세는 문제를 프로세스별 CPU 계측으로 대체했다 |
+| `evaluation/ledger.py` | 증거 원장 | 해시·무결성·게이트 판정을 같은 규칙으로 등록. 게이트 FAIL이면 승격을 거부한다 |
+| `evaluation/inspect_mcap.py` | 기록 무결성 | chunk/data/summary CRC와 인덱스를 분리해 확인 |
+| `scripts/corridor_preflight.sh` | 출발 전 자동 점검 | 도메인·RViz 순서·lifecycle·금지구역·`/cmd_vel` 소유권·코스트맵·배터리 |
+| `test/test_route_clearance.py` | 경로가 복도에 물리적으로 맞는가 | 로봇 없이 지도만으로 내접 반경 침범과 금지구역 진입을 막는다 |
+
+### 이야기로 만들 수 있는 실패 사례
+
+수치와 파일이 함께 남아 있는 것들이다.
+
+- QoS reliability 불일치: `/imu/data_raw`는 best_effort 발행이라 reliable 오버라이드를
+  걸면 이후 모든 bag에서 IMU가 0건이 된다. 실측 대조로 막았다.
+- BT XML의 `server_timeout`이 `bt_navigator`의 `default_server_timeout`을 덮어써
+  파라미터만 올려서는 효과가 없었다.
+- 오래 떠 있던 원격 RViz가 `map_server`의 `change_state` 응답을 막아 기동 자체가 실패.
+- 경로가 벽에서 0.06m까지 붙어 로봇 발자국이 내접 반경을 침범, 컨트롤러가 출발 직후
+  `collision ahead`로 중단.
+- `load1 < 4` 게이트가 CPU 포화가 아닌 대기 스레드를 세고 있어 여유 있는 로봇을 막았다.
+
 ## 증거 원장
 
 주행·지도 산출물은 `evaluation/ledger.py`로 등록한다. 해시, 토픽별 메시지 수, MCAP
