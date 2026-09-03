@@ -94,15 +94,14 @@ setsid nohup ros2 launch jdamr_cube_navigation offline_replay_guard.launch.py \
   offline_domain_id:="$ROS_DOMAIN_ID" >> "$LOG" 2>&1 &
 REPLAY_PID=$!
 
+# 감시는 신뢰할 수 있는 신호만 쓴다. 앞선 판은 /map 토픽 조회를
+# 진행 증거로 삼았는데, 부하 상태의 디스커버리가 8초 안에 끝나지 않아 정상
+# 런을 두 번 죽였다(165606/cartographer 는 실제로 지도를 만들고 있었다).
+# 조회가 실패할 수 있는 검사는 감시에 쓰지 않는다. 프로세스 생존과 기록
+# 증가만으로 판정한다.
 RESULT_DIR="$OUT/${RUN_ID}_result"
-# slam_toolbox 는 첫 지도까지 실측 약 3분이 걸린다. 120초 제한은 정상 런을
-# 죽인다. 진짜 죽음은 아래 두 검사(프로세스 생존, 기록 정체)가 잡으므로 이
-# 제한은 "영원히 안 나오는" 경우만 걸러내도록 넉넉히 둔다.
-FIRST_MAP_DEADLINE=$(( $(date +%s) + 420 ))
-STALL_LIMIT=90
 last_size=0
 last_progress=$(date +%s)
-saw_map=0
 RC=0
 
 while kill -0 "$REPLAY_PID" 2>/dev/null; do
@@ -120,17 +119,6 @@ while kill -0 "$REPLAY_PID" 2>/dev/null; do
     echo "감시: 결과 기록이 ${STALL_LIMIT}초 동안 늘지 않았다 - 중단한다" \
       | tee -a "$LOG"
     RC=5; break
-  fi
-  if [ "$saw_map" -eq 0 ]; then
-    if timeout 8 ros2 topic info /map 2>/dev/null \
-         | grep -q 'Publisher count: [1-9]'; then
-      saw_map=1
-      echo "감시: /map 발행 확인 ($(date +%H:%M:%S))" | tee -a "$LOG"
-    elif [ "$now" -gt "$FIRST_MAP_DEADLINE" ]; then
-      echo "감시: 420초 안에 /map 이 나오지 않았다 - backend 가 입력을 처리하지 못한다" \
-        | tee -a "$LOG"
-      RC=6; break
-    fi
   fi
 done
 

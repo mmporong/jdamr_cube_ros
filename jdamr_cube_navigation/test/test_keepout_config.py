@@ -633,3 +633,24 @@ def test_replay_guard_orders_odometry_against_scans():
         nanosec = 500_000_000
 
     assert stamp_seconds(_Stamp()) == 5.5
+
+
+def test_autorun_never_drives_without_passing_every_gate():
+    """A run the operator cannot watch must refuse itself on any doubt."""
+    # 2026-09-03: Wi-Fi dropped in the corridor and the start command never
+    # reached the robot.  Recording always lived on the Pi's SD card, so the
+    # link is only needed to start, stop and collect.  Moving the start into
+    # the robot removes the dependency, which means nobody is watching while
+    # it decides to move.
+    source = (PACKAGE_ROOT / 'scripts'
+              / 'corridor_autorun.sh').read_text(encoding='utf-8')
+
+    for gate in ('lifecycle 매니저', '사전점검 FAIL', '전체 경로 계획 실패'):
+        assert gate in source
+    assert source.count('주행하지 않는다') >= 4
+    assert 'jdamr_abort' in source
+    # The stack must come down even when a gate aborts the script.
+    assert 'trap stop_stack EXIT' in source
+    # Signal strength is logged to the robot so a dropped link still leaves
+    # evidence of where the corridor coverage failed.
+    assert '/proc/net/wireless' in source
