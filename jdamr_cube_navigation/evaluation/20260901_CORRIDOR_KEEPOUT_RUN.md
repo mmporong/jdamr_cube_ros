@@ -277,3 +277,84 @@ reliable로 적었다면 IMU 구독이 매칭되지 않아 이후 모든 bag에�
 
 `soak_metrics`로 프로세스별 CPU를 함께 기록한다. 이전 소크는 load1 총량만 남겨
 9.85의 출처를 지목할 수 없었다.
+
+## 2026-09-03 소크 재실행에서 확인한 두 가지 운영 조건
+
+게이트 재측정을 시도하면서 문서에 없던 실행 조건 두 가지가 드러났다. 둘 다 실주행
+전에 반드시 맞춰야 하는 항목이다.
+
+### 1. 파이 bringup은 `ROS_DOMAIN_ID=12`에서 돈다
+
+비대화형 SSH 세션은 `~/.bashrc`를 읽지 않아 도메인이 0으로 떨어진다. 이 상태로 Nav2를
+띄우면 로봇 센서와 완전히 격리된 채 기동한다. 첫 시도에서 실제로 그렇게 됐고, MCAP에는
+`/tf_static` 1건만 남았다. `/scan`·`/odom`·`/imu/data_raw`는 구독조차 되지 않았다.
+
+원격 실행 스크립트는 `export ROS_DOMAIN_ID=12`를 명시해야 한다. 기록이 비정상적으로
+작으면(5분 30초 소크 기준 45MB 대신 21KB) 도메인 불일치를 먼저 의심한다.
+
+### 2. 오래 떠 있던 노트북 RViz가 lifecycle 기동을 막았다
+
+도메인을 맞춘 두 번째 시도는 `map_server`가 지도를 읽고도
+`failed to send response to /map_server/change_state (timeout)`으로 응답 전송에
+실패했다. `lifecycle_manager_localization`은 AMCL을 configure하지 못한 채 멈췄고,
+`map -> odom`이 없어 global_costmap 활성화가 타임아웃되며 navigation bringup이 abort
+됐다.
+
+당시 도메인 12에는 41시간 동안 떠 있던 노트북 `keepout_operator_view` RViz가 붙어
+있었다. RViz를 종료하고 같은 명령을 다시 실행하자 세 lifecycle 매니저가 모두
+`Managed nodes are active`에 도달했고 TF 프레임 오류는 0건이었다.
+
+기존 문서는 원격 시각화 fan-out이 **주행 중 지연**을 악화시킨다고만 적었다. 실제로는
+**기동 자체를 막을 수 있다.** 운영 순서는 다음과 같다.
+
+1. 파이에서 Nav2와 recorder를 먼저 기동하고 lifecycle 활성화를 확인한다.
+2. 그 뒤에 노트북에서 `keepout_operator_view.launch.py`를 새로 띄운다.
+3. 실행이 끝나면 RViz도 함께 종료한다. 다음 실행까지 켜 둔 채 두지 않는다.
+
+## 2026-09-03 게이트 정비본 정적 소크
+
+- run id: `static_gatefix_20260903T104916`
+- 기록 시간: 318.6초, MCAP 45.9MiB, 47,894 messages
+- 무결성: 43/43 chunk CRC, data-section CRC, summary CRC, 전수 순회 PASS
+- 필수 Nav2 노드: 세 lifecycle 매니저 모두 `Managed nodes are active`, TF 프레임 오류 0건
+- `/cmd_vel` 0건, `/cmd_vel_nav` 0건 — 비영점 속도 명령 없음
+- recorder: 손실 이벤트 보고 없음, 종료 시 캐시 flush 후 정상 종료
+
+### 기록 손실 게이트 PASS
+
+발행률 대비 기록률은 `/odom` 100.00%(15,930/15,930), `/imu/data_raw` 99.95%,
+`/scan` 99.90%, `/tf` 99.19%다. 부족분은 시작·종료 경계에서 생기는 수준이다.
+
+특히 `/imu/data_raw`가 **best_effort로 15,922건** 기록됐다. QoS override를 실측 없이
+reliable로 적었다면 구독이 매칭되지 않아 0건이었을 자리다.
+
+### 부하 게이트는 여전히 FAIL, 그러나 측정 대상이 틀렸다
+
+load1은 3.97~10.66으로 4.0 게이트를 넘었다. 그런데 같은 구간에서 Nav2 프로세스
+전체의 CPU 합계는 **4코어 400% 중 약 203%로 일정**했고, 스레드 수도 197개로 고정,
+온도 65~69도에 thermal throttle 0x0이었다. CPU가 51%에서 평평한데 load1만 4에서 9로
+출렁인 것이다.
+
+즉 이 load1은 CPU 포화가 아니라 대기 상태 스레드를 함께 세고 있다. 파이 4코어 기준
+약 두 코어가 놀고 있는 상태에서 게이트가 실행을 막고 있다.
+
+프로세스별 평균 CPU는 다음과 같다. 특정 프로세스가 폭주하는 구조가 아니라 12~20%씩
+고르게 퍼져 있다.
+
+| 프로세스 | 평균 CPU | 최대 스레드 |
+|---|---:|---:|
+| controller_server | 20.1% | 17 |
+| lifecycle_manager (3개 합) | 18.4% | 14 |
+| bt_navigator | 17.2% | 13 |
+| amcl | 16.4% | 14 |
+| planner_server | 16.2% | 18 |
+| map_server | 12.6% | 12 |
+| collision_monitor | 12.2% | 15 |
+| velocity_smoother | 12.2% | 12 |
+| bringup | 2.5% | 14 |
+
+### 판단이 필요한 지점
+
+`load1 < 4`를 그대로 두면 실행은 계속 막힌다. 대안은 CPU 사용률과 throttle, recorder
+손실로 게이트를 다시 정의하는 것이다. 이 변경은 안전 기준을 바꾸는 일이므로 임의로
+적용하지 않고 결정을 남긴다.

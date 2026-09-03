@@ -1358,3 +1358,105 @@ datasets:
   exclusion_reasons:
   - 주행이 없으므로 성능 표본이 아님
   - 5분 소크 미완료
+- dataset_id: static_gatefix_20260903T104916
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/static_gatefix_20260903T104916
+  storage:
+    identifier: mcap
+    relative_file: static_gatefix_20260903T104916_0.mcap
+    size_bytes: 45925747
+    sha256: b6cc932f4db29e6f39a090fddf8ad07ffba382291911ee01b2b2390008541884
+    metadata_sha256: 6a7e95504580b7610ef44da8ba37b131c30052d53d81cb41d75636a7418472fb
+  capture:
+    started_at_unix_ns: 1788400170682624071
+    duration_ns: 318604301881
+    message_count: 47894
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 게이트 정비본 318.6초 비주행 소크. 필수 Nav2 노드 전원 활성화, /cmd_vel 0건, IMU 15,922건 best_effort 기록. load1 3.97~10.66으로
+    게이트 FAIL이나 CPU는 4코어 중 약 203%로 여유
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 318
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 15922
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 15930
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 3081
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 12641
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 47894
+    chunk_crc:
+      chunks_with_crc: 43
+      total_chunks: 43
+    data_section_crc: 1064881235
+    summary_crc: 2714973038
+    message_index:
+      records: 217
+    chunk_index:
+      records: 43
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: PASS
+  recorder:
+    transport_loss: 0
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+  - load1<4 게이트 FAIL
