@@ -1,19 +1,53 @@
 schema_version: 1
-allowed_states: [candidate, published, deprecated]
+allowed_states:
+- candidate
+- published
+- deprecated
 state_transitions:
-  candidate: [published, deprecated]
-  published: [deprecated]
+  candidate:
+  - published
+  - deprecated
+  published:
+  - deprecated
   deprecated: []
 publication_gates:
-  - source_datasets_protocol_qualified
-  - backend_and_config_hash_present
-  - map_image_and_yaml_checksums_present
-  - quality_report_present
-  - single_map_to_odom_authority_verified
-  - manual_review_passed
+- source_datasets_protocol_qualified
+- backend_and_config_hash_present
+- map_image_and_yaml_checksums_present
+- quality_report_present
+- single_map_to_odom_authority_verified
+- manual_review_passed
 deprecation_triggers:
-  - quality_gate_failure
-  - map_or_config_checksum_mismatch
-  - sensor_extrinsic_change
-  - persistent_structural_environment_change
-maps: []
+- quality_gate_failure
+- map_or_config_checksum_mismatch
+- sensor_extrinsic_change
+- persistent_structural_environment_change
+maps:
+- map_id: autonomous_20260826T161908
+  state: published
+  uri: $HOME/maps/autonomous_20260826T161908.yaml
+  source_run: autonomous_mapping_20260826
+  resolution_m: 0.05
+  origin:
+  - -2.527
+  - -8.975
+  - 0.0
+  checksums:
+    yaml_sha256: 3ddadf69e8f29a2ac4ec17f2d1bfc71f56cda0e805d65c792ddb5f5d46e0d652
+    image_sha256: ee9b0911f41a7da31a92eca67d261b2a96c286f6f49d65b3d6c884fb5937fc6e
+  image_bytes: 189543
+  note: 복도 자율 매핑 결과. 저장지도 AMCL 자율주행의 기준 지도이며 노트북·파이 해시 일치 확인
+- map_id: autonomous_20260826T161908_keepout_multi
+  state: published
+  uri: $HOME/maps/autonomous_20260826T161908_keepout_multi.yaml
+  source_run: keepout_zone_capture_20260901
+  resolution_m: 0.05
+  origin:
+  - -2.527
+  - -8.975
+  - 0.0
+  checksums:
+    yaml_sha256: 945b904f254864baab2a61f2cbf602cf69a1c8e8a71da1b7f07c0de84b9344f9
+    image_sha256: 40a99481046b2ad55fd4c5d3ad3e8b3a6d245fd7c808d32571f2828d4837df28
+  image_bytes: 189543
+  note: 계단 가지 2곳 다각형 + 0.55m 팽창 마스크. 원본 지도와 동일 격자·원점

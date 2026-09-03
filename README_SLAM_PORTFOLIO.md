@@ -111,6 +111,83 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 현재 위치는 **1 완료, 2는 여러 차례 실주행했지만 프로토콜 적격 표본 0회**다. 부분 복귀 성공과 각 실패 bag은 진단·오프라인 SLAM 입력으로 보존하고, 반복 중단 수정본의 비주행 소크를 통과한 뒤 같은 80m 경로를 처음부터 다시 수집한다.
 
+## 2026-09-03 주행 전 정비
+
+실주행 없이 처리한 항목이다. 근거는 모두 저장소 안 파일과 회귀 테스트다.
+
+### recorder transport loss 게이트
+
+- 기록 토픽은 11개인데 `evaluation/qos_overrides.yaml`에는 6개만 있었다. 나머지는
+  기본 depth 10으로 떨어졌고, 50Hz `/imu/data_raw` 기준 0.2초 버퍼다. 2026-09-01
+  소크의 load1 9.85 구간 정지 시간을 견디지 못한다.
+- 기록 계약을 `jdamr_cube_navigation/onboard_recording.py` 한 곳으로 모으고 launch가
+  이를 import한다. depth는 `rate x 2초`로 계산한다.
+- bag 3종(`corridor_keepout_roundtrip_20260901T150446`,
+  `onboard_minimal_soak_20260901T161338`, `static_repeat_stop_fix_20260901T174200`)의
+  metadata를 대조해 발행자가 실제로 제시하는 QoS를 확인했다. `/imu/data_raw`는
+  **best_effort**, `/amcl_pose`는 **transient_local**이다. reliable 오버라이드를
+  걸었다면 구독이 매칭되지 않아 IMU가 통째로 비었을 것이다. 계약과 회귀 테스트가
+  이 불일치를 막는다.
+- launch에 `--disable-keyboard-controls`를 추가했다. launch 아래 recorder는 터미널을
+  갖지 않으므로 키 입력 폴링 스레드는 부하만 더한다.
+
+### 파이 load 게이트
+
+- 전역 코스트맵은 894x212 = 189,528셀이다. `always_send_full_costmap: True`와
+  `publish_frequency: 1.0`은 이 전체 격자를 초당 한 번 reliable DDS로 직렬화한다.
+  노트북 RViz는 view-only이고 Global Costmap 표시는 기본 OFF다.
+- 두 코스트맵 모두 `always_send_full_costmap: False`로 바꿔 변경분만 보내고,
+  전역 발행 주기를 0.5Hz, 지역 발행 주기를 1.0Hz로 낮췄다. 계획에 쓰는
+  `update_frequency`는 건드리지 않았다.
+- AMCL 입자 수와 게이트 임계는 바꾸지 않았다. 위치추정 품질을 CPU 때문에 흔들지
+  않는다.
+
+### 부하 귀속 측정
+
+- 이전 소크는 `load1` 총량만 남겨 9.85가 어느 프로세스에서 왔는지 근거가 없었다.
+- `jdamr_cube_navigation/soak_metrics.py`(실행 이름 `soak_metrics`)가 `/proc`을 직접
+  읽어 프로세스별 CPU·스레드·RSS를 TSV로 남기고, 종료 시 평균 CPU 내림차순 요약을
+  출력한다. ROS 의존성이 없어 파이에서 단독 실행된다.
+
+```bash
+ros2 run jdamr_cube_navigation soak_metrics \
+  --output "$HOME/jdamr_artifacts/<run_id>.per_process.tsv" \
+  --duration 330 --interval 5
+```
+
+### 남은 것
+
+다음 정적 소크에서 위 두 게이트를 다시 측정한다. load가 여전히 4를 넘으면
+`soak_metrics` 요약의 상위 프로세스를 근거로 줄인다. 두 게이트가 통과해야 80m 왕복
+실주행으로 넘어간다.
+
+## 증거 원장
+
+주행·지도 산출물은 `evaluation/ledger.py`로 등록한다. 해시, 토픽별 메시지 수, MCAP
+무결성, 자동 게이트 판정이 같은 규칙으로 기록되므로 포트폴리오 주장을 파일까지
+되짚을 수 있다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation"
+export PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python"
+
+# 주행 기록 등록 (--apply 없으면 dry-run)
+python3 ledger.py bag "$HOME/jdamr_artifacts/<run_id>" \
+  --role corridor_roundtrip --qualification DIAGNOSTIC_ONLY \
+  --outcome '로봇이 실제로 한 일 한 문장' --transport-loss 0 --apply
+
+# 지도 등록
+python3 ledger.py map "$HOME/maps/<map>.yaml" \
+  --state published --source-run <run_id> --note '설명' --apply
+```
+
+`PROTOCOL_QUALIFIED`는 자동 게이트가 전부 통과하고 운영자가 완주를 명시할 때만
+부여된다. 게이트가 하나라도 FAIL이면 도구가 승격을 거부한다. 파일이 로봇의 복귀를
+증명할 수는 없기 때문이다.
+
+파이 SD카드에만 있던 9건은 2026-09-03에 노트북으로 미러링했고 MCAP 해시 일치를
+확인했다.
+
 ## 실차 작업 전 중단선
 
 - 실차 이동은 작업자가 로봇 옆에서 물리 전원을 즉시 차단할 수 있을 때만 수행한다.

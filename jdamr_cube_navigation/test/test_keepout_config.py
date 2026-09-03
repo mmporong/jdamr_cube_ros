@@ -18,6 +18,7 @@ from jdamr_cube_navigation.keepout_zone_capture import (
     zone_document,
     zones_document,
 )
+from jdamr_cube_navigation.onboard_recording import RECORDED_TOPICS
 from jdamr_cube_navigation.tf_replay_filter import filter_tf_message
 import pytest
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
@@ -232,10 +233,12 @@ def test_onboard_navigation_keeps_control_and_recording_off_wifi():
     assert "'--topics', *RECORDED_TOPICS" in source
     assert "'ionice', '--class', 'best-effort', '--classdata', '7'" in source
     assert "'nice', '--adjustment', '10'" in source
-    assert "'/scan'" in source
-    assert "'/odom'" in source
-    assert "'/tf'" in source
-    assert "'/joint_states'" not in source
+    # The topic list itself moved into the shared recording contract so the
+    # launch file and the QoS overrides cannot drift apart.
+    assert '/scan' in RECORDED_TOPICS
+    assert '/odom' in RECORDED_TOPICS
+    assert '/tf' in RECORDED_TOPICS
+    assert '/joint_states' not in RECORDED_TOPICS
     assert 'onboard recorder exited; stopping navigation' in source
     assert 'if context.is_shutdown' in source
     assert 'bag_output already exists' in source

@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 
 from ament_index_python.packages import get_package_share_directory
+from jdamr_cube_navigation.onboard_recording import RECORDED_TOPICS
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.actions import IncludeLaunchDescription, OpaqueFunction
@@ -16,21 +17,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 
-# Keep only mapping, localization, command, and safety evidence.  RViz-only
-# state such as joint_states stays off the Pi recorder by default.
-RECORDED_TOPICS = [
-    '/scan',
-    '/odom',
-    '/tf',
-    '/tf_static',
-    '/imu/data_raw',
-    '/cmd_vel',
-    '/cmd_vel_nav',
-    '/amcl_pose',
-    '/battery_state',
-    '/plan',
-    '/collision_monitor_state',
-]
+# The recorded topic set and its QoS depths are one contract shared with the
+# evaluation overrides, so importing keeps them from drifting apart.
 
 
 def _enabled(context, argument_name):
@@ -102,6 +90,9 @@ def generate_launch_description():
             'ionice', '--class', 'best-effort', '--classdata', '7',
             'nice', '--adjustment', '10',
             'ros2', 'bag', 'record',
+            # No terminal owns the recorder under launch, so the keyboard
+            # control thread only adds a polling thread to a loaded Pi.
+            '--disable-keyboard-controls',
             '--storage', 'mcap',
             '--storage-config-file', writer_options,
             '--qos-profile-overrides-path', qos_overrides,

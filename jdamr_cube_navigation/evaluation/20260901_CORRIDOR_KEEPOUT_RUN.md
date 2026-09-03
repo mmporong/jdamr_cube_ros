@@ -238,3 +238,42 @@ race가 SIGSEGV를 기록했지만 recorder는 cache를 flush하고 clean exit�
   0을 통과하지 못했다. 주행 전에 이 두 항목을 다시 개선·검증한다.
 - 전 구간 왕복 성공, 시작점 복귀, 최종 정지, 배터리 10.5V 이상을 확인한다.
 - MCAP·metadata 해시와 토픽 수를 등록한 뒤에만 최종 데이터로 승격한다.
+
+## 2026-09-03 주행 전 정비와 증거 등록
+
+실주행 없이 처리했다. 상세는 `README_SLAM_PORTFOLIO.md`의 "2026-09-03 주행 전 정비"에
+있고, 여기에는 이 실주행 기록들에 직접 관계된 사실만 남긴다.
+
+### 기록 손실 게이트에 대한 조치
+
+recorder는 11개 토픽을 구독하는데 QoS override는 6개뿐이었다. 나머지는 기본 depth
+10으로 떨어졌고 50Hz `/imu/data_raw` 기준 0.2초 버퍼다. load1 9.85 구간의 정지 시간을
+견딜 수 없는 값이다. 기록 계약을 `onboard_recording.py`로 모으고 depth를 `rate x 2초`로
+정했다.
+
+이 과정에서 발행자가 실제로 제시하는 QoS를 bag 3종으로 대조했다. `/imu/data_raw`는
+**best_effort**, `/amcl_pose`는 **transient_local**이다. 두 값을 확인하지 않고 전 토픽을
+reliable로 적었다면 IMU 구독이 매칭되지 않아 이후 모든 bag에서 IMU가 통째로 비었을
+것이다. 회귀 테스트가 이 불일치를 막는다.
+
+### 증거 원장 등록에서 새로 확인한 사실
+
+`evaluation/ledger.py`로 15건을 등록하면서 문서에 없던 두 가지가 드러났다.
+
+1. `corridor_keepout_nav_20260901T144128`과 `corridor_keepout_roundtrip_20260901T145437`은
+   `/imu/data_raw`를 **아예 기록하지 않았다**. 두 기록은 IMU를 쓰는 오프라인 실험의
+   입력이 될 수 없다.
+2. `static_split_repeat_stop_fix_20260901T174845`는 `metadata.yaml`이 0바이트이고 MCAP도
+   footer 없이 잘려 있다. 2컨테이너 분할 구조가 종료 시 SIGKILL을 필요로 했다는 서술의
+   직접적인 파일 증거다. 이 기록은 읽을 수 없으므로 어떤 분석 입력으로도 쓰지 않는다.
+
+### 파이 단독 보관 해소
+
+`corridor_keepout_onboard_*` 4건을 포함한 9건이 파이 SD카드에만 있었다. 노트북
+`~/jdamr_artifacts/`로 미러링하고 MCAP SHA-256 일치를 확인했다. 부분 복귀 성공 기록
+`20260901T172141`도 이제 두 곳에 있다.
+
+### 다음 소크에서 추가로 남길 것
+
+`soak_metrics`로 프로세스별 CPU를 함께 기록한다. 이전 소크는 load1 총량만 남겨
+9.85의 출처를 지목할 수 없었다.

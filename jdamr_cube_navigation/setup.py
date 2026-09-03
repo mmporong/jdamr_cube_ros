@@ -38,6 +38,7 @@ setup(
             'jdamr_cube_navigation.keepout_zone_capture:main',
             'tf_replay_filter = '
             'jdamr_cube_navigation.tf_replay_filter:main',
+            'soak_metrics = jdamr_cube_navigation.soak_metrics:main',
         ],
     },
 )

@@ -133,7 +133,9 @@ local_costmap:
   local_costmap:
     ros__parameters:
       update_frequency: 5.0
-      publish_frequency: 2.0
+      # 노트북 RViz는 view-only이므로 전체 격자를 매 주기 직렬화하지 않고
+      # 변경분만 보낸다.
+      publish_frequency: 1.0
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
@@ -170,13 +172,15 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
-      always_send_full_costmap: True
+      always_send_full_costmap: False
 
 global_costmap:
   global_costmap:
     ros__parameters:
       update_frequency: 1.0
-      publish_frequency: 1.0
+      # 저장 지도 전역 코스트맵은 894x212 = 189,528셀이다. 전체 격자를 초당
+      # 한 번 reliable DDS로 내보내면 파이 CPU와 무선 대역을 함께 먹는다.
+      publish_frequency: 0.5
       global_frame: map
       robot_base_frame: base_link
       transform_tolerance: 0.7
@@ -213,7 +217,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
         inflation_radius: 0.55
-      always_send_full_costmap: True
+      always_send_full_costmap: False
 
 map_server:
   ros__parameters:

@@ -5,6 +5,7 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 
+from jdamr_cube_navigation.onboard_recording import RECORDED_TOPICS
 import yaml
 
 
@@ -81,20 +82,18 @@ def test_mcap_inspector_dependency_is_pinned_and_available():
 
 def test_qos_overrides_cover_all_recorded_topics():
     """Make recording and playback QoS provenance explicit."""
+    # The onboard recorder subscribes to eleven topics.  Six had no override
+    # until 2026-09-03, so they fell back to depth 10 and dropped messages
+    # whenever the Pi stalled.
     qos = load_yaml('qos_overrides.yaml')
 
-    assert set(qos) == {
-        '/scan',
-        '/odom',
-        '/tf',
-        '/tf_static',
-        '/joint_states',
-        '/cmd_vel',
-    }
+    assert set(qos) >= set(RECORDED_TOPICS)
     assert qos['/tf_static']['durability'] == 'transient_local'
     assert qos['/tf_static']['depth'] == 1
     for topic, profile in qos.items():
-        assert profile['reliability'] == 'reliable', topic
+        # /imu/data_raw is offered best-effort; an override may not upgrade it.
+        assert profile['reliability'] in {'reliable', 'best_effort'}, topic
+        assert profile['history'] == 'keep_last', topic
 
 
 def test_map_registry_does_not_revive_deprecated_maps():

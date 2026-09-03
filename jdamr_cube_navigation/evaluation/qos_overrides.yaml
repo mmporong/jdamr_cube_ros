@@ -1,20 +1,26 @@
+# 기록·재생 QoS 정본. jdamr_cube_navigation.onboard_recording 의 실측 계약에서
+# 생성한다. reliability·durability 는 발행자가 실제로 제시한 값이며(2026-09-01 bag
+# 3종 대조), 어긋나면 구독이 매칭되지 않아 해당 토픽이 통째로 비어버린다.
+# depth 는 rate x 2초 버퍼로, 2026-09-01 소크의 load1 9.85 구간에서 발생한
+# recorder transport loss 3건에 대응한다.
+
 /scan:
   reliability: reliable
   durability: volatile
   history: keep_last
-  depth: 10
+  depth: 20
 
 /odom:
   reliability: reliable
   durability: volatile
   history: keep_last
-  depth: 50
+  depth: 100
 
 /tf:
   reliability: reliable
   durability: volatile
   history: keep_last
-  depth: 100
+  depth: 200
 
 /tf_static:
   reliability: reliable
@@ -22,14 +28,50 @@
   history: keep_last
   depth: 1
 
-/joint_states:
-  reliability: reliable
+/imu/data_raw:
+  reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 20
+  depth: 100
 
 /cmd_vel:
   reliability: reliable
   durability: volatile
   history: keep_last
+  depth: 40
+
+/cmd_vel_nav:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 40
+
+/amcl_pose:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 10
+
+/battery_state:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/plan:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/collision_monitor_state:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
   depth: 20
+
+/joint_states:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 40

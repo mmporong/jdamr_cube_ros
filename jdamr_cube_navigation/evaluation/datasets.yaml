@@ -1,53 +1,1360 @@
 schema_version: 1
 datasets:
-  - dataset_id: g4_userloop_reset_20260824T175151
-    role: diagnostic_reference
-    qualification: DIAGNOSTIC_ONLY
-    protocol_qualified: false
-    uri: $HOME/jdamr_artifacts/g4_userloop_reset_20260824T175151
-    storage:
-      identifier: mcap
-      relative_file: g4_userloop_reset_20260824T175151_0.mcap
-      size_bytes: 31084464
-      sha256: 9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6
-      metadata_sha256: faed909f1ba27d3995a528ef718ffe3c0bd4e85a1e2b6643bf682b0452d8f9f1
-    capture:
-      started_at_unix_ns: 1787561518339123238
-      duration_ns: 195889382665
-      message_count: 63955
-      ros_distro: jazzy
-      backend_context: cartographer_mapping_session
-      clock_mode: wall
-    topics:
-      - {name: /tf_static, type: tf2_msgs/msg/TFMessage, messages: 1, reliability: reliable, durability: transient_local}
-      - {name: /tf, type: tf2_msgs/msg/TFMessage, messages: 48533, reliability: reliable, durability: volatile}
-      - {name: /scan, type: sensor_msgs/msg/LaserScan, messages: 1883, reliability: reliable, durability: volatile}
-      - {name: /odom, type: nav_msgs/msg/Odometry, messages: 9757, reliability: reliable, durability: volatile}
-      - {name: /joint_states, type: sensor_msgs/msg/JointState, messages: 1959, reliability: reliable, durability: volatile}
-      - {name: /cmd_vel, type: geometry_msgs/msg/Twist, messages: 1822, reliability: reliable, durability: volatile}
-    integrity:
-      inspected_at: '2026-09-01'
-      inspector: python-mcap-1.4.0
-      full_message_iteration: PASS
-      iterated_message_count: 63955
-      summary_crc: {status: VERIFIED, value: 1706017585}
-      chunk_crc: {status: UNAVAILABLE, chunks_with_crc: 0, total_chunks: 39}
-      data_section_crc: {status: UNAVAILABLE, value: 0}
-      message_index: {status: VERIFIED, records: 182}
-      chunk_index: {status: VERIFIED, records: 39}
-    qos_provenance:
-      offered_profiles: RECORDED_IN_METADATA
-      recorder_override: UNKNOWN
-      playback_override: UNKNOWN
-    drop_counters:
-      nic: UNKNOWN
-      driver: UNKNOWN
-      kernel: UNKNOWN
-    analysis_window:
-      policy: derive_from_last_nonzero_cmd_before_lift_discontinuity
-      cutoff_status: NOT_DERIVED
-    exclusion_reasons:
-      - robot lift contaminated the tail of the recording
-      - recorder and playback QoS overrides were not preserved
-      - chunk and data-section CRCs were not written
-      - NIC, driver, and kernel drop counters were not captured
+- dataset_id: g4_userloop_reset_20260824T175151
+  role: diagnostic_reference
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/g4_userloop_reset_20260824T175151
+  storage:
+    identifier: mcap
+    relative_file: g4_userloop_reset_20260824T175151_0.mcap
+    size_bytes: 31084464
+    sha256: 9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6
+    metadata_sha256: faed909f1ba27d3995a528ef718ffe3c0bd4e85a1e2b6643bf682b0452d8f9f1
+  capture:
+    started_at_unix_ns: 1787561518339123238
+    duration_ns: 195889382665
+    message_count: 63955
+    ros_distro: jazzy
+    backend_context: cartographer_mapping_session
+    clock_mode: wall
+  topics:
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 48533
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 1883
+    reliability: reliable
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 9757
+    reliability: reliable
+    durability: volatile
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    messages: 1959
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 1822
+    reliability: reliable
+    durability: volatile
+  integrity:
+    inspected_at: '2026-09-01'
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 63955
+    summary_crc:
+      status: VERIFIED
+      value: 1706017585
+    chunk_crc:
+      status: UNAVAILABLE
+      chunks_with_crc: 0
+      total_chunks: 39
+    data_section_crc:
+      status: UNAVAILABLE
+      value: 0
+    message_index:
+      status: VERIFIED
+      records: 182
+    chunk_index:
+      status: VERIFIED
+      records: 39
+  qos_provenance:
+    offered_profiles: RECORDED_IN_METADATA
+    recorder_override: UNKNOWN
+    playback_override: UNKNOWN
+  drop_counters:
+    nic: UNKNOWN
+    driver: UNKNOWN
+    kernel: UNKNOWN
+  analysis_window:
+    policy: derive_from_last_nonzero_cmd_before_lift_discontinuity
+    cutoff_status: NOT_DERIVED
+  exclusion_reasons:
+  - robot lift contaminated the tail of the recording
+  - recorder and playback QoS overrides were not preserved
+  - chunk and data-section CRCs were not written
+  - NIC, driver, and kernel drop counters were not captured
+- dataset_id: corridor_keepout_nav_20260901T144128
+  role: corridor_attempt
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_keepout_nav_20260901T144128
+  storage:
+    identifier: mcap
+    relative_file: corridor_keepout_nav_20260901T144128_0.mcap
+    size_bytes: 17566326
+    sha256: 6448280dfa39238785a0076c8a79940737f3a2f0755e15e6c750f6036c201ef4
+    metadata_sha256: 402b1c4359367090fa403876b1e1f36d5d2dbe4fba2934a8fbde721d28c4f1e2
+  capture:
+    started_at_unix_ns: 1788241289174686533
+    duration_ns: 136608380481
+    message_count: 14880
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 2026-09-01 저장지도 Keepout 자율주행 초기 기동 구간 기록
+  topics:
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    messages: 1365
+    reliability: reliable
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 6795
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 1315
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 5404
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 14880
+    chunk_crc:
+      chunks_with_crc: 17
+      total_chunks: 17
+    data_section_crc: 42984705
+    summary_crc: 2362762901
+    message_index:
+      records: 69
+    chunk_index:
+      records: 17
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: FAIL
+    transport_loss_zero: UNKNOWN
+    missing_topics:
+    - /imu/data_raw
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 전체 왕복 기록이 아님
+  - 개별 판정이 실주행 문서에 따로 남아 있지 않음
+- dataset_id: corridor_keepout_roundtrip_20260901T145437
+  role: corridor_attempt
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_keepout_roundtrip_20260901T145437
+  storage:
+    identifier: mcap
+    relative_file: corridor_keepout_roundtrip_20260901T145437_0.mcap
+    size_bytes: 4106909
+    sha256: 92402555b007d64b50b00594170d48bab0f449f31aab881b05c81fc0fcfb5873
+    metadata_sha256: 3362b1f5178ad27b9a63e7b774b01baf061fce36808324c5e63a3f5e6293889d
+  capture:
+    started_at_unix_ns: 1788242078321538793
+    duration_ns: 31619381213
+    message_count: 3453
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 2026-09-01 왕복 시도 단축 기록
+  topics:
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    messages: 317
+    reliability: reliable
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 1582
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 306
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 1247
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 3453
+    chunk_crc:
+      chunks_with_crc: 4
+      total_chunks: 4
+    data_section_crc: 3659646426
+    summary_crc: 769091759
+    message_index:
+      records: 17
+    chunk_index:
+      records: 4
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: FAIL
+    transport_loss_zero: UNKNOWN
+    missing_topics:
+    - /imu/data_raw
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 전체 왕복 기록이 아님
+  - 개별 판정이 실주행 문서에 따로 남아 있지 않음
+- dataset_id: corridor_keepout_roundtrip_20260901T150446
+  role: corridor_roundtrip_attempt
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_keepout_roundtrip_20260901T150446
+  storage:
+    identifier: mcap
+    relative_file: corridor_keepout_roundtrip_20260901T150446_0.mcap
+    size_bytes: 112040088
+    sha256: 0390852648db3c4e1c1c68c3b9499ab7c37676d6651aef43a58c5da20633af6f
+    metadata_sha256: d4952657564bab95b0dfaf2f3c76136c37df8a2b3160136caf9b3da770383772
+  capture:
+    started_at_unix_ns: 1788242728556781104
+    duration_ns: 905090372383
+    message_count: 128791
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: waypoint 2~12 및 반환점 (37.5,-4.25) 도달. 복귀 waypoint 13에서 Wi-Fi 지연으로 map/odom TF 1~2초 지연, controller
+    오류 102로 중단
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 292
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 754
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 7995
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 37658
+    reliability: best_effort
+    durability: volatile
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    messages: 8867
+    reliability: reliable
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 37654
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 434
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 6859
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 28277
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 128791
+    chunk_crc:
+      chunks_with_crc: 105
+      total_chunks: 105
+    data_section_crc: 925179294
+    summary_crc: 4051290095
+    message_index:
+      records: 823
+    chunk_index:
+      records: 105
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: FAIL
+  recorder:
+    transport_loss: 136
+  exclusion_reasons:
+  - recorder transport loss 136건
+  - 시작점 복귀 미완주
+  - 원격 RViz·rosbag fan-out이 무선 병목을 악화시킨 조건에서 수집
+- dataset_id: onboard_static_soak_20260901T155625
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/onboard_static_soak_20260901T155625
+  storage:
+    identifier: mcap
+    relative_file: onboard_static_soak_20260901T155625_0.mcap
+    size_bytes: 18188073
+    sha256: ba6365bcb889db8e47e6916a9f7e3f924972388114a6d8ab4d05a572521b0516
+    metadata_sha256: 7898f28e81754f81c668c99fae2d520c8152cacbe7ae4b2976aa5f414dc31536
+  capture:
+    started_at_unix_ns: 1788245791490372793
+    duration_ns: 127411260715
+    message_count: 17834
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 온보드 전환 초기 정적 소크. 공식 Nav2 전체 구성은 load1 9.33~11.27로 4.0 게이트 초과
+  topics:
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 127
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 6343
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 6342
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 1228
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 3793
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 17834
+    chunk_crc:
+      chunks_with_crc: 18
+      total_chunks: 18
+    data_section_crc: 1646917776
+    summary_crc: 46971898
+    message_index:
+      records: 90
+    chunk_index:
+      records: 18
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: FAIL
+    transport_loss_zero: UNKNOWN
+    missing_topics:
+    - /cmd_vel
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+- dataset_id: onboard_static_soak_20260901T155916
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/onboard_static_soak_20260901T155916
+  storage:
+    identifier: mcap
+    relative_file: onboard_static_soak_20260901T155916_0.mcap
+    size_bytes: 11823695
+    sha256: a26883aceaf025a42c4097ee28e7123f5f392f1cb6a18f445a809f282c9811cd
+    metadata_sha256: f92a425c854554c23933c4cd4bcf33ed6650327d6f43bf364ed8e1bc925c2f73
+  capture:
+    started_at_unix_ns: 1788245967829959890
+    duration_ns: 82629964941
+    message_count: 12195
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 온보드 정적 소크 반복 측정
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 81
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 9
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 1
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 4065
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 4061
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 789
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 3187
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 12195
+    chunk_crc:
+      chunks_with_crc: 12
+      total_chunks: 12
+    data_section_crc: 504003798
+    summary_crc: 725418446
+    message_index:
+      records: 63
+    chunk_index:
+      records: 12
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+- dataset_id: onboard_static_soak_20260901T160305
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/onboard_static_soak_20260901T160305
+  storage:
+    identifier: mcap
+    relative_file: onboard_static_soak_20260901T160305_0.mcap
+    size_bytes: 12757837
+    sha256: 8b3c19c668bdda7e6a4b21ed479f02183c5f5864fe101f2b7078b04c3d03565d
+    metadata_sha256: a7d1e2a1a7ab732ac7ff66fcfa578f5b98cee514ccea637cab68461c20b6de6f
+  capture:
+    started_at_unix_ns: 1788246195223389437
+    duration_ns: 88955956139
+    message_count: 13287
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 온보드 정적 소크 반복 측정
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 88
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 10
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 1
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 4448
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 4445
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 843
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 3450
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 13287
+    chunk_crc:
+      chunks_with_crc: 12
+      total_chunks: 12
+    data_section_crc: 3578312134
+    summary_crc: 877145623
+    message_index:
+      records: 64
+    chunk_index:
+      records: 12
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+- dataset_id: onboard_minimal_soak_20260901T161043
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/onboard_minimal_soak_20260901T161043
+  storage:
+    identifier: mcap
+    relative_file: onboard_minimal_soak_20260901T161043_0.mcap
+    size_bytes: 13900195
+    sha256: 0baac7f19f48b294652ea307656808df5b322c2f34f9ec53de5cec705965193a
+    metadata_sha256: 1a2a00615550bdefbfed94d59c8b2417c6aabf9f5816ec768934bd3445e472b6
+  capture:
+    started_at_unix_ns: 1788246647105970425
+    duration_ns: 98515280354
+    message_count: 13806
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 최소 온보드 구성 정적 소크 예비 측정
+  topics:
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 99
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 4924
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 4925
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 926
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 2931
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 13806
+    chunk_crc:
+      chunks_with_crc: 13
+      total_chunks: 13
+    data_section_crc: 1318164523
+    summary_crc: 1936682842
+    message_index:
+      records: 66
+    chunk_index:
+      records: 13
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: FAIL
+    transport_loss_zero: UNKNOWN
+    missing_topics:
+    - /cmd_vel
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+- dataset_id: onboard_minimal_soak_20260901T161338
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/onboard_minimal_soak_20260901T161338
+  storage:
+    identifier: mcap
+    relative_file: onboard_minimal_soak_20260901T161338_0.mcap
+    size_bytes: 15438754
+    sha256: 2a1f2f9fafec4713c705914d248d2e37ce2a17180c8eb57ea0c04f8b4196e231
+    metadata_sha256: f982e28f058237ef3f49aebf255e940b357865b6bacff7af9f059e6dcbcd59a6
+  capture:
+    started_at_unix_ns: 1788246827468750502
+    duration_ns: 107861977725
+    message_count: 16150
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 최소 온보드 구성 107.862초 정적 소크. load1 1.17~1.93, 66.2~70.6도, throttle 0x0, 비영점 속도 명령 0건, odom 변위
+    0.025mm
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 108
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 5
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 1
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 5394
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 5392
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 1022
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 4226
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 16150
+    chunk_crc:
+      chunks_with_crc: 15
+      total_chunks: 15
+    data_section_crc: 1896188058
+    summary_crc: 1295978407
+    message_index:
+      records: 79
+    chunk_index:
+      records: 15
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+- dataset_id: corridor_keepout_onboard_20260901T165606
+  role: corridor_roundtrip_attempt
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_keepout_onboard_20260901T165606
+  storage:
+    identifier: mcap
+    relative_file: corridor_keepout_onboard_20260901T165606_0.mcap
+    size_bytes: 81733378
+    sha256: 60b0d24551789cf5914b397cf45d6e4eb6c0ea86d2379d326f70196b810b3088
+    metadata_sha256: 5472b4b575ba7523223ad360380a6576992bd281b0fb8f19121a5dee47cc23b7
+  capture:
+    started_at_unix_ns: 1788249376405153057
+    duration_ns: 555332782471
+    message_count: 87577
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: waypoint 7/20 완료 뒤 합성 컨테이너 내부 Nav2 노드가 DDS graph에서 소실
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 109
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 555
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 3851
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 1956
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 2
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 27755
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 27755
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 194
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 5354
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 20045
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 87577
+    chunk_crc:
+      chunks_with_crc: 77
+      total_chunks: 77
+    data_section_crc: 366062284
+    summary_crc: 2057276309
+    message_index:
+      records: 503
+    chunk_index:
+      records: 77
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: FAIL
+  recorder:
+    transport_loss: 20
+  exclusion_reasons:
+  - recorder transport loss 20건
+  - 전체 왕복 미완주
+- dataset_id: corridor_keepout_onboard_20260901T170550
+  role: corridor_roundtrip_attempt
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_keepout_onboard_20260901T170550
+  storage:
+    identifier: mcap
+    relative_file: corridor_keepout_onboard_20260901T170550_0.mcap
+    size_bytes: 136542969
+    sha256: 2cc55bc9f15b7fcc3824e940de7a5340307fc5be5d48eac39f59065d62d69ea9
+    metadata_sha256: a1b13ffa46a6de8a6fffb7fccd1e1498e8e9daa599626de887cd6513e515ce43
+  capture:
+    started_at_unix_ns: 1788249963574775099
+    duration_ns: 922032010745
+    message_count: 141757
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 재시작 시 AMCL 원점 초기화, 위치 복원 뒤 반환점 도달. x 공분산 0.519와 15.008초 freshness 게이트에 차단
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 124
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 921
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 4127
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 2069
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 46005
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 46003
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 207
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 8879
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 33421
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 141757
+    chunk_crc:
+      chunks_with_crc: 128
+      total_chunks: 128
+    data_section_crc: 4079765849
+    summary_crc: 1455935048
+    message_index:
+      records: 780
+    chunk_index:
+      records: 128
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 전체 왕복 미완주
+  - 과민한 고정 공분산·freshness 게이트 조건에서 수집
+- dataset_id: corridor_keepout_onboard_20260901T172141
+  role: corridor_partial_return
+  qualification: PARTIAL_SUCCESS
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_keepout_onboard_20260901T172141
+  storage:
+    identifier: mcap
+    relative_file: corridor_keepout_onboard_20260901T172141_0.mcap
+    size_bytes: 45323482
+    sha256: 94ca6cdfd3d2043a350dafac3ef20e91997c055dcdbcefaca6bfa3d59a736068
+    metadata_sha256: b63c3ae09bebbbcfc21d26ca0aa58573e68c0b52b54ded974a72a00f0f1c3be6
+  capture:
+    started_at_unix_ns: 1788250913391909075
+    duration_ns: 302940112967
+    message_count: 50968
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 현재 위치에서 남은 23.573m를 7/7 waypoint, recovery 0으로 복귀 성공. 경로 완료 뒤 합성 lifecycle manager가 map server·controller
+    bond 실패 보고, 종료 중 SIGSEGV
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 111
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 302
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 3487
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 1752
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 15138
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 15136
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 174
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 2922
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 11945
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 50968
+    chunk_crc:
+      chunks_with_crc: 43
+      total_chunks: 43
+    data_section_crc: 770387894
+    summary_crc: 3748330273
+    message_index:
+      records: 324
+    chunk_index:
+      records: 43
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 시작점부터의 전체 80m 왕복이 아님
+  - 종료 품질 결함(bond 실패·SIGSEGV) 동반
+- dataset_id: corridor_keepout_onboard_20260901T172738
+  role: corridor_roundtrip_attempt
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_keepout_onboard_20260901T172738
+  storage:
+    identifier: mcap
+    relative_file: corridor_keepout_onboard_20260901T172738_0.mcap
+    size_bytes: 26028787
+    sha256: f43a9375463213912fca6642ae2902e0a11b5213341a9de512dfe31c13e21ffc
+    metadata_sha256: d8de7eecba5eefa8bef3316324137a602296db313e921ce6e160957da967d05f
+  capture:
+    started_at_unix_ns: 1788251273544705836
+    duration_ns: 178080290206
+    message_count: 27217
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 독립 프로세스 전환 후 노드는 생존했으나 20ms planner action 응답 제한으로 첫 목표 중단
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 9
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 178
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 330
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 158
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 20
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 8893
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 8891
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 18
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 1717
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 7002
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 27217
+    chunk_crc:
+      chunks_with_crc: 25
+      total_chunks: 25
+    data_section_crc: 2356259266
+    summary_crc: 2464979356
+    message_index:
+      records: 147
+    chunk_index:
+      records: 25
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 전체 왕복 미완주
+- dataset_id: static_repeat_stop_fix_20260901T174200
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/static_repeat_stop_fix_20260901T174200
+  storage:
+    identifier: mcap
+    relative_file: static_repeat_stop_fix_20260901T174200_0.mcap
+    size_bytes: 47635479
+    sha256: e1ad0afa71d86746b5530d66a34be11eed836fc0878f3846a31b22f81c864578
+    metadata_sha256: 5f26bf46bfb86f3f3a9a3c8c2968ff7b4452520c3dfc0fed257ce4f7bb0dd5de
+  capture:
+    started_at_unix_ns: 1788251946162602440
+    duration_ns: 330746634840
+    message_count: 49556
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 반복 중단 수정본 330.747초 비주행 소크. 필수 Nav2 노드 9/9 생존, bond 실패·SIGSEGV 0, 45/45 chunk CRC PASS. load1
+    4.13~9.85로 게이트 FAIL
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 330
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 1
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 16499
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 16503
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 3188
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 13033
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 49556
+    chunk_crc:
+      chunks_with_crc: 45
+      total_chunks: 45
+    data_section_crc: 1882812703
+    summary_crc: 4121893044
+    message_index:
+      records: 228
+    chunk_index:
+      records: 45
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: FAIL
+  recorder:
+    transport_loss: 3
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+  - load<4 게이트 FAIL
+  - transport loss 0 게이트 FAIL
+- dataset_id: static_split_repeat_stop_fix_20260901T174845
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/static_split_repeat_stop_fix_20260901T174845
+  storage:
+    identifier: mcap
+    relative_file: static_split_repeat_stop_fix_20260901T174845_0.mcap
+    size_bytes: 22462464
+    sha256: 45748d96e4fbfb5c04cbf75abe8bb0e7eb1f666f719f828b5b848761c1e67b06
+    metadata_sha256: ABSENT_RECORDER_NOT_FINALIZED
+  capture:
+    started_at_unix_ns: UNKNOWN
+    duration_ns: UNKNOWN
+    message_count: UNKNOWN
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: localization/navigation 2컨테이너 분할 시험. 32초 load1 2.19, 2분14초 7.56에서 사용자 전원 종료로 중단. 종료 시 SIGKILL
+    필요로 미채택
+  topics: []
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: FAIL
+    iterated_message_count: UNKNOWN
+    chunk_crc:
+      chunks_with_crc: 0
+      total_chunks: 0
+    data_section_crc: 0
+    summary_crc: 0
+    message_index:
+      records: 0
+    chunk_index:
+      records: 0
+  gates:
+    full_message_iteration: FAIL
+    recorder_finalized: FAIL
+    chunk_crc: FAIL
+    data_section_crc: FAIL
+    summary_crc: FAIL
+    message_index: FAIL
+    required_evidence_present: UNKNOWN
+    transport_loss_zero: UNKNOWN
+    missing_topics:
+    - /scan
+    - /odom
+    - /tf
+    - /tf_static
+    - /imu/data_raw
+    - /cmd_vel
+    read_error: 'RecordLengthLimitExceeded: unknown (opcode 0) record has length 1788252710163992007 that
+      exceeds limit 4294967296'
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 주행이 없으므로 성능 표본이 아님
+  - 5분 소크 미완료
