@@ -18,10 +18,13 @@ from jdamr_cube_navigation.onboard_recording import (
 from jdamr_cube_navigation.soak_metrics import (
     classify,
     cpu_percent,
+    evaluate_resource_gate,
     parse_proc_stat,
     parse_proc_status_rss_kb,
+    percentile,
     read_loadavg,
     summarize,
+    TSV_HEADER,
 )
 
 import yaml
@@ -151,3 +154,73 @@ def test_soak_summary_ranks_the_hottest_process_first():
     assert summary[1]['label'] == 'amcl'
     assert summary[1]['mean_cpu_pct'] == 15.0
     assert summary[1]['max_threads'] == 6
+
+
+def test_the_gate_scores_sustained_load_not_the_startup_spike():
+    """Bringing twelve processes up at once must not block the drive."""
+    # 2026-09-03 shape: one 296% configure spike over a flat 203% plateau.
+    samples = [{'cpu_pct': 296.0, 'temp_c': 66.0, 'throttled': '0x0'}]
+    samples += [{'cpu_pct': 203.0, 'temp_c': 69.0, 'throttled': '0x0'}
+                for _ in range(66)]
+    verdict = evaluate_resource_gate([], samples, core_count=4)
+
+    assert verdict['sustained_cpu_pct'] == 203.0
+    assert verdict['peak_cpu_pct'] == 296.0
+    assert verdict['gates']['cpu_headroom'] == 'PASS'
+    assert verdict['verdict'] == 'PASS'
+
+
+def test_a_genuinely_saturated_pi_still_fails():
+    """Relaxing the gate must not make it unable to fail."""
+    samples = [{'cpu_pct': 380.0, 'temp_c': 70.0, 'throttled': '0x0'}
+               for _ in range(20)]
+    verdict = evaluate_resource_gate([], samples, core_count=4)
+
+    assert verdict['gates']['cpu_headroom'] == 'FAIL'
+    assert verdict['verdict'] == 'FAIL'
+
+
+def test_thermal_throttling_fails_regardless_of_cpu():
+    """A throttled Pi is slow no matter what the CPU percentage says."""
+    samples = [{'cpu_pct': 100.0, 'temp_c': 70.0, 'throttled': '0x50005'}
+               for _ in range(10)]
+    verdict = evaluate_resource_gate([], samples, core_count=4)
+
+    assert verdict['gates']['thermal_throttle'] == 'FAIL'
+    assert verdict['verdict'] == 'FAIL'
+
+
+def test_hot_but_unthrottled_still_fails_on_margin():
+    """Stop before the 80C soft-throttle rather than after it."""
+    samples = [{'cpu_pct': 100.0, 'temp_c': 78.0, 'throttled': '0x0'}
+               for _ in range(10)]
+
+    assert evaluate_resource_gate(
+        [], samples, core_count=4)['gates']['temperature'] == 'FAIL'
+
+
+def test_missing_temperature_is_unknown_not_pass():
+    """Never let an unmeasured thermal state read as a passing one."""
+    samples = [{'cpu_pct': 100.0, 'temp_c': None, 'throttled': '0x0'}
+               for _ in range(10)]
+    verdict = evaluate_resource_gate([], samples, core_count=4)
+
+    assert verdict['gates']['temperature'] == 'UNKNOWN'
+    assert verdict['verdict'] == 'UNKNOWN'
+
+
+def test_load_average_is_recorded_but_does_not_decide():
+    """load1 counts threads waiting on I/O, so it cannot gate the drive."""
+    assert 'load1' in TSV_HEADER
+    samples = [{'cpu_pct': 203.0, 'temp_c': 69.0, 'throttled': '0x0'}
+               for _ in range(20)]
+
+    assert 'load' not in ' '.join(
+        evaluate_resource_gate([], samples, core_count=4)['gates'])
+
+
+def test_percentile_picks_the_sustained_value():
+    """The gate metric must ignore a single outlier sample."""
+    assert percentile([203.0] * 9 + [296.0], 0.90) == 296.0
+    assert percentile([203.0] * 19 + [296.0], 0.90) == 203.0
+    assert percentile([], 0.90) == 0.0

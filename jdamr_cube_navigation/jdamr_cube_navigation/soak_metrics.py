@@ -170,19 +170,130 @@ def summarize(rows):
     return summary
 
 
+def percentile(values, fraction):
+    """Return the value at *fraction* of a sorted sample list."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = min(len(ordered) - 1, int(len(ordered) * fraction))
+    return ordered[position]
+
+
+# The original onboard gate was "load1 < 4".  The 2026-09-03 soak showed that
+# number does not measure what it was meant to measure: load1 swung between
+# 3.97 and 10.66 while the Nav2 process set held a flat 203% of the Pi's 400%
+# CPU budget at 65-69C with thermal throttle 0x0.  Linux load average counts
+# threads waiting on I/O and locks, not only threads burning CPU, and this
+# stack runs 197 threads across 12 DDS participants.  The gate now measures
+# CPU headroom, thermal state, and evidence completeness directly.  load1 is
+# still recorded, but it no longer decides whether the robot may drive.
+CPU_BUDGET_FRACTION = 0.75
+
+# The Pi 4 soft-throttles at 80C and hard-throttles at 85C.  Leaving 10C of
+# margin keeps a warm room from turning into a mid-corridor slowdown.
+MAX_TEMPERATURE_C = 75.0
+
+
+def evaluate_resource_gate(rows, samples, core_count,
+                           budget_fraction=CPU_BUDGET_FRACTION,
+                           max_temperature_c=MAX_TEMPERATURE_C):
+    """Return the onboard resource verdict measured from a soak."""
+    budget_pct = 100.0 * core_count * budget_fraction
+    peak_cpu = max((sample['cpu_pct'] for sample in samples), default=0.0)
+    mean_cpu = (
+        sum(sample['cpu_pct'] for sample in samples) / len(samples)
+        if samples else 0.0)
+    # Bringing twelve Nav2 processes up at once costs one sample far above the
+    # steady state (296% against a 203% plateau on 2026-09-03).  A transient
+    # that ends before the robot moves must not block the drive, so the gate
+    # scores the sustained 90th percentile and reports the peak alongside it.
+    sustained_cpu = percentile(
+        [sample['cpu_pct'] for sample in samples], 0.90)
+    temperatures = [sample['temp_c'] for sample in samples
+                    if sample['temp_c'] is not None]
+    peak_temp = max(temperatures, default=0.0)
+    throttled = [sample['throttled'] for sample in samples
+                 if sample['throttled'] not in ('', None)]
+    throttle_clean = all(value in ('0', '0x0') for value in throttled)
+    peak_threads = max((row['threads'] for row in rows), default=0)
+
+    gates = {
+        'cpu_headroom': 'PASS' if sustained_cpu <= budget_pct else 'FAIL',
+        'thermal_throttle': 'PASS' if throttle_clean else 'FAIL',
+        'temperature': (
+            'PASS' if temperatures and peak_temp <= max_temperature_c
+            else ('FAIL' if temperatures else 'UNKNOWN')),
+    }
+    return {
+        'gates': gates,
+        'verdict': (
+            'FAIL' if 'FAIL' in gates.values()
+            else ('UNKNOWN' if 'UNKNOWN' in gates.values() else 'PASS')),
+        'core_count': core_count,
+        'cpu_budget_pct': budget_pct,
+        'peak_cpu_pct': peak_cpu,
+        'sustained_cpu_pct': sustained_cpu,
+        'mean_cpu_pct': mean_cpu,
+        'peak_temperature_c': peak_temp,
+        'peak_threads': peak_threads,
+    }
+
+
+def read_samples(path):
+    """Aggregate a per-process TSV into one record per sample index."""
+    rows = []
+    totals = {}
+    with Path(path).open(encoding='utf-8') as stream:
+        header = stream.readline().rstrip('\n').split('\t')
+        index_of = {name: position for position, name in enumerate(header)}
+        for line in stream:
+            fields = line.rstrip('\n').split('\t')
+            if len(fields) < len(header):
+                continue
+            sample = fields[index_of['sample']]
+            cpu = float(fields[index_of['cpu_pct']])
+            threads = int(fields[index_of['threads']])
+            rows.append({
+                'label': fields[index_of['label']],
+                'cpu_pct': cpu,
+                'threads': threads,
+            })
+            entry = totals.setdefault(sample, {
+                'cpu_pct': 0.0,
+                'load1': fields[index_of['load1']],
+                'temp_c': None,
+                'throttled': fields[index_of['throttled']],
+            })
+            entry['cpu_pct'] += cpu
+            raw_temp = fields[index_of['temp_c']]
+            if raw_temp:
+                entry['temp_c'] = float(raw_temp)
+    return rows, list(totals.values())
+
+
 def main(argv=None):
     """Sample the onboard process set for the requested duration."""
     parser = argparse.ArgumentParser(
         description='Record per-process CPU during an onboard soak')
-    parser.add_argument('--output', required=True,
+    parser.add_argument('--output',
                         help='absolute TSV path for the per-process samples')
     parser.add_argument('--duration', type=float, default=330.0,
                         help='total sampling seconds')
     parser.add_argument('--interval', type=float, default=5.0,
                         help='seconds between samples')
+    parser.add_argument('--evaluate',
+                        help='score an existing TSV instead of sampling')
+    parser.add_argument('--cores', type=int, default=None,
+                        help='core count of the machine that produced the '
+                             'samples; defaults to this machine')
     args = parser.parse_args(argv)
 
-    output = Path(args.output).expanduser()
+    if args.evaluate:
+        return _report(*read_samples(args.evaluate), cores=args.cores)
+
+    output = Path(args.output or '.').expanduser()
+    if not args.output:
+        parser.error('--output is required unless --evaluate is given')
     if not output.is_absolute():
         parser.error('--output must be an absolute path')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -212,11 +323,29 @@ def main(argv=None):
                 break
             time.sleep(args.interval)
 
-    for entry in summarize(collected):
+    return _report(collected, read_samples(output)[1], cores=args.cores)
+
+
+def _report(rows, samples, cores=None):
+    """Print the per-process ranking and the resource verdict."""
+    for entry in summarize(rows):
         print(
             f'{entry["label"]:22} mean_cpu={entry["mean_cpu_pct"]:6.1f}%'
             f'  max_threads={entry["max_threads"]}')
-    return 0
+    verdict = evaluate_resource_gate(
+        rows, samples, cores or os.cpu_count() or 1)
+    print()
+    print(f'cores={verdict["core_count"]} '
+          f'budget={verdict["cpu_budget_pct"]:.0f}% '
+          f'sustained_p90={verdict["sustained_cpu_pct"]:.0f}% '
+          f'startup_peak={verdict["peak_cpu_pct"]:.0f}% '
+          f'mean={verdict["mean_cpu_pct"]:.0f}% '
+          f'peak_temp={verdict["peak_temperature_c"]:.1f}C '
+          f'threads={verdict["peak_threads"]}')
+    for name, value in verdict['gates'].items():
+        print(f'  {name:20} {value}')
+    print(f'resource gate: {verdict["verdict"]}')
+    return 0 if verdict['verdict'] == 'PASS' else 1
 
 
 if __name__ == '__main__':

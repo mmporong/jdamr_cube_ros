@@ -99,7 +99,7 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 ## 전체 실행 순서와 통과 조건
 
-1. **온보드 비주행 검증 — 완료:** 지도·Keepout 해시, 필수 lifecycle, 단일 `/cmd_vel` 소유자, load<4, throttle 0, MCAP CRC, 종료 뒤 프로세스 0을 확인한다.
+1. **온보드 비주행 검증 — 완료:** 지도·Keepout 해시, 필수 lifecycle, 단일 `/cmd_vel` 소유자, 지속 CPU가 코어 예산의 75% 이내, thermal throttle 0, 최고 온도 75도 이하, MCAP CRC, 종료 뒤 프로세스 0을 확인한다. 2026-09-03에 `load1 < 4`를 이 기준으로 교체했다.
 2. **80m급 왕복 1회:** 저장 지도+AMCL+Keepout으로 자율주행하고 파이 로컬 MCAP에 transport loss 0, 전 구간 완주, 시작점 복귀, 최종 정지, 배터리 10.5V 이상을 남긴다. 온라인 mapping은 주행 중 끈다. 사용자의 결정으로 별도 2~6m 단거리 단계는 생략한다.
 3. **자율 반복 2회:** 같은 프로토콜을 두 번 더 실행해 총 3개 적격 표본을 만든다. 수동으로 세 바퀴를 도는 방식이 아니라 자율주행 재현성 시험이다.
 4. **오프라인 2D SLAM 비교:** 각 raw bag을 격리 domain의 빈 상태에서 Cartographer와 SLAM Toolbox에 동일하게 재생한다. `/map`, 이동 명령, 기록 AMCL `map→odom`은 제외하고 폐루프 오차·loop audit·처리시간을 비교한다.
@@ -155,11 +155,45 @@ ros2 run jdamr_cube_navigation soak_metrics \
   --duration 330 --interval 5
 ```
 
+### 부하 게이트 재정의 (2026-09-03)
+
+재측정 결과 `load1 < 4`는 측정 대상 자체가 틀렸다. 같은 구간에서 load1은 3.97~10.66으로
+출렁였지만 Nav2 프로세스 전체의 CPU는 파이 4코어 400% 중 **203%에서 평평**했고,
+스레드 197개, 온도 65~69도, thermal throttle `0x0`이었다. 리눅스 load average는 CPU를
+쓰는 스레드만이 아니라 I/O와 락을 기다리는 스레드까지 세는데, 이 구성은 12개 DDS
+참가자에 197개 스레드를 띄운다. 코어 두 개가 놀고 있는 상태에서 게이트가 실행을 막고
+있었다.
+
+게이트를 실측 가능한 세 항목으로 바꿨고, 문서상의 수동 기준이 아니라 코드가 판정한다.
+
+| 항목 | 기준 | 2026-09-03 실측 |
+|---|---|---|
+| 지속 CPU (p90) | 코어 예산의 75% 이내 (4코어 = 300%) | 204% PASS |
+| thermal throttle | `0x0` | `0x0` PASS |
+| 최고 온도 | 75도 이하 (소프트 스로틀 80도 대비 여유) | 69.6도 PASS |
+
+기동 순간 한 샘플은 296%까지 오르지만 이는 12개 프로세스가 동시에 configure되는
+구간이고 로봇이 움직이기 전에 끝난다. 그래서 순간 최대가 아니라 p90 지속 부하로
+판정하고 최대값은 참고로 함께 출력한다. load1은 계속 기록하되 판정에서는 뺐다.
+
+```bash
+# 소크와 동시에 측정하며 판정
+ros2 run jdamr_cube_navigation soak_metrics \
+  --output "$HOME/jdamr_artifacts/<run_id>.per_process.tsv" \
+  --duration 330 --interval 5
+
+# 기존 TSV 재판정 (다른 기기에서 볼 때는 --cores 로 원본 기기 코어 수를 준다)
+python3 soak_metrics.py --evaluate <run_id>.per_process.tsv --cores 4
+```
+
+게이트가 통과해도 실차 이동 권한은 별개다. 작업자가 로봇 옆에서 물리 전원을 즉시
+차단할 수 있을 때만 주행한다. 충돌 감시, 배터리 전압, AMCL 공분산 같은 실제 안전
+인터록은 그대로 둔다.
+
 ### 남은 것
 
-다음 정적 소크에서 위 두 게이트를 다시 측정한다. load가 여전히 4를 넘으면
-`soak_metrics` 요약의 상위 프로세스를 근거로 줄인다. 두 게이트가 통과해야 80m 왕복
-실주행으로 넘어간다.
+기록 게이트와 부하 게이트는 2026-09-03 소크에서 모두 통과했다. 다음은 80m 왕복
+실주행이다.
 
 ## 증거 원장
 

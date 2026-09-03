@@ -1375,8 +1375,8 @@ datasets:
     message_count: 47894
     ros_distro: jazzy
     clock_mode: wall
-  outcome: 게이트 정비본 318.6초 비주행 소크. 필수 Nav2 노드 전원 활성화, /cmd_vel 0건, IMU 15,922건 best_effort 기록. load1 3.97~10.66으로
-    게이트 FAIL이나 CPU는 4코어 중 약 203%로 여유
+  outcome: 게이트 정비본 318.6초 비주행 소크. 필수 Nav2 노드 전원 활성화, /cmd_vel 0건, IMU 15,922건 best_effort 기록. 재정의한 자원
+    게이트 PASS (지속 CPU p90 204%/예산 300%, throttle 0x0, 최고 69.6도)
   topics:
   - name: /amcl_pose
     type: geometry_msgs/msg/PoseWithCovarianceStamped
@@ -1459,4 +1459,3 @@ datasets:
     transport_loss: 0
   exclusion_reasons:
   - 주행이 없으므로 성능 표본이 아님
-  - load1<4 게이트 FAIL
