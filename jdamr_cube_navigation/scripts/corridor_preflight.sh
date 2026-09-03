@@ -11,8 +11,21 @@ set -uo pipefail
 
 : "${ROS_DOMAIN_ID:?ROS_DOMAIN_ID 를 지정해야 한다 (파이 bringup 은 12)}"
 FAIL=0
-ok()  { printf '  [PASS] %s\n' "$1"; }
-bad() { printf '  [FAIL] %s\n' "$1"; FAIL=1; }
+ok()   { printf '  [PASS] %s\n' "$1"; }
+bad()  { printf '  [FAIL] %s\n' "$1"; FAIL=1; }
+warn() { printf '  [주의] %s\n' "$1"; }
+
+# 파이의 DDS 서비스 응답은 부하에 따라 느려진다. 2026-09-03 점검에서 15초
+# 조회가 planner_server 와 bt_navigator 를 무응답으로 읽어 거짓 FAIL 을 냈다.
+# 두 노드 모두 실제로는 active 였다. 판정 전에 반드시 재시도한다.
+lifecycle_state() {
+  local node="$1" state
+  for _ in 1 2 3; do
+    state=$(timeout 25 ros2 lifecycle get "$node" 2>/dev/null | head -1)
+    [ -n "$state" ] && { printf '%s' "$state"; return 0; }
+  done
+  return 1
+}
 
 echo "== 1. 센서 도메인 =="
 topics=$(timeout 15 ros2 topic list 2>/dev/null)
@@ -22,21 +35,32 @@ for t in /scan /odom /tf /battery_state; do
 done
 
 echo "== 2. 원격 시각화 =="
-if timeout 15 ros2 node list 2>/dev/null | grep -q rviz; then
-  bad "RViz 가 이미 떠 있다. Nav2 기동 전에는 끄고, 활성화 확인 후 열 것"
+# 규칙은 "RViz 금지"가 아니라 순서다. Nav2 활성화 전에 붙어 있으면
+# map_server 의 change_state 응답을 막아 기동 자체가 실패한다.
+# 이 시점에는 이미 Nav2 가 떠 있으므로 상태만 알린다. 조회가 실패하면
+# 안전한 쪽(모름)으로 보고한다.
+nodes=$(timeout 25 ros2 node list 2>/dev/null)
+if [ -z "$nodes" ]; then
+  bad "노드 목록 조회 실패 - DDS 연결을 먼저 확인할 것"
+elif grep -q rviz <<<"$nodes"; then
+  warn "RViz 연결됨. Nav2 활성화 이후에 연 것이 맞는지 확인할 것"
+  warn "주행 중 TF 지연이 보이면(controller 오류 102) RViz 를 닫고 재시도"
 else
-  ok "RViz 미실행"
+  ok "RViz 미연결"
 fi
 
 echo "== 3. Nav2 lifecycle =="
 for n in /map_server /amcl /controller_server /planner_server /bt_navigator \
          /collision_monitor /keepout_filter_mask_server \
          /keepout_costmap_filter_info_server; do
-  state=$(timeout 15 ros2 lifecycle get "$n" 2>/dev/null | head -1)
-  case "$state" in
-    active*) ok "$n $state" ;;
-    *)       bad "$n ${state:-응답 없음}" ;;
-  esac
+  if state=$(lifecycle_state "$n"); then
+    case "$state" in
+      active*) ok "$n $state" ;;
+      *)       bad "$n $state" ;;
+    esac
+  else
+    bad "$n 3회 조회 모두 무응답"
+  fi
 done
 
 echo "== 4. 금지구역 필터 =="
