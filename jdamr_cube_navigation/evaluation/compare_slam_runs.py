@@ -247,6 +247,12 @@ def main(argv=None):
         mcap = next(iter(sorted(result_dir.glob('*.mcap'))), None)
         if mcap is None:
             continue
+        # A recorder still writing leaves no finalized metadata, and reading
+        # the unfinished MCAP raises instead of returning partial data.
+        metadata = result_dir / 'metadata.yaml'
+        if not metadata.is_file() or metadata.stat().st_size == 0:
+            print(f'기록 미완료로 건너뜀: {result_dir.name}')
+            continue
         stem = result_dir.name[:-len('_result')]
         source_name, _, _backend = stem.partition('__')
         source_dir = args.source_root / source_name

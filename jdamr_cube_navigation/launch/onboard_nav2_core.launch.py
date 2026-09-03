@@ -113,6 +113,11 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
+            # The Pi answers lifecycle services slowly under Nav2 load.  On
+            # 2026-09-03 the default 4 s bond timeout reported a healthy
+            # keepout server as failed and aborted its bringup.
+            'bond_timeout': 10.0,
+            'bond_respawn_max_duration': 20.0,
             'node_names': [
                 'keepout_filter_mask_server',
                 'keepout_costmap_filter_info_server',
@@ -184,6 +189,8 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
+            'bond_timeout': 10.0,
+            'bond_respawn_max_duration': 20.0,
             'node_names': localization_nodes,
         }],
     )
@@ -195,6 +202,8 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
+            'bond_timeout': 10.0,
+            'bond_respawn_max_duration': 20.0,
             'node_names': navigation_nodes,
         }],
     )

@@ -55,10 +55,13 @@ case "$BACKEND" in
       --ros-args -p use_sim_time:=true >> "$LOG" 2>&1 &
     ;;
   slam_toolbox)
-    setsid nohup ros2 run slam_toolbox async_slam_toolbox_node --ros-args \
-      -p use_sim_time:=true -p base_frame:=base_footprint -p odom_frame:=odom \
-      -p map_frame:=map -p scan_topic:=/scan -p mode:=mapping \
-      -p resolution:=0.05 -p max_laser_range:=8.0 \
+    # Jazzy 의 async_slam_toolbox_node 는 lifecycle 노드다. ros2 run 으로
+    # 띄우면 unconfigured 상태로 남아 스캔을 처리하지 않고 /map 도 내지
+    # 않는다. 2026-09-03 첫 실행이 정확히 그렇게 조용히 실패했다.
+    # upstream launch 가 configure/activate 를 수행하므로 그대로 쓴다.
+    PARAMS="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation/config/slam_toolbox_corridor.yaml"
+    setsid nohup ros2 launch slam_toolbox online_async_launch.py \
+      use_sim_time:=true slam_params_file:="$PARAMS" \
       >> "$LOG" 2>&1 &
     ;;
   *) echo "알 수 없는 backend: $BACKEND" >&2; exit 2 ;;

@@ -56,7 +56,18 @@ for n in /map_server /amcl /controller_server /planner_server /bt_navigator \
   if state=$(lifecycle_state "$n"); then
     case "$state" in
       active*) ok "$n $state" ;;
-      *)       bad "$n $state" ;;
+      *)
+        # 2026-09-03 에 keepout_costmap_filter_info_server 가 inactive 로
+        # 남아 금지구역이 코스트맵에 적용되지 않은 채 출발할 뻔했다.
+        # 한 번 활성화를 시도하고 결과를 다시 읽는다. 숨기지 않고 알린다.
+        warn "$n $state - 활성화를 시도한다"
+        timeout 30 ros2 lifecycle set "$n" activate >/dev/null 2>&1
+        if state=$(lifecycle_state "$n") && [ "${state:0:6}" = "active" ]; then
+          ok "$n $state (활성화 복구)"
+        else
+          bad "$n ${state:-무응답} - 활성화 실패"
+        fi
+        ;;
     esac
   else
     bad "$n 3회 조회 모두 무응답"

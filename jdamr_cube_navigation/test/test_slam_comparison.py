@@ -116,3 +116,39 @@ def test_yaw_of_reads_a_quarter_turn():
     assert math.degrees(
         yaw_of(_Quaternion(math.sin(math.pi / 4), math.cos(math.pi / 4)))
     ) == pytest.approx(90.0, abs=1e-6)
+
+
+def _harness_source():
+    return (Path(__file__).resolve().parents[1]
+            / 'scripts' / 'offline_slam_replay.sh').read_text(encoding='utf-8')
+
+
+def test_slam_toolbox_is_started_through_its_lifecycle_launch():
+    """ros2 run leaves the Jazzy node unconfigured and silently mapless."""
+    # 2026-09-03: async_slam_toolbox_node started, consumed nothing, and
+    # published no /map for a whole 303 s replay.  It is a lifecycle node.
+    source = _harness_source()
+
+    assert 'ros2 launch slam_toolbox online_async_launch.py' in source
+    assert 'ros2 run slam_toolbox' not in source
+    assert 'slam_params_file' in source
+
+
+def test_cartographer_gflags_precede_ros_args():
+    """Put gflags before --ros-args or cartographer_node exits at once."""
+    # The failure is silent in the launch log except for one glog line:
+    # "Check failed: !FLAGS_configuration_directory.empty()".
+    source = _harness_source()
+    invocation = source.split(
+        'ros2 run cartographer_ros cartographer_node', 1)[1]
+    invocation = invocation.split('&', 1)[0]
+
+    assert invocation.index('-configuration_directory') < invocation.index(
+        '--ros-args')
+
+
+def test_replay_refuses_the_physical_domain():
+    """Replaying on domain 12 would inject a map frame at the real robot."""
+    source = _harness_source()
+
+    assert 'ROS_DOMAIN_ID" = "12"' in source

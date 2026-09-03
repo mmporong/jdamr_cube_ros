@@ -598,3 +598,14 @@ def test_package_installs_keepout_command_and_assets():
     assert "glob('launch/*.launch.py')" in setup_source
     assert "glob('config/*.yaml')" in setup_source
     assert "glob('rviz/*.rviz')" in setup_source
+
+
+def test_lifecycle_managers_tolerate_pi_service_latency():
+    """A slow bond reply must not read as a dead node."""
+    # 2026-09-03: the default 4 s bond timeout reported a healthy keepout
+    # server as failed and aborted its bringup, leaving the costmap filter
+    # info server inactive so keepout zones were not applied at all.
+    source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
+
+    assert source.count("'bond_timeout': 10.0") == 3
+    assert source.count("'bond_respawn_max_duration': 20.0") == 3
