@@ -65,6 +65,7 @@ def generate_launch_description():
             '--remap',
             '/tf:=/tf_recorded',
             '/tf_static:=/tf_static_recorded',
+            '/odom:=/odom_recorded',
         ],
         output='screen',
     )

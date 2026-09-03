@@ -609,3 +609,27 @@ def test_lifecycle_managers_tolerate_pi_service_latency():
 
     assert source.count("'bond_timeout': 10.0") == 3
     assert source.count("'bond_respawn_max_duration': 20.0") == 3
+
+
+def test_replay_guard_orders_odometry_against_scans():
+    """Late odometry kills Cartographer mid-replay, so the guard drops it."""
+    # corridor_keepout_roundtrip_20260901T150446 carries 63 odometry messages
+    # stamped before the newest scan, up to 1.340 s inverted, because Wi-Fi
+    # delayed them during recording.  Cartographer aborts with
+    # "Check failed: odometry_data.time >= timed_pose_queue_.back().time".
+    from jdamr_cube_navigation.tf_replay_filter import stamp_seconds
+
+    guard = (PACKAGE_ROOT / 'jdamr_cube_navigation'
+             / 'tf_replay_filter.py').read_text(encoding='utf-8')
+    replay = (PACKAGE_ROOT / 'launch'
+              / 'offline_replay_guard.launch.py').read_text(encoding='utf-8')
+
+    assert "'/odom_recorded'" in guard
+    assert "'/odom:=/odom_recorded'" in replay
+    assert 'self.late_odometry' in guard
+
+    class _Stamp:
+        sec = 5
+        nanosec = 500_000_000
+
+    assert stamp_seconds(_Stamp()) == 5.5

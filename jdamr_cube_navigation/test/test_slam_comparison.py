@@ -152,3 +152,30 @@ def test_replay_refuses_the_physical_domain():
     source = _harness_source()
 
     assert 'ROS_DOMAIN_ID" = "12"' in source
+
+
+def test_replay_aborts_without_progress_evidence():
+    """No long job may keep running once it has stopped producing."""
+    # Three failures on 2026-09-03 shared one shape: the job ran to completion
+    # while producing nothing, and the loss was only visible afterwards in a
+    # log.  The harness now watches the backend process, the growth of the
+    # result recording, and the first /map publication.
+    source = _harness_source()
+
+    assert 'FIRST_MAP_DEADLINE' in source
+    assert 'STALL_LIMIT' in source
+    assert 'kill -0 "$REPLAY_PID"' in source
+    for reason in ('backend($probe) 가 죽었다',
+                   '결과 기록이 ${STALL_LIMIT}초 동안 늘지 않았다',
+                   '420초 안에 /map 이 나오지 않았다'):
+        assert reason in source
+
+
+def test_first_map_deadline_outlasts_a_healthy_slow_start():
+    """A watchdog that kills healthy runs is worse than none at all."""
+    # slam_toolbox needed about three minutes to publish its first /map on
+    # 2026-09-01 data.  The first draft of this watchdog used 120 s and would
+    # have aborted a run that was working.
+    source = _harness_source()
+
+    assert 'FIRST_MAP_DEADLINE=$(( $(date +%s) + 420 ))' in source

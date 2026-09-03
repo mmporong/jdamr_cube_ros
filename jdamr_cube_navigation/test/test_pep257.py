@@ -19,5 +19,7 @@ import pytest
 @pytest.mark.linter
 @pytest.mark.pep257
 def test_pep257():
-    rc = main(argv=['.', 'test'])
+    # colcon 산출물(build/install/log)은 소스가 아니므로 제외한다.
+    rc = main(argv=['.', 'test',
+                    '--exclude', 'build', 'install', 'log'])
     assert rc == 0, 'Found code style errors / warnings'

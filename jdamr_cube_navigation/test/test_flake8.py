@@ -19,7 +19,10 @@ import pytest
 @pytest.mark.flake8
 @pytest.mark.linter
 def test_flake8():
-    rc, errors = main_with_errors(argv=[])
+    # colcon 을 패키지 디렉터리에서 실행하면 build/install/log 가
+    # 여기에 생기고 colcon 이 만든 파일까지 검사해 실패한다.
+    rc, errors = main_with_errors(
+        argv=['--exclude', 'build', 'install', 'log'])
     assert rc == 0, \
         'Found %d code style errors / warnings:\n' % len(errors) + \
         '\n'.join(errors)

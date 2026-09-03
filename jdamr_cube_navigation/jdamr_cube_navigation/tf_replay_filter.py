@@ -1,8 +1,10 @@
-"""Remove recorded localization TF before an offline SLAM replay."""
+"""Guard an offline SLAM replay: drop recorded TF authority and late odometry."""
 
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import LaserScan
 from tf2_msgs.msg import TFMessage
 
 
@@ -23,6 +25,11 @@ def filter_tf_message(message, drop_parent='map', drop_child='odom'):
     return TFMessage(transforms=kept), len(message.transforms) - len(kept)
 
 
+def stamp_seconds(stamp):
+    """Return a builtin_interfaces stamp as float seconds."""
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
 class TfReplayFilter(Node):
     """Bridge recorded TF topics while excluding AMCL map-to-odom."""
 
@@ -35,6 +42,15 @@ class TfReplayFilter(Node):
         self.drop_child = self.get_parameter(
             'drop_child').get_parameter_value().string_value
         self.dropped = 0
+        # Cartographer aborts when odometry arrives with a stamp older than
+        # the newest scan-derived pose.  corridor_keepout_roundtrip_
+        # 20260901T150446 carries 63 such messages, up to 1.340 s inverted,
+        # because Wi-Fi delayed them past the scans during recording.  The
+        # guard drops those few rather than letting the backend die mid-run,
+        # and both backends receive the identical filtered stream.
+        self.newest_scan = None
+        self.late_odometry = 0
+        self.forwarded_odometry = 0
 
         dynamic_qos = QoSProfile(
             depth=100,
@@ -55,6 +71,12 @@ class TfReplayFilter(Node):
         self.create_subscription(
             TFMessage, '/tf_static_recorded', self._static_callback,
             static_qos)
+        self.odometry_publisher = self.create_publisher(
+            Odometry, '/odom', dynamic_qos)
+        self.create_subscription(
+            Odometry, '/odom_recorded', self._odometry_callback, dynamic_qos)
+        self.create_subscription(
+            LaserScan, '/scan', self._scan_callback, dynamic_qos)
         self.get_logger().info(
             f'offline TF guard active: dropping '
             f'{self.drop_parent} -> {self.drop_child}')
@@ -72,6 +94,23 @@ class TfReplayFilter(Node):
                 f'dropped {dropped} recorded localization transform(s); '
                 f'total={self.dropped}')
         return filtered
+
+    def _scan_callback(self, message):
+        stamp = stamp_seconds(message.header.stamp)
+        if self.newest_scan is None or stamp > self.newest_scan:
+            self.newest_scan = stamp
+
+    def _odometry_callback(self, message):
+        stamp = stamp_seconds(message.header.stamp)
+        if self.newest_scan is not None and stamp < self.newest_scan:
+            self.late_odometry += 1
+            if self.late_odometry % 10 == 1:
+                self.get_logger().warn(
+                    f'dropped odometry stamped {self.newest_scan - stamp:.3f}s '
+                    f'before the newest scan; total={self.late_odometry}')
+            return
+        self.forwarded_odometry += 1
+        self.odometry_publisher.publish(message)
 
     def _dynamic_callback(self, message):
         filtered = self._filtered(message)
@@ -94,7 +133,9 @@ def main():
         pass
     finally:
         print(
-            f'offline TF guard stopped; total dropped={node.dropped}',
+            f'offline replay guard stopped; localization transforms '
+            f'dropped={node.dropped}; odometry forwarded='
+            f'{node.forwarded_odometry} dropped_late={node.late_odometry}',
             flush=True)
         node.destroy_node()
         if rclpy.ok():
