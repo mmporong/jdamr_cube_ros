@@ -90,7 +90,11 @@ if timeout 20 ros2 service call /global_costmap/clear_entirely_global_costmap \
      nav2_msgs/srv/ClearEntireCostmap >/dev/null 2>&1 \
    && timeout 20 ros2 service call /local_costmap/clear_entirely_local_costmap \
      nav2_msgs/srv/ClearEntireCostmap >/dev/null 2>&1; then
-  ok "전역·지역 코스트맵 초기화"
+  # 비운 직후에는 전역 코스트맵이 아직 미지 상태다. planner 는
+  # allow_unknown:false 라 그 상태에서 계획하면 크게 우회한다. 2026-09-03에
+  # 같은 경로가 비운 직후 214.863m, 3초 기다린 뒤 78.032m 로 나왔다.
+  sleep 5
+  ok "전역·지역 코스트맵 초기화 (재구축 대기 5초 포함)"
 else
   bad "코스트맵 초기화 실패"
 fi

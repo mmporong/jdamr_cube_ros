@@ -654,3 +654,15 @@ def test_autorun_never_drives_without_passing_every_gate():
     # Signal strength is logged to the robot so a dropped link still leaves
     # evidence of where the corridor coverage failed.
     assert '/proc/net/wireless' in source
+
+
+def test_preflight_lets_the_costmap_refill_before_planning():
+    """Planning against a just-cleared costmap detours around unknown space."""
+    # 2026-09-03: the same route planned 214.863 m immediately after a clear
+    # and 78.032 m three seconds later.  The planner runs with
+    # allow_unknown:false, so an empty global costmap looks impassable.
+    source = (PACKAGE_ROOT / 'scripts'
+              / 'corridor_preflight.sh').read_text(encoding='utf-8')
+    clear_block = source.split('코스트맵 초기화 ==', 1)[1]
+
+    assert 'sleep 5' in clear_block.split('== 7.', 1)[0]
