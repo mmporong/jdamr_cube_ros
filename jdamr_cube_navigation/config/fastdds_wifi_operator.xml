@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- 노트북 operator view 전용 Fast DDS 프로파일.
+     노트북에는 docker0(172.17.0.1)와 tailscale0(100.64.0.0/10)가 있어 기본
+     디스커버리가 Wi-Fi가 아닌 인터페이스를 잡는다. 2026-09-03에 노트북과 파이가
+     같은 192.168.0.0/24에 있는데도 서로의 노드를 전혀 보지 못했고, RViz는 아무
+     데이터도 받지 못했다.
+     사용법: WIFI_ADDR 와 ROBOT_ADDR 를 실제 주소로 바꾼 사본을 만들어
+     FASTRTPS_DEFAULT_PROFILES_FILE 로 지정한다. -->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>udp_wifi</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <address>WIFI_ADDR</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="wifi_only" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>udp_wifi</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <initialPeersList>
+            <locator>
+              <udpv4><address>ROBOT_ADDR</address></udpv4>
+            </locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

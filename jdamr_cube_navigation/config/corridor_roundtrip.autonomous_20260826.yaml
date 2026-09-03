@@ -4,7 +4,8 @@ frame_id: map
 map_yaml: $HOME/maps/autonomous_20260826T161908.yaml
 keepout_mask_yaml: $HOME/maps/autonomous_20260826T161908_keepout_multi.yaml
 expected_mask_sha256: 40a99481046b2ad55fd4c5d3ad3e8b3a6d245fd7c808d32571f2828d4837df28
-planned_length_m: 80.047
+# waypoint 직선 합. Nav2 경로는 회전 보간 때문에 약 4% 길게 나온다.
+planned_length_m: 76.42
 sensor_freshness_s: 2.5
 minimum_battery_v: 10.5
 # A straight corridor is weakly observable along x; keep the lateral y gate
@@ -13,24 +14,27 @@ max_amcl_x_covariance: 2.0
 max_amcl_y_covariance: 1.0
 amcl_freshness_s: 60.0
 max_resume_start_distance_m: 6.0
+# 2026-09-03: 지도에서 여유를 직접 최대화해 y를 다시 잡았다.
+# 이전 좌표는 복도 벽에 0.06~0.18m까지 붙어 내접 반경 0.20m를 침범했고,
+# 실제로 첫 구간에서 controller가 collision ahead 로 중단했다.
 waypoints:
-  - {id: outbound_02m, x: 2.00, y: -0.22}
-  - {id: outbound_06m, x: 6.00, y: -0.38}
-  - {id: outbound_10m, x: 10.00, y: -0.52}
-  - {id: outbound_14m, x: 14.00, y: -0.77}
-  - {id: outbound_18m, x: 18.00, y: -1.12}
-  - {id: outbound_22m, x: 22.00, y: -1.52}
-  - {id: outbound_26m, x: 26.00, y: -1.72}
-  - {id: outbound_30m, x: 30.00, y: -2.37}
-  - {id: outbound_34m, x: 34.00, y: -2.87}
+  - {id: outbound_02m, x: 2.00, y: -0.42}
+  - {id: outbound_06m, x: 6.00, y: -0.73}
+  - {id: outbound_10m, x: 10.00, y: -1.07}
+  - {id: outbound_14m, x: 14.00, y: -1.42}
+  - {id: outbound_18m, x: 18.00, y: -1.77}
+  - {id: outbound_22m, x: 22.00, y: -2.17}
+  - {id: outbound_26m, x: 26.00, y: -2.37}
+  - {id: outbound_30m, x: 30.00, y: -2.72}
+  - {id: outbound_34m, x: 34.00, y: -3.52}
   - {id: turnaround, x: 37.50, y: -4.25}
-  - {id: return_34m, x: 34.00, y: -6.27}
-  - {id: return_30m, x: 30.00, y: -5.62}
-  - {id: return_26m, x: 26.00, y: -4.12}
-  - {id: return_22m, x: 22.00, y: -5.27}
-  - {id: return_18m, x: 18.00, y: -4.72}
-  - {id: return_14m, x: 14.00, y: -3.37}
-  - {id: return_10m, x: 10.00, y: -1.77}
-  - {id: return_06m, x: 6.00, y: -1.07}
-  - {id: return_02m, x: 2.00, y: -0.52}
+  - {id: return_34m, x: 34.00, y: -5.62}
+  - {id: return_30m, x: 30.00, y: -4.97}
+  - {id: return_26m, x: 26.00, y: -3.97}
+  - {id: return_22m, x: 22.00, y: -4.62}
+  - {id: return_18m, x: 18.00, y: -4.12}
+  - {id: return_14m, x: 14.00, y: -2.82}
+  - {id: return_10m, x: 10.00, y: -1.12}
+  - {id: return_06m, x: 6.00, y: -0.72}
+  - {id: return_02m, x: 2.00, y: -0.42}
   - {id: home, x: 0.00, y: -0.10, yaw: 0.0}

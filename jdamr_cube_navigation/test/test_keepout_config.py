@@ -301,8 +301,12 @@ def test_corridor_route_uses_fail_fast_tree_and_continuous_guards():
     assert 'FollowPath' in tags
     assert 'PipelineSequence' not in tags
     assert 'RateController' not in tags
-    assert root.findall('.//ComputePathToPose')[0].attrib['server_timeout'] == '1000'
-    assert root.findall('.//FollowPath')[0].attrib['server_timeout'] == '1000'
+    # The BT attribute overrides bt_navigator's default_server_timeout, so
+    # both must move together.  1000ms aborted every first goal on 2026-09-03
+    # because it landed while planner_server was still busy with the preflight.
+    assert root.findall(
+        './/ComputePathToPose')[0].attrib['server_timeout'] == '3000'
+    assert root.findall('.//FollowPath')[0].attrib['server_timeout'] == '3000'
     assert 'if not self._navigation_ready()' in source
     assert 'self._guard_failure()' in source
 
@@ -313,7 +317,7 @@ def test_corridor_bt_matches_separate_process_response_budget():
     navigator = config['bt_navigator']['ros__parameters']
     planner = config['planner_server']['ros__parameters']
 
-    assert navigator['default_server_timeout'] == 1000
+    assert navigator['default_server_timeout'] == 3000
     assert navigator['wait_for_service_timeout'] == 5000
     assert planner['expected_planner_frequency'] == 1.0
 
@@ -428,7 +432,7 @@ def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
     config = yaml.safe_load(ROUNDTRIP_ROUTE.read_text(encoding='utf-8'))
     waypoints = config['waypoints']
 
-    assert config['planned_length_m'] == 80.047
+    assert config['planned_length_m'] == 76.42
     assert config['sensor_freshness_s'] == 2.5
     assert config['minimum_battery_v'] == 10.5
     assert config['max_amcl_x_covariance'] == 2.0

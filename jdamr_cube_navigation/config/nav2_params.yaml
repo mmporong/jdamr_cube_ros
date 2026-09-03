@@ -58,7 +58,9 @@ bt_navigator:
     odom_topic: /odom
     bt_loop_duration: 10
     # Separate Pi processes need a realistic DDS action acknowledgement window.
-    default_server_timeout: 1000
+    # 1000ms still aborted when the first goal followed the 80m preflight plan:
+    # planner_server was busy and did not acknowledge in time.
+    default_server_timeout: 3000
     wait_for_service_timeout: 5000
     action_server_result_timeout: 900.0
     # Frontier explorer는 검증된 forward-only NavigateToPose 트리만 사용한다.

@@ -1,11 +1,16 @@
-<!-- Fail-fast corridor navigation: plan once per leg, never spin or retry. -->
+<!-- Fail-fast corridor navigation: plan once per leg, never spin or retry.
+     server_timeout is the wait for the action server to acknowledge a goal,
+     not a limit on the drive.  1000ms aborted every first goal on 2026-09-03
+     because it landed while planner_server was still busy with the 80m
+     preflight plan.  It also silently overrode bt_navigator's
+     default_server_timeout, so raising the parameter alone did nothing. -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <Sequence name="NavigateCorridorFailFast">
       <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
       <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
-      <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}" server_timeout="1000"/>
-      <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}" server_timeout="1000"/>
+      <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+      <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
     </Sequence>
   </BehaviorTree>
 </root>
