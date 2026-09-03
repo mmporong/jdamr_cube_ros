@@ -1,16 +1,28 @@
-<!-- Fail-fast corridor navigation: plan once per leg, never spin or retry.
-     server_timeout is the wait for the action server to acknowledge a goal,
-     not a limit on the drive.  1000ms aborted every first goal on 2026-09-03
-     because it landed while planner_server was still busy with the 80m
-     preflight plan.  It also silently overrode bt_navigator's
-     default_server_timeout, so raising the parameter alone did nothing. -->
+<!-- 복도 주행 BT. 앞으로만 가되 일시적 실패는 재시도한다.
+     2026-09-03: 재시도가 전혀 없어 한 번의 일시적 실패가 8m 지점에서 전체
+     주행을 끝냈다. 회전·후진 복구는 여전히 넣지 않는다(상태가 불명확해지고
+     behavior_server 를 띄우지 않는다). 복구 수단은 코스트맵 초기화뿐이다.
+     server_timeout 은 bt_navigator 의 default_server_timeout 을 덮어쓰므로
+     둘을 함께 3000ms 로 맞춘다. -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <Sequence name="NavigateCorridorFailFast">
-      <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
-      <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
-      <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
-      <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
-    </Sequence>
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <Sequence name="NavigateCorridorForwardOnly">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <RecoveryNode number_of_retries="3" name="ComputePathRetry">
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+          <ClearEntireCostmap name="ClearGlobalBeforeReplan" service_name="global_costmap/clear_entirely_global_costmap"/>
+        </RecoveryNode>
+        <RecoveryNode number_of_retries="3" name="FollowPathRetry">
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+          <ClearEntireCostmap name="ClearLocalBeforeRetry" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </Sequence>
+      <Sequence name="CorridorRecovery">
+        <ClearEntireCostmap name="ClearGlobalRecovery" service_name="global_costmap/clear_entirely_global_costmap"/>
+        <ClearEntireCostmap name="ClearLocalRecovery" service_name="local_costmap/clear_entirely_local_costmap"/>
+      </Sequence>
+    </RecoveryNode>
   </BehaviorTree>
 </root>

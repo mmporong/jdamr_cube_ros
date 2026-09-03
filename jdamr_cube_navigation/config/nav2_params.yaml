@@ -120,7 +120,7 @@ controller_server:
       use_cost_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.90
       regulated_linear_scaling_min_speed: 0.05
-      cost_scaling_dist: 0.55
+      cost_scaling_dist: 0.30
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
       use_fixed_curvature_lookahead: false
@@ -158,7 +158,10 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        # 복도 좁은 구간의 폭이 1.20~1.50m 다. 0.55m 팽창은 양옆에서 1.1m 를
+        # 먹어 통과 가능 폭이 0.1~0.4m 밖에 남지 않는다. 로봇 폭이 0.40m 이므로
+        # 사실상 늘 경계선에 걸린다.
+        inflation_radius: 0.30
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -218,7 +221,9 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        # 지역 코스트맵과 같은 이유로 0.55 -> 0.30. 좁은 복도에서 0.55 는
+        # 계획을 통과 불가에 가깝게 만든다.
+        inflation_radius: 0.30
       always_send_full_costmap: False
 
 map_server:

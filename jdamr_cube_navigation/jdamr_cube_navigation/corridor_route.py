@@ -106,6 +106,13 @@ class CorridorRoute(Node):
             raise ValueError('start_index is past the final waypoint')
         self.minimum_battery_v = float(config.get('minimum_battery_v', 10.5))
         self.freshness_s = float(config.get('sensor_freshness_s', 2.5))
+        # /battery_state arrives at about 0.83 Hz, so a 2.5 s limit is barely
+        # two periods and one late message cancels the drive.  On 2026-09-03
+        # the robot was 8 m into a clean run, zero recoveries, 11.7 V, and was
+        # stopped by "battery stale: age=2.505s limit=2.500s".  A late battery
+        # message is not a hazard; a low voltage is, and that gate stays.
+        self.battery_freshness_s = float(
+            config.get('battery_freshness_s', 30.0))
         self.max_amcl_covariance = (
             float(config.get('max_amcl_x_covariance', 0.5)),
             float(config.get('max_amcl_y_covariance', 0.5)),
@@ -168,10 +175,14 @@ class CorridorRoute(Node):
             if timestamp is None:
                 return f'{name} missing'
             age = now - timestamp
-            if age > self.freshness_s:
+            # Scan and odometry going quiet means the robot is driving blind.
+            # Battery only needs to be recent enough to trust the voltage.
+            limit = (self.battery_freshness_s if name == 'battery'
+                     else self.freshness_s)
+            if age > limit:
                 return (
                     f'{name} stale: age={age:.3f}s '
-                    f'limit={self.freshness_s:.3f}s')
+                    f'limit={limit:.3f}s')
         if self.battery_voltage is None:
             return 'battery voltage missing'
         if self.battery_voltage < self.minimum_battery_v:

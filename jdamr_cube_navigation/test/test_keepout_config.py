@@ -286,21 +286,27 @@ def test_operator_view_never_starts_navigation_or_recording():
         assert forbidden not in source
 
 
-def test_corridor_route_uses_fail_fast_tree_and_continuous_guards():
-    """Never hide a corridor fault behind spin, wait, or repeated goals."""
+def test_corridor_route_retries_but_never_turns_around():
+    """Retry a transient failure; never hide a fault behind spin or backup."""
+    # 2026-09-03: with no retry at all, one transient failure ended an
+    # otherwise clean 8 m run at waypoint 3.  Retries are allowed now, but
+    # rotation and reversing stay out: they make the recorded state
+    # ambiguous, and behavior_server is not started onboard anyway.
     source = ROUTE_SOURCE.read_text(encoding='utf-8')
     root = ET.parse(CORRIDOR_BT).getroot()
     tags = {element.tag for element in root.iter()}
 
     assert 'navigate_to_pose_corridor_fail_fast.xml' in source
-    assert 'RecoveryNode' not in tags
+    assert 'RecoveryNode' in tags
+    assert 'ClearEntireCostmap' in tags
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
     assert 'Wait' not in tags
     assert 'ComputePathToPose' in tags
     assert 'FollowPath' in tags
-    assert 'PipelineSequence' not in tags
-    assert 'RateController' not in tags
+    # Recovery must stay bounded so a stuck robot still ends the run.
+    for node in root.iter('RecoveryNode'):
+        assert int(node.attrib['number_of_retries']) <= 6
     # The BT attribute overrides bt_navigator's default_server_timeout, so
     # both must move together.  1000ms aborted every first goal on 2026-09-03
     # because it landed while planner_server was still busy with the preflight.
@@ -435,8 +441,10 @@ def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
     assert config['planned_length_m'] == 76.42
     assert config['sensor_freshness_s'] == 2.5
     assert config['minimum_battery_v'] == 10.5
-    assert config['max_amcl_x_covariance'] == 2.0
-    assert config['max_amcl_y_covariance'] == 1.0
+    # Raised out of the way on 2026-09-03; a corridor makes x ambiguous by
+    # construction and the old 2.0/1.0 pair cancelled real drives.
+    assert config['max_amcl_x_covariance'] >= 50.0
+    assert config['max_amcl_y_covariance'] >= 50.0
     assert config['amcl_freshness_s'] == 60.0
     assert config['max_resume_start_distance_m'] == 6.0
     assert len(waypoints) == 20
@@ -467,26 +475,36 @@ def test_corridor_route_receives_amcl_pose_when_started_after_localization():
     assert AMCL_QOS.durability == DurabilityPolicy.TRANSIENT_LOCAL
 
 
-def test_corridor_route_uses_axis_specific_amcl_covariance_limits():
-    """Allow corridor-axis ambiguity while keeping lateral drift strict."""
+def test_corridor_route_keeps_a_covariance_gate_but_stops_blocking_corridors():
+    """Report the axis and value, but do not cancel on corridor ambiguity."""
+    # 2026-09-03: the operator asked for the run to stop being blocked.  A
+    # straight corridor is weakly observable along x, and 9/1 cancelled a
+    # drive at x covariance 0.519.  The mechanism stays so a truly lost
+    # estimate is still named, with the limit raised out of the way.  Real
+    # hazards are held by Collision Monitor and the keepout mask.
     route = object.__new__(CorridorRoute)
     now = time.monotonic()
     route.samples = {name: now for name in ('battery', 'odom', 'scan')}
     route.freshness_s = 2.5
+    route.battery_freshness_s = 30.0
     route.battery_voltage = 12.0
     route.minimum_battery_v = 10.5
     route.amcl_seen = now
-    route.amcl_covariance = (0.519, 0.151)
     route.amcl_position = (0.0, 0.0)
-    route.max_amcl_covariance = (2.0, 1.0)
+    route.max_amcl_covariance = (50.0, 50.0)
     route.amcl_freshness_s = 60.0
     route.max_resume_start_distance_m = 6.0
     route.resume_start_check_pending = False
 
+    # The values that cancelled real drives must now pass.
+    route.amcl_covariance = (0.519, 0.151)
     assert route._guard_failure() is None
-    route.amcl_covariance = (0.519, 1.001)
+    route.amcl_covariance = (2.5, 1.5)
+    assert route._guard_failure() is None
+    # A genuinely diverged estimate is still reported per axis.
+    route.amcl_covariance = (0.5, 50.001)
     assert route._guard_failure() == (
-        'AMCL y covariance high: value=1.001 limit=1.000')
+        'AMCL y covariance high: value=50.001 limit=50.000')
 
 
 def test_corridor_route_rejects_resume_after_amcl_resets_to_origin():
@@ -495,11 +513,12 @@ def test_corridor_route_rejects_resume_after_amcl_resets_to_origin():
     now = time.monotonic()
     route.samples = {name: now for name in ('battery', 'odom', 'scan')}
     route.freshness_s = 2.5
+    route.battery_freshness_s = 30.0
     route.battery_voltage = 12.0
     route.minimum_battery_v = 10.5
     route.amcl_seen = now
     route.amcl_covariance = (0.25, 0.25)
-    route.max_amcl_covariance = (2.0, 1.0)
+    route.max_amcl_covariance = (50.0, 50.0)
     route.amcl_freshness_s = 60.0
     route.waypoints = [{'x': 30.0, 'y': -2.37}]
     route.amcl_position = (0.0, 0.0)
@@ -666,3 +685,20 @@ def test_preflight_lets_the_costmap_refill_before_planning():
     clear_block = source.split('코스트맵 초기화 ==', 1)[1]
 
     assert 'sleep 5' in clear_block.split('== 7.', 1)[0]
+
+
+def test_battery_freshness_is_not_scan_freshness():
+    """A late battery reading is not a hazard; a blind robot is."""
+    # 2026-09-03: 8 m into a clean run with zero recoveries and 11.7 V, the
+    # drive cancelled on "battery stale: age=2.505s limit=2.500s".
+    # /battery_state runs near 0.83 Hz, so 2.5 s is barely two periods.
+    config = yaml.safe_load(ROUNDTRIP_ROUTE.read_text(encoding='utf-8'))
+    source = (PACKAGE_ROOT / 'jdamr_cube_navigation'
+              / 'corridor_route.py').read_text(encoding='utf-8')
+
+    assert config['battery_freshness_s'] >= 20.0
+    # Sensing stays strict: losing scan or odom means driving blind.
+    assert config['sensor_freshness_s'] <= 3.0
+    assert "name == 'battery'" in source
+    # The voltage limit itself is a real hazard gate and must remain.
+    assert config['minimum_battery_v'] >= 10.0

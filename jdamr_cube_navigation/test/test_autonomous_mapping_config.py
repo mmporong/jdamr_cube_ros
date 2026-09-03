@@ -159,7 +159,13 @@ def test_costmaps_use_exact_robot_footprint_and_scan_obstacle_layers():
         assert obstacle['observation_sources'] == 'scan', name
         assert obstacle['scan']['topic'] == '/scan', name
         assert obstacle['scan']['data_type'] == 'LaserScan', name
-        assert costmap['inflation_layer']['inflation_radius'] >= 0.55, name
+        # 2026-09-03: lowered from 0.55 to 0.30.  The corridor narrows to
+        # 1.20~1.50 m, so 0.55 m of inflation on both sides left only
+        # 0.1~0.4 m of passable width for a 0.40 m robot and made planning
+        # fail at the boundary.  It must still exceed the 0.20 m inscribed
+        # radius so obstacles keep a real cost gradient.
+        inflation = costmap['inflation_layer']['inflation_radius']
+        assert 0.25 <= inflation <= 0.35, name
 
 
 def test_collision_monitor_is_final_velocity_owner_with_fresh_scan():
