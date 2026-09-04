@@ -111,6 +111,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
+        SetEnvironmentVariable(
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
         DeclareLaunchArgument(
             'map',
             default_value=os.path.expanduser(

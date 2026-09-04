@@ -69,6 +69,10 @@ source "$HOME/jdamr_ws/install/setup.bash"
 set -u
 export ROS_DOMAIN_ID=12
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+# 이전 셸이 SUBNET 범위로 만든 CLI daemon을 재사용하면 원격 그래프가 다시
+# 섞인다. 실행기의 LOCALHOST 환경으로 필요할 때 새 daemon이 생기게 한다.
+ros2 daemon stop >/dev/null 2>&1 || true
 SHARE="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation"
 ROUTE="$SHARE/config/corridor_roundtrip.autonomous_20260826.yaml"
 

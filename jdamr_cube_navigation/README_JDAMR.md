@@ -2,7 +2,7 @@
 
 이 패키지는 Cartographer가 갱신하는 `/map`에서 frontier를 고르고, Nav2에 한 번에 목표 하나만 전달한다. `frontier_explorer`는 시작 시 항상 `IDLE`이며 직접 `/cmd_vel`을 발행하지 않는다. 최종 속도 명령은 Collision Monitor만 `/cmd_vel`에 발행해야 한다.
 
-실기 launch는 파이에서 재현된 Fast DDS 공유메모리 user-data 장애를 피하도록 자식 노드 시작 전에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 설정한다. `real_bringup.launch.py`, `cartographer_real.launch.py`, `autonomous_mapping.launch.py`를 사용하면 transport 별도 설정이 필요 없다. launch 밖에서 실기 ROS 노드를 직접 실행할 때도 같은 환경변수를 적용한다. 로봇의 ROS domain은 12이며 비대화형 셸에서는 `.bashrc`가 적용되지 않을 수 있으므로 아래 실행 예시처럼 domain과 discovery 범위를 명시한다.
+실기 launch는 파이에서 재현된 Fast DDS 공유메모리 user-data 장애를 피하도록 자식 노드 시작 전에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 설정한다. 또한 실차의 센서·제어 DDS를 무선 인터페이스에서 분리하도록 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`를 설정한다. `real_bringup.launch.py`, `cartographer_real.launch.py`, `autonomous_mapping.launch.py`를 사용하면 두 설정을 별도로 넣을 필요가 없다. launch 밖에서 실기 ROS 노드를 직접 실행할 때도 같은 환경변수를 적용한다. 로봇의 ROS domain은 12이며 비대화형 셸에서는 `.bashrc`가 적용되지 않을 수 있으므로 아래 실행 예시처럼 domain과 discovery 범위를 명시한다.
 
 ## 시작 전 안전 조건
 
@@ -21,7 +21,7 @@
 source /opt/ros/jazzy/setup.bash
 source ~/jdamr_cube_ws/install/setup.bash
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-12}"
-export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
+export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-LOCALHOST}"
 export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=false
 ```
@@ -82,9 +82,9 @@ ros2 topic echo --once /keepout_costmap_filter_info
 ```
 
 단일 PC 정적 진단에서는 `keepout_navigation.launch.py`의 RViz 기본값을 사용할 수 있다.
-파이 온보드 실차 주행에서는 아래 전용 wrapper가 RViz를 포함하지 않고, 노트북의
-view-only RViz에서 `Keepout Zones`와 계획 경로가 금지구역을 침범하지 않는지 목표 전송
-전에 확인한다.
+파이 온보드 실차 주행에서는 아래 전용 wrapper가 RViz를 포함하지 않는다. 마스크는 출발
+전에 `keepout_mask validate`와 전체 경로 planning-only로 검증하고, 주행 뒤 bag을
+노트북에서 재생해 지도·마스크·AMCL·계획 경로를 확인한다.
 
 이 모드는 기존 지도를 경로 통제에만 사용한다. 실차 수집 중 Cartographer나 SLAM Toolbox mapping을 동시에 실행하지 않는다. 원시 `/scan`, `/odom`, TF를 bag으로 기록한 뒤, `offline_replay_guard.launch.py`로 `/map`과 이동 명령을 재생 목록에서 제외하고 기록된 AMCL의 `map -> odom`을 TF에서 제거한다. 새 mapping backend는 격리 domain의 빈 상태에서 실행한다. 따라서 Keepout이나 저장 지도가 새 지도 결과를 덮어쓰거나 정답으로 주입되지 않는다. 실행 절차는 `evaluation/README.md`의 "저장 지도 주행 bag의 오프라인 SLAM 재생"을 따른다.
 
@@ -95,6 +95,15 @@ ping 20% 손실, 평균 약 710ms, 최대 약 1.1초 지연이 발생했다. `/s
 2초 이상 늦어져 Collision Monitor가 정지했고, recorder 종료 직후 센서가 다시
 수신됐다. 이 결과로 실차의 제어 루프와 원본 데이터 수집을 Wi-Fi 건너편에서 실행하는
 구성을 폐기한다.
+
+2026-09-04 14:24 실주행에서는 무선 association과 같은 BSSID가 유지됐고 신호도
+-58~-64 dBm이었으며 커널·wpa_supplicant 로그에 disconnect/deauth가 없었다. 하지만
+MCAP에서 `/scan` 11.687초, `/odom` 6.707초, `/imu/data_raw` 6.725초의 최대 기록 공백이
+동시에 나타났고 Nav2 lifecycle bond도 무너졌다. 당시 노트북의 장기 실행 대시보드 노드가
+파이의 원시 센서 토픽을 구독하고 있었다. bringup만 띄운 상태에서 파이의 무선 송신량은
+약 287.7 KiB/s·325.2 packet/s였고, DDS discovery를 `LOCALHOST`로 제한한 뒤
+0.3 KiB/s·0.8 packet/s로 내려갔다. 따라서 관측된 "Wi-Fi 끊김"은 RF 접속 해제로
+확정할 수 없으며, DDS 센서 경로가 무선망과 결합된 것이 우선 해결할 구조적 문제다.
 
 파이에는 하드웨어 bringup이 먼저 실행돼 있어야 한다. 그 위에는 저장 지도·AMCL,
 controller, planner, velocity smoother, Collision Monitor, BT navigator, Keepout,
@@ -115,26 +124,18 @@ cd "$HOME/jdamr_ws"
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 export ROS_DOMAIN_ID=12
-export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
   map:="$HOME/maps/autonomous_20260826T161908.yaml" \
   keepout_mask:="$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml"
 ```
 
-노트북은 지도·마스크·AMCL·계획 경로만 보는 저대역폭 RViz를 실행한다. 원시 LaserScan과
-전체 Global Costmap 표시는 기본 OFF이고 frame rate는 10Hz다. 필요할 때만 잠깐 켠다.
-노트북에서는 rosbag을 동시에 기록하지 않는다.
-
-```bash
-cd "$HOME/jdamr_cube_ws"
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-export ROS_DOMAIN_ID=12
-export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
-export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
-ros2 launch jdamr_cube_navigation keepout_operator_view.launch.py
-```
+`LOCALHOST` 주행 중에는 노트북 RViz가 파이의 ROS graph를 볼 수 없는 것이 정상이다.
+노트북에서는 RViz와 rosbag을 실행하지 않고 SSH로 텍스트 로그와 종료 상태만 확인한다.
+`keepout_operator_view.launch.py`는 실차 자율주행과 동시에 쓰지 않는 단일 호스트 정적
+진단용이다. 시각 검토는 주행 종료 뒤 로컬로 복사한 bag과
+`evaluation/README.md`의 격리 domain 재생 절차로 수행한다.
 
 검증된 20-point 왕복 경로는
 `config/corridor_roundtrip.autonomous_20260826.yaml`에 저장돼 있다. 다음 두 명령도
@@ -158,9 +159,11 @@ ros2 run jdamr_cube_navigation corridor_route \
 ```
 
 실측 수치·해시·실패 시점은 `evaluation/20260904_HANDOFF.md`와 증거 원장을 기준으로
-한다. 최신 11:56 기록은 MCAP 무결성과 필수 토픽을 통과해 TF·센서 지연 분석에는 쓸 수
-있지만, 세 번째 목표 이전에 Nav2 lifecycle이 무너져 전체 왕복 표본은 아니다. recorder가
-주행 종료 뒤에도 계속된 구간이 있어 전체 duration과 평균 rate도 성능 비교에서 제외한다.
+한다. 최신 실주행 `corridor_roundtrip_20260904T142436`은 첫 세 목표를 통과한 뒤 네 번째
+목표를 1.43m 남기고 sensor/TF 처리와 lifecycle이 멈춘 진단 표본이다. 그 뒤
+`corridor_localdds_static_20260904T145231`에서 로컬 DDS, lifecycle 3/3, 전체 77.223m 계획,
+75초 자원 게이트와 recorder 정상 종료를 비주행으로 확인했다. 이 정적 결과만으로 복도
+주행 해결을 주장하지 않으며, 다음 실주행 1회가 동적 검증 게이트다.
 
 프로세스별 CPU의 과거 표는 구버전 계측기의 오분류 때문에 소급 검증할 수 없다. 수정된
 `soak_metrics`는 전체 시스템 CPU로 자원 여유를 판정하고 프로세스별 CPU는 원인 귀속에

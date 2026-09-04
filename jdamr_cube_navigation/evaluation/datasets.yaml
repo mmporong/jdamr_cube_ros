@@ -417,6 +417,207 @@ datasets:
     transport_loss: UNKNOWN
   exclusion_reasons:
   - 주행이 없으므로 성능 표본이 아님
+- dataset_id: corridor_roundtrip_20260904T142436
+  role: corridor_roundtrip
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_roundtrip_20260904T142436
+  storage:
+    identifier: mcap
+    relative_file: corridor_roundtrip_20260904T142436_0.mcap
+    size_bytes: 41653074
+    sha256: 15649bea39f50a68c89d2bc00ef8c4d8b1dabc13bdb6bd493eea0ed146282681
+    metadata_sha256: e746bb7ecf9a95391020705fb796ea0d9027f0787efc6835c0d1271f180d5f6a
+  capture:
+    started_at_unix_ns: 1788499510606272727
+    duration_ns: 314262898568
+    message_count: 45450
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 첫 세 waypoint에 도달한 뒤 네 번째 목표를 1.43m 남기고 sensor/TF 처리와 lifecycle bond가 정체됨
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 54
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 283
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 1841
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 1091
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 19
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 14133
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 14133
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 6
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 2712
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 11177
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 45450
+    chunk_crc:
+      chunks_with_crc: 39
+      total_chunks: 39
+    data_section_crc: 1873650709
+    summary_crc: 2701762696
+    message_index:
+      records: 250
+    chunk_index:
+      records: 39
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 80m 왕복 미완주
+  - LOCALHOST DDS 적용 전 기록
+- dataset_id: corridor_localdds_static_20260904T145231
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_localdds_static_20260904T145231
+  storage:
+    identifier: mcap
+    relative_file: corridor_localdds_static_20260904T145231_0.mcap
+    size_bytes: 25189658
+    sha256: 467884cfb27d93d33986b392f277ba636430f60c0c0d03072750347dae7b3791
+    metadata_sha256: c4c27f61b487ec59a1e0fe55185310f34ede18024694f3f87cdd7b682b625081
+  capture:
+    started_at_unix_ns: 1788501169904872153
+    duration_ns: 175825422479
+    message_count: 26035
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: LOCALHOST DDS에서 lifecycle 3/3, 77.223m 계획과 75초 자원 게이트를 비주행으로 통과함
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 173
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 0
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 8654
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 8653
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 1
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 1671
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 6881
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 26035
+    chunk_crc:
+      chunks_with_crc: 24
+      total_chunks: 24
+    data_section_crc: 4155380420
+    summary_crc: 842521330
+    message_index:
+      records: 123
+    chunk_index:
+      records: 24
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 주행이 없으므로 동적 해결 증거가 아님
 - dataset_id: corridor_roundtrip_20260904T115600
   role: corridor_roundtrip
   qualification: DIAGNOSTIC_ONLY

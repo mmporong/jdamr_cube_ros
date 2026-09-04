@@ -1,12 +1,12 @@
 """
-실기 SLAM — 파이에서 헤드리스로 돌린다 (RViz 는 노트북에서 별도 실행).
+실기 SLAM — 파이에서 헤드리스로 돌린다.
 
 전제: real_bringup.launch.py 가 이미 떠서 /scan·/odom·TF 가 살아 있다.
 시뮬용 cartographer.launch.py 와 분리한 이유: use_sim_time 과 설정 lua 가
 다르고, 파이4 에는 RViz 를 띄우지 않는다.
 
-노트북에서 보기:
-  rviz2  (Fixed Frame=map, LaserScan·Map·TF 추가. DOMAIN_ID 12 로 맞출 것)
+시각 검토:
+  기록 종료 뒤 bag을 노트북의 격리 domain에서 재생한다.
 지도 저장:
   ros2 run nav2_map_server map_saver_cli -f ~/maps/room_$(date +%m%d)
 """
@@ -25,6 +25,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
+        SetEnvironmentVariable(
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
         Node(
             package='cartographer_ros',
             executable='cartographer_node',

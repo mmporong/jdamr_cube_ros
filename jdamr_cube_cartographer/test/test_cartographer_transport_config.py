@@ -39,11 +39,28 @@ def test_real_slam_forces_udp_before_starting_nodes():
     assert ast.literal_eval(first_action.args[1]) == 'UDPv4'
 
 
+def test_real_slam_keeps_dds_off_the_wifi_interface():
+    source = LAUNCH_PATH.read_text(encoding='utf-8')
+
+    ast.parse(source)
+    assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'" in source
+
+
 def test_map_reset_defaults_to_udp_transport():
     source = RESET_PATH.read_text(encoding='utf-8')
     export = (
         'export FASTDDS_BUILTIN_TRANSPORTS='
         '"${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"')
+
+    assert export in source
+    assert source.index(export) < source.index('ros2 pkg prefix')
+
+
+def test_map_reset_defaults_to_localhost_discovery():
+    source = RESET_PATH.read_text(encoding='utf-8')
+    export = (
+        'export ROS_AUTOMATIC_DISCOVERY_RANGE='
+        '"${ROS_AUTOMATIC_DISCOVERY_RANGE:-LOCALHOST}"')
 
     assert export in source
     assert source.index(export) < source.index('ros2 pkg prefix')

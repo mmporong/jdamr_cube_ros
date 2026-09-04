@@ -41,6 +41,10 @@ def generate_launch_description():
         # 이 파이의 Fast DDS SHM user-data 경로는 discovery 후 데이터가
         # 전달되지 않는다. 노드를 띄우기 전에 UDP-only로 고정한다.
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
+        # 실차 제어 토픽은 파이 내부에서만 교환한다. 시각 검토는 주행 뒤
+        # bag을 재생해 무선 상태가 센서·제어 콜백을 막지 않게 한다.
+        SetEnvironmentVariable(
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ydlidar_g4',

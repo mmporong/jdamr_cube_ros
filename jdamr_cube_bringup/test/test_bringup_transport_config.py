@@ -33,6 +33,18 @@ def test_real_bringup_forces_udp_before_starting_nodes():
     assert ast.literal_eval(first_action.args[1]) == 'UDPv4'
 
 
+def test_real_bringup_keeps_dds_off_the_wifi_interface():
+    syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
+    environment = {
+        ast.literal_eval(node.args[0]): ast.literal_eval(node.args[1])
+        for node in ast.walk(syntax)
+        if isinstance(node, ast.Call)
+        and _call_name(node) == 'SetEnvironmentVariable'
+    }
+
+    assert environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'LOCALHOST'
+
+
 def test_real_bringup_keeps_odom_fast_but_limits_dynamic_tf_to_20_hz():
     syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
     base_node = next(

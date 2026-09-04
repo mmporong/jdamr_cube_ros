@@ -165,6 +165,18 @@ def test_saved_map_navigation_injects_the_safe_behavior_tree():
     assert "'behavior_trees', 'navigate_to_pose_safe_mapping.xml'" in source
 
 
+def test_onboard_run_isolates_dds_from_wifi():
+    for path in (ONBOARD_LAUNCH, ONBOARD_CORE_LAUNCH):
+        source = path.read_text(encoding='utf-8')
+
+        ast.parse(source)
+        assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'" in source
+
+    autorun = AUTORUN_SCRIPT.read_text(encoding='utf-8')
+    assert 'export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST' in autorun
+    assert 'ros2 daemon stop' in autorun
+
+
 def test_keepout_launch_starts_dedicated_rviz_by_default():
     """Show the saved map, mask, localization, and Nav2 goal tools together."""
     source = KEEPOUT_LAUNCH.read_text(encoding='utf-8')
