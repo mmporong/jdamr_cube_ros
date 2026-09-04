@@ -298,6 +298,13 @@ def comparison_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         closure_denominator = selected['start_to_end_m']
         reference_denominator = selected['deviation_from_amcl']['rms_m']
         result['relative_to_closest_alternative'] = {
+            'backend': closest_alternative['backend'],
+            'selected_start_to_end_m': selected['start_to_end_m'],
+            'alternative_start_to_end_m': (
+                closest_alternative['start_to_end_m']),
+            'start_to_end_difference_m': round(
+                closest_alternative['start_to_end_m']
+                - selected['start_to_end_m'], 3),
             'start_to_end_ratio': (
                 round(closest_alternative['start_to_end_m']
                       / closure_denominator, 2)
@@ -367,10 +374,19 @@ def render_comparison(records: list[dict[str, Any]], results: Path,
 
     _configure_plot_font()
     ordered = sorted(records, key=lambda record: record['backend'])
-    figure = plt.figure(figsize=(14, 9), dpi=160)
-    grid = figure.add_gridspec(2, 2, height_ratios=(1.2, 0.8))
-    for index, record in enumerate(ordered[:2]):
-        axes = figure.add_subplot(grid[0, index])
+    map_columns = min(3, len(ordered))
+    map_rows = math.ceil(len(ordered) / map_columns)
+    figure_width = 14 if len(ordered) <= 2 else 18
+    figure_height = 4.0 * map_rows + 5.5
+    figure = plt.figure(
+        figsize=(figure_width, figure_height), dpi=160)
+    grid = figure.add_gridspec(
+        map_rows + 2,
+        map_columns,
+        height_ratios=([1.0] * map_rows) + [0.8, 0.65])
+    for index, record in enumerate(ordered):
+        row, column = divmod(index, map_columns)
+        axes = figure.add_subplot(grid[row, column])
         map_yaml = results / record['map_yaml']
         document = __import__('yaml').safe_load(
             map_yaml.read_text(encoding='utf-8'))
@@ -381,8 +397,12 @@ def render_comparison(records: list[dict[str, Any]], results: Path,
             f"map {record['map']['extent_m'][0]}×"
             f"{record['map']['extent_m'][1]} m")
         axes.axis('off')
+    for index in range(len(ordered), map_rows * map_columns):
+        row, column = divmod(index, map_columns)
+        axes = figure.add_subplot(grid[row, column])
+        axes.axis('off')
 
-    metrics = figure.add_subplot(grid[1, 0])
+    metrics = figure.add_subplot(grid[map_rows, :])
     backends = [record['backend'] for record in ordered]
     positions = np.arange(len(ordered))
     width = 0.36
@@ -393,13 +413,13 @@ def render_comparison(records: list[dict[str, Any]], results: Path,
                 label='start-to-end', color='#2563eb')
     metrics.bar(positions + width / 2, reference_rms_m, width,
                 label='aligned AMCL RMS', color='#16a34a')
-    metrics.set_xticks(positions, backends)
+    metrics.set_xticks(positions, backends, rotation=12, ha='right')
     metrics.set_ylabel('distance [m] — lower is more consistent')
     metrics.set_title('Same-bag consistency metrics')
     metrics.grid(axis='y', alpha=0.25)
     metrics.legend()
 
-    summary = figure.add_subplot(grid[1, 1])
+    summary = figure.add_subplot(grid[map_rows + 1, :])
     summary.axis('off')
     selection = comparison_summary(records)
     selection_label = (selection['selected_backend']
@@ -410,27 +430,29 @@ def render_comparison(records: list[dict[str, Any]], results: Path,
         '',
         f'Selected  {selection_label}',
         '',
+        f"{'variant':<43} {'path [m]':>9} {'closure [m]':>12} "
+        f"{'AMCL RMS [m]':>12}",
     ]
     for record in ordered:
-        lines.extend([
-            record['backend'],
-            f"  estimated path  {record['estimated_length_m']:.3f} m",
-            f"  start-to-end    {record['start_to_end_m']:.3f} m",
-            f"  AMCL-ref RMS    {record['deviation_from_amcl']['rms_m']:.3f} m",
-            '',
-        ])
+        lines.append(
+            f"{record['backend']:<43} "
+            f"{record['estimated_length_m']:>9.3f} "
+            f"{record['start_to_end_m']:>12.3f} "
+            f"{record['deviation_from_amcl']['rms_m']:>12.3f}")
     lines.extend([
+        '',
         'AMCL is a saved-map localization reference,',
         'not external ground truth or ATE.',
     ])
     summary.text(
-        0.03, 0.97, '\n'.join(lines), va='top', ha='left', fontsize=11.5,
-        family='monospace', linespacing=1.45,
+        0.03, 0.97, '\n'.join(lines), va='top', ha='left', fontsize=10.5,
+        family='monospace', linespacing=1.25,
         bbox={'boxstyle': 'round,pad=0.8', 'facecolor': '#f8fafc',
               'edgecolor': '#cbd5e1'})
     figure.suptitle(
-        'JD-AMR offline 2D SLAM comparison — identical recorded input')
-    figure.tight_layout()
+        'JD-AMR offline 2D SLAM comparison — identical recorded input',
+        y=0.995)
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.975))
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, bbox_inches='tight')
     plt.close(figure)
@@ -452,7 +474,7 @@ def render_report(records: list[dict[str, Any]]) -> str:
         '',
         '## 결과',
         '',
-        '| 백엔드 | 추정 경로 | 시작–종료 | AMCL 기준 정렬 RMS | AMCL 기준 최대 편차 | 지도 범위 |',
+        '| 백엔드/조건 | 추정 경로 | 시작–종료 | AMCL 기준 정렬 RMS | AMCL 기준 최대 편차 | 지도 범위 |',
         '|---|---:|---:|---:|---:|---:|',
     ]
     for record in ordered:
@@ -470,13 +492,26 @@ def render_report(records: list[dict[str, Any]]) -> str:
             'ground truth 실험 없이 기본 백엔드를 정하지 않는다.')
     else:
         ratios = selection['relative_to_closest_alternative']
-        lines.append(
-            f"`{selection['selected_backend']}`를 현재 복도 데이터의 기본 백엔드로 선택한다. "
-            f"동일 입력에서 시작–종료 불일치가 {ratios['start_to_end_ratio']}배 작고, "
-            f"저장 지도 AMCL 기준 정렬 RMS가 {ratios['amcl_aligned_rms_ratio']}배 작았다.")
+        if ratios['start_to_end_ratio'] <= 1.05:
+            lines.append(
+                f'`{selection["selected_backend"]}`를 현재 복도 데이터의 '
+                f'기본 백엔드로 선택한다. 시작–종료 불일치는 '
+                f'{ratios["selected_start_to_end_m"]:.3f}m와 '
+                f'{ratios["alternative_start_to_end_m"]:.3f}m로 수치상 '
+                f'유사했고, 저장 지도 AMCL 기준 정렬 RMS는 '
+                f'{ratios["amcl_aligned_rms_ratio"]}배 작았다.')
+        else:
+            lines.append(
+                f'`{selection["selected_backend"]}`를 현재 복도 데이터의 '
+                f'기본 백엔드로 선택한다. 동일 입력에서 시작–종료 '
+                f'불일치가 {ratios["start_to_end_ratio"]}배 작고, 저장 '
+                f'지도 AMCL 기준 정렬 RMS가 '
+                f'{ratios["amcl_aligned_rms_ratio"]}배 작았다.')
     lines.extend([
         '',
-        '이 비교는 백엔드의 절대 정확도를 증명하지 않는다. 같은 센서 입력에서 폐루프 구조와 저장 지도 기준 일관성을 얼마나 유지했는지를 비교한 결과다.',
+        '이 비교는 백엔드의 절대 정확도를 증명하지 않는다. 같은 센서 '
+        '입력에서 폐루프 구조와 저장 지도 기준 일관성을 얼마나 '
+        '유지했는지를 비교한 결과다.',
         '',
     ])
     return '\n'.join(lines)
@@ -503,14 +538,16 @@ def main(argv=None):
         mcaps = sorted(result_dir.glob('*.mcap'))
         if len(mcaps) != 1:
             input_errors.append(
-                f'{result_dir.name}: expected one result MCAP, got {len(mcaps)}')
+                f'{result_dir.name}: expected one result MCAP, got '
+                f'{len(mcaps)}')
             continue
         mcap = mcaps[0]
         # A recorder still writing leaves no finalized metadata, and reading
         # the unfinished MCAP raises instead of returning partial data.
         metadata = result_dir / 'metadata.yaml'
         if not metadata.is_file() or metadata.stat().st_size == 0:
-            input_errors.append(f'{result_dir.name}: recording is not finalized')
+            input_errors.append(
+                f'{result_dir.name}: recording is not finalized')
             continue
         stem = result_dir.name[:-len('_result')]
         source_name, separator, backend = stem.rpartition('__')
@@ -541,7 +578,8 @@ def main(argv=None):
         print(json.dumps(record, ensure_ascii=False, indent=2))
     if args.output:
         args.output.write_text(
-            json.dumps(records, ensure_ascii=False, indent=2), encoding='utf-8')
+            json.dumps(records, ensure_ascii=False, indent=2),
+            encoding='utf-8')
         print(f'\n저장: {args.output}')
     if args.plot:
         render_comparison(records, args.results, args.plot)

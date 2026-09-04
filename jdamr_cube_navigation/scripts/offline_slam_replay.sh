@@ -7,6 +7,7 @@
 set -uo pipefail
 
 BAG=""; BACKEND=""; OUT=""; RATE="1.0"; DURATION="-1.0"
+RUN_LABEL=""; SLAM_PARAMS=""
 STALL_LIMIT="${STALL_LIMIT:-240}"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -15,6 +16,8 @@ while [ $# -gt 0 ]; do
     --out)      OUT="$2"; shift 2 ;;
     --rate)     RATE="$2"; shift 2 ;;
     --duration) DURATION="$2"; shift 2 ;;
+    --label)    RUN_LABEL="$2"; shift 2 ;;
+    --slam-params) SLAM_PARAMS="$2"; shift 2 ;;
     *) echo "알 수 없는 인자: $1" >&2; exit 2 ;;
   esac
 done
@@ -24,12 +27,19 @@ done
 [ -d "$BAG" ] || { echo "bag 디렉터리가 없다: $BAG" >&2; exit 2; }
 [[ "$STALL_LIMIT" =~ ^[1-9][0-9]*$ ]] || {
   echo "STALL_LIMIT은 양의 정수여야 한다: $STALL_LIMIT" >&2; exit 2; }
+[ -n "$RUN_LABEL" ] || RUN_LABEL="$BACKEND"
+[[ "$RUN_LABEL" =~ ^[a-z0-9_]+$ ]] || {
+  echo "label은 소문자·숫자·밑줄만 허용한다: $RUN_LABEL" >&2; exit 2; }
+if [ -n "$SLAM_PARAMS" ] && [ "$BACKEND" != "slam_toolbox" ]; then
+  echo "--slam-params는 slam_toolbox에서만 사용한다" >&2
+  exit 2
+fi
 
 export ROS_DOMAIN_ID="${OFFLINE_DOMAIN_ID:-199}"
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 [ "$ROS_DOMAIN_ID" = "12" ] && { echo "물리 도메인 12 에서는 재생하지 않는다" >&2; exit 2; }
 mkdir -p "$OUT"
-RUN_ID="$(basename "$BAG")__${BACKEND}"
+RUN_ID="$(basename "$BAG")__${RUN_LABEL}"
 LOG="$OUT/${RUN_ID}.log"
 RESULT_DIR="$OUT/${RUN_ID}_result"
 WRITER_CONFIG="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation/evaluation/mcap_writer_options.yaml"
@@ -78,7 +88,14 @@ case "$BACKEND" in
     # 띄우면 unconfigured 상태로 남아 스캔을 처리하지 않고 /map 도 내지
     # 않는다.
     # upstream launch 가 configure/activate 를 수행하므로 그대로 쓴다.
-    PARAMS="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation/config/slam_toolbox_corridor.yaml"
+    if [ -n "$SLAM_PARAMS" ]; then
+      PARAMS="$SLAM_PARAMS"
+    else
+      PARAMS="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation/config/slam_toolbox_corridor.yaml"
+    fi
+    [ -f "$PARAMS" ] || {
+      echo "SLAM Toolbox 설정이 없다: $PARAMS" >&2; exit 2; }
+    echo "slam_params=$(realpath "$PARAMS")" | tee -a "$LOG"
     setsid nohup ros2 launch slam_toolbox online_async_launch.py \
       use_sim_time:=true slam_params_file:="$PARAMS" \
       >> "$LOG" 2>&1 &

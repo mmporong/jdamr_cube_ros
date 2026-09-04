@@ -1,0 +1,257 @@
+[
+  {
+    "result_bag": "corridor_localdds_armed_20260904T152036_scan931__cartographer_result_0.mcap",
+    "result_bag_sha256": "fd749eeb30c2d0d36dc98323820d98cf4c5a65f42177f5e767e3a7e7b1391daa",
+    "source_bag": "corridor_localdds_armed_20260904T152036_scan931_0.mcap",
+    "source_bag_sha256": "ba76d155c9925dd516fc8e1a65fe7ecb98f9608a072972a06a331e434cf6c0d1",
+    "map_to_odom_updates": 15110,
+    "odometry_samples": 37810,
+    "trajectory_samples": 37810,
+    "estimated_length_m": 84.536,
+    "start_xy": [
+      0.0,
+      0.0
+    ],
+    "end_xy": [
+      0.884,
+      -0.52
+    ],
+    "start_to_end_m": 1.026,
+    "odometry_length_m": 79.269,
+    "amcl_length_m": 77.409,
+    "deviation_from_amcl": {
+      "samples": 755,
+      "aligned_yaw_deg": -3.51,
+      "rms_m": 0.553,
+      "max_m": 1.411
+    },
+    "deviation_from_odometry": {
+      "samples": 789,
+      "aligned_yaw_deg": -46.7,
+      "rms_m": 7.44,
+      "max_m": 17.154
+    },
+    "map_yaml": "corridor_localdds_armed_20260904T152036_scan931__cartographer_map.yaml",
+    "map_yaml_sha256": "175718cac40f71a6a1929b024a929a0427ad3a04192a7a72d5f33058839180c8",
+    "map_image_sha256": "d3f97349d972b63e4cd3f5e27c7c930b302dfee97f3ddbbb1e27a8bd3feceb1c",
+    "map": {
+      "width_cells": 927,
+      "height_cells": 243,
+      "extent_m": [
+        46.35,
+        12.15
+      ],
+      "occupied_cells": 3609,
+      "free_cells": 64191,
+      "unknown_cells": 157461,
+      "occupied_area_m2": 9.0225,
+      "free_area_m2": 160.4775,
+      "unknown_area_m2": 393.6525
+    },
+    "backend": "cartographer"
+  },
+  {
+    "result_bag": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_range35_dense_noloop_result_0.mcap",
+    "result_bag_sha256": "0ee2e60b0900f64fb14fee9b589d4f610d496efeed7f99127b01a04df98c7cc7",
+    "source_bag": "corridor_localdds_armed_20260904T152036_scan931_0.mcap",
+    "source_bag_sha256": "ba76d155c9925dd516fc8e1a65fe7ecb98f9608a072972a06a331e434cf6c0d1",
+    "map_to_odom_updates": 38175,
+    "odometry_samples": 37810,
+    "trajectory_samples": 37806,
+    "estimated_length_m": 84.827,
+    "start_xy": [
+      0.0,
+      -0.0
+    ],
+    "end_xy": [
+      0.215,
+      -2.766
+    ],
+    "start_to_end_m": 2.774,
+    "odometry_length_m": 79.269,
+    "amcl_length_m": 77.409,
+    "deviation_from_amcl": {
+      "samples": 764,
+      "aligned_yaw_deg": -1.86,
+      "rms_m": 1.008,
+      "max_m": 2.359
+    },
+    "deviation_from_odometry": {
+      "samples": 794,
+      "aligned_yaw_deg": -45.78,
+      "rms_m": 8.151,
+      "max_m": 18.415
+    },
+    "map_yaml": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_range35_dense_noloop_map.yaml",
+    "map_yaml_sha256": "f23a1ba4057bad6a6a97b1023caf5e4a70b28c09ec544ddfc832c0a6da1589ce",
+    "map_image_sha256": "df79be0269780308f0558bdbd6cb0ba105b382664b48d47d364aaf92bdb8c74e",
+    "map": {
+      "width_cells": 907,
+      "height_cells": 202,
+      "extent_m": [
+        45.35,
+        10.1
+      ],
+      "occupied_cells": 5919,
+      "free_cells": 81580,
+      "unknown_cells": 95715,
+      "occupied_area_m2": 14.7975,
+      "free_area_m2": 203.95,
+      "unknown_area_m2": 239.2875
+    },
+    "backend": "slam_toolbox_range35_dense_noloop"
+  },
+  {
+    "result_bag": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_range35_dense_result_0.mcap",
+    "result_bag_sha256": "2e8faf79505cc282d14e9547306d8c4f9c123ead5b19491a7ff2eb38756ae5f2",
+    "source_bag": "corridor_localdds_armed_20260904T152036_scan931_0.mcap",
+    "source_bag_sha256": "ba76d155c9925dd516fc8e1a65fe7ecb98f9608a072972a06a331e434cf6c0d1",
+    "map_to_odom_updates": 38176,
+    "odometry_samples": 37810,
+    "trajectory_samples": 37806,
+    "estimated_length_m": 87.034,
+    "start_xy": [
+      0.0,
+      -0.0
+    ],
+    "end_xy": [
+      0.946,
+      -0.413
+    ],
+    "start_to_end_m": 1.032,
+    "odometry_length_m": 79.269,
+    "amcl_length_m": 77.409,
+    "deviation_from_amcl": {
+      "samples": 770,
+      "aligned_yaw_deg": -0.16,
+      "rms_m": 0.817,
+      "max_m": 2.058
+    },
+    "deviation_from_odometry": {
+      "samples": 800,
+      "aligned_yaw_deg": -43.12,
+      "rms_m": 7.635,
+      "max_m": 17.238
+    },
+    "map_yaml": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_range35_dense_map.yaml",
+    "map_yaml_sha256": "87cda18669e382551bc7c21f4553efcf80394adbda3b915b413d4de162fadc85",
+    "map_image_sha256": "37581c86c687708e59239e86c7982c25e5148441656fc7572d8d652ae20aa8a6",
+    "map": {
+      "width_cells": 895,
+      "height_cells": 206,
+      "extent_m": [
+        44.75,
+        10.3
+      ],
+      "occupied_cells": 5057,
+      "free_cells": 70645,
+      "unknown_cells": 108668,
+      "occupied_area_m2": 12.6425,
+      "free_area_m2": 176.6125,
+      "unknown_area_m2": 271.67
+    },
+    "backend": "slam_toolbox_range35_dense"
+  },
+  {
+    "result_bag": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_range35_result_0.mcap",
+    "result_bag_sha256": "af643c867aef55f078fd7adfe6ca6a8a2d8540f3ad341e4bd92f3a44eb101a99",
+    "source_bag": "corridor_localdds_armed_20260904T152036_scan931_0.mcap",
+    "source_bag_sha256": "ba76d155c9925dd516fc8e1a65fe7ecb98f9608a072972a06a331e434cf6c0d1",
+    "map_to_odom_updates": 38178,
+    "odometry_samples": 37810,
+    "trajectory_samples": 37806,
+    "estimated_length_m": 84.426,
+    "start_xy": [
+      0.0,
+      -0.0
+    ],
+    "end_xy": [
+      0.452,
+      -2.727
+    ],
+    "start_to_end_m": 2.764,
+    "odometry_length_m": 79.269,
+    "amcl_length_m": 77.409,
+    "deviation_from_amcl": {
+      "samples": 766,
+      "aligned_yaw_deg": -2.01,
+      "rms_m": 0.963,
+      "max_m": 2.38
+    },
+    "deviation_from_odometry": {
+      "samples": 799,
+      "aligned_yaw_deg": -45.55,
+      "rms_m": 8.195,
+      "max_m": 18.234
+    },
+    "map_yaml": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_range35_map.yaml",
+    "map_yaml_sha256": "ad1725f239656ae3797b559bfe06f043c125926a9e04ba8a058a115423e226e2",
+    "map_image_sha256": "961f7b31ba6160d40f8594cfa22dccdfee27b8a055c4a9d1426ef78430e808a1",
+    "map": {
+      "width_cells": 885,
+      "height_cells": 193,
+      "extent_m": [
+        44.25,
+        9.65
+      ],
+      "occupied_cells": 4541,
+      "free_cells": 79053,
+      "unknown_cells": 87211,
+      "occupied_area_m2": 11.3525,
+      "free_area_m2": 197.6325,
+      "unknown_area_m2": 218.0275
+    },
+    "backend": "slam_toolbox_range35"
+  },
+  {
+    "result_bag": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_result_0.mcap",
+    "result_bag_sha256": "d17a664cf9b75c98642d36c121862ec0d7dee7e18023a278141145b8ab718ada",
+    "source_bag": "corridor_localdds_armed_20260904T152036_scan931_0.mcap",
+    "source_bag_sha256": "ba76d155c9925dd516fc8e1a65fe7ecb98f9608a072972a06a331e434cf6c0d1",
+    "map_to_odom_updates": 38176,
+    "odometry_samples": 37810,
+    "trajectory_samples": 37806,
+    "estimated_length_m": 85.41,
+    "start_xy": [
+      0.0,
+      -0.0
+    ],
+    "end_xy": [
+      1.522,
+      2.588
+    ],
+    "start_to_end_m": 3.002,
+    "odometry_length_m": 79.269,
+    "amcl_length_m": 77.409,
+    "deviation_from_amcl": {
+      "samples": 773,
+      "aligned_yaw_deg": 5.26,
+      "rms_m": 1.152,
+      "max_m": 2.611
+    },
+    "deviation_from_odometry": {
+      "samples": 804,
+      "aligned_yaw_deg": -38.28,
+      "rms_m": 6.971,
+      "max_m": 15.877
+    },
+    "map_yaml": "corridor_localdds_armed_20260904T152036_scan931__slam_toolbox_map.yaml",
+    "map_yaml_sha256": "3199b2939df0c693313968f5c394b81b468978fe11cd823e5d408d35d7d1616d",
+    "map_image_sha256": "b8141fade42855a931814962e789f9d2ddb2cffbb96dda758bf20c8c0c98f568",
+    "map": {
+      "width_cells": 947,
+      "height_cells": 404,
+      "extent_m": [
+        47.35,
+        20.2
+      ],
+      "occupied_cells": 7038,
+      "free_cells": 82123,
+      "unknown_cells": 293427,
+      "occupied_area_m2": 17.595,
+      "free_area_m2": 205.3075,
+      "unknown_area_m2": 733.5675
+    },
+    "backend": "slam_toolbox"
+  }
+]

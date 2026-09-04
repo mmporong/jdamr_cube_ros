@@ -1,9 +1,9 @@
 # slam_toolbox 복도 오프라인 재생 설정.
 # slam_toolbox 기본 mapper_params_online_async.yaml 에서 아래만 바꿨다.
-#   max_laser_range 20.0 -> 8.0   복도 폭 2.4m 에서 20m 는 잡음만 늘린다.
-#                                  Cartographer 쪽 max_range 3.5 와 함께 기록한다.
+#   max_laser_range 20.0 -> 8.0   먼 반사점의 영향을 제한한다.
+#                                  Cartographer 쪽 범위와 함께 기록한다.
 #   transform_timeout 0.2 -> 1.0  재생 시 TF 도착이 실시간보다 들쭉날쭉하다.
-#   minimum_time_interval 0.5 -> 0.2  0.18 m/s 저속에서 스캔을 너무 버린다.
+#   minimum_time_interval 0.5 -> 0.2  저속 주행의 스캔 누락을 줄인다.
 # 나머지는 기본값 그대로 두어 비교가 upstream 기본 설정 기준이 되게 한다.
 slam_toolbox:
   ros__parameters:

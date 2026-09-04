@@ -51,6 +51,15 @@ files:
 - file: slam_backend_comparison.png
   size_bytes: 278694
   sha256: 4591bbaaa1323f4fbdf8614b5c5cbaf6887ae99aad33daf64d4d4e0777ff99a4
+- file: slam_toolbox_ablation.json
+  size_bytes: 8021
+  sha256: 9bedfabb45558bc1cba51c7a9399835cf7f2a9454bd85e9071d409df7db673c8
+- file: slam_toolbox_ablation.md
+  size_bytes: 1383
+  sha256: 72c2d211c83ad6f6bb975fd574afc790e8380e92d5d0fcfe866e5ebbd33c41b2
+- file: slam_toolbox_ablation.png
+  size_bytes: 423915
+  sha256: d71029767eb0d9077c754470dc100765aba7903715d6d330a98af7b1d99b56f0
 - file: success_card.png
   size_bytes: 54299
   sha256: 9c242cfa6e8e5f506b73e17456da29d97129cace778a75dfcf2ff89a7e133e9a

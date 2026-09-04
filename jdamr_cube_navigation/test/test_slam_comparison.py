@@ -258,6 +258,25 @@ def test_report_defers_selection_when_consistency_criteria_disagree():
     assert 'None배' not in report
 
 
+def test_report_does_not_exaggerate_a_near_tie_in_loop_closure():
+    """A negligible proxy difference must not be marketed as a win."""
+    records = [
+        {'backend': 'a', 'estimated_length_m': 10.0,
+         'start_to_end_m': 1.0,
+         'deviation_from_amcl': {'rms_m': 0.5, 'max_m': 1.0},
+         'map': {'extent_m': [5.0, 2.0]}},
+        {'backend': 'b', 'estimated_length_m': 10.0,
+         'start_to_end_m': 1.01,
+         'deviation_from_amcl': {'rms_m': 0.8, 'max_m': 1.2},
+         'map': {'extent_m': [5.0, 2.0]}},
+    ]
+
+    report = render_report(records)
+
+    assert '1.000m와 1.010m로 수치상 유사' in report
+    assert '1.01배 작고' not in report
+
+
 def _harness_source():
     return (Path(__file__).resolve().parents[1]
             / 'scripts' / 'offline_slam_replay.sh').read_text(encoding='utf-8')
@@ -270,6 +289,16 @@ def test_slam_toolbox_is_started_through_its_lifecycle_launch():
     assert 'ros2 launch slam_toolbox online_async_launch.py' in source
     assert 'ros2 run slam_toolbox' not in source
     assert 'slam_params_file' in source
+
+
+def test_slam_toolbox_ablation_uses_an_explicit_config_and_run_label():
+    """Multiple runs must remain attributable without overwriting outputs."""
+    source = _harness_source()
+
+    assert '--slam-params' in source
+    assert '--label' in source
+    assert 'slam_params=$(realpath "$PARAMS")' in source
+    assert 'RUN_ID="$(basename "$BAG")__${RUN_LABEL}"' in source
 
 
 def test_cartographer_gflags_precede_ros_args():

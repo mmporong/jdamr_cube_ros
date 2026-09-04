@@ -151,3 +151,44 @@ python3 jdamr_cube_navigation/evaluation/compare_slam_runs.py \
 ```
 
 설정 필드와 QoS 형식은 [rosbag2 MCAP 저장소 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/rosbag2_storage_mcap/README.md)와 [rosbag2 QoS override 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/README.md)를 기준으로 한다.
+
+### 가변 LaserScan 격자 원인분리
+
+스캔마다 빔 수나 시작 각도가 달라지는 bag은 원본을 수정하지 않고 고정 각도 격자의
+파생 bag으로 만든다. `--beam-count`는 원본 분포를 확인한 뒤 실험 manifest에 기록한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+source /opt/ros/jazzy/setup.bash
+python3 jdamr_cube_navigation/evaluation/normalize_scan_bag.py \
+  --bag "$HOME/jdamr_artifacts/<run_id>" \
+  --output "$HOME/jdamr_artifacts/<run_id>_scan_fixed" \
+  --beam-count <count> \
+  --storage-config-file \
+    jdamr_cube_navigation/evaluation/mcap_writer_options.yaml
+```
+
+출력 bag에는 원본·출력 SHA-256, 입력 빔 수 분포, 정규화 방식, 전수 검증 결과를 담은
+manifest가 함께 생성된다. 검증은 메시지 순서와 timestamp, 비-scan payload, 정규화된
+모든 scan을 대조한다.
+
+파라미터 실험은 검토된 기본 YAML에서 허용된 값만 바꾼 파생 파일을 만들고 실행 라벨과
+설정 경로를 로그에 남긴다.
+
+```bash
+python3 jdamr_cube_navigation/evaluation/make_slam_toolbox_ablation.py \
+  --base jdamr_cube_navigation/config/slam_toolbox_corridor.yaml \
+  --output "$HOME/jdamr_artifacts/<experiment>/params.yaml" \
+  --label <label> \
+  --max-laser-range-m <metres>
+
+bash jdamr_cube_navigation/scripts/offline_slam_replay.sh \
+  --bag "$HOME/jdamr_artifacts/<run_id>_scan_fixed" \
+  --backend slam_toolbox \
+  --label <unique_run_label> \
+  --slam-params "$HOME/jdamr_artifacts/<experiment>/params.yaml" \
+  --out "$HOME/jdamr_artifacts/<results>" \
+  --rate 1.0
+```
+
+현재 복도 실험의 판정과 한계는 `20260904_SLAM_TOOLBOX_ROOT_CAUSE.md`에 기록했다.
