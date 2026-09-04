@@ -1,0 +1,31 @@
+schema_version: 1
+map_yaml: /home/lim/maps/autonomous_20260826T161908.yaml
+safety_margin_m: 0.55
+connectivity_checks:
+- id: main_corridor_left_to_right
+  start: [-0.002, 0.0]
+  goal: [37.498, -4.3]
+  clearance_m: 0.25
+zones:
+- id: keepout_1
+  enabled: true
+  polygon:
+  - - 6.26378
+    - -2.225145
+  - - 8.747318
+    - -2.356887
+  - - 8.727464
+    - -3.456606
+  - - 6.095974
+    - -2.916945
+- id: keepout_2
+  enabled: true
+  polygon:
+  - - 37.763397
+    - -6.394963
+  - - 40.990551
+    - -3.746852
+  - - 41.432625
+    - -7.194964
+  - - 37.651196
+    - -7.636807

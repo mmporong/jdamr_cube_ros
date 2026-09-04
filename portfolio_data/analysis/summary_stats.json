@@ -1,0 +1,54 @@
+{
+  "source_bag": "corridor_keepout_roundtrip_20260901T150446",
+  "bag_duration_s": 905.09,
+  "amcl_pose": {
+    "samples": 292,
+    "cov_xx": {
+      "min": 0.0389514,
+      "p50": 0.207713,
+      "p95": 0.636312,
+      "max": 0.730873
+    },
+    "cov_yy": {
+      "min": 0.0122144,
+      "p50": 0.0417468,
+      "p95": 0.107784,
+      "max": 0.163935
+    },
+    "cov_yawyaw": {
+      "min": 0.0166806,
+      "p50": 0.0680061,
+      "p95": 0.115418,
+      "max": 0.171482
+    },
+    "exceed_counts": {
+      "xx>0.5": 63,
+      "xx>2.0": 0,
+      "xx>50.0": 0
+    },
+    "note": "설정 파일의 실제 게이트는 max_amcl_x/y_covariance=50.0 (corridor_roundtrip.autonomous_20260826.yaml). 코드 기본값은 0.5이고 실주행에서 cov_xx가 63회 0.5를 넘어 게이트를 완화했다."
+  },
+  "tf_map_odom": {
+    "messages": 6710,
+    "latency_ms": {
+      "min": -909.539,
+      "p50": -901.189,
+      "p95": -349.526,
+      "p99": 170.412,
+      "max": 10614.985,
+      "mean": -801.384
+    },
+    "publish_gap_ms": {
+      "min": 0.0,
+      "p50": 103.8,
+      "p90": 174.091,
+      "p95": 300.0,
+      "p99": 713.327,
+      "max": 23540.477,
+      "mean": 134.745
+    },
+    "gap_over_1s": 20,
+    "gap_over_5s": 2,
+    "note": "latency = recv_time - header.stamp. AMCL은 map->odom을 transform_tolerance(1.0s)만큼 미래로 찍어 발행하므로 값이 음수가 정상이다. 판단 근거로 쓸 지표는 발행 간격(publish_gap_ms)이다."
+  }
+}

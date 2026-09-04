@@ -1,0 +1,38 @@
+{
+  "connectivity_checks": [
+    {
+      "baseline_reachable_cells": 48435,
+      "clearance_m": 0.25,
+      "connected": true,
+      "goal": [
+        37.498,
+        -4.3
+      ],
+      "id": "main_corridor_left_to_right",
+      "reachable_cells": 47746,
+      "start": [
+        -0.002,
+        0.0
+      ]
+    }
+  ],
+  "height": 212,
+  "keepout_cells": 9406,
+  "mask_sha256": "40a99481046b2ad55fd4c5d3ad3e8b3a6d245fd7c808d32571f2828d4837df28",
+  "mask_yaml": "/home/lim/maps/autonomous_20260826T161908_keepout_multi.yaml",
+  "origin": [
+    -2.527,
+    -8.975,
+    0.0
+  ],
+  "resolution": 0.05,
+  "safety_margin_m": 0.55,
+  "source_map_sha256": "ee9b0911f41a7da31a92eca67d261b2a96c286f6f49d65b3d6c884fb5937fc6e",
+  "source_map_yaml": "/home/lim/maps/autonomous_20260826T161908.yaml",
+  "width": 894,
+  "zones": [
+    "keepout_1",
+    "keepout_2"
+  ],
+  "zones_yaml": "/home/lim/maps/autonomous_20260826T161908_keepout_zones_multi.yaml"
+}

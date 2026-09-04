@@ -1,0 +1,90 @@
+[
+  {
+    "result_bag": "corridor_keepout_onboard_20260901T172141__cartographer_result_0.mcap",
+    "source_bag": "corridor_keepout_onboard_20260901T172141_0.mcap",
+    "map_to_odom_updates": 6053,
+    "odometry_samples": 15136,
+    "trajectory_samples": 15136,
+    "estimated_length_m": 25.358,
+    "start_xy": [
+      0.0,
+      0.0
+    ],
+    "end_xy": [
+      23.104,
+      -5.658
+    ],
+    "start_to_end_m": 23.787,
+    "odometry_length_m": 23.925,
+    "amcl_length_m": 46.215,
+    "deviation_from_amcl": {
+      "samples": 236,
+      "aligned_yaw_deg": -179.38,
+      "rms_m": 1.567,
+      "max_m": 23.481
+    },
+    "deviation_from_odometry": {
+      "samples": 243,
+      "aligned_yaw_deg": -165.37,
+      "rms_m": 0.67,
+      "max_m": 1.542
+    },
+    "map": {
+      "width_cells": 568,
+      "height_cells": 187,
+      "extent_m": [
+        28.4,
+        9.35
+      ],
+      "occupied_cells": 1669,
+      "free_cells": 104547,
+      "unknown_cells": 0,
+      "occupied_length_m": 83.5
+    },
+    "backend": "cartographer"
+  },
+  {
+    "result_bag": "corridor_keepout_onboard_20260901T172141__slam_toolbox_result_0.mcap",
+    "source_bag": "corridor_keepout_onboard_20260901T172141_0.mcap",
+    "map_to_odom_updates": 30978,
+    "odometry_samples": 15136,
+    "trajectory_samples": 15136,
+    "estimated_length_m": 25.874,
+    "start_xy": [
+      21.977,
+      20.897
+    ],
+    "end_xy": [
+      -2.129,
+      17.289
+    ],
+    "start_to_end_m": 24.375,
+    "odometry_length_m": 23.925,
+    "amcl_length_m": 46.215,
+    "deviation_from_amcl": {
+      "samples": 239,
+      "aligned_yaw_deg": -20.9,
+      "rms_m": 1.624,
+      "max_m": 23.845
+    },
+    "deviation_from_odometry": {
+      "samples": 246,
+      "aligned_yaw_deg": -6.95,
+      "rms_m": 0.521,
+      "max_m": 1.162
+    },
+    "map": {
+      "width_cells": 644,
+      "height_cells": 226,
+      "extent_m": [
+        32.2,
+        11.3
+      ],
+      "occupied_cells": 1957,
+      "free_cells": 143587,
+      "unknown_cells": 0,
+      "occupied_length_m": 97.9
+    },
+    "backend": "slam_toolbox"
+  }
+]
