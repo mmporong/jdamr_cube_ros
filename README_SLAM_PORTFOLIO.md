@@ -73,7 +73,8 @@ Phase 0의 목적은 알고리즘을 바꾸는 것이 아니라 이후 모든 �
    - `jdamr_cube_navigation/evaluation/README.md`
 3. 기존 G4 reference bag을 checksum, duration, topic count와 함께 `DIAGNOSTIC_ONLY`로 등록했다.
 4. MCAP 전체 메시지를 CRC 검증 모드로 읽고 summary CRC와 index는 유효하지만 chunk CRC와 data-section CRC가 없음을 분리해 기록했다.
-5. 다음 수집부터 chunk/data/summary CRC와 index를 남기고, 기록·재생 QoS 6개를 같은 파일로 고정하도록 했다.
+5. 다음 수집부터 chunk/data/summary CRC와 index를 남기고, 처음 6개였던 기록·재생 QoS
+   정본을 현재 발행 계약 12개까지 같은 파일에 고정했다.
 6. LiDAR와 IMU의 static TF checksum, timestamp source, 검증 상태를 등록하고 `UNVERIFIED` 상태의 fusion을 차단했다.
 7. SO-101 PRD와 미추적 미션 코드의 상태 차이를 읽기 전용으로 감사했다.
 8. Python `mcap==1.4.0`과 압축 모듈을 평가 전용 디렉터리에 고정 설치하고 JSON Schema, ROS 2 Jazzy QoS 파서, 패키지 설치 레이아웃, 전체 패키지 테스트를 통과했다.
@@ -100,7 +101,7 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 - navigation package: 198 passed, 1 skipped
 - G4 diagnostic bag: 63,955 messages, SHA-256 `9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6`
-- QoS override: ROS 2 Jazzy 파서에서 6개 profile 통과
+- QoS override: ROS 2 Jazzy 파서에서 12개 profile 통과
 - 설치 레이아웃: evaluation 파일 10개 확인
 - 평가 의존성: `mcap==1.4.0`, `lz4==4.4.5`, `zstandard==0.25.0`을 별도 target에 고정하고 user site를 끈 상태에서 bag 검사 확인
 - protocol-qualified 데이터의 필수 provenance가 `UNKNOWN`이면 승격 차단
