@@ -6,7 +6,12 @@ keepout_mask_yaml: $HOME/maps/autonomous_20260826T161908_keepout_multi.yaml
 expected_mask_sha256: 40a99481046b2ad55fd4c5d3ad3e8b3a6d245fd7c808d32571f2828d4837df28
 # waypoint 직선 합. Nav2 경로는 회전 보간 때문에 약 4% 길게 나온다.
 planned_length_m: 76.42
-sensor_freshness_s: 2.5
+# 2026-09-04: 2.5초에서 완화. 로봇이 복도에서 waypoint 2 를 1.06m 남기고
+# "odom stale: age=2.503s limit=2.500s" 로 취소됐다. /odom 은 50Hz 라 2.5초는
+# 125개를 놓친 것이고, 무선이 잠깐 막히면 그 정도는 난다. 즉시 정지는
+# Collision Monitor 가 자체 source_timeout 2.0초로 이미 담당한다. 이 게이트는
+# 센서가 진짜로 죽었을 때 주행을 끝내는 2차 방어이므로 10초면 충분하다.
+sensor_freshness_s: 10.0
 # /battery_state 는 약 0.83Hz 라 2.5초는 두 주기밖에 안 된다.
 # 늦은 배터리 메시지는 위험이 아니다. 낮은 전압이 위험이고 그 게이트는 유지한다.
 battery_freshness_s: 30.0

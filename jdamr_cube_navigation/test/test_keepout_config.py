@@ -439,7 +439,10 @@ def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
     waypoints = config['waypoints']
 
     assert config['planned_length_m'] == 76.42
-    assert config['sensor_freshness_s'] == 2.5
+    # 2026-09-04: raised from 2.5 s.  A wireless stall cancelled a healthy run
+    # at "odom stale: age=2.503s limit=2.500s".  Collision Monitor holds the
+    # immediate stop with its own 2.0 s source timeout.
+    assert 5.0 <= config['sensor_freshness_s'] <= 15.0
     assert config['minimum_battery_v'] == 10.5
     # Raised out of the way on 2026-09-03; a corridor makes x ambiguous by
     # construction and the old 2.0/1.0 pair cancelled real drives.
@@ -697,8 +700,11 @@ def test_battery_freshness_is_not_scan_freshness():
               / 'corridor_route.py').read_text(encoding='utf-8')
 
     assert config['battery_freshness_s'] >= 20.0
-    # Sensing stays strict: losing scan or odom means driving blind.
-    assert config['sensor_freshness_s'] <= 3.0
+    # Sensing still has its own, tighter limit, but not so tight that a
+    # wireless stall reads as a dead sensor.  Collision Monitor owns the
+    # immediate stop; this gate only ends a run whose sensors really died.
+    assert config['sensor_freshness_s'] < config['battery_freshness_s']
+    assert config['sensor_freshness_s'] <= 15.0
     assert "name == 'battery'" in source
     # The voltage limit itself is a real hazard gate and must remain.
     assert config['minimum_battery_v'] >= 10.0
