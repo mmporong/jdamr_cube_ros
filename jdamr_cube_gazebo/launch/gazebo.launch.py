@@ -3,8 +3,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (AppendEnvironmentVariable, DeclareLaunchArgument,
-                            IncludeLaunchDescription, RegisterEventHandler,
-                            SetEnvironmentVariable)
+                            IncludeLaunchDescription, OpaqueFunction,
+                            RegisterEventHandler, SetEnvironmentVariable)
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -12,25 +12,84 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _load_robot_description(urdf_file, controllers_yaml):
+    with open(urdf_file, 'r') as stream:
+        content = stream.read()
+    return content.replace(
+        'package://jdamr_cube_description/config/so101_controllers.yaml',
+        controllers_yaml)
+
+
+def _robot_actions(context, urdf_file, controllers_yaml, use_sim_time,
+                   x_pose, y_pose, z_pose):
+    robot_description_content = _load_robot_description(
+        urdf_file.perform(context), controllers_yaml)
+    robot_state_publisher_node = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        output='screen',
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[{
+            'robot_description': robot_description_content,
+            'use_sim_time': use_sim_time,
+        }])
+    spawn_entity_node = Node(
+        package='ros_gz_sim',
+        executable='create',
+        arguments=[
+            '-topic', 'robot_description',
+            '-name', 'jdamr_cube',
+            '-x', x_pose,
+            '-y', y_pose,
+            '-z', z_pose,
+        ],
+        output='screen')
+    load_joint_state_broadcaster = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster'],
+        output='screen')
+    load_arm_controller = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['arm_controller'],
+        output='screen')
+    load_gripper_controller = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['gripper_controller'],
+        output='screen')
+    return [
+        robot_state_publisher_node,
+        spawn_entity_node,
+        RegisterEventHandler(OnProcessExit(
+            target_action=spawn_entity_node,
+            on_exit=[load_joint_state_broadcaster])),
+        RegisterEventHandler(OnProcessExit(
+            target_action=load_joint_state_broadcaster,
+            on_exit=[load_arm_controller])),
+        RegisterEventHandler(OnProcessExit(
+            target_action=load_arm_controller,
+            on_exit=[load_gripper_controller])),
+    ]
+
+
 def generate_launch_description():
     pkg_gazebo_dir = get_package_share_directory('jdamr_cube_gazebo')
     pkg_ros_gz_sim_dir = get_package_share_directory('ros_gz_sim')
     pkg_description_dir = get_package_share_directory('jdamr_cube_description')
 
-    urdf_file = os.path.join(pkg_description_dir, 'urdf', 'jdamr_cube.urdf')
-    with open(urdf_file, 'r') as infp:
-        robot_description_content = infp.read()
-
     # gz_ros2_control-system 플러그인은 <parameters> 안의 package:// URI를 스스로 해석하지
     # 못하고 그대로 --params-file 인자로 넘겨 gz-sim이 죽는다. 실제 설치 경로로 치환한다.
     so101_controllers_yaml = os.path.join(pkg_description_dir, 'config', 'so101_controllers.yaml')
-    robot_description_content = robot_description_content.replace(
-        'package://jdamr_cube_description/config/so101_controllers.yaml',
-        so101_controllers_yaml)
 
     bridge_config_file = os.path.join(pkg_gazebo_dir, 'params', 'bridge.yaml')
 
+    urdf_file = LaunchConfiguration('urdf_file')
     world = LaunchConfiguration('world')
+    seed = LaunchConfiguration('seed')
     use_sim_time = LaunchConfiguration('use_sim_time')
     gui = LaunchConfiguration('gui')
     x_pose = LaunchConfiguration('x_pose')
@@ -42,10 +101,20 @@ def generate_launch_description():
         default_value=os.path.join(pkg_gazebo_dir, 'worlds', 'empty.world'),
         description='Full path to the world file to load')
 
+    declare_urdf_file_cmd = DeclareLaunchArgument(
+        'urdf_file',
+        default_value=os.path.join(
+            pkg_description_dir, 'urdf', 'jdamr_cube.urdf'),
+        description='Base or generated URDF used for this simulation run')
+
     declare_use_sim_time_cmd = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
         description='Use simulation (Gazebo) clock if true')
+
+    declare_seed_cmd = DeclareLaunchArgument(
+        'seed', default_value='42',
+        description='Deterministic Gazebo random seed')
 
     declare_gui_cmd = DeclareLaunchArgument(
         'gui',
@@ -83,43 +152,23 @@ def generate_launch_description():
     gazebo_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': ['-r -v2 ', world]}.items(),
+        launch_arguments={
+            'gz_args': ['-r -v2 --seed ', seed, ' ', world],
+        }.items(),
         condition=IfCondition(gui))
 
     gazebo_sim_headless = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': ['-r -s -v2 ', world]}.items(),
+        launch_arguments={
+            'gz_args': ['-r -s -v2 --seed ', seed, ' ', world],
+        }.items(),
         condition=UnlessCondition(gui))
 
-    # respawn: 이 노드가 죽으면 TF 트리가 통째로 사라지고, 그 뒤로는 물체를 봐도
-    # base_footprint로 변환을 못 해 "TF 대기 실패 → 물체 미검출"이 무한 반복된다
-    # (실측 2026-08-07: 3회 검증 중 2회가 이 상태로 접근조차 못 했다). 며칠에 걸쳐
-    # 재발했고 원인이 외부 SIGTERM으로 보여 자동 복구를 건다 — 시뮬 하네스에서
-    # TF는 단일 실패점이라 살아나는 쪽이 옳다.
-    robot_state_publisher_node = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        name='robot_state_publisher',
-        output='screen',
-        respawn=True,
-        respawn_delay=2.0,
-        parameters=[{
-            'robot_description': robot_description_content,
-            'use_sim_time': use_sim_time,
-        }])
-
-    spawn_entity_node = Node(
-        package='ros_gz_sim',
-        executable='create',
-        arguments=[
-            '-topic', 'robot_description',
-            '-name', 'jdamr_cube',
-            '-x', x_pose,
-            '-y', y_pose,
-            '-z', z_pose,
-        ],
-        output='screen')
+    robot_actions = OpaqueFunction(
+        function=_robot_actions,
+        args=[urdf_file, so101_controllers_yaml, use_sim_time,
+              x_pose, y_pose, z_pose])
 
     bridge_node = Node(
         package='ros_gz_bridge',
@@ -146,31 +195,11 @@ def generate_launch_description():
         arguments=['demo_up/image_raw', 'demo_side/image_raw'],
         output='screen')
 
-    # so101 팔은 gz_ros2_control(URDF의 <ros2_control>/<gazebo><plugin gz_ros2_control-system>)로
-    # 노출되는데, 스폰 전에는 controller_manager 서비스가 없어 스포너가 실패한다.
-    # spawn_entity_node가 끝난 뒤 joint_state_broadcaster -> arm_controller -> gripper_controller
-    # 순서로 로드/activate 한다.
-    load_joint_state_broadcaster = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=['joint_state_broadcaster'],
-        output='screen')
-
-    load_arm_controller = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=['arm_controller'],
-        output='screen')
-
-    load_gripper_controller = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=['gripper_controller'],
-        output='screen')
-
     ld = LaunchDescription()
     ld.add_action(declare_world_cmd)
+    ld.add_action(declare_urdf_file_cmd)
     ld.add_action(declare_use_sim_time_cmd)
+    ld.add_action(declare_seed_cmd)
     ld.add_action(declare_gui_cmd)
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
@@ -180,16 +209,9 @@ def generate_launch_description():
     ld.add_action(set_prime_offload)
     ld.add_action(gazebo_sim)
     ld.add_action(gazebo_sim_headless)
-    ld.add_action(robot_state_publisher_node)
-    ld.add_action(spawn_entity_node)
+    ld.add_action(robot_actions)
     ld.add_action(bridge_node)
     ld.add_action(wrist_camera_bridge_node)
     ld.add_action(rgbd_camera_bridge_node)
     ld.add_action(demo_camera_bridge_node)
-    ld.add_action(RegisterEventHandler(
-        OnProcessExit(target_action=spawn_entity_node, on_exit=[load_joint_state_broadcaster])))
-    ld.add_action(RegisterEventHandler(
-        OnProcessExit(target_action=load_joint_state_broadcaster, on_exit=[load_arm_controller])))
-    ld.add_action(RegisterEventHandler(
-        OnProcessExit(target_action=load_arm_controller, on_exit=[load_gripper_controller])))
     return ld

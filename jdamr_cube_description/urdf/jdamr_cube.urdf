@@ -158,7 +158,8 @@
     </link>
 
     <joint name="laser_joint" type="fixed">
-        <origin xyz="0 0 0.1" rpy="0 0 3.141592653589793"/><!-- 2026-08-24 G4 재장착: 판/바퀴축 중앙, 0°인 케이블 출구가 후면이라 yaw=π. z는 기존 광학 중심 높이 유지 -->
+        <!-- 장착 변환의 상태와 무효 조건은 evaluation/calibration_registry.yaml에서 관리한다. -->
+        <origin xyz="0 0 0.1" rpy="0 0 3.141592653589793"/>
         <parent link="base_link"/>
         <child link="laser_link"/>
     </joint>
@@ -187,7 +188,7 @@
         </inertial>
     </link>
 
-     <gazebo>
+    <gazebo>
         <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
             <left_joint>left_wheel_joint</left_joint>
             <right_joint>right_wheel_joint</right_joint>
@@ -207,11 +208,29 @@
             <tf_topic>/tf</tf_topic>
         </plugin>
     </gazebo>
+
+    <gazebo>
+        <!-- wheel odom이나 SLAM TF를 재사용하지 않고 Gazebo 모델 pose만
+             독립 정답 토픽으로 보낸다. 실험별 설정은 run manifest에 남긴다. -->
+        <plugin filename="gz-sim-pose-publisher-system"
+                name="gz::sim::systems::PosePublisher">
+            <publish_model_pose>true</publish_model_pose>
+            <publish_nested_model_pose>false</publish_nested_model_pose>
+            <publish_link_pose>false</publish_link_pose>
+            <publish_sensor_pose>false</publish_sensor_pose>
+            <publish_collision_pose>false</publish_collision_pose>
+            <publish_visual_pose>false</publish_visual_pose>
+            <use_pose_vector_msg>false</use_pose_vector_msg>
+            <update_frequency>20</update_frequency>
+        </plugin>
+    </gazebo>
+
     <gazebo reference="laser_link">
         <sensor type="gpu_lidar" name="laser_sensor">
             <pose>0 0 0 0 0 0</pose>
             <visualize>true</visualize>
-            <update_rate>2</update_rate><!-- 픽 시험 가속: SLAM 시 10으로 -->
+            <!-- SLAM 실험률은 원본을 고치지 않고 센서 variant manifest로 관리한다. -->
+            <update_rate>2</update_rate>
             <always_on>true</always_on>
             <topic>scan</topic>
             <gz_frame_id>laser_link</gz_frame_id>
@@ -220,10 +239,8 @@
                     <horizontal>
                         <samples>360</samples>
                         <resolution>1</resolution>
-                        <!-- 라이다 정후방(180도)에는 팔을 받치는 리서 마스트(arm_riser_link)가
-                             있어 완전한 360도를 스캔하면 자기 자신을 장애물로 감지한다. 팔을
-                             앞으로 옮기면서 마스트가 라이다에 더 가까워져(약 0.12m) 사각지대를
-                             넓힘. 실제 라이다 장착 브래킷처럼 후방에 사각지대(약 ±16도)를 둔다. -->
+                        <!-- 후방 리저 마스트의 self-return을 제외한다. 라이다나 마스트의
+                             기구 배치가 바뀌면 이 시야각 설정을 다시 검증해야 한다. -->
                         <min_angle>-2.862</min_angle> <max_angle>2.862</max_angle>
                     </horizontal>
                 </scan>

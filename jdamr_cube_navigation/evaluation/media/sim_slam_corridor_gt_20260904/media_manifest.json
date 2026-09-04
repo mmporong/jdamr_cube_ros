@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "run": "baseline_10hz__cartographer",
+      "run_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/baseline_10hz__cartographer/run_manifest.json",
+        "sha256": "ffa051ec762f4d36feb9cacd1d6b6c64b7b953ab87ae5c9034bed5c3f6764979"
+      },
+      "metrics": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/baseline_10hz__cartographer/metrics.json",
+        "sha256": "7b75b33d98c5265a68a9eaa45da75af4dfc8930c5f9c0914f96a31b1b388c1cf"
+      },
+      "sensor_profile_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_profiles_20260904/baseline_10hz.manifest.json",
+        "sha256": "9f20b1854573ec7c4294aeb4558e10d14f8d09c2718331177e3b62df2af4a59a"
+      }
+    },
+    {
+      "run": "baseline_10hz__slam_toolbox",
+      "run_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/baseline_10hz__slam_toolbox/run_manifest.json",
+        "sha256": "d5892c892e37bdabfffe2f6c2d0f339f9d97e99a0369468b61514c5a297ed304"
+      },
+      "metrics": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/baseline_10hz__slam_toolbox/metrics.json",
+        "sha256": "e1a9ebb0b9d96d291b19c829124967ec15c693ea32a86d40528114d5e6b44e2c"
+      },
+      "sensor_profile_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_profiles_20260904/baseline_10hz.manifest.json",
+        "sha256": "9f20b1854573ec7c4294aeb4558e10d14f8d09c2718331177e3b62df2af4a59a"
+      }
+    },
+    {
+      "run": "lidar_noise_5x__cartographer",
+      "run_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/lidar_noise_5x__cartographer/run_manifest.json",
+        "sha256": "eab8e88abcfef451298b82eeb1f0cc5ebb6596228ae091b706ba25aefa4e7d78"
+      },
+      "metrics": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/lidar_noise_5x__cartographer/metrics.json",
+        "sha256": "053d4848437f1d8da504c9922934c4d09a82824190281c5b1771ef65839a3c47"
+      },
+      "sensor_profile_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_profiles_20260904/lidar_noise_5x.manifest.json",
+        "sha256": "0e8ce48c268f0110bb08838716687321fe290474d6de230306d59b83360c481f"
+      }
+    },
+    {
+      "run": "lidar_noise_5x__slam_toolbox",
+      "run_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/lidar_noise_5x__slam_toolbox/run_manifest.json",
+        "sha256": "2d7f31a11e83a4286f897e8ce73bbdf9bdba4fad1d0df3ee882e521e1232d51d"
+      },
+      "metrics": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_corridor_gt_20260904/lidar_noise_5x__slam_toolbox/metrics.json",
+        "sha256": "a890935d99e0838213f34f44110c560957d4bf92b4da25183613e31db2596b4b"
+      },
+      "sensor_profile_manifest": {
+        "path": "/home/lim/jdamr_artifacts/sim_slam_profiles_20260904/lidar_noise_5x.manifest.json",
+        "sha256": "0e8ce48c268f0110bb08838716687321fe290474d6de230306d59b83360c481f"
+      }
+    }
+  ],
+  "artifacts": {
+    "sim_slam_robustness.json": {
+      "sha256": "78dece436908e92b424fa9cfc6c8244483f51cc5f1f86df47a0c8e413ae9231e"
+    },
+    "sim_slam_robustness.md": {
+      "sha256": "5ee9fda2c9d8a96f6761b68914b06cc18828aa1222b30ddaf72cb60cb46ec4ff"
+    },
+    "sim_slam_robustness.png": {
+      "sha256": "81b0870699b217223e7e5cf07b19f4de042090ec03ab5a0fbe53f79cc477513c"
+    }
+  }
+}

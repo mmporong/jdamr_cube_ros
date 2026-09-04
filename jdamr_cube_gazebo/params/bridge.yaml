@@ -26,6 +26,13 @@
   gz_type_name: "gz.msgs.Pose_V"
   direction: GZ_TO_ROS
 
+# Gazebo model pose is independent of wheel odometry and SLAM transforms.
+- ros_topic_name: "ground_truth_pose"
+  gz_topic_name: "model/jdamr_cube/pose"
+  ros_type_name: "geometry_msgs/msg/PoseStamped"
+  gz_type_name: "gz.msgs.Pose"
+  direction: GZ_TO_ROS
+
 # gz topic subscribed to by DiffDrive plugin
 - ros_topic_name: "cmd_vel"
   gz_topic_name: "cmd_vel"

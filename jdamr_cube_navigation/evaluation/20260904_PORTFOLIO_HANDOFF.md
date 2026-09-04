@@ -5,7 +5,9 @@
 JD-AMR은 저장 지도와 Keepout을 사용해 복도 왕복 경로의 20개 목표를 Nav2 recovery 없이
 완주했다. 제어 경로를 온보드 DDS로 격리한 뒤 LiDAR 최대 공백은 10.750초에서
 0.112초로 줄었다. 성공 주행 MCAP을 두 SLAM 백엔드에 같은 조건으로 다시 재생해 복도
-환경에 맞는 백엔드도 선택했다.
+환경에 맞는 백엔드를 골랐다. 이어 실제 평면도의 긴 반복 복도를 단순화한 Gazebo
+통제 환경에서 독립 ground truth ATE/RPE와 합성 LiDAR 노이즈 민감도를 측정해 이 선택을
+다시 확인했다.
 
 공개 페이지는 다음 순서로 쓴다.
 
@@ -14,7 +16,8 @@ JD-AMR은 저장 지도와 Keepout을 사용해 복도 왕복 경로의 20개 �
 3. 20/20 waypoint, recovery 0회, AMCL 경로 77.090m의 완주 결과
 4. 가변 LiDAR 격자와 반복 복도 문제를 오프라인 원인분리
 5. 동일한 정규화 MCAP으로 Cartographer와 튜닝한 SLAM Toolbox 비교
-6. 실측 센서·시간 분포를 다음 시뮬레이션 실험의 입력으로 연결
+6. 독립 Gazebo ground truth에서 두 백엔드의 ATE/RPE 비교
+7. LiDAR 노이즈 stress에서 단기 상대 오차가 변하는 정도 확인
 
 ## 공개에 쓸 수치
 
@@ -33,11 +36,21 @@ JD-AMR은 저장 지도와 Keepout을 사용해 복도 왕복 경로의 20개 �
 | Cartographer AMCL 기준 정렬 RMS | 0.553m | ground truth가 아닌 일관성 지표 |
 | LiDAR 주기 jitter p99 | 0.002164초 | 성공 주행 구간 header timestamp |
 | 정적 IMU z축 robust sigma | 0.0018113rad/s | 주행 직전 60초 구간 |
+| 시뮬레이션 기준 Cartographer ATE | 0.645m | seed 42, 27.905m GT 경로 |
+| 시뮬레이션 기준 SLAM Toolbox ATE | 4.355m | 같은 world·경로·LiDAR |
+| 시뮬레이션 노이즈 Cartographer ATE | 0.752m | LiDAR σ 0.01→0.05m 합성 stress |
+| 시뮬레이션 노이즈 SLAM Toolbox ATE | 3.990m | 같은 stress 조건 |
 
 입력 정규화와 복도 설정 후 SLAM Toolbox의 시작–종료 불일치는 9.139m에서 1.032m로
 줄었다. 같은 정규화 입력에서 Cartographer의 시작–종료 1.026m는 수치상 유사했고,
 AMCL 기준 정렬 RMS는 0.553m로 SLAM Toolbox의 0.817m보다 낮았다. 현재 복도용 기본
 mapping backend는 Cartographer로 유지한다.
+
+독립 ground truth 실험에서도 같은 결론이 나왔다. 기준 조건에서 SLAM Toolbox의 이동
+ATE는 Cartographer의 6.75배, 1초 이동 RPE는 8.41배였다. 5배 LiDAR 노이즈에서는
+각각 5.31배와 4.75배였다. Cartographer의 노이즈 전후 이동 ATE는 0.645m에서
+0.752m(+16.6%), 1초 RPE는 0.0366m에서 0.0601m(+64.5%)로 변했다. 이 결과는 단일
+시드의 센서 민감도 사례이며 반복 성공률로 표현하지 않는다.
 
 ## 공개 미디어
 
@@ -49,6 +62,7 @@ mapping backend는 Cartographer로 유지한다.
 - `media/corridor_localdds_armed_20260904T152036/slam_toolbox_ablation.png`
 - `media/corridor_localdds_armed_20260904T152036/sensor_profile.png`
 - `media/corridor_localdds_armed_20260904T152036/timing_profile.png`
+- `media/sim_slam_corridor_gt_20260904/sim_slam_robustness.png`
 
 ## 공개 문구에서 제외할 내용
 
@@ -59,7 +73,8 @@ mapping backend는 Cartographer로 유지한다.
 
 한계는 짧고 정확하게 남긴다. AMCL은 외부 ground truth가 아니므로 ATE/RPE나 절대
 정확도를 주장하지 않는다. 한 번의 완주로 반복 성공률을 만들지 않으며, 카메라 데이터가
-없는 현재 결과를 Visual SLAM으로 부르지 않는다.
+없는 현재 결과를 Visual SLAM으로 부르지 않는다. 시뮬레이션 ATE/RPE는 실제 평면도의
+축척 복원이 아니라 긴 반복 복도의 정성적 구조를 단순화한 한 seed 결과라고 밝힌다.
 
 ## 근거 파일
 
@@ -70,6 +85,8 @@ mapping backend는 Cartographer로 유지한다.
 - `20260904_SLAM_TOOLBOX_ROOT_CAUSE.md`
 - `media/corridor_localdds_armed_20260904T152036/slam_toolbox_ablation.md`
 - `media/corridor_localdds_armed_20260904T152036/media_manifest.yaml`
+- `media/sim_slam_corridor_gt_20260904/sim_slam_robustness.md`
+- `media/sim_slam_corridor_gt_20260904/media_manifest.json`
 
 포트폴리오 세션은 이 문서의 공개 수치와 미디어만 먼저 사용한다. 자세한 디버깅 기록은
 면접에서 원인 분석 과정을 질문받았을 때 근거로 연다.

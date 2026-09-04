@@ -13,6 +13,9 @@
 - `phase0_status.yaml`: 현재 오프라인 게이트와 SO101 경계 감사 결과
 - `inspect_mcap.py`: ROS 노드와 재생 없이 MCAP 전체 메시지와 CRC를 읽는 검사 도구
 - `corridor_run_media.py`: 주행 구간 지표와 CSV·PNG·GIF·MP4를 MCAP에서 재생성하는 도구
+- `make_sim_sensor_variant.py`: URDF 센서율·노이즈를 허용 목록 안에서 바꾸고 해시 manifest를 만드는 도구
+- `run_sim_slam_experiment.py`: 격리 Gazebo, backend, MCAP, 왕복 경로와 ATE/RPE를 한 번에 실행하는 도구
+- `compare_sim_slam_experiments.py`: 동일 조건의 backend·센서 stress 행렬을 검증하고 비교 자료를 만드는 도구
 - `../launch/offline_replay_guard.launch.py`: 저장 지도와 이동 명령을 재생하지 않고 AMCL `map -> odom`을 제거하는 launch
 
 `inspect_mcap.py`와 미디어 생성기는 `requirements.txt`에 고정한 MCAP reader, ROS 2
@@ -120,6 +123,84 @@ python3 jdamr_cube_navigation/evaluation/profile_sensor_streams.py \
 출력은 sensor profile YAML/JSON/Markdown과 센서·시간 분포 PNG다. 실차에 외부 ground
 truth가 없으므로 LiDAR additive range noise와 odometry 정확도는 이 데이터만으로 만들지
 않는다. 시뮬레이션 후보값은 관측 범위의 시작점이며 튜닝 완료값이 아니다.
+
+## Gazebo 정답 궤적과 센서 노이즈 실험
+
+실제 층 평면도에서는 긴 복도, 반복되는 양쪽 벽, 끝에서 회차해 돌아오는 구조만 가져왔다.
+`slam_corridor.world`는 이를 통제 가능한 직선 복도로 단순화한 것이며 실제 축척·방 위치를
+복원한 지도가 아니다. Gazebo PosePublisher의 `/ground_truth_pose`는 wheel odom과
+SLAM TF를 사용하지 않으므로 ATE/RPE의 독립 기준으로 쓴다.
+
+센서 variant는 원본 URDF를 덮어쓰지 않고 저장소 밖에 생성한다. 이번 기준선은 LiDAR
+10Hz·가우시안 표준편차 0.01m이고, stress 조건은 주기는 유지한 채 표준편차만 0.05m로
+바꿨다. 0.05m는 실차에서 측정한 노이즈가 아니라 강건성 확인용 합성 조건이다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+mkdir -p "$HOME/jdamr_artifacts/sim_slam_profiles_20260904"
+python3 jdamr_cube_navigation/evaluation/make_sim_sensor_variant.py \
+  --base jdamr_cube_description/urdf/jdamr_cube.urdf \
+  --output "$HOME/jdamr_artifacts/sim_slam_profiles_20260904/baseline_10hz.urdf" \
+  --label baseline_10hz \
+  --lidar-update-rate-hz 10 --lidar-noise-stddev-m 0.01
+python3 jdamr_cube_navigation/evaluation/make_sim_sensor_variant.py \
+  --base jdamr_cube_description/urdf/jdamr_cube.urdf \
+  --output "$HOME/jdamr_artifacts/sim_slam_profiles_20260904/lidar_noise_5x.urdf" \
+  --label lidar_noise_5x \
+  --lidar-update-rate-hz 10 --lidar-noise-stddev-m 0.05
+```
+
+같은 출력 경로가 이미 있으면 생성기가 덮어쓰지 않는다. 새 실험은 디렉터리 이름을
+바꾸고, 이번 결과를 검증할 때는 보존된 `20260904` profile과 manifest를 그대로 쓴다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_cube_ws/install/setup.bash"
+export PYTHONNOUSERSITE=1
+export PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python:$PWD/jdamr_cube_navigation/evaluation"
+
+python3 jdamr_cube_navigation/evaluation/run_sim_slam_experiment.py \
+  --backend cartographer \
+  --profile-urdf "$HOME/jdamr_artifacts/sim_slam_profiles_20260904/baseline_10hz.urdf" \
+  --profile-label baseline_10hz \
+  --world "$PWD/jdamr_cube_gazebo/worlds/slam_corridor.world" \
+  --out-root "$HOME/jdamr_artifacts/sim_slam_corridor_gt_20260904" \
+  --seed 42 --route corridor --spawn-x -8.0 --spawn-y 0.0 \
+  --corridor-distance-m 14.0
+```
+
+SLAM Toolbox 실행에는 검증할 설정을 명시해야 한다. 이번 비교는 실제 bag 원인분리에서
+선택한 `slam_toolbox_range35_dense.yaml`을 사용했다. 실행 디렉터리가 이미 있으면
+덮어쓰지 않고 중단하므로 각 결과가 한 조건에만 대응한다.
+
+```bash
+python3 jdamr_cube_navigation/evaluation/make_slam_toolbox_ablation.py \
+  --base jdamr_cube_navigation/config/slam_toolbox_corridor.yaml \
+  --output "$HOME/jdamr_artifacts/slam_toolbox_ablation_20260904/slam_toolbox_range35_dense.yaml" \
+  --label range35_dense \
+  --max-laser-range-m 3.5 \
+  --minimum-travel-distance-m 0.1 \
+  --minimum-travel-heading-rad 0.15 \
+  --do-loop-closing true
+```
+
+네 실행이 끝난 뒤 비교 자료는 다음 명령으로 재생성한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python:$PWD/jdamr_cube_navigation/evaluation" \
+python3 jdamr_cube_navigation/evaluation/compare_sim_slam_experiments.py \
+  --results-root "$HOME/jdamr_artifacts/sim_slam_corridor_gt_20260904" \
+  --output-dir \
+    jdamr_cube_navigation/evaluation/media/sim_slam_corridor_gt_20260904
+```
+
+이번 seed 42 결과에서 Cartographer의 이동 ATE RMS는 기준선 0.645m, 5배 노이즈
+0.752m였다. SLAM Toolbox는 각각 4.355m, 3.990m였다. 두 센서 조건의 이동·회전
+ATE/RPE가 모두 낮아 Cartographer를 유지한다. 자세한 수치·입력 해시·단일 시드 한계는
+`media/sim_slam_corridor_gt_20260904/sim_slam_robustness.md`에 있다.
 
 ## 저장 지도 주행 bag의 오프라인 SLAM 재생
 

@@ -1,0 +1,102 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <world name="slam_corridor">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system"
+            name="gz::sim::systems::Imu"/>
+
+    <light type="directional" name="sun">
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>50 12</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>50 12</size></plane></geometry>
+          <material><diffuse>0.78 0.78 0.78 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 실제 평면도의 긴 복도를 단순화한 통제 환경이다.
+         축척 복원이 아닌 반복 벽·왕복·폐루프 조건 재현이 목적이다. -->
+    <model name="wall_north">
+      <static>true</static><pose>0 1.2 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>20 0.1 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>20 0.1 1</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_south">
+      <static>true</static><pose>0 -1.2 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>20 0.1 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>20 0.1 1</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_west">
+      <static>true</static><pose>-10 0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.1 2.5 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.1 2.5 1</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_east">
+      <static>true</static><pose>10 0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.1 2.5 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.1 2.5 1</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- 서로 다른 위치·측면의 돌출부가 반복 복도의 대칭을 깨는 기준물이 된다. -->
+    <model name="feature_north_west">
+      <static>true</static><pose>-5.5 1.0 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.5 0.3 0.8</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.5 0.3 0.8</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="feature_south_mid">
+      <static>true</static><pose>-1.0 -0.95 0.3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.8 0.4 0.6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.8 0.4 0.6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="feature_north_east">
+      <static>true</static><pose>3.2 0.95 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.3 0.4 1.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.3 0.4 1.0</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="feature_south_east">
+      <static>true</static><pose>7.0 -0.95 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.6 0.4 0.7</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.6 0.4 0.7</size></box></geometry></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

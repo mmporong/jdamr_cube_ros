@@ -88,5 +88,8 @@ SLAM Toolbox가 사용하는 Karto 레이저 모델은 처음 등록한 각도·
 - 비교 그림: `media/corridor_localdds_armed_20260904T152036/slam_toolbox_ablation.png`
 - 비교 요약: `media/corridor_localdds_armed_20260904T152036/slam_toolbox_ablation.md`
 
-SLAM Toolbox 파라미터 탐색은 여기서 종료한다. 다음 오프라인 단계는 실측 센서 분포를
-사용한 시뮬레이션 fault injection과 외부 ground truth 기반 ATE/RPE다.
+SLAM Toolbox 파라미터 탐색은 여기서 종료했다. 후속 Gazebo 실험에서 같은 결론을
+독립 ground truth로 확인했다. 기준 조건 이동 ATE RMS는 Cartographer 0.645m,
+SLAM Toolbox 4.355m였고, LiDAR 가우시안 표준편차를 0.01m에서 0.05m로 높인
+stress 조건에서는 각각 0.752m와 3.990m였다. 상세 결과와 입력 해시는
+`media/sim_slam_corridor_gt_20260904/sim_slam_robustness.md`에 있다.

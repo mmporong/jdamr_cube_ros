@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "experiment": {
+    "seed": 42,
+    "route": "corridor",
+    "spawn_xy_m": [
+      -8.0,
+      0.0
+    ],
+    "corridor_distance_m": 14.0,
+    "world_sha256": "5844746f49500e5580f948ca6dbe8e3e7ec9057eed0f577b959a3e811f6caccb",
+    "ground_truth_path_range_m": [
+      27.877655492992233,
+      27.90769680909866
+    ],
+    "alignment": "SE(2) rigid transform without scale",
+    "rpe_delta_s": 1.0
+  },
+  "sensor_profiles": {
+    "baseline_10hz": {
+      "lidar_update_rate_hz": {
+        "from": 2.0,
+        "to": 10.0,
+        "unit": "Hz"
+      },
+      "lidar_noise_stddev_m": {
+        "from": 0.01,
+        "to": 0.01,
+        "unit": "m"
+      }
+    },
+    "lidar_noise_5x": {
+      "lidar_update_rate_hz": {
+        "from": 2.0,
+        "to": 10.0,
+        "unit": "Hz"
+      },
+      "lidar_noise_stddev_m": {
+        "from": 0.01,
+        "to": 0.05,
+        "unit": "m"
+      }
+    }
+  },
+  "results": [
+    {
+      "profile": "baseline_10hz",
+      "backend": "cartographer",
+      "profile_sha256": "73d0b1ed35a3f4ca3949192996a38b9bed90a833b681922cd0dcb0f29244ad91",
+      "profile_manifest_sha256": "9f20b1854573ec7c4294aeb4558e10d14f8d09c2718331177e3b62df2af4a59a",
+      "run_manifest_sha256": "ffa051ec762f4d36feb9cacd1d6b6c64b7b953ab87ae5c9034bed5c3f6764979",
+      "metrics_sha256": "7b75b33d98c5265a68a9eaa45da75af4dfc8930c5f9c0914f96a31b1b388c1cf",
+      "ground_truth_path_m": 27.904872573511398,
+      "slam_path_m": 26.066380288766805,
+      "slam_path_error_percent": -6.588427450802181,
+      "normalized_ate_percent": 2.311375657325916,
+      "ate": {
+        "samples": 4762,
+        "alignment_yaw_rad": -0.001195294602879986,
+        "translation_rms_m": 0.6449864318719583,
+        "translation_max_m": 1.238925605929617,
+        "yaw_rms_rad": 0.009033126713662777,
+        "yaw_max_rad": 0.05770670882394979
+      },
+      "rpe": {
+        "samples": 4715,
+        "delta_s": 1.0,
+        "translation_rms_m": 0.03655779646605901,
+        "translation_max_m": 0.13313271315670053,
+        "yaw_rms_rad": 0.006865269497422196,
+        "yaw_max_rad": 0.06050590685628876
+      },
+      "wheel_odometry_reference": {
+        "path_length_m": 27.885901784317163,
+        "ate": {
+          "samples": 4762,
+          "alignment_yaw_rad": 0.012589867057946683,
+          "translation_rms_m": 0.10360826061365433,
+          "translation_max_m": 0.17359688736011733,
+          "yaw_rms_rad": 0.01738701803774184,
+          "yaw_max_rad": 0.09424342817213693
+        },
+        "rpe": {
+          "samples": 4715,
+          "delta_s": 1.0,
+          "translation_rms_m": 0.0029283368058624936,
+          "translation_max_m": 0.014700240059552604,
+          "yaw_rms_rad": 0.011430891974844357,
+          "yaw_max_rad": 0.0833318063688342
+        }
+      }
+    },
+    {
+      "profile": "baseline_10hz",
+      "backend": "slam_toolbox",
+      "profile_sha256": "73d0b1ed35a3f4ca3949192996a38b9bed90a833b681922cd0dcb0f29244ad91",
+      "profile_manifest_sha256": "9f20b1854573ec7c4294aeb4558e10d14f8d09c2718331177e3b62df2af4a59a",
+      "run_manifest_sha256": "d5892c892e37bdabfffe2f6c2d0f339f9d97e99a0369468b61514c5a297ed304",
+      "metrics_sha256": "e1a9ebb0b9d96d291b19c829124967ec15c693ea32a86d40528114d5e6b44e2c",
+      "ground_truth_path_m": 27.90769680909866,
+      "slam_path_m": 33.56898453591213,
+      "slam_path_error_percent": 20.285757601350095,
+      "normalized_ate_percent": 15.605038423633696,
+      "ate": {
+        "samples": 4700,
+        "alignment_yaw_rad": 0.02792462079099849,
+        "translation_rms_m": 4.355006810211041,
+        "translation_max_m": 6.7678535056088,
+        "yaw_rms_rad": 0.023792487401537984,
+        "yaw_max_rad": 0.09049575695625167
+      },
+      "rpe": {
+        "samples": 4653,
+        "delta_s": 1.0,
+        "translation_rms_m": 0.30754768761099527,
+        "translation_max_m": 0.4342453388851539,
+        "yaw_rms_rad": 0.010625277760839701,
+        "yaw_max_rad": 0.08530955924712336
+      },
+      "wheel_odometry_reference": {
+        "path_length_m": 27.77215010548674,
+        "ate": {
+          "samples": 4705,
+          "alignment_yaw_rad": 0.004300912500884072,
+          "translation_rms_m": 0.03956467431075135,
+          "translation_max_m": 0.0638517402562464,
+          "yaw_rms_rad": 0.010737635587182687,
+          "yaw_max_rad": 0.07223946524638558
+        },
+        "rpe": {
+          "samples": 4658,
+          "delta_s": 1.0,
+          "translation_rms_m": 0.00317323196920094,
+          "translation_max_m": 0.014700290785707608,
+          "yaw_rms_rad": 0.009383999204534935,
+          "yaw_max_rad": 0.08181955924712359
+        }
+      }
+    },
+    {
+      "profile": "lidar_noise_5x",
+      "backend": "cartographer",
+      "profile_sha256": "369c7e05a96acce649608022048497e685779e848e6b4815e876bdfffc4bd80c",
+      "profile_manifest_sha256": "0e8ce48c268f0110bb08838716687321fe290474d6de230306d59b83360c481f",
+      "run_manifest_sha256": "eab8e88abcfef451298b82eeb1f0cc5ebb6596228ae091b706ba25aefa4e7d78",
+      "metrics_sha256": "053d4848437f1d8da504c9922934c4d09a82824190281c5b1771ef65839a3c47",
+      "ground_truth_path_m": 27.877655492992233,
+      "slam_path_m": 24.690027073758664,
+      "slam_path_error_percent": -11.434348989766596,
+      "normalized_ate_percent": 2.6971480924768247,
+      "ate": {
+        "samples": 4680,
+        "alignment_yaw_rad": 0.022028070755226167,
+        "translation_rms_m": 0.7519016533565007,
+        "translation_max_m": 1.3625266429125482,
+        "yaw_rms_rad": 0.027205197691105056,
+        "yaw_max_rad": 0.0925799784289989
+      },
+      "rpe": {
+        "samples": 4633,
+        "delta_s": 1.0,
+        "translation_rms_m": 0.060129078299587746,
+        "translation_max_m": 0.23147204076796207,
+        "yaw_rms_rad": 0.016695703019116073,
+        "yaw_max_rad": 0.10496288960527433
+      },
+      "wheel_odometry_reference": {
+        "path_length_m": 27.767631020165556,
+        "ate": {
+          "samples": 4680,
+          "alignment_yaw_rad": 0.004242817490627302,
+          "translation_rms_m": 0.0380602814388019,
+          "translation_max_m": 0.06228303686234256,
+          "yaw_rms_rad": 0.00956509691121051,
+          "yaw_max_rad": 0.06341502470353078
+        },
+        "rpe": {
+          "samples": 4633,
+          "delta_s": 1.0,
+          "translation_rms_m": 0.003247135939807702,
+          "translation_max_m": 0.014700297189203928,
+          "yaw_rms_rad": 0.008741928326812766,
+          "yaw_max_rad": 0.07450311751486227
+        }
+      }
+    },
+    {
+      "profile": "lidar_noise_5x",
+      "backend": "slam_toolbox",
+      "profile_sha256": "369c7e05a96acce649608022048497e685779e848e6b4815e876bdfffc4bd80c",
+      "profile_manifest_sha256": "0e8ce48c268f0110bb08838716687321fe290474d6de230306d59b83360c481f",
+      "run_manifest_sha256": "2d7f31a11e83a4286f897e8ce73bbdf9bdba4fad1d0df3ee882e521e1232d51d",
+      "metrics_sha256": "a890935d99e0838213f34f44110c560957d4bf92b4da25183613e31db2596b4b",
+      "ground_truth_path_m": 27.885243470320304,
+      "slam_path_m": 32.02700112395836,
+      "slam_path_error_percent": 14.852865308658103,
+      "normalized_ate_percent": 14.309153869496052,
+      "ate": {
+        "samples": 4680,
+        "alignment_yaw_rad": 0.07376702314359718,
+        "translation_rms_m": 3.990142395051733,
+        "translation_max_m": 6.19878181837639,
+        "yaw_rms_rad": 0.0587600289214903,
+        "yaw_max_rad": 0.10880120413163485
+      },
+      "rpe": {
+        "samples": 4633,
+        "delta_s": 1.0,
+        "translation_rms_m": 0.2857368748922389,
+        "translation_max_m": 0.4508801547294768,
+        "yaw_rms_rad": 0.018837737363472214,
+        "yaw_max_rad": 0.16403088869206206
+      },
+      "wheel_odometry_reference": {
+        "path_length_m": 27.779150087659968,
+        "ate": {
+          "samples": 4680,
+          "alignment_yaw_rad": 0.006416092270806209,
+          "translation_rms_m": 0.051441060889973834,
+          "translation_max_m": 0.08906964976919957,
+          "yaw_rms_rad": 0.011776819549999599,
+          "yaw_max_rad": 0.07461420298084409
+        },
+        "rpe": {
+          "samples": 4633,
+          "delta_s": 1.0,
+          "translation_rms_m": 0.003143096883142034,
+          "translation_max_m": 0.014700286139977987,
+          "yaw_rms_rad": 0.009769468436774918,
+          "yaw_max_rad": 0.08318070621304985
+        }
+      }
+    }
+  ],
+  "backend_comparison": {
+    "baseline_10hz": {
+      "cartographer_ate_translation_lower_percent": 85.18977214089126,
+      "slam_toolbox_to_cartographer_ate_translation_ratio": 6.752090578977621,
+      "cartographer_rpe_translation_lower_percent": 88.11312913778123,
+      "slam_toolbox_to_cartographer_rpe_translation_ratio": 8.41264292000008
+    },
+    "lidar_noise_5x": {
+      "cartographer_ate_translation_lower_percent": 81.15601953732401,
+      "slam_toolbox_to_cartographer_ate_translation_ratio": 5.306734434270327,
+      "cartographer_rpe_translation_lower_percent": 78.95648634000618,
+      "slam_toolbox_to_cartographer_rpe_translation_ratio": 4.7520581218388305
+    }
+  },
+  "noise_sensitivity": {
+    "cartographer": {
+      "ate_translation_rms_m_change_percent": 16.57635202871479,
+      "ate_yaw_rms_rad_change_percent": 201.17143878826224,
+      "rpe_translation_rms_m_change_percent": 64.47675766074357,
+      "rpe_yaw_rms_rad_change_percent": 143.19078843714811
+    },
+    "slam_toolbox": {
+      "ate_translation_rms_m_change_percent": -8.378044652050187,
+      "ate_yaw_rms_rad_change_percent": 146.96883486714364,
+      "rpe_translation_rms_m_change_percent": -7.0918474101304145,
+      "rpe_yaw_rms_rad_change_percent": 77.29171686127756
+    }
+  },
+  "selection": {
+    "backend": "cartographer",
+    "criterion": "lower translation/yaw ATE and RPE in every tested profile",
+    "passed": true
+  },
+  "limitations": [
+    "one random seed and one out-and-back route",
+    "synthetic Gaussian LiDAR stress, not measured sensor noise",
+    "straight corridor proxy, not a metric reconstruction of the site",
+    "simulated wheel odometry is cleaner than the physical platform"
+  ]
+}

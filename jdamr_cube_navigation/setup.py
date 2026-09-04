@@ -44,6 +44,8 @@ setup(
             'soak_metrics = jdamr_cube_navigation.soak_metrics:main',
             'nav2_liveness_guard = '
             'jdamr_cube_navigation.nav2_liveness_guard:main',
+            'sim_slam_route = '
+            'jdamr_cube_navigation.sim_slam_route:main',
         ],
     },
 )
