@@ -170,9 +170,9 @@ ros2 run jdamr_cube_navigation corridor_route \
 쓴다. recorder와 `nav2_container` 또는 독립 Nav2 필수 집합이 워밍업 뒤 60초 동안 함께
 측정되고 인접 샘플 간격이 10초 이하여야 통과하며, 빈 시점도 sentinel로 기록한다.
 `corridor_autorun.sh`는 이 정적 자원
-게이트를 실제 출발 전에 실행한다. 이 수정본의 비주행 소크 뒤 짧은 위치 왕복, recording
-A/B, 전체 왕복 순으로 검증한다. 실제 출발 시 작업자가 로봇 옆에서 물리 전원을 즉시
-차단할 수 있어야 한다.
+게이트를 실제 출발 전에 실행한다. 로컬 DDS 비주행 소크는 통과했으며 다음 검증은 같은
+복도 전체 왕복이다. 로컬 DDS에서도 같은 sensor/TF 공백이 재현될 때만 recording A/B로
+돌아간다. 실제 출발 시 작업자가 로봇 옆에서 물리 전원을 즉시 차단할 수 있어야 한다.
 
 자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
