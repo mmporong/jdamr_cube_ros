@@ -1,0 +1,38 @@
+schema_version: 1
+run_id: corridor_localdds_armed_20260904T152036
+source_mcap_sha256: 65105177e43eca6153d2543f3cf8e9cc9f7c62b77f258975fdcdbd10b5e2e16a
+source_route_log_sha256: b779c9e50e2c1c40e7380681df5235c1980c4eb27fac3256c1689ef2e43349a5
+files:
+- file: amcl_trajectory.csv
+  size_bytes: 35181
+  sha256: 3c2e36c001327918fdf44c82e64a08fe069faeb52c239466bf9d66535dbd4213
+- file: continuity_comparison.csv
+  size_bytes: 728
+  sha256: 8a84304c9c880908f99e98f59f7785a8954a78cdd94d9a68ec0562f67b90f21c
+- file: continuity_comparison.png
+  size_bytes: 73931
+  sha256: 11a0f113e74014c114a75c630ddca204e92fe35c6861fa428cffac6ac7e53da3
+- file: corridor_roundtrip.gif
+  size_bytes: 1362661
+  sha256: 6bec00cc6a36254a98f849d0e5603dbca17abf17a12c5cb211bfba0d90c01085
+- file: corridor_roundtrip.mp4
+  size_bytes: 135123
+  sha256: 2a9f468c02c679096e0d5c7a6a5992e84b8681333b6be3125a2c63213167b6e5
+- file: metrics.json
+  size_bytes: 4115
+  sha256: 4510038ab4b85dd992c750e2629cdf0451df9802915213645d4580b8d9927ea6
+- file: metrics.yaml
+  size_bytes: 3328
+  sha256: 5ea63ae5561c71f5576d99dbaabbe0ce3ce7da9d361eed9ba8c6637c4768fbfc
+- file: route_evidence.png
+  size_bytes: 190550
+  sha256: 3f4d48e1a8070ad625077fb5cb64cfa46d4f0d93d683f2a7317822b4bf91aee5
+- file: route_progress.csv
+  size_bytes: 3312
+  sha256: 55efa911a5e0f432922afa4a75d8f08acb182400d73ae2956f421a7df4189bf1
+- file: success_card.png
+  size_bytes: 54299
+  sha256: 9c242cfa6e8e5f506b73e17456da29d97129cace778a75dfcf2ff89a7e133e9a
+- file: telemetry.png
+  size_bytes: 268295
+  sha256: 01127567c7394b554c6508657e057a6a0ff3440bf192e1d2cbccb2f12a5e299e

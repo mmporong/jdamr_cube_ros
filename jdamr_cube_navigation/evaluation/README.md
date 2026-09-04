@@ -12,9 +12,13 @@
 - `qos_overrides.yaml`: 기록·재생에 공통으로 사용할 명시적 QoS
 - `phase0_status.yaml`: 현재 오프라인 게이트와 SO101 경계 감사 결과
 - `inspect_mcap.py`: ROS 노드와 재생 없이 MCAP 전체 메시지와 CRC를 읽는 검사 도구
+- `corridor_run_media.py`: 주행 구간 지표와 CSV·PNG·GIF·MP4를 MCAP에서 재생성하는 도구
 - `../launch/offline_replay_guard.launch.py`: 저장 지도와 이동 명령을 재생하지 않고 AMCL `map -> odom`을 제거하는 launch
 
-`inspect_mcap.py`는 `requirements.txt`에 고정한 Python `mcap==1.4.0`과 압축 모듈을 사용한다. 로봇 런타임의 전역 Python 환경이나 OS 패키지를 바꾸지 않도록 평가 전용 디렉터리에 설치한다.
+`inspect_mcap.py`와 미디어 생성기는 `requirements.txt`에 고정한 MCAP reader, ROS 2
+decoder, 수치·그림 라이브러리를 사용한다. 로봇 런타임의 전역 Python 환경이나 OS
+패키지를 바꾸지 않도록 평가 전용 디렉터리에 설치한다. MP4 변환에는 시스템 `ffmpeg`를
+사용하며, 없으면 GIF와 나머지 산출물만 만든다.
 
 ```bash
 python3 -m pip install --disable-pip-version-check --no-input --upgrade \
@@ -73,6 +77,29 @@ ros2 bag record \
 7. `UNVERIFIED` 또는 `UNOBSERVABLE` 보정값은 센서 융합 성능 주장에 사용하지 않는다.
 
 진단 전용 데이터에서는 미상 항목을 명시한 채 보존할 수 있다. 하지만 `protocol_qualified: true` 입력에 QoS, CRC, 드롭 또는 구간 경계가 미상이라면 승격을 차단한다.
+
+## 완주 기록의 지표와 미디어 생성
+
+`corridor_run_media.py`는 경로 실행 로그의 첫 목표 전송과 성공 시각을 분석 구간으로
+사용한다. MCAP recorder timestamp로 토픽 rate, p99 gap과 최대 gap을 계산하고, 마지막
+메시지 뒤 무응답 시간도 최대 gap에 포함한다. AMCL 누적 경로는 5cm보다 작은 연속 위치
+변화를 제거한 뒤 계산한다. 이 숫자는 저장 지도 localization의 일관성 지표이며 외부
+ground truth ATE가 아니다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
+python3 jdamr_cube_navigation/evaluation/corridor_run_media.py \
+  --run-dir "$HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036" \
+  --compare-run-dir "$HOME/jdamr_artifacts/corridor_roundtrip_20260904T142436" \
+  --output-dir \
+    jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036
+```
+
+출력에는 집계 YAML/JSON, AMCL 궤적과 목표 진행 CSV, 지도 중첩 그림, stream gap 비교,
+텔레메트리, GIF와 H.264 MP4가 포함된다. GIF는 실제 AMCL timestamp를 균등 시간축으로
+압축한 시각화이며 카메라 촬영 영상이 아니다.
 
 ## 저장 지도 주행 bag의 오프라인 SLAM 재생
 

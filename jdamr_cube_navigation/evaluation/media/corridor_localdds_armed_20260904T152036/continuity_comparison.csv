@@ -1,0 +1,9 @@
+run_id,stream,topic,messages,rate_hz,max_gap_s,p99_gap_s
+corridor_roundtrip_20260904T142436,scan,/scan,969,7.627,10.749524,0.302758
+corridor_roundtrip_20260904T142436,wheel odom,/odom,5092,40.077,9.825378,0.025672
+corridor_roundtrip_20260904T142436,IMU,/imu/data_raw,5091,40.069,9.824943,0.026024
+corridor_roundtrip_20260904T142436,map→odom TF,tf_odom,939,7.39,13.573578,0.509614
+corridor_localdds_armed_20260904T152036,scan,/scan,5394,9.655,0.111922,0.108233
+corridor_localdds_armed_20260904T152036,wheel odom,/odom,27934,49.999,0.029342,0.02357
+corridor_localdds_armed_20260904T152036,IMU,/imu/data_raw,27934,49.999,0.028942,0.02377
+corridor_localdds_armed_20260904T152036,map→odom TF,tf_odom,5394,9.655,0.166762,0.133167

@@ -4,35 +4,26 @@
 
 ## 현재 상태
 
-- 오프라인 평가 기준선, Keepout, TF replay guard, 데이터·지도·보정 registry와 MCAP
-  무결성 검사는 구현돼 있다.
-- 프로토콜 적격 80m 왕복 표본은 아직 0회다. 기존 실차 bag은 원인 분석과 오프라인
-  SLAM 입력에는 쓸 수 있지만, 미완주 또는 기록 손실 때문에 최종 성능 표본은 아니다.
-- 최신 `corridor_roundtrip_20260904T115600`은 MCAP 263,763개 메시지와 모든 CRC를
-  통과했다. 세 번째 목표 도중 실제 `x=7.079m`에서 Nav2가 최신 sensor/TF를 사용하지
-  못하고 lifecycle이 무너졌으며, raw scan·odom·IMU는 그 뒤에도 계속 기록됐다.
-- 이 기록은 주행 종료 뒤 recorder가 31분 더 살아 있어 전체 duration과 평균 rate를
-  성능 지표로 쓰지 않는다. 고아 recorder는 해당 PID만 종료해 metadata를 마감했고,
-  이후 실행기는 자신이 시작한 프로세스 그룹 전체를 추적하도록 고쳤다.
-- 과거 자원 계측기는 rosbag의 토픽 인자를 실행 파일로 오인하고 합성 Nav2 container를
-  누락했다. 당시 프로세스별 CPU 결론은 폐기했으며, 수정본은 원문 command와 process
-  coverage가 없으면 PASS를 거부한다.
-- 현재 온보드 Nav2는 합성 컨테이너와 별도 lifecycle·graph liveness 감시를 함께 쓴다.
-  composition은 확인됐지만 intra-process 통신은 켜지 않았으므로 zero-copy라고 설명하지
-  않는다.
-- AMCL freshness는 출발 시에만 요구한다. 복도 BT만 `PositionGoalChecker`를 선택해
-  home 도달을 위치로 판정하고, 일반 자율주행의 방향 판정은 유지한다.
-- 고주기 recorder 구독은 best-effort로 낮췄지만 역압이 원인이었다는 가설은 아직
-  recording A/B로 검증하지 않았다. DDS 단계에서 빠진 메시지를 단순 메시지 수만으로
-  검출할 수도 없으므로, 적격 주행 전에는 토픽별 gap/rate 게이트도 추가해야 한다.
-  근본 원인은 계속 미규명 상태다.
-- 현재 로컬 검증은 `206 passed, 1 skipped`다. 파이 수정본은 대상 회귀 `78 passed`와
-  `corridor_static_20260904T140326` 비주행 기동을 통과했다. lifecycle 3/3, 사전점검,
-  전체 경로 계획, 자원 게이트가 PASS했고 25,375-message MCAP을 정상 마감했다.
-  `/cmd_vel`·`/cmd_vel_nav` 기록은 0건이며 실주행은 아직 수행하지 않았다.
-- SO-101 PRD는 Architect 승인 상태지만 구현 시작 전이라고 선언한다. 동시에 미추적 `mobile_mission.py`가 있어 이 차이를 읽기 전용 감사 결과로 남겼고 SO-101 파일은 수정하지 않았다.
-- 현재 세션은 작업자가 로봇 옆에 있다고 확인되지 않았으므로 `real_motion_authorized: false`다.
-- 계획 문서가 인용하는 일부 기존 `.omx` 계획·테스트 명세는 아직 Git 미추적 상태다. 해당 파일을 임의로 함께 스테이징하지 않는다.
+`corridor_localdds_armed_20260904T152036`으로 복도 왕복을 마쳤다. 저장 지도와 Keepout을
+사용해 20개 목표를 모두 통과했고, Nav2 복구 동작 없이 출발점으로 돌아왔다. 사전 계획은
+77.278m, 기록된 AMCL 경로는 77.090m였다.
+
+이전 주행은 네 번째 목표 앞에서 sensor와 TF가 함께 멈췄다. 무선 association은 살아
+있었지만 노트북의 ROS 노드가 파이의 raw sensor를 구독하면서 제어 경로까지 무선 DDS에
+묶여 있었다. 로봇의 DDS discovery를 `LOCALHOST`로 제한하자 `/scan` 최대 공백이
+10.750초에서 0.112초로 줄었고, 같은 복도를 끝까지 주행했다. `/odom`, IMU,
+`map -> odom` TF도 긴 정체가 사라졌다.
+
+성공 MCAP은 130,798개 메시지를 담고 있으며 chunk, data-section, summary CRC와 인덱스
+검사를 통과했다. recorder transport-loss 카운터가 없고 자원 TSV의 마지막 경계 표본이
+한 개 빠져 원장 등급은 `PARTIAL_SUCCESS`다. 자율주행 완주 판정과 데이터 provenance
+등급을 한 문장으로 뭉치지 않는다.
+
+경로와 Keepout, 실제 AMCL 궤적, 전후 센서 공백 비교, 주행 GIF와 H.264 영상은 저장소에
+생성했다. 같은 스크립트로 원본 MCAP에서 다시 만들 수 있다. 다음 작업은 새 주행이 아니라
+이 77m bag의 Cartographer/SLAM Toolbox 격리 재생과 센서 노이즈 분석이다.
+
+![복도 왕복 자율주행 완주](jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036/success_card.png)
 
 ## 저장소 경계
 
@@ -101,14 +92,15 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 현재 Phase 0 판정은 `ONBOARD_STATIC_READY`다. 수정본의 온보드 비주행 실행에서
 위치추정·Keepout·전체 경로 planning-only·자원 계측·기록 마감을 다시 확인했다.
 
-- navigation package: 206 passed, 1 skipped
+- navigation package: 214 passed, 1 skipped
 - Pi target regression: 78 passed
 - onboard static run: `corridor_static_20260904T140326`, resource gate PASS,
   25,375 messages, nonzero `/cmd_vel` absent
 - G4 diagnostic bag: 63,955 messages, SHA-256 `9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6`
 - QoS override: ROS 2 Jazzy 파서에서 12개 profile 통과
 - 설치 레이아웃: evaluation 파일 10개 확인
-- 평가 의존성: `mcap==1.4.0`, `lz4==4.4.5`, `zstandard==0.25.0`을 별도 target에 고정하고 user site를 끈 상태에서 bag 검사 확인
+- 평가 의존성: MCAP reader와 ROS 2 decoder, 압축·수치·미디어 라이브러리 8개를 별도
+  target에 고정하고 user site를 끈 상태에서 bag 검사와 미디어 생성을 확인
 - protocol-qualified 데이터의 필수 provenance가 `UNKNOWN`이면 승격 차단
 - diagnostic-only 데이터는 미상 값을 명시한 채 원인 분석에만 사용
 - published map은 source bag, backend/config hash, quality report, 수동 검토를 모두 요구
@@ -118,32 +110,25 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 ## 전체 실행 순서와 통과 조건
 
-1. **로컬 정적 검증(완료):** YAML·BT·셸 구문, 단위 테스트, 패키지 빌드와 전체
-   테스트를 통과하고 과거 결함 TSV가 `process_coverage=FAIL`로 재판정되는지 확인한다.
-2. **파이 비주행 기동:** 지도·Keepout 해시, lifecycle, 단일 `/cmd_vel` 소유자와 함께
-   `nav2_container`·recorder 원문 command가 TSV에 남는지 확인한다. 종료 뒤 잔류
-   프로세스 0과 `metadata.yaml` 생성을 확인한다.
-3. **짧은 위치 왕복:** 최종 yaw 정렬 없이 위치 도달로 끝나는지, AMCL 토픽 정지만으로
-   정상 주행을 취소하지 않는지 확인한다.
-4. **recording A/B:** 같은 경로와 실행 구조에서 기록 조건만 바꿔 TF 처리 지연,
-   container CPU, lifecycle heartbeat를 비교한다.
-5. **80m급 자율 왕복 3회:** 저장 지도+AMCL+Keepout으로 한 번 완주한 뒤 같은 프로토콜을
-   두 번 반복한다. 수동으로 세 바퀴를 도는 방식이 아니다.
-6. **오프라인 2D SLAM 비교:** 적격 raw bag을 Cartographer와 SLAM Toolbox에 동일하게
-   재생하고 폐루프 오차·loop audit·처리시간을 비교한다.
-7. **센서·TF 강건성 및 Sim-to-Real:** 실차 분포로 노이즈·dropout·wheel slip·시간
-   지연·extrinsic 오차를 한 번에 하나씩 주입하고, 시뮬레이션 ground truth로
-   ATE/RPE/NEES를 계산한다.
-8. **위치추정·탐색 선택:** AMCL과 SLAM Toolbox localization, kidnapped-robot recovery,
-   frontier 정책을 비교한다. planner/controller 교체는 재현된 실패 근거가 있을 때만 한다.
-9. **Visual SLAM 선택 트랙:** 카메라 timestamp·intrinsic·extrinsic과 이미지 기록이
-   확보된 뒤 2D LiDAR SLAM과 별도 실험으로 수행한다.
-10. **포트폴리오 승격:** 동일 복도와 held-out 결과, 실패 사례, 정량 지표, 재현 명령을
-    묶는다. SO-101에는 SLAM 코드를 복제하지 않고 localization/TF/도착 오차 계약만
-    연결한다.
+1. **로컬 정적 검증, 완료:** 설정과 회귀 테스트, 비주행 기동, lifecycle, Keepout,
+   planning-only와 기록 마감을 확인했다.
+2. **복도 왕복, 완료:** 저장 지도와 AMCL, Keepout으로 20개 목표를 자율주행했다. 같은 날
+   실패 기록과 성공 기록의 sensor/TF 공백을 같은 계산식으로 비교했다.
+3. **증거와 미디어, 완료:** 해시와 무결성을 원장에 등록하고 CSV, JSON, PNG, GIF, MP4를
+   원본 MCAP에서 생성했다.
+4. **오프라인 2D SLAM 비교:** 성공 bag을 Cartographer와 SLAM Toolbox에 같은 조건으로
+   재생한다. 폐루프 오차와 지도 형태, 처리시간을 비교한다.
+5. **센서와 TF 강건성:** 실차 데이터에서 scan, odom, IMU, timestamp jitter 분포를
+   계산한다. 그 범위로 시뮬레이션에 noise, dropout, wheel slip, 지연을 하나씩 넣는다.
+6. **위치추정과 탐색 선택:** AMCL과 SLAM Toolbox localization, kidnapped-robot recovery,
+   frontier 정책을 비교한다. planner나 controller는 재현된 실패 근거가 있을 때만 바꾼다.
+7. **Visual SLAM 선택 트랙:** 카메라 timestamp, intrinsic, extrinsic과 이미지 기록이
+   확보된 뒤 2D LiDAR SLAM과 별도 실험으로 진행한다.
+8. **포트폴리오 반영:** 성공 결과와 실패 원인, 전후 수치, 재현 명령을 묶는다. SO-101에는
+   SLAM 코드를 복제하지 않고 localization, TF, 도착 오차 계약만 연결한다.
 
-현재 위치는 **1·2 완료, 다음은 3 짧은 위치 왕복**이다. 기존 부분 복귀와 실패 bag은 진단·오프라인 SLAM
-입력으로 보존하되, 새 코드의 합격 증거로 소급 사용하지 않는다.
+현재 위치는 **1~3 완료, 다음은 4 오프라인 2D SLAM 비교**다. 반복 실주행은 성공률을
+수치로 말해야 할 때만 추가한다.
 
 ## 기존 정비 기록과 2026-09-04 정정
 
@@ -235,8 +220,8 @@ ros2 run jdamr_cube_navigation soak_metrics \
 
 ### 남은 것
 
-기록 게이트와 수정된 프로세스 coverage를 포함한 비주행 부하 게이트를 통과했다.
-다음은 짧은 위치 왕복이며, 그 뒤 recording A/B와 80m 왕복을 진행한다.
+성공 bag을 두 SLAM backend에 격리 재생하고, 같은 주행에서 센서 노이즈 분포를
+계산한다. 새 실차 주행은 필요하지 않다.
 
 ## 포트폴리오로 보여줄 수 있는 것
 
@@ -247,19 +232,24 @@ ros2 run jdamr_cube_navigation soak_metrics \
 
 | 파일 | 내용 |
 |---|---|
-| `$HOME/jdamr_artifacts/portfolio/corridor_route_map.png` | 저장 지도 + 계단 금지구역 2곳 + 20 waypoint 경로 |
-| `$HOME/jdamr_artifacts/portfolio/corridor_route_with_drive.png` | 위 그림에 2026-09-01 실제 주행 궤적(AMCL) 중첩 |
+| `evaluation/media/.../success_card.png` | README와 포트폴리오 대표 이미지 |
+| `evaluation/media/.../route_evidence.png` | 저장 지도, 금지구역, 계획과 실제 AMCL 경로 |
+| `evaluation/media/.../continuity_comparison.png` | DDS 격리 전후 sensor/TF 최대 공백 |
+| `evaluation/media/.../telemetry.png` | 목표 진행, 배터리, AMCL 공분산, stream gap |
+| `evaluation/media/.../corridor_roundtrip.gif` | 실제 AMCL timestamp로 만든 왕복 애니메이션 |
+| `evaluation/media/.../corridor_roundtrip.mp4` | 발표 자료용 H.264 영상 |
 
-RViz 화면 캡처 대신 `evaluation/render_route_map.py`로 파일에서 다시 그린다. 세션이
-끝나도 커밋 해시만으로 같은 그림을 재생성할 수 있고, 가려진 창이 잘못 캡처되는 문제도
-없다.
+RViz 화면 캡처 대신 `evaluation/corridor_run_media.py`가 지도와 로그, MCAP에서 다시
+그린다. 애니메이션도 실제 AMCL timestamp를 사용한다.
 
 ```bash
-python3 evaluation/render_route_map.py \
-  --output "$HOME/jdamr_artifacts/portfolio/corridor_route_map.png"
-python3 evaluation/render_route_map.py \
-  --output "$HOME/jdamr_artifacts/portfolio/corridor_route_with_drive.png" \
-  --trajectory-bag "$HOME/jdamr_artifacts/corridor_keepout_onboard_20260901T172141/corridor_keepout_onboard_20260901T172141_0.mcap"
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
+python3 jdamr_cube_navigation/evaluation/corridor_run_media.py \
+  --run-dir "$HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036" \
+  --compare-run-dir "$HOME/jdamr_artifacts/corridor_roundtrip_20260904T142436" \
+  --output-dir \
+    jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036
 ```
 
 ### 노드와 도구
@@ -288,6 +278,9 @@ python3 evaluation/render_route_map.py \
 - 경로가 벽에서 0.06m까지 붙어 로봇 발자국이 내접 반경을 침범, 컨트롤러가 출발 직후
   `collision ahead`로 중단.
 - `load1 < 4` 게이트가 CPU 포화가 아닌 대기 스레드를 세고 있어 여유 있는 로봇을 막았다.
+- 원격 ROS 참여자가 raw sensor를 구독해 파이의 제어 경로까지 무선 DDS에 묶였다. RF
+  association은 유지됐지만 scan과 TF가 함께 멈췄다. discovery를 `LOCALHOST`로 제한한
+  뒤 같은 복도를 완주했고 stream gap을 전후 기록으로 남겼다.
 
 ## 증거 원장
 
@@ -327,4 +320,4 @@ python3 ledger.py map "$HOME/maps/<map>.yaml" \
 
 다음과 같이 요청하면 된다.
 
-> `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/README_SLAM_PORTFOLIO.md`와 `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/20260904_HANDOFF.md`를 읽고, 수정된 프로세스 계측의 비주행 결과부터 확인한 뒤 짧은 위치 왕복과 recording A/B를 순서대로 진행해. 실제 이동은 내가 로봇 옆에서 비상 정지를 확보했다고 명시한 뒤에만 진행해.
+> `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/README_SLAM_PORTFOLIO.md`와 `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/20260904_CORRIDOR_LOCALDDS_SUCCESS.md`를 읽고, `corridor_localdds_armed_20260904T152036`을 Cartographer와 SLAM Toolbox에 격리 재생해. 같은 bag의 센서 노이즈와 timestamp jitter도 계산하고 결과를 기존 포트폴리오 미디어와 연결해.

@@ -74,10 +74,16 @@ def test_mcap_inspector_dependency_is_pinned_and_available():
 
     assert requirements == [
         'mcap==1.4.0',
+        'mcap-ros2-support==0.5.7',
         'lz4==4.4.5',
         'zstandard==0.25.0',
+        'matplotlib==3.6.3',
+        'numpy==1.26.4',
+        'Pillow==10.2.0',
+        'PyYAML==6.0.1',
     ]
     assert version('mcap') == '1.4.0'
+    assert version('mcap-ros2-support') == '0.5.7'
 
 
 def test_qos_overrides_cover_all_recorded_topics():

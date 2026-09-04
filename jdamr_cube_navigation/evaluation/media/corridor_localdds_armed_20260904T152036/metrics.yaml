@@ -1,0 +1,127 @@
+schema_version: 1
+run_id: corridor_localdds_armed_20260904T152036
+outcome: SUCCESS
+source:
+  run_dir: $HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036
+  mcap: $HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036/corridor_localdds_armed_20260904T152036_0.mcap
+  mcap_sha256: 65105177e43eca6153d2543f3cf8e9cc9f7c62b77f258975fdcdbd10b5e2e16a
+  route_log: $HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036.route.log
+  route_log_sha256: b779c9e50e2c1c40e7380681df5235c1980c4eb27fac3256c1689ef2e43349a5
+  process_log: $HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036.per_process.tsv
+integrity:
+  validate_crcs: PASS
+  chunk_count: 105
+  chunks_with_crc: 105
+  data_section_crc: 2538816714
+  summary_crc: 2854828520
+  chunk_index_count: 105
+  message_index_count: 782
+capture:
+  total_messages: 130798
+  total_duration_s: 756.229
+  drive_start_unix_ns: 1788503005333895936
+  drive_end_unix_ns: 1788503564024274432
+  drive_duration_s: 558.69
+navigation:
+  sent_waypoints: 20
+  declared_waypoints: 20
+  max_recoveries: 0
+  preflight:
+    stamp_ns: 1788503005330177024
+    path_pose_count: 3048
+    planned_path_length_m: 77.278
+  amcl_path_length_m: 77.09
+  wheel_odom_path_length_m: 79.259
+  start_to_end_amcl_m: 0.113
+  final_home_error_amcl_m: 0.18
+  amcl_start_xy_m:
+  - 0.174
+  - -0.069
+  amcl_end_xy_m:
+  - 0.161
+  - -0.181
+  amcl_max_x_m: 37.64
+  battery_min_v: 11.884
+  battery_max_v: 12.112
+  post_success_stop:
+    samples: 10
+    max_abs_linear_mps: 0.025
+    max_abs_angular_rps: 0.01462
+    final_command_zero: true
+continuity:
+  /amcl_pose:
+    messages: 324
+    rate_hz: 0.58
+    max_gap_s: 4.342062
+    p99_gap_s: 3.703433
+  /battery_state:
+    messages: 559
+    rate_hz: 1.001
+    max_gap_s: 1.003048
+    p99_gap_s: 1.002339
+  /cmd_vel:
+    messages: 11172
+    rate_hz: 19.997
+    max_gap_s: 0.098143
+    p99_gap_s: 0.069655
+  /cmd_vel_nav:
+    messages: 5613
+    rate_hz: 10.047
+    max_gap_s: 0.107693
+    p99_gap_s: 0.103577
+  /imu/data_raw:
+    messages: 27934
+    rate_hz: 49.999
+    max_gap_s: 0.028942
+    p99_gap_s: 0.02377
+  /odom:
+    messages: 27934
+    rate_hz: 49.999
+    max_gap_s: 0.029342
+    p99_gap_s: 0.02357
+  /plan:
+    messages: 20
+    rate_hz: 0.036
+    max_gap_s: 37.570825
+    p99_gap_s: 36.889806
+  /scan:
+    messages: 5394
+    rate_hz: 9.655
+    max_gap_s: 0.111922
+    p99_gap_s: 0.108233
+  /tf:
+    messages: 22154
+    rate_hz: 39.653
+    max_gap_s: 0.060878
+    p99_gap_s: 0.056949
+  tf_base_footprint:
+    messages: 11173
+    rate_hz: 19.999
+    max_gap_s: 0.066263
+    p99_gap_s: 0.062406
+  tf_odom:
+    messages: 5394
+    rate_hz: 9.655
+    max_gap_s: 0.166762
+    p99_gap_s: 0.133167
+resources:
+  samples: 109
+  max_sample_gap_s: 6.0
+  system_cpu_mean_pct: 232.8
+  system_cpu_p90_pct: 237.1
+  system_cpu_peak_pct: 258.4
+  peak_temperature_c: 68.7
+  throttled_samples: 0
+  process_cpu_mean_pct:
+    bringup: 7.0
+    corridor_route: 19.0
+    lifecycle_manager: 13.7
+    nav2_container: 95.2
+    nav2_launch: 0.3
+    nav2_liveness_guard: 0.3
+    recorder: 9.6
+limitations:
+- AMCL is a saved-map localization estimate, not external ground truth.
+- Recorder transport-loss counters were not emitted; loss is UNKNOWN.
+- The full-capture resource gate missed one terminal sample; drive-window resource
+  values remain descriptive evidence only.

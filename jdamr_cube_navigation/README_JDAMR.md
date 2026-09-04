@@ -158,21 +158,29 @@ ros2 run jdamr_cube_navigation corridor_route \
   --execute
 ```
 
-실측 수치·해시·실패 시점은 `evaluation/20260904_HANDOFF.md`와 증거 원장을 기준으로
-한다. 최신 실주행 `corridor_roundtrip_20260904T142436`은 첫 세 목표를 통과한 뒤 네 번째
-목표를 1.43m 남기고 sensor/TF 처리와 lifecycle이 멈춘 진단 표본이다. 그 뒤
-`corridor_localdds_static_20260904T145231`에서 로컬 DDS, lifecycle 3/3, 전체 77.223m 계획,
-75초 자원 게이트와 recorder 정상 종료를 비주행으로 확인했다. 이 정적 결과만으로 복도
-주행 해결을 주장하지 않으며, 다음 실주행 1회가 동적 검증 게이트다.
+실측 수치와 해시는 `evaluation/20260904_CORRIDOR_LOCALDDS_SUCCESS.md`와 증거 원장을
+기준으로 한다. `corridor_localdds_armed_20260904T152036`은 77.278m 사전 계획의 20개
+목표를 복구 없이 마치고 출발점으로 돌아왔다. AMCL 누적 경로는 77.090m, 첫 위치와
+마지막 위치 사이는 0.113m였다. 130,798개 메시지를 담은 MCAP은 chunk, data-section,
+summary CRC와 인덱스 검사를 통과했다.
+
+직전 실패 기록과 같은 주행 구간 계산을 적용하면 `/scan` 최대 공백은 10.750초에서
+0.112초로 줄었다. `/odom`과 `/imu/data_raw`는 0.029초, `map -> odom` TF는 0.167초를
+넘지 않았다. 로봇 DDS를 무선망에서 분리한 뒤 lifecycle bond 상실과 scan stale 취소가
+재현되지 않은 결과다. recorder transport-loss 카운터는 남지 않아 증거 원장 등급은
+`PARTIAL_SUCCESS`로 두었다. 완주 결과와 데이터 사용 가능 여부는 분리해서 기록한다.
+
+![복도 왕복 성공 요약](evaluation/media/corridor_localdds_armed_20260904T152036/success_card.png)
 
 프로세스별 CPU의 과거 표는 구버전 계측기의 오분류 때문에 소급 검증할 수 없다. 수정된
 `soak_metrics`는 전체 시스템 CPU로 자원 여유를 판정하고 프로세스별 CPU는 원인 귀속에
 쓴다. recorder와 `nav2_container` 또는 독립 Nav2 필수 집합이 워밍업 뒤 60초 동안 함께
 측정되고 인접 샘플 간격이 10초 이하여야 통과하며, 빈 시점도 sentinel로 기록한다.
-`corridor_autorun.sh`는 이 정적 자원
-게이트를 실제 출발 전에 실행한다. 로컬 DDS 비주행 소크는 통과했으며 다음 검증은 같은
-복도 전체 왕복이다. 로컬 DDS에서도 같은 sensor/TF 공백이 재현될 때만 recording A/B로
-돌아간다. 실제 출발 시 작업자가 로봇 옆에서 물리 전원을 즉시 차단할 수 있어야 한다.
+`corridor_autorun.sh`는 이 정적 자원 게이트를 실제 출발 전에 실행한다. 로컬 DDS
+비주행 소크와 복도 전체 왕복을 모두 마쳤다. 다음 분석은 성공 bag을 Cartographer와
+SLAM Toolbox에 격리 재생하고, 센서 노이즈와 timestamp jitter 분포를 구하는 작업이다.
+반복 실주행은 성공률 수치가 필요할 때만 추가한다. 실제 출발 시 작업자가 로봇 옆에서
+물리 전원을 즉시 차단할 수 있어야 한다.
 
 자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
