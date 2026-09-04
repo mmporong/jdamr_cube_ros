@@ -1,5 +1,21 @@
 """Launch only the Nav2 components required by the onboard corridor run."""
 
+# 2026-09-04: back to a composed container, with a liveness guard.
+#
+# The 2026-09-01 split into one process per node was a reaction to internal
+# nodes silently leaving the DDS graph while the container process lived on.
+# It detected that failure, but it also pushed every intra-robot message onto
+# DDS/UDP.  Measured on the same corridor and route:
+#
+#   composed      : reached 37.60 m and 37.68 m
+#   one per node  : never past 10 m; load climbed 5.9 -> 17.8 while CPU held
+#                   near 250% of 400%, and TF gapped 3.1 s
+#
+# Indoors the split build is fine, so the cost only appears once the wireless
+# link degrades and intra-robot traffic waits behind it.  Composition keeps
+# that traffic in-process, and nav2_liveness_guard restores the detection the
+# split was bought for.
+
 import os
 from pathlib import Path
 
@@ -11,8 +27,8 @@ from launch.actions import RegisterEventHandler, SetEnvironmentVariable
 from launch.actions import Shutdown
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
-from launch_ros.descriptions import ParameterFile
+from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.descriptions import ComposableNode, ParameterFile
 from nav2_common.launch import RewrittenYaml
 
 
@@ -70,41 +86,80 @@ def generate_launch_description():
         allow_substs=True,
     )
     remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
-    localization_nodes = ['map_server', 'amcl']
-    navigation_nodes = [
-        'controller_server',
-        'planner_server',
-        'velocity_smoother',
-        'collision_monitor',
-        'bt_navigator',
+    lifecycle_bond = {
+        # The Pi answers lifecycle services slowly under Nav2 load.  On
+        # 2026-09-03 the default 4 s bond timeout reported a healthy keepout
+        # server as failed and aborted its bringup.
+        'bond_timeout': 10.0,
+        'bond_respawn_max_duration': 20.0,
+    }
+
+    def composable(package, plugin, name, parameters, remap=True):
+        return ComposableNode(
+            package=package,
+            plugin=plugin,
+            name=name,
+            parameters=parameters,
+            remappings=remappings if remap else [],
+        )
+
+    keepout_components = [
+        composable('nav2_map_server', 'nav2_map_server::MapServer',
+                   'keepout_filter_mask_server', [{
+                       'use_sim_time': use_sim_time,
+                       'yaml_filename': keepout_mask,
+                       'topic_name': '/keepout_filter_mask',
+                       'frame_id': 'map',
+                   }], remap=False),
+        composable('nav2_map_server',
+                   'nav2_map_server::CostmapFilterInfoServer',
+                   'keepout_costmap_filter_info_server', [{
+                       'use_sim_time': use_sim_time,
+                       'type': 0,
+                       'filter_info_topic': '/keepout_costmap_filter_info',
+                       'mask_topic': '/keepout_filter_mask',
+                       'base': 0.0,
+                       'multiplier': 1.0,
+                   }], remap=False),
+    ]
+    nav2_components = [
+        composable('nav2_map_server', 'nav2_map_server::MapServer',
+                   'map_server', [configured_params,
+                                  {'yaml_filename': map_yaml}]),
+        composable('nav2_amcl', 'nav2_amcl::AmclNode', 'amcl',
+                   [configured_params]),
+        ComposableNode(
+            package='nav2_controller',
+            plugin='nav2_controller::ControllerServer',
+            name='controller_server',
+            parameters=[configured_params],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ),
+        composable('nav2_planner', 'nav2_planner::PlannerServer',
+                   'planner_server', [configured_params]),
+        ComposableNode(
+            package='nav2_velocity_smoother',
+            plugin='nav2_velocity_smoother::VelocitySmoother',
+            name='velocity_smoother',
+            parameters=[configured_params],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ),
+        composable('nav2_collision_monitor',
+                   'nav2_collision_monitor::CollisionMonitor',
+                   'collision_monitor', [configured_params]),
+        composable('nav2_bt_navigator', 'nav2_bt_navigator::BtNavigator',
+                   'bt_navigator', [configured_params]),
     ]
 
-    keepout_mask_server = Node(
-        package='nav2_map_server',
-        executable='map_server',
-        name='keepout_filter_mask_server',
+    container = ComposableNodeContainer(
+        package='rclcpp_components',
+        executable='component_container_isolated',
+        name='nav2_container',
+        namespace='',
+        composable_node_descriptions=keepout_components + nav2_components,
         output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'yaml_filename': keepout_mask,
-            'topic_name': '/keepout_filter_mask',
-            'frame_id': 'map',
-        }],
     )
-    keepout_info_server = Node(
-        package='nav2_map_server',
-        executable='costmap_filter_info_server',
-        name='keepout_costmap_filter_info_server',
-        output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'type': 0,
-            'filter_info_topic': '/keepout_costmap_filter_info',
-            'mask_topic': '/keepout_filter_mask',
-            'base': 0.0,
-            'multiplier': 1.0,
-        }],
-    )
+
     keepout_lifecycle = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -113,73 +168,12 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
-            # The Pi answers lifecycle services slowly under Nav2 load.  On
-            # 2026-09-03 the default 4 s bond timeout reported a healthy
-            # keepout server as failed and aborted its bringup.
-            'bond_timeout': 10.0,
-            'bond_respawn_max_duration': 20.0,
             'node_names': [
                 'keepout_filter_mask_server',
                 'keepout_costmap_filter_info_server',
             ],
+            **lifecycle_bond,
         }],
-    )
-
-    map_server = Node(
-        package='nav2_map_server',
-        executable='map_server',
-        name='map_server',
-        output='screen',
-        parameters=[configured_params, {'yaml_filename': map_yaml}],
-        remappings=remappings,
-    )
-    amcl = Node(
-        package='nav2_amcl',
-        executable='amcl',
-        name='amcl',
-        output='screen',
-        parameters=[configured_params],
-        remappings=remappings,
-    )
-    controller_server = Node(
-        package='nav2_controller',
-        executable='controller_server',
-        name='controller_server',
-        output='screen',
-        parameters=[configured_params],
-        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-    )
-    planner_server = Node(
-        package='nav2_planner',
-        executable='planner_server',
-        name='planner_server',
-        output='screen',
-        parameters=[configured_params],
-        remappings=remappings,
-    )
-    velocity_smoother = Node(
-        package='nav2_velocity_smoother',
-        executable='velocity_smoother',
-        name='velocity_smoother',
-        output='screen',
-        parameters=[configured_params],
-        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-    )
-    collision_monitor = Node(
-        package='nav2_collision_monitor',
-        executable='collision_monitor',
-        name='collision_monitor',
-        output='screen',
-        parameters=[configured_params],
-        remappings=remappings,
-    )
-    bt_navigator = Node(
-        package='nav2_bt_navigator',
-        executable='bt_navigator',
-        name='bt_navigator',
-        output='screen',
-        parameters=[configured_params],
-        remappings=remappings,
     )
     localization_lifecycle = Node(
         package='nav2_lifecycle_manager',
@@ -189,9 +183,8 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
-            'bond_timeout': 10.0,
-            'bond_respawn_max_duration': 20.0,
-            'node_names': localization_nodes,
+            'node_names': ['map_server', 'amcl'],
+            **lifecycle_bond,
         }],
     )
     navigation_lifecycle = Node(
@@ -202,28 +195,40 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
-            'bond_timeout': 10.0,
-            'bond_respawn_max_duration': 20.0,
-            'node_names': navigation_nodes,
+            'node_names': [
+                'controller_server',
+                'planner_server',
+                'velocity_smoother',
+                'collision_monitor',
+                'bt_navigator',
+            ],
+            **lifecycle_bond,
         }],
     )
-    required_nav2_processes = [
-        map_server,
-        amcl,
-        controller_server,
-        planner_server,
-        velocity_smoother,
-        collision_monitor,
-        bt_navigator,
+
+    # The container process surviving is not evidence that the nodes inside it
+    # are alive.  This is what the one-process-per-node split was bought for.
+    liveness_guard = Node(
+        package='jdamr_cube_navigation',
+        executable='nav2_liveness_guard',
+        name='nav2_liveness_guard',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
+    required_processes = [
+        container,
+        keepout_lifecycle,
         localization_lifecycle,
         navigation_lifecycle,
+        liveness_guard,
     ]
     required_exit_handlers = [
         RegisterEventHandler(OnProcessExit(
             target_action=process,
             on_exit=_shutdown_unless_already_stopping(
                 'required Nav2 process exited; stopping navigation')))
-        for process in required_nav2_processes
+        for process in required_processes
     ]
 
     return LaunchDescription([
@@ -244,17 +249,6 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('autostart', default_value='true'),
         OpaqueFunction(function=_validate_keepout),
-        RegisterEventHandler(OnProcessExit(
-            target_action=keepout_mask_server,
-            on_exit=_shutdown_unless_already_stopping(
-                'keepout mask server exited; stopping navigation'))),
-        RegisterEventHandler(OnProcessExit(
-            target_action=keepout_info_server,
-            on_exit=_shutdown_unless_already_stopping(
-                'keepout info server exited; stopping navigation'))),
         *required_exit_handlers,
-        keepout_mask_server,
-        keepout_info_server,
-        keepout_lifecycle,
-        *required_nav2_processes,
+        *required_processes,
     ])

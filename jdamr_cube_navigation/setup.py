@@ -42,6 +42,8 @@ setup(
             'tf_replay_filter = '
             'jdamr_cube_navigation.tf_replay_filter:main',
             'soak_metrics = jdamr_cube_navigation.soak_metrics:main',
+            'nav2_liveness_guard = '
+            'jdamr_cube_navigation.nav2_liveness_guard:main',
         ],
     },
 )

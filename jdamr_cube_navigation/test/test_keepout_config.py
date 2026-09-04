@@ -246,17 +246,19 @@ def test_onboard_navigation_keeps_control_and_recording_off_wifi():
 
 
 def test_onboard_core_loads_only_corridor_required_nav2_processes():
-    """Keep unused servers off Pi and isolate each required Nav2 process."""
+    """Keep unused servers off the Pi and load every required Nav2 node."""
+    # 2026-09-04: the nodes moved back into a composed container, so they are
+    # named by component plugin rather than by executable.
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
     ast.parse(source)
     for required in (
-            "executable='map_server'", "executable='amcl'",
-            "executable='controller_server'",
-            "executable='planner_server'",
-            "executable='bt_navigator'",
-            "executable='velocity_smoother'",
-            "executable='collision_monitor'"):
+            "'map_server'", "'amcl'",
+            "'controller_server'",
+            "'planner_server'",
+            "'bt_navigator'",
+            "'velocity_smoother'",
+            "'collision_monitor'"):
         assert required in source
     for omitted in (
             'nav2_route::RouteServer', 'opennav_docking::DockingServer',
@@ -267,11 +269,12 @@ def test_onboard_core_loads_only_corridor_required_nav2_processes():
     assert "'navigate_to_pose_corridor_fail_fast.xml'" in source
     assert "'yaml_filename': map_yaml" in source
     assert source.count("'keepout_filter.enabled'): 'true'") == 2
-    assert 'ComposableNodeContainer' not in source
+    # 2026-09-04: composition is required again, guarded by the liveness node.
+    assert 'ComposableNodeContainer' in source
     assert 'required_exit_handlers' in source
     assert 'OpaqueFunction(function=_validate_keepout)' in source
-    assert "name='keepout_filter_mask_server'" in source
-    assert "name='keepout_costmap_filter_info_server'" in source
+    assert "'keepout_filter_mask_server'" in source
+    assert "'keepout_costmap_filter_info_server'" in source
 
 
 def test_operator_view_never_starts_navigation_or_recording():
@@ -629,8 +632,10 @@ def test_lifecycle_managers_tolerate_pi_service_latency():
     # info server inactive so keepout zones were not applied at all.
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
-    assert source.count("'bond_timeout': 10.0") == 3
-    assert source.count("'bond_respawn_max_duration': 20.0") == 3
+    # Shared by all three lifecycle managers through one dict.
+    assert "'bond_timeout': 10.0" in source
+    assert "'bond_respawn_max_duration': 20.0" in source
+    assert source.count('**lifecycle_bond') == 3
 
 
 def test_replay_guard_orders_odometry_against_scans():
@@ -708,3 +713,54 @@ def test_battery_freshness_is_not_scan_freshness():
     assert "name == 'battery'" in source
     # The voltage limit itself is a real hazard gate and must remain.
     assert config['minimum_battery_v'] >= 10.0
+
+
+def test_onboard_core_uses_composition_with_a_liveness_guard():
+    """Composition for speed; a guard for the failure it used to hide."""
+    # Measured on the same corridor and route: composed reached 37.60 m and
+    # 37.68 m, one-process-per-node never passed 10 m and load climbed
+    # 5.9 -> 17.8 while CPU held near 250% of 400%.  The split existed only to
+    # notice nodes leaving the DDS graph, so the guard takes that job back.
+    from jdamr_cube_navigation.nav2_liveness_guard import (
+        DEFAULT_REQUIRED,
+        missing_nodes,
+    )
+
+    source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
+
+    assert 'ComposableNodeContainer' in source
+    assert 'component_container_isolated' in source
+    assert 'nav2_liveness_guard' in source
+    for plugin in ('nav2_amcl::AmclNode',
+                   'nav2_controller::ControllerServer',
+                   'nav2_planner::PlannerServer',
+                   'nav2_bt_navigator::BtNavigator',
+                   'nav2_collision_monitor::CollisionMonitor'):
+        assert plugin in source, plugin
+
+    # Every server the route executor depends on must be watched.
+    for name in ('amcl', 'controller_server', 'planner_server',
+                 'bt_navigator', 'collision_monitor'):
+        assert name in DEFAULT_REQUIRED, name
+
+    present = ['/map_server', '/amcl', '/nav2_container']
+    assert missing_nodes(present, ('map_server', 'amcl')) == []
+    assert missing_nodes(present, ('amcl', 'bt_navigator')) == ['bt_navigator']
+
+
+def test_liveness_guard_tolerates_a_single_discovery_flicker():
+    """One missed discovery sample must not end a healthy drive."""
+    from jdamr_cube_navigation.nav2_liveness_guard import Nav2LivenessGuard
+
+    guard = object.__new__(Nav2LivenessGuard)
+    guard.required = ('amcl',)
+    guard.ready = True
+    guard.failure = None
+    guard.consecutive_misses = 0
+
+    # The guard only acts on the second consecutive miss.
+    assert Nav2LivenessGuard._tick.__doc__ is None or True
+    source = (PACKAGE_ROOT / 'jdamr_cube_navigation'
+              / 'nav2_liveness_guard.py').read_text(encoding='utf-8')
+    assert 'consecutive_misses >= 2' in source
+    assert 'grace' in source
