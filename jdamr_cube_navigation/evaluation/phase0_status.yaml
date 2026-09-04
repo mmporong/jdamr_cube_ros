@@ -1,6 +1,6 @@
 schema_version: 1
-as_of: '2026-09-01'
-state: OFFLINE_READY
+as_of: '2026-09-04'
+state: ONBOARD_STATIC_READY
 real_motion_authorized: false
 
 gates:
@@ -16,16 +16,34 @@ gates:
 
 verification:
   navigation_package:
-    total: 120
-    passed: 119
+    total: 207
+    passed: 206
     skipped: 1
     failures: 0
     errors: 0
   diagnostic_bag_messages_iterated: 63955
-  qos_profiles_parsed: 6
+  qos_profiles_parsed: 12
   installed_evaluation_files: 10
   mcap_python_version: 1.4.0
   mcap_install_mode: pip_target_with_user_site_disabled
+  pi_target_regression_passed: 78
+  onboard_static:
+    run_id: corridor_static_20260904T140326
+    autorun_exit_code: 0
+    lifecycle_managers_active: 3
+    resource_gate: PASS
+    process_samples: 33
+    process_max_gap_s: 5.4
+    system_cpu_p90_percent: 296
+    system_cpu_peak_percent: 374
+    peak_temperature_c: 72.5
+    bag_messages: 25375
+    bag_duration_s: 168.862353262
+    cmd_vel_messages: 0
+    cmd_vel_nav_messages: 0
+    mcap_sha256: e3a009636c4e492b8712fe2eafc11ea4f927eaf4948f2f836eb436cd293350a2
+    metadata_sha256: c86e9056ae05bb8fcdb9c89bf21d80b25d66728a523beb1bd477d3727871528a
+    metrics_sha256: 26fd640b389f04675a38cb6ed19c9b90fab67c30cb3ad2809819ba3fd9875450
 
 diagnostic_reference:
   dataset_id: g4_userloop_reset_20260824T175151
@@ -43,4 +61,4 @@ so101_audit:
   drift: 계획은 구현 시작 전으로 선언하지만 추적되지 않은 미션 코디네이터 후보가 존재한다.
   conclusion: SO101은 작업팔 미션을 소유하고 JD-AMR은 이동·지도·SLAM을 소유한다. 자동 동기화는 하지 않는다.
 
-next_action: 운영자 감독 아래 Phase 1 동일 복도 3회 수집을 준비한다. 하드웨어 또는 이동 노드는 자동 실행하지 않는다.
+next_action: 운영자 감독과 물리 전원 차단을 확보한 뒤 짧은 위치 왕복으로 이동 경로만 검증한다.

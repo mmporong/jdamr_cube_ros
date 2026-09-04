@@ -26,8 +26,10 @@
   recording A/B로 검증하지 않았다. DDS 단계에서 빠진 메시지를 단순 메시지 수만으로
   검출할 수도 없으므로, 적격 주행 전에는 토픽별 gap/rate 게이트도 추가해야 한다.
   근본 원인은 계속 미규명 상태다.
-- 현재 로컬 검증은 `206 passed, 1 skipped`다. 수정본의 파이 비주행 기동과 실주행은
-  아직 수행하지 않았다.
+- 현재 로컬 검증은 `206 passed, 1 skipped`다. 파이 수정본은 대상 회귀 `78 passed`와
+  `corridor_static_20260904T140326` 비주행 기동을 통과했다. lifecycle 3/3, 사전점검,
+  전체 경로 계획, 자원 게이트가 PASS했고 25,375-message MCAP을 정상 마감했다.
+  `/cmd_vel`·`/cmd_vel_nav` 기록은 0건이며 실주행은 아직 수행하지 않았다.
 - SO-101 PRD는 Architect 승인 상태지만 구현 시작 전이라고 선언한다. 동시에 미추적 `mobile_mission.py`가 있어 이 차이를 읽기 전용 감사 결과로 남겼고 SO-101 파일은 수정하지 않았다.
 - 현재 세션은 작업자가 로봇 옆에 있다고 확인되지 않았으므로 `real_motion_authorized: false`다.
 - 계획 문서가 인용하는 일부 기존 `.omx` 계획·테스트 명세는 아직 Git 미추적 상태다. 해당 파일을 임의로 함께 스테이징하지 않는다.
@@ -96,10 +98,13 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
   "$HOME/jdamr_artifacts/g4_userloop_reset_20260824T175151/g4_userloop_reset_20260824T175151_0.mcap"
 ```
 
-현재 Phase 0 판정은 `OFFLINE_READY`다. 이번 수정본의 온보드 비주행 판정은 아직
-재수집 전이므로 기존 `ONBOARD_STATIC_READY`를 승계하지 않는다.
+현재 Phase 0 판정은 `ONBOARD_STATIC_READY`다. 수정본의 온보드 비주행 실행에서
+위치추정·Keepout·전체 경로 planning-only·자원 계측·기록 마감을 다시 확인했다.
 
 - navigation package: 206 passed, 1 skipped
+- Pi target regression: 78 passed
+- onboard static run: `corridor_static_20260904T140326`, resource gate PASS,
+  25,375 messages, nonzero `/cmd_vel` absent
 - G4 diagnostic bag: 63,955 messages, SHA-256 `9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6`
 - QoS override: ROS 2 Jazzy 파서에서 12개 profile 통과
 - 설치 레이아웃: evaluation 파일 10개 확인
@@ -137,7 +142,7 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
     묶는다. SO-101에는 SLAM 코드를 복제하지 않고 localization/TF/도착 오차 계약만
     연결한다.
 
-현재 위치는 **1 완료, 2 미수행**이다. 기존 부분 복귀와 실패 bag은 진단·오프라인 SLAM
+현재 위치는 **1·2 완료, 다음은 3 짧은 위치 왕복**이다. 기존 부분 복귀와 실패 bag은 진단·오프라인 SLAM
 입력으로 보존하되, 새 코드의 합격 증거로 소급 사용하지 않는다.
 
 ## 기존 정비 기록과 2026-09-04 정정
@@ -197,17 +202,17 @@ ros2 run jdamr_cube_navigation soak_metrics \
 기존 재측정에서는 load1과 프로세스 CPU 합계가 서로 다른 추세를 보였고, 이를 근거로
 `load1 < 4`를 단독 게이트에서 제외했다. 이 설계 판단은 유지한다. 다만 당시 분류기는
 원문 command를 남기지 않았고 recorder 오분류가 확인됐으므로, 과거의 **203%**와
-프로세스별 귀속값은 참고치로만 남긴다. 수정된 process coverage 게이트로 비주행 소크를
-다시 통과하기 전에는 CPU 여유가 검증됐다고 주장하지 않는다.
+프로세스별 귀속값은 참고치로만 남긴다. 수정된 process coverage 게이트는
+`corridor_static_20260904T140326` 비주행 소크에서 다시 통과했다.
 
 게이트를 실측 가능한 네 항목으로 바꿨고, 문서상의 수동 기준이 아니라 코드가 판정한다.
 
-| 항목 | 기준 | 2026-09-03 실측 |
+| 항목 | 기준 | 2026-09-04 수정본 비주행 실측 |
 |---|---|---|
-| 전체 시스템 지속 CPU (p90) | 코어 예산의 75% 이내 (4코어 = 300%) | 과거 수치 무효, 재측정 필요 |
-| thermal throttle | `0x0` | `0x0` PASS |
-| 최고 온도 | 75도 이하 (소프트 스로틀 80도 대비 여유) | 69.6도 PASS |
-| 프로세스 coverage | recorder+Nav2 필수 집합이 워밍업 뒤 60초 연속, 최대 샘플 간격 10초 | 과거 command 부재, 재측정 필요 |
+| 전체 시스템 지속 CPU (p90) | 코어 예산의 75% 이내 (4코어 = 300%) | 296% PASS |
+| thermal throttle | `0x0` | PASS |
+| 최고 온도 | 75도 이하 (소프트 스로틀 80도 대비 여유) | 72.5도 PASS |
+| 프로세스 coverage | recorder+Nav2 필수 집합이 워밍업 뒤 60초 연속, 최대 샘플 간격 10초 | 33/33, 165초, 최대 5.4초 PASS |
 
 순간 최대와 프로세스별 합계는 진단용으로 함께 출력하되, 판정은 전체 시스템 CPU의
 p90 지속 부하를 사용한다. 워밍업 제외, 단위 변환, 프로세스 전멸 샘플 기록은 계산
@@ -230,8 +235,8 @@ ros2 run jdamr_cube_navigation soak_metrics \
 
 ### 남은 것
 
-기존 기록 게이트는 통과했다. 수정된 프로세스 coverage를 포함한 부하 게이트는 비주행
-소크 재검증이 필요하며, 그 다음이 짧은 위치 왕복과 80m 왕복이다.
+기록 게이트와 수정된 프로세스 coverage를 포함한 비주행 부하 게이트를 통과했다.
+다음은 짧은 위치 왕복이며, 그 뒤 recording A/B와 80m 왕복을 진행한다.
 
 ## 포트폴리오로 보여줄 수 있는 것
 

@@ -118,12 +118,17 @@ def test_unverified_calibrations_cannot_enable_fusion():
 
 
 def test_phase0_status_blocks_real_motion_and_tracks_so101_drift():
-    """Keep offline preparation distinct from hardware authorization."""
+    """Keep static readiness distinct from hardware authorization."""
     status = load_yaml('phase0_status.yaml')
 
-    assert status['state'] == 'OFFLINE_READY'
+    assert status['state'] == 'ONBOARD_STATIC_READY'
     assert status['real_motion_authorized'] is False
     assert set(status['gates'].values()) == {'PASS'}
+    onboard = status['verification']['onboard_static']
+    assert onboard['autorun_exit_code'] == 0
+    assert onboard['resource_gate'] == 'PASS'
+    assert onboard['cmd_vel_messages'] == 0
+    assert onboard['cmd_vel_nav_messages'] == 0
     assert status['so101_audit']['plan_review_state'] == 'ARCHITECT_APPROVE'
     assert status['so101_audit']['plan_declared_implementation'] == 'NOT_STARTED'
     assert status['so101_audit']['untracked_candidate'] == 'mobile_mission.py'
