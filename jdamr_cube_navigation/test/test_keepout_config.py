@@ -4,6 +4,7 @@ import ast
 import hashlib
 import math
 from pathlib import Path
+import subprocess
 import time
 import xml.etree.ElementTree as ET
 
@@ -51,6 +52,7 @@ ROUTE_SOURCE = (
 CORRIDOR_BT = (
     PACKAGE_ROOT / 'behavior_trees' /
     'navigate_to_pose_corridor_fail_fast.xml')
+AUTORUN_SCRIPT = PACKAGE_ROOT / 'scripts' / 'corridor_autorun.sh'
 
 
 def _params():
@@ -763,9 +765,18 @@ def test_autorun_never_drives_without_passing_every_gate():
     """A run the operator cannot watch must refuse itself on any doubt."""
     # Onboard scheduling removes Wi-Fi from the start path, so every gate and
     # cleanup boundary must remain local to the robot.
-    source = (PACKAGE_ROOT / 'scripts'
-              / 'corridor_autorun.sh').read_text(encoding='utf-8')
+    source = AUTORUN_SCRIPT.read_text(encoding='utf-8')
 
+    # ROS setup reads optional environment variables.  Nounset must only be
+    # enabled after both setup scripts have finished.
+    assert source.index('source /opt/ros/jazzy/setup.bash') < \
+        source.index('set -u')
+    assert source.index('source "$HOME/jdamr_ws/install/setup.bash"') < \
+        source.index('set -u')
+    first_source = source.index('source /opt/ros/jazzy/setup.bash')
+    assert source.index('--delay 값이 필요하다') < first_source
+    assert source.index('--delay는 0~3600 범위의 정수여야 한다') < first_source
+    assert source.index('--run-id 값이 필요하다') < first_source
     for gate in (
             'lifecycle 매니저', '사전점검 FAIL', '전체 경로 계획 실패',
             '자원 게이트 FAIL'):
@@ -810,6 +821,29 @@ def test_autorun_never_drives_without_passing_every_gate():
     # Signal strength is logged to the robot so a dropped link still leaves
     # evidence of where the corridor coverage failed.
     assert '/proc/net/wireless' in source
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--delay'],
+    ['--delay', '-1'],
+    ['--delay', '1.5'],
+    ['--delay', '999999999999999999999999'],
+    ['--delay', '--no-execute'],
+    ['--run-id'],
+    ['--run-id', '../outside'],
+    ['--run-id', '--no-execute'],
+])
+def test_autorun_rejects_malformed_arguments_before_ros_setup(arguments):
+    """Reject unsafe scheduling arguments before any ROS process can start."""
+    completed = subprocess.run(
+        ['bash', str(AUTORUN_SCRIPT), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stderr.startswith('--')
 
 
 def test_preflight_lets_the_costmap_refill_before_planning():

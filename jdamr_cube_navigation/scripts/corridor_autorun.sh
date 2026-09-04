@@ -11,7 +11,7 @@
 #
 # --delay 동안 로봇을 출발 지점에 놓고 물러선다. 게이트가 하나라도 실패하면
 # 주행하지 않는다. 비상 정지는 물리 전원 차단이다.
-set -uo pipefail
+set -o pipefail
 
 DELAY_S=180
 STOP_GRACE_S=25
@@ -25,12 +25,32 @@ EXECUTE=1
 RUN_ID="corridor_autorun_$(date +%Y%m%dT%H%M%S)"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --delay)      DELAY_S="$2"; shift 2 ;;
-    --run-id)     RUN_ID="$2"; shift 2 ;;
+    --delay)
+      [ "$#" -ge 2 ] || { echo "--delay 값이 필요하다" >&2; exit 2; }
+      case "$2" in --*) echo "--delay 값이 필요하다" >&2; exit 2 ;; esac
+      DELAY_S="$2"; shift 2 ;;
+    --run-id)
+      [ "$#" -ge 2 ] || { echo "--run-id 값이 필요하다" >&2; exit 2; }
+      case "$2" in --*) echo "--run-id 값이 필요하다" >&2; exit 2 ;; esac
+      RUN_ID="$2"; shift 2 ;;
     --no-execute) EXECUTE=0; shift ;;
     *) echo "알 수 없는 인자: $1" >&2; exit 2 ;;
   esac
 done
+case "$DELAY_S" in
+  ''|*[!0-9]*|?????*)
+    echo "--delay는 0~3600 범위의 정수여야 한다" >&2
+    exit 2 ;;
+esac
+if [ "$DELAY_S" -gt 3600 ]; then
+  echo "--delay는 0~3600 범위의 정수여야 한다" >&2
+  exit 2
+fi
+case "$RUN_ID" in
+  ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*)
+    echo "--run-id는 영문·숫자로 시작하고 영문·숫자·점·밑줄·하이픈만 허용한다" >&2
+    exit 2 ;;
+esac
 
 A="$HOME/jdamr_artifacts"
 mkdir -p "$A"
@@ -46,6 +66,7 @@ STOPPING=0
 
 source /opt/ros/jazzy/setup.bash
 source "$HOME/jdamr_ws/install/setup.bash"
+set -u
 export ROS_DOMAIN_ID=12
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 SHARE="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation"

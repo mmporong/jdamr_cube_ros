@@ -26,7 +26,7 @@
   recording A/B로 검증하지 않았다. DDS 단계에서 빠진 메시지를 단순 메시지 수만으로
   검출할 수도 없으므로, 적격 주행 전에는 토픽별 gap/rate 게이트도 추가해야 한다.
   근본 원인은 계속 미규명 상태다.
-- 현재 로컬 검증은 `198 passed, 1 skipped`다. 수정본의 파이 비주행 기동과 실주행은
+- 현재 로컬 검증은 `206 passed, 1 skipped`다. 수정본의 파이 비주행 기동과 실주행은
   아직 수행하지 않았다.
 - SO-101 PRD는 Architect 승인 상태지만 구현 시작 전이라고 선언한다. 동시에 미추적 `mobile_mission.py`가 있어 이 차이를 읽기 전용 감사 결과로 남겼고 SO-101 파일은 수정하지 않았다.
 - 현재 세션은 작업자가 로봇 옆에 있다고 확인되지 않았으므로 `real_motion_authorized: false`다.
@@ -99,7 +99,7 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 현재 Phase 0 판정은 `OFFLINE_READY`다. 이번 수정본의 온보드 비주행 판정은 아직
 재수집 전이므로 기존 `ONBOARD_STATIC_READY`를 승계하지 않는다.
 
-- navigation package: 198 passed, 1 skipped
+- navigation package: 206 passed, 1 skipped
 - G4 diagnostic bag: 63,955 messages, SHA-256 `9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6`
 - QoS override: ROS 2 Jazzy 파서에서 12개 profile 통과
 - 설치 레이아웃: evaluation 파일 10개 확인
