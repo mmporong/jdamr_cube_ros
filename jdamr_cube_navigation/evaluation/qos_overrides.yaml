@@ -1,26 +1,31 @@
-# 기록·재생 QoS 정본. jdamr_cube_navigation.onboard_recording 의 실측 계약에서
-# 생성한다. reliability·durability 는 발행자가 실제로 제시한 값이며(2026-09-01 bag
-# 3종 대조), 어긋나면 구독이 매칭되지 않아 해당 토픽이 통째로 비어버린다.
-# depth 는 rate x 2초 버퍼로, 2026-09-01 소크의 load1 9.85 구간에서 발생한
-# recorder transport loss 3건에 대응한다.
+# 기록·재생 QoS 정본. jdamr_cube_navigation.onboard_recording 에서 생성한다.
+#
+# 2026-09-04: 고주기 토픽을 best_effort 로 내렸다. 기록기가 reliable 로 받으면
+# 밀릴 때 발행자의 write 가 막히고, 그러면 로깅이 제어 루프를 세운다. 실주행
+# 에서 CPU 61~146%(400% 중)로 자원이 남는데 컨트롤 루프가 10Hz -> 1.7Hz 로
+# 떨어지고 lifecycle heartbeat 가 끊겨 노드 9개가 한꺼번에 사라졌다.
+# 부하가 걸리면 기록기가 몇 건을 잃되 로봇은 계속 달리는 쪽을 택한다.
+#
+# /tf_static 은 한 번만 오는 latched 라 reliable 을 유지한다. 저주기 토픽도
+# 역압 위험이 없어 reliable 이다.
 
 /scan:
-  reliability: reliable
+  reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 20
+  depth: 10
 
 /odom:
-  reliability: reliable
+  reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 100
+  depth: 25
 
 /tf:
-  reliability: reliable
+  reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 200
+  depth: 50
 
 /tf_static:
   reliability: reliable
@@ -32,7 +37,7 @@
   reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 100
+  depth: 25
 
 /cmd_vel:
   reliability: reliable
@@ -71,7 +76,7 @@
   depth: 20
 
 /joint_states:
-  reliability: reliable
+  reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 40
+  depth: 10

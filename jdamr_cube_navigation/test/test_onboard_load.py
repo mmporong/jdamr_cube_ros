@@ -12,6 +12,8 @@ from jdamr_cube_navigation.onboard_recording import (
     NOMINAL_RATES_HZ,
     OFFERED_PROFILES,
     RECORDED_TOPICS,
+    RECORDER_BEST_EFFORT,
+    recorder_reliability,
     reliability,
     required_depth,
 )
@@ -78,14 +80,20 @@ def test_overrides_match_the_qos_each_publisher_offers():
     assert OFFERED_PROFILES['/imu/data_raw'][0] == 'best_effort'
     assert OFFERED_PROFILES['/amcl_pose'][1] == 'transient_local'
     for topic in RECORDED_TOPICS:
-        assert qos[topic]['reliability'] == reliability(topic), topic
+        assert qos[topic]['reliability'] == recorder_reliability(topic), topic
         assert qos[topic]['durability'] == durability(topic), topic
+        # A best-effort reader is always compatible with a reliable writer,
+        # never the other way round.
+        if recorder_reliability(topic) == 'reliable':
+            assert reliability(topic) == 'reliable', topic
 
 
-def test_recorder_queue_absorbs_a_two_second_stall():
-    """Require the queue to outlast the scheduling stalls measured on the Pi."""
+def test_reliable_recorder_queues_absorb_a_two_second_stall():
+    """A reliable reader must buffer, since dropping is not an option there."""
+    # Best-effort topics deliberately keep a shallow queue: they drop under
+    # load rather than make a publisher wait, so buffering only ages the data.
     for topic in RECORDED_TOPICS:
-        if topic == '/tf_static':
+        if topic == '/tf_static' or topic in RECORDER_BEST_EFFORT:
             continue
         assert required_depth(topic) >= NOMINAL_RATES_HZ[topic] * 2.0, topic
 
@@ -224,3 +232,24 @@ def test_percentile_picks_the_sustained_value():
     assert percentile([203.0] * 9 + [296.0], 0.90) == 296.0
     assert percentile([203.0] * 19 + [296.0], 0.90) == 203.0
     assert percentile([], 0.90) == 0.0
+
+
+def test_recording_cannot_back_pressure_the_control_loop():
+    """Logging must never block a publisher the robot depends on."""
+    # 2026-09-04: with the recorder subscribing reliably to /tf, /odom and
+    # /scan, a real drive stalled with CPU at 61-146% of 400% and load 2.8-6.1
+    # -- resources to spare.  The control loop fell from 10 Hz to 1.7 Hz, the
+    # lifecycle heartbeats stopped, and nine Nav2 nodes left the graph at once.
+    # The process was blocked, not busy.
+    for topic in ('/scan', '/odom', '/tf', '/imu/data_raw'):
+        assert topic in RECORDER_BEST_EFFORT, topic
+        assert recorder_reliability(topic) == 'best_effort', topic
+        # Dropping is the point, so a deep queue would only hold stale data.
+        assert required_depth(topic) <= NOMINAL_RATES_HZ[topic], topic
+
+    # Latched transforms arrive once and must not be dropped.
+    assert '/tf_static' not in RECORDER_BEST_EFFORT
+    assert recorder_reliability('/tf_static') == 'reliable'
+    # Low-rate evidence carries no back-pressure risk and stays reliable.
+    for topic in ('/cmd_vel', '/amcl_pose', '/battery_state', '/plan'):
+        assert recorder_reliability(topic) == 'reliable', topic

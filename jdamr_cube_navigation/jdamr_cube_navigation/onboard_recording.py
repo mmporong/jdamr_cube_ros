@@ -39,6 +39,32 @@ OFFERED_PROFILES = {
     '/joint_states': ('reliable', 'volatile', 20.0),
 }
 
+# 2026-09-04: 기록은 제어 경로에 역압을 주면 안 된다.
+#
+# 기록기가 고주기 토픽을 reliable 로 구독하면, 기록기가 밀릴 때 발행자의
+# write 가 막힌다. 실주행에서 CPU 61~146%(400% 중), load 2.8~6.1 로 자원이
+# 남는데도 컨트롤 루프가 10Hz -> 1.7Hz 로 떨어지고 lifecycle heartbeat 가
+# 끊겨 노드 9개가 한꺼번에 사라졌다. 바빠서가 아니라 막혀서다.
+#
+# 고주기 센서·TF 는 best_effort 로 받는다. 부하가 걸리면 기록기가 몇 건을
+# 잃되 로봇은 계속 달린다. 저주기 토픽은 역압 위험이 없어 reliable 을
+# 유지하고, /tf_static 은 한 번만 오는 latched 라 반드시 reliable 이어야 한다.
+RECORDER_BEST_EFFORT = {
+    '/scan',
+    '/odom',
+    '/tf',
+    '/imu/data_raw',
+    '/joint_states',
+}
+
+
+def recorder_reliability(topic):
+    """Return the reliability the recorder subscribes with."""
+    if topic in RECORDER_BEST_EFFORT:
+        return 'best_effort'
+    return OFFERED_PROFILES[topic][0]
+
+
 NOMINAL_RATES_HZ = {
     topic: profile[2] for topic, profile in OFFERED_PROFILES.items()
 }
@@ -64,8 +90,12 @@ def durability(topic):
 
 
 def required_depth(topic):
-    """Return the smallest recorder queue depth that survives a 2 s stall."""
+    """Return the recorder queue depth for *topic*."""
     if topic in LATCHED_TOPICS:
         return 1
+    if topic in RECORDER_BEST_EFFORT:
+        # A best-effort reader drops instead of blocking, so a deep queue only
+        # holds stale data.  Half a second of buffer is enough.
+        return max(10, int(math.ceil(NOMINAL_RATES_HZ[topic] * 0.5)))
     rate = NOMINAL_RATES_HZ[topic]
     return max(10, int(math.ceil(rate * MIN_BUFFER_SECONDS)))
