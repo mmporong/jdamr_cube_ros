@@ -101,13 +101,13 @@ controller, planner, velocity smoother, Collision Monitor, BT navigator, Keepout
 경로 실행기, 필수 토픽 MCAP recorder만 둔다. 파이 전용 launch는 쓰지 않는 smoother
 server, route server, behavior server, waypoint follower, docking server를 실행하지
 않는다. RViz, Cartographer·SLAM Toolbox, 그래프·통계 계산, bag 재생은 주행 중 파이에
-띄우지 않는다. 필수 Nav2 노드는 하나의 합성 컨테이너가 아니라 독립 프로세스로 실행한다.
-실차에서 컨테이너 프로세스는 살아 있는데 AMCL·planner·navigator가 DDS graph에서 함께
-사라진 장애를 분리하고, 어느 필수 프로세스든 종료되면 전체 navigation을 종료하기 위한
-구조다.
+띄우지 않는다. 필수 Nav2 서버는 `component_container_isolated` 하나에 합성하고,
+lifecycle manager와 graph liveness guard는 별도 프로세스로 둔다. 컨테이너가 살아 있어도
+내부 노드가 graph에서 사라지는 장애를 별도 guard가 감지해 전체 navigation을 종료한다.
 recorder는 CPU nice 10과 I/O best-effort 최저 우선순위 7로 실행해 제어 루프가 먼저
 스케줄되게 한다. 기본 기록도 `/scan`, `/odom`, TF, IMU, 제어 전·후 속도, AMCL,
 배터리, 계획, Collision Monitor 상태로 제한하며 RViz용 `/joint_states`는 제외한다.
+고주기 토픽은 best-effort로 구독해 기록기가 reliable 전달을 요구하지 않게 한다.
 recorder가 예상치 않게 끝나면 navigation도 종료한다.
 
 ```bash
@@ -140,12 +140,14 @@ ros2 launch jdamr_cube_navigation keepout_operator_view.launch.py
 `config/corridor_roundtrip.autonomous_20260826.yaml`에 저장돼 있다. 다음 두 명령도
 파이에서 실행한다. 첫 명령은 80m 전체 경로를 계획만 하고, 두 번째 명령만 실제로
 움직인다. `corridor_route`는 waypoint마다 경로를 한 번만 계산하고 따르는 복도 전용
-fail-fast BT를 명시한다. 1Hz 연속 재계획과 회전·후진·대기·재시도는 사용하지 않으며,
-planner와 controller action 응답 제한은 1,000ms다. 배터리·scan·odom freshness 또는
-AMCL 게이트가 깨지면 현재 목표를 취소하며 다음 waypoint를 보내지 않는다. 복도에서
-관측이 약한 진행축 x 공분산은 2.0, 벽 이탈과 직접 관련된 횡축 y는 1.0으로 분리한다.
-중간 재개에는 `--start-index`를 쓰되 현재 AMCL 위치와 첫 잔여 waypoint가 6m보다 멀면
-원점 초기화 오류로 보고 출발하지 않는다.
+fail-fast BT를 명시한다. 회전·후진 복구는 사용하지 않고, 일시적 TF·controller 실패에는
+코스트맵 초기화 뒤 제한된 재시도만 수행한다. 배터리·scan·odom freshness가 깨지면 현재
+목표를 취소하며 다음 waypoint를 보내지 않는다. AMCL freshness는 출발 준비에서만
+확인하고, 주행 중에는 정지 상태의 미발행만으로 취소하지 않는다. 전체 경로는 현재 AMCL
+위치가 지도상의 home에서 1m 이내일 때만 시작하고, 중간 재개는 첫 잔여 waypoint와의
+거리 제한을 통과해야 한다. 복도 전용 BT는 일반 주행용
+방향 검사기를 바꾸지 않고 `position_goal_checker`를 선택해, 최종 home을 방향이 아니라
+위치 복귀로 판정한다.
 
 ```bash
 ros2 run jdamr_cube_navigation corridor_route \
@@ -155,36 +157,35 @@ ros2 run jdamr_cube_navigation corridor_route \
   --execute
 ```
 
-2026-09-01 노트북 기록은 106.9MiB·128,791개 메시지로 정상 종료됐지만 transport
-loss 136건과 미완주가 있어 진단용이다. 상세 수치·해시·실패 시점은
-`evaluation/20260901_CORRIDOR_KEEPOUT_RUN.md`에 고정했다. 파이 로컬 기록에서 손실 0과
-완전 왕복을 확인하기 전에는 최종 포트폴리오 데이터로 승격하지 않는다. 다음 실차에서는
-출발 전 1분 정적 소크에서 4코어 load average가 4.0 미만이고 thermal throttle이 없음을
-확인한 뒤 주행한다. 최소 온보드 구성은 107.862초 정적 소크에서 load1 1.17~1.93,
-66.2~70.6°C, throttle 0을 기록했고 MCAP 16,150개 메시지의 CRC가 통과했다. 속도 명령은
-전부 0이었고 정지 변위는 0.025mm였다. 사용자의 결정으로 별도 2~6m 단거리 단계는
-생략하고 전체 왕복으로 진행한다. 실제 출발 시 작업자가 로봇 옆에서 물리 전원을 즉시
+실측 수치·해시·실패 시점은 `evaluation/20260904_HANDOFF.md`와 증거 원장을 기준으로
+한다. 최신 11:56 기록은 MCAP 무결성과 필수 토픽을 통과해 TF·센서 지연 분석에는 쓸 수
+있지만, 세 번째 목표 이전에 Nav2 lifecycle이 무너져 전체 왕복 표본은 아니다. recorder가
+주행 종료 뒤에도 계속된 구간이 있어 전체 duration과 평균 rate도 성능 비교에서 제외한다.
+
+프로세스별 CPU의 과거 표는 구버전 계측기의 오분류 때문에 소급 검증할 수 없다. 수정된
+`soak_metrics`는 전체 시스템 CPU로 자원 여유를 판정하고 프로세스별 CPU는 원인 귀속에
+쓴다. recorder와 `nav2_container` 또는 독립 Nav2 필수 집합이 워밍업 뒤 60초 동안 함께
+측정되고 인접 샘플 간격이 10초 이하여야 통과하며, 빈 시점도 sentinel로 기록한다.
+`corridor_autorun.sh`는 이 정적 자원
+게이트를 실제 출발 전에 실행한다. 이 수정본의 비주행 소크 뒤 짧은 위치 왕복, recording
+A/B, 전체 왕복 순으로 검증한다. 실제 출발 시 작업자가 로봇 옆에서 물리 전원을 즉시
 차단할 수 있어야 한다.
-
-반복 노드 소실을 고친 독립 프로세스 판은 recorder 포함 330.747초 정적 소크에서 필수
-Nav2 노드가 모두 생존했고 bond 실패와 SIGSEGV가 없었다. 45.4MiB·49,556개 메시지의
-45/45 chunk CRC가 통과했고 비영점 속도 명령은 0건, odom 변위는 0.0253mm, 종료 뒤
-잔류 프로세스와 `/cmd_vel` 발행자는 0이었다. 반면 load1은 4.13~9.85, recorder
-transport loss는 3건이어서 부하·최종 데이터 게이트는 통과하지 못했다. 부하를 줄이려고
-두 개의 멀티스레드 컨테이너로 나눈 시험은 32초에 load1 2.19까지 내려갔지만 2분 14초에
-7.56으로 올랐고 종료 시 navigation 컨테이너가 SIGKILL을 필요로 해 채택하지 않았다.
-
-후속 네 기록도 같은 원칙으로 분류한다. `165606`과 `170550`은 합성 노드 소실 및
-AMCL 재초기화·게이트 진단용, `172141`은 23.573m의 깨끗한 부분 복귀 성공, `172738`은
-독립 프로세스에서 BT action timeout을 재현한 진단용이다. 모든 bag은 센서 노이즈·주기·
-TF 지연과 오프라인 SLAM 입력에는 사용할 수 있지만, 시작점부터 80m 전체 왕복을 한 번에
-끝낸 기록이 아니므로 프로토콜 적격 표본 수는 아직 0이다.
 
 자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
-자율 매핑, 노트북 실행과 파이 저장지도 주행은 모두 Nav2 lifecycle 노드를 별도 프로세스로 띄운다(`use_composition=False`). 실기 scan/TF 부하에서 한 구성 컨테이너가 멈추면 planner와 navigator action server가 함께 사라지는 결합을 피하려는 설정이다. `onboard_nav2_core.launch.py`는 기능 수는 최소로 유지하되 필수 노드마다 process exit handler를 둔다. 과거 최소 합성 구성은 load1 1.17~1.93이었지만 실차에서 내부 노드 소실이 발생했고, 현재 독립 프로세스 구성은 생존성을 얻는 대신 load1 4.13~9.85를 기록했다. 이 상충은 다음 실차 전 별도 성능 개선 대상으로 남긴다. 베이스는 `/odom`과 IMU를 약 50Hz로 유지하면서 `odom -> base_footprint` TF만 20Hz로 제한하고, Cartographer의 `map -> odom`도 20Hz로 발행한다. explorer 프로세스가 종료되면 전체 자율 매핑 launch가 종료되도록 event handler가 등록돼 있다.
+파이 저장지도 주행은 현재 필요한 Nav2 서버를 `component_container_isolated` 하나에
+합성하고 lifecycle manager와 graph liveness guard를 별도 프로세스로 둔다. 이 구성에서
+intra-process 통신을 명시적으로 켜지는 않았으므로 composition과 zero-copy를 같은 뜻으로
+설명하지 않는다. 베이스 센서·TF 발행 주기와 자율 매핑의 explorer 종료 처리는 별도
+launch 계약을 따른다.
 
-운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다. Nav2 자식 프로세스 하나만 직접 `kill`하면 lifecycle 정리와 최종 정지 상태를 확인하기 어렵다. 합성 컨테이너에서 확인된 lifecycle bond 실패와 종료 SIGSEGV 때문에 현재 복도 구성은 독립 프로세스로 전환했다. 종료 뒤 Nav2·recorder 잔류 0과 `/cmd_vel` publisher 0은 계속 확인한다.
+운용 종료는 launch를 실행한 터미널의 `Ctrl-C` 또는 launch process group 종료로 수행한다.
+Nav2 자식 프로세스 하나만 직접 `kill`하면 lifecycle 정리와 recorder 마감을 확인하기
+어렵다. 현재 복도 구성은 합성 컨테이너와 graph liveness guard를 함께 사용하며,
+`corridor_autorun.sh`는 자신이 시작한 프로세스 그룹만 추적해 종료한다. 종료 뒤
+Nav2·recorder 잔류 0, `metadata.yaml` 생성, `/cmd_vel` publisher 0을 확인한다.
+`--delay`는 Nav2 기동 전에 적용한다. 로봇을 배치한 뒤에는 AMCL·사전 계획·자원 게이트가
+끝날 때까지 옮기지 않는다.
 
 2026-08-26 팔 장착 전 실기 자율탐사에서는 최종 상태 `FINISHED`, `save=succeeded`, `readiness_missing=none`을 확인했다. 저장 지도는 894×212셀(0.05m/셀), 오도메트리 누적 경로는 45.018m였다. 이 결과는 당시 복도와 작업자 감시 조건에서의 자율 매핑 기록이며 안전 인증이나 무인 운전 승인을 뜻하지 않는다.
 

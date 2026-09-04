@@ -1,21 +1,20 @@
 <!-- 복도 주행 BT. 앞으로만 가되 일시적 실패는 재시도한다.
-     2026-09-03: 재시도가 전혀 없어 한 번의 일시적 실패가 8m 지점에서 전체
-     주행을 끝냈다. 회전·후진 복구는 여전히 넣지 않는다(상태가 불명확해지고
-     behavior_server 를 띄우지 않는다). 복구 수단은 코스트맵 초기화뿐이다.
-     server_timeout 은 bt_navigator 의 default_server_timeout 을 덮어쓰므로
-     둘을 함께 3000ms 로 맞춘다. -->
+     회전·후진 복구는 상태를 불명확하게 만들므로 넣지 않고, 복구 수단은
+     코스트맵 초기화로 제한한다. server_timeout은 bt_navigator의 같은 이름
+     설정을 덮어쓰므로 두 실행값을 테스트에서 함께 검증한다. -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <Sequence name="NavigateCorridorForwardOnly">
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <GoalCheckerSelector selected_goal_checker="{selected_goal_checker}" default_goal_checker="position_goal_checker" topic_name="goal_checker_selector"/>
         <RecoveryNode number_of_retries="3" name="ComputePathRetry">
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
           <ClearEntireCostmap name="ClearGlobalBeforeReplan" service_name="global_costmap/clear_entirely_global_costmap"/>
         </RecoveryNode>
         <RecoveryNode number_of_retries="3" name="FollowPathRetry">
-          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+          <FollowPath path="{path}" controller_id="{selected_controller}" goal_checker_id="{selected_goal_checker}" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
           <ClearEntireCostmap name="ClearLocalBeforeRetry" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </Sequence>

@@ -72,6 +72,15 @@ def load_route(route_yaml):
             waypoint[field] = value
         if 'yaw' in waypoint:
             waypoint['yaw'] = float(waypoint['yaw'])
+    start_pose = config.get('start_pose')
+    if start_pose is not None:
+        if not isinstance(start_pose, dict):
+            raise ValueError('start_pose must be a mapping')
+        for field in ('x', 'y'):
+            value = float(start_pose[field])
+            if not math.isfinite(value):
+                raise ValueError(f'start_pose {field} must be finite')
+            start_pose[field] = value
 
     map_yaml = _expanded_path(config['map_yaml'], route_yaml.parent)
     mask_yaml = _expanded_path(
@@ -106,11 +115,9 @@ class CorridorRoute(Node):
             raise ValueError('start_index is past the final waypoint')
         self.minimum_battery_v = float(config.get('minimum_battery_v', 10.5))
         self.freshness_s = float(config.get('sensor_freshness_s', 2.5))
-        # /battery_state arrives at about 0.83 Hz, so a 2.5 s limit is barely
-        # two periods and one late message cancels the drive.  On 2026-09-03
-        # the robot was 8 m into a clean run, zero recoveries, 11.7 V, and was
-        # stopped by "battery stale: age=2.505s limit=2.500s".  A late battery
-        # message is not a hazard; a low voltage is, and that gate stays.
+        # Battery freshness and sensor freshness are separate contracts: a
+        # delayed battery sample is not equivalent to driving blind.  The
+        # measured rate and threshold history live in the evaluation report.
         self.battery_freshness_s = float(
             config.get('battery_freshness_s', 30.0))
         self.max_amcl_covariance = (
@@ -121,7 +128,18 @@ class CorridorRoute(Node):
             config.get('amcl_freshness_s', 15.0))
         self.max_resume_start_distance_m = float(
             config.get('max_resume_start_distance_m', 6.0))
-        self.resume_start_check_pending = start_index > 0
+        if start_index > 0:
+            self.start_reference = self.waypoints[0]
+            self.start_distance_limit_m = self.max_resume_start_distance_m
+            self.start_check_kind = 'resume'
+        else:
+            self.start_reference = config.get('start_pose', self.waypoints[0])
+            self.start_distance_limit_m = float(
+                config.get(
+                    'max_route_start_distance_m',
+                    self.max_resume_start_distance_m))
+            self.start_check_kind = 'route'
+        self.start_check_pending = True
         self.stop_requested = False
         self.samples = {'battery': None, 'odom': None, 'scan': None}
         self.battery_voltage = None
@@ -168,7 +186,7 @@ class CorridorRoute(Node):
             float(message.pose.pose.position.y),
         )
 
-    def _guard_failure(self):
+    def _guard_failure(self, require_fresh_amcl=True):
         """Describe the exact fail-closed input instead of a generic stop."""
         now = time.monotonic()
         for name, timestamp in self.samples.items():
@@ -185,40 +203,53 @@ class CorridorRoute(Node):
                     f'limit={limit:.3f}s')
         if self.battery_voltage is None:
             return 'battery voltage missing'
+        if not math.isfinite(self.battery_voltage):
+            return (
+                'battery voltage non-finite: '
+                f'value={self.battery_voltage}')
         if self.battery_voltage < self.minimum_battery_v:
             return (
                 f'battery low: voltage={self.battery_voltage:.3f}V '
                 f'limit={self.minimum_battery_v:.3f}V')
         if self.amcl_seen is None or self.amcl_covariance is None:
             return 'AMCL pose missing'
-        amcl_age = now - self.amcl_seen
-        if amcl_age > self.amcl_freshness_s:
+        amcl_age_s = now - self.amcl_seen
+        if require_fresh_amcl and amcl_age_s > self.amcl_freshness_s:
             return (
-                f'AMCL pose stale: age={amcl_age:.3f}s '
+                f'AMCL pose stale: age={amcl_age_s:.3f}s '
                 f'limit={self.amcl_freshness_s:.3f}s')
         for axis, covariance, limit in zip(
                 ('x', 'y'), self.amcl_covariance,
                 self.max_amcl_covariance):
+            if not math.isfinite(covariance):
+                return (
+                    f'AMCL {axis} covariance non-finite: '
+                    f'value={covariance}')
             if covariance > limit:
                 return (
                     f'AMCL {axis} covariance high: value={covariance:.3f} '
                     f'limit={limit:.3f}')
-        if self.resume_start_check_pending:
+        if self.start_check_pending:
             if self.amcl_position is None:
-                return 'AMCL position missing for route resume'
-            first = self.waypoints[0]
-            distance = math.hypot(
-                self.amcl_position[0] - first['x'],
-                self.amcl_position[1] - first['y'],
+                return f'AMCL position missing for {self.start_check_kind} start'
+            for axis, position in zip(('x', 'y'), self.amcl_position):
+                if not math.isfinite(position):
+                    return (
+                        f'AMCL {self.start_check_kind} start {axis} '
+                        f'non-finite: value={position}')
+            distance_m = math.hypot(
+                self.amcl_position[0] - self.start_reference['x'],
+                self.amcl_position[1] - self.start_reference['y'],
             )
-            if distance > self.max_resume_start_distance_m:
+            if distance_m > self.start_distance_limit_m:
                 return (
-                    f'AMCL resume start too far: distance={distance:.3f}m '
-                    f'limit={self.max_resume_start_distance_m:.3f}m')
+                    f'AMCL {self.start_check_kind} start too far: '
+                    f'distance={distance_m:.3f}m '
+                    f'limit={self.start_distance_limit_m:.3f}m')
         return None
 
-    def _navigation_ready(self):
-        return self._guard_failure() is None
+    def _navigation_ready(self, require_fresh_amcl=True):
+        return self._guard_failure(require_fresh_amcl) is None
 
     def wait_until_ready(self, timeout=15.0):
         """Require current sensors, battery, and a bounded AMCL estimate."""
@@ -226,7 +257,7 @@ class CorridorRoute(Node):
         while time.monotonic() < deadline and not self.stop_requested:
             rclpy.spin_once(self, timeout_sec=0.1)
             if self._navigation_ready():
-                self.resume_start_check_pending = False
+                self.start_check_pending = False
                 return True
         self.get_logger().error(
             'navigation readiness timeout: '
@@ -319,11 +350,18 @@ class CorridorRoute(Node):
         if not self.navigate.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('navigate_to_pose unavailable')
             return False
+        # wait_until_ready() already proved that localization produced a
+        # current pose.  AMCL's pose topic may remain quiet while a correctly
+        # localized robot is stationary.  Runtime
+        # safety continues to require fresh scan/odom, valid battery data, and
+        # bounded covariance, but silence on /amcl_pose alone is not a fault.
         for index, waypoint in enumerate(self.waypoints):
-            if self.stop_requested or not self._navigation_ready():
+            if (
+                    self.stop_requested or
+                    not self._navigation_ready(require_fresh_amcl=False)):
                 self.get_logger().error(
                     'navigation guard blocked next goal: '
-                    f'{self._guard_failure() or "operator stop"}')
+                    f'{self._guard_failure(False) or "operator stop"}')
                 return False
             goal = NavigateToPose.Goal()
             goal.pose = self._pose(index, waypoint)
@@ -349,10 +387,11 @@ class CorridorRoute(Node):
                 if self.stop_requested:
                     self._cancel(handle, 'operator interrupt')
                     return False
-                if not self._navigation_ready():
+                if not self._navigation_ready(require_fresh_amcl=False):
                     self._cancel(
                         handle,
-                        self._guard_failure() or 'navigation guard failure')
+                        self._guard_failure(False) or
+                        'navigation guard failure')
                     return False
             wrapped = result_future.result()
             if (

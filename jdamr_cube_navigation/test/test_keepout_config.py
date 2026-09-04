@@ -2,6 +2,7 @@
 
 import ast
 import hashlib
+import math
 from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
@@ -247,8 +248,7 @@ def test_onboard_navigation_keeps_control_and_recording_off_wifi():
 
 def test_onboard_core_loads_only_corridor_required_nav2_processes():
     """Keep unused servers off the Pi and load every required Nav2 node."""
-    # 2026-09-04: the nodes moved back into a composed container, so they are
-    # named by component plugin rather than by executable.
+    # Composed nodes are named by component plugin rather than executable.
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
     ast.parse(source)
@@ -269,7 +269,7 @@ def test_onboard_core_loads_only_corridor_required_nav2_processes():
     assert "'navigate_to_pose_corridor_fail_fast.xml'" in source
     assert "'yaml_filename': map_yaml" in source
     assert source.count("'keepout_filter.enabled'): 'true'") == 2
-    # 2026-09-04: composition is required again, guarded by the liveness node.
+    # Composition and graph-loss detection are one executable contract.
     assert 'ComposableNodeContainer' in source
     assert 'required_exit_handlers' in source
     assert 'OpaqueFunction(function=_validate_keepout)' in source
@@ -291,10 +291,8 @@ def test_operator_view_never_starts_navigation_or_recording():
 
 def test_corridor_route_retries_but_never_turns_around():
     """Retry a transient failure; never hide a fault behind spin or backup."""
-    # 2026-09-03: with no retry at all, one transient failure ended an
-    # otherwise clean 8 m run at waypoint 3.  Retries are allowed now, but
-    # rotation and reversing stay out: they make the recorded state
-    # ambiguous, and behavior_server is not started onboard anyway.
+    # Rotation and reversing stay out because they make the recorded state
+    # ambiguous, and behavior_server is not started onboard.
     source = ROUTE_SOURCE.read_text(encoding='utf-8')
     root = ET.parse(CORRIDOR_BT).getroot()
     tags = {element.tag for element in root.iter()}
@@ -310,13 +308,13 @@ def test_corridor_route_retries_but_never_turns_around():
     # Recovery must stay bounded so a stuck robot still ends the run.
     for node in root.iter('RecoveryNode'):
         assert int(node.attrib['number_of_retries']) <= 6
-    # The BT attribute overrides bt_navigator's default_server_timeout, so
-    # both must move together.  1000ms aborted every first goal on 2026-09-03
-    # because it landed while planner_server was still busy with the preflight.
+    # The BT attribute overrides bt_navigator's default_server_timeout, so the
+    # two executable values move together.
     assert root.findall(
         './/ComputePathToPose')[0].attrib['server_timeout'] == '3000'
     assert root.findall('.//FollowPath')[0].attrib['server_timeout'] == '3000'
-    assert 'if not self._navigation_ready()' in source
+    assert source.count(
+        'not self._navigation_ready(require_fresh_amcl=False)') == 2
     assert 'self._guard_failure()' in source
 
 
@@ -442,22 +440,46 @@ def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
     waypoints = config['waypoints']
 
     assert config['planned_length_m'] == 76.42
-    # 2026-09-04: raised from 2.5 s.  A wireless stall cancelled a healthy run
-    # at "odom stale: age=2.503s limit=2.500s".  Collision Monitor holds the
-    # immediate stop with its own 2.0 s source timeout.
+    # Collision Monitor owns the immediate stop; the route gate detects a
+    # longer sensor-stream loss.
     assert 5.0 <= config['sensor_freshness_s'] <= 15.0
     assert config['minimum_battery_v'] == 10.5
-    # Raised out of the way on 2026-09-03; a corridor makes x ambiguous by
-    # construction and the old 2.0/1.0 pair cancelled real drives.
+    # A corridor makes its longitudinal axis weakly observable, so covariance
+    # is retained as evidence without being an aggressive runtime gate.
     assert config['max_amcl_x_covariance'] >= 50.0
     assert config['max_amcl_y_covariance'] >= 50.0
     assert config['amcl_freshness_s'] == 60.0
+    assert config['start_pose'] == {'x': 0.0, 'y': -0.1}
+    assert config['max_route_start_distance_m'] == 1.0
     assert config['max_resume_start_distance_m'] == 6.0
     assert len(waypoints) == 20
     assert waypoints[0]['id'] == 'outbound_02m'
     assert waypoints[9]['id'] == 'turnaround'
-    assert waypoints[-1] == {
-        'id': 'home', 'x': 0.0, 'y': -0.1, 'yaw': 0.0}
+    assert waypoints[-1] == {'id': 'home', 'x': 0.0, 'y': -0.1}
+
+
+def test_roundtrip_finishes_on_position_without_forcing_a_final_turn():
+    """Returning to home is a position task, not an orientation task."""
+    params = yaml.safe_load(PARAMS_PATH.read_text(encoding='utf-8'))
+    controller = params['controller_server']['ros__parameters']
+    root = ET.parse(CORRIDOR_BT).getroot()
+
+    assert controller['goal_checker_plugins'] == [
+        'general_goal_checker', 'position_goal_checker']
+    general = controller['general_goal_checker']
+    assert general['plugin'] == 'nav2_controller::SimpleGoalChecker'
+    assert general['yaw_goal_tolerance'] == 0.25
+    checker = controller['position_goal_checker']
+    assert checker['plugin'] == 'nav2_controller::PositionGoalChecker'
+    assert checker['xy_goal_tolerance'] == 0.15
+    assert 'yaw_goal_tolerance' not in checker
+
+    selector = root.find('.//GoalCheckerSelector')
+    follow_path = root.find('.//FollowPath')
+    assert selector is not None
+    assert selector.attrib['default_goal_checker'] == 'position_goal_checker'
+    assert follow_path is not None
+    assert follow_path.attrib['goal_checker_id'] == '{selected_goal_checker}'
 
 
 def test_corridor_route_is_planning_first_and_signal_safe():
@@ -483,11 +505,9 @@ def test_corridor_route_receives_amcl_pose_when_started_after_localization():
 
 def test_corridor_route_keeps_a_covariance_gate_but_stops_blocking_corridors():
     """Report the axis and value, but do not cancel on corridor ambiguity."""
-    # 2026-09-03: the operator asked for the run to stop being blocked.  A
-    # straight corridor is weakly observable along x, and 9/1 cancelled a
-    # drive at x covariance 0.519.  The mechanism stays so a truly lost
-    # estimate is still named, with the limit raised out of the way.  Real
-    # hazards are held by Collision Monitor and the keepout mask.
+    # A straight corridor is weakly observable along its longitudinal axis.
+    # Keep the mechanism and exact diagnostic without making it an aggressive
+    # runtime stop; measured failures stay in the evaluation report.
     route = object.__new__(CorridorRoute)
     now = time.monotonic()
     route.samples = {name: now for name in ('battery', 'odom', 'scan')}
@@ -499,8 +519,7 @@ def test_corridor_route_keeps_a_covariance_gate_but_stops_blocking_corridors():
     route.amcl_position = (0.0, 0.0)
     route.max_amcl_covariance = (50.0, 50.0)
     route.amcl_freshness_s = 60.0
-    route.max_resume_start_distance_m = 6.0
-    route.resume_start_check_pending = False
+    route.start_check_pending = False
 
     # The values that cancelled real drives must now pass.
     route.amcl_covariance = (0.519, 0.151)
@@ -511,6 +530,29 @@ def test_corridor_route_keeps_a_covariance_gate_but_stops_blocking_corridors():
     route.amcl_covariance = (0.5, 50.001)
     assert route._guard_failure() == (
         'AMCL y covariance high: value=50.001 limit=50.000')
+
+
+def test_amcl_freshness_is_a_start_gate_not_a_runtime_cancel():
+    """A stationary localized robot need not republish /amcl_pose forever."""
+    route = object.__new__(CorridorRoute)
+    now = time.monotonic()
+    route.samples = {name: now for name in ('battery', 'odom', 'scan')}
+    route.freshness_s = 10.0
+    route.battery_freshness_s = 30.0
+    route.battery_voltage = 12.0
+    route.minimum_battery_v = 10.5
+    route.amcl_seen = now - 61.0
+    route.amcl_covariance = (0.25, 0.25)
+    route.amcl_position = (0.0, 0.0)
+    route.max_amcl_covariance = (50.0, 50.0)
+    route.amcl_freshness_s = 60.0
+    route.start_check_pending = False
+
+    assert route._guard_failure().startswith('AMCL pose stale:')
+    assert route._guard_failure(require_fresh_amcl=False) is None
+
+    source = ROUTE_SOURCE.read_text(encoding='utf-8')
+    assert source.count('_navigation_ready(require_fresh_amcl=False)') == 2
 
 
 def test_corridor_route_rejects_resume_after_amcl_resets_to_origin():
@@ -528,14 +570,73 @@ def test_corridor_route_rejects_resume_after_amcl_resets_to_origin():
     route.amcl_freshness_s = 60.0
     route.waypoints = [{'x': 30.0, 'y': -2.37}]
     route.amcl_position = (0.0, 0.0)
-    route.max_resume_start_distance_m = 6.0
-    route.resume_start_check_pending = True
+    route.start_reference = {'x': 30.0, 'y': -2.37}
+    route.start_distance_limit_m = 6.0
+    route.start_check_kind = 'resume'
+    route.start_check_pending = True
 
     assert route._guard_failure() == (
         'AMCL resume start too far: distance=30.093m limit=6.000m')
 
-    route.resume_start_check_pending = False
+    route.start_check_pending = False
     assert route._guard_failure() is None
+
+
+def test_corridor_route_rejects_a_full_run_away_from_home():
+    """Moving the robot after localization must not redirect a full route."""
+    route = object.__new__(CorridorRoute)
+    now = time.monotonic()
+    route.samples = {name: now for name in ('battery', 'odom', 'scan')}
+    route.freshness_s = 10.0
+    route.battery_freshness_s = 30.0
+    route.battery_voltage = 12.0
+    route.minimum_battery_v = 10.5
+    route.amcl_seen = now
+    route.amcl_covariance = (0.25, 0.25)
+    route.max_amcl_covariance = (50.0, 50.0)
+    route.amcl_freshness_s = 60.0
+    route.amcl_position = (7.0, -0.7)
+    route.start_reference = {'x': 0.0, 'y': -0.1}
+    route.start_distance_limit_m = 1.0
+    route.start_check_kind = 'route'
+    route.start_check_pending = True
+
+    assert route._guard_failure() == (
+        'AMCL route start too far: distance=7.026m limit=1.000m')
+
+
+@pytest.mark.parametrize('bad_value', [math.nan, math.inf, -math.inf])
+def test_corridor_route_rejects_non_finite_safety_inputs(bad_value):
+    """Reject NaN and infinity before comparison-based safety gates."""
+    route = object.__new__(CorridorRoute)
+    now = time.monotonic()
+    route.samples = {name: now for name in ('battery', 'odom', 'scan')}
+    route.freshness_s = 10.0
+    route.battery_freshness_s = 30.0
+    route.minimum_battery_v = 10.5
+    route.amcl_seen = now
+    route.amcl_covariance = (0.25, 0.25)
+    route.max_amcl_covariance = (50.0, 50.0)
+    route.amcl_freshness_s = 60.0
+    route.amcl_position = (0.0, -0.1)
+    route.start_reference = {'x': 0.0, 'y': -0.1}
+    route.start_distance_limit_m = 1.0
+    route.start_check_kind = 'route'
+    route.start_check_pending = False
+
+    route.battery_voltage = bad_value
+    assert route._guard_failure().startswith('battery voltage non-finite:')
+
+    route.battery_voltage = 12.0
+    route.amcl_covariance = (bad_value, 0.25)
+    assert route._guard_failure().startswith(
+        'AMCL x covariance non-finite:')
+
+    route.amcl_covariance = (0.25, 0.25)
+    route.amcl_position = (bad_value, -0.1)
+    route.start_check_pending = True
+    assert route._guard_failure().startswith(
+        'AMCL route start x non-finite:')
 
 
 def test_route_loader_rejects_a_changed_keepout_mask(tmp_path):
@@ -627,9 +728,7 @@ def test_package_installs_keepout_command_and_assets():
 
 def test_lifecycle_managers_tolerate_pi_service_latency():
     """A slow bond reply must not read as a dead node."""
-    # 2026-09-03: the default 4 s bond timeout reported a healthy keepout
-    # server as failed and aborted its bringup, leaving the costmap filter
-    # info server inactive so keepout zones were not applied at all.
+    # The shared setting keeps all lifecycle managers on the same contract.
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
     # Shared by all three lifecycle managers through one dict.
@@ -640,10 +739,8 @@ def test_lifecycle_managers_tolerate_pi_service_latency():
 
 def test_replay_guard_orders_odometry_against_scans():
     """Late odometry kills Cartographer mid-replay, so the guard drops it."""
-    # corridor_keepout_roundtrip_20260901T150446 carries 63 odometry messages
-    # stamped before the newest scan, up to 1.340 s inverted, because Wi-Fi
-    # delayed them during recording.  Cartographer aborts with
-    # "Check failed: odometry_data.time >= timed_pose_queue_.back().time".
+    # Run-specific inversion counts stay in the evaluation report.  This test
+    # pins the ordering rule and the conversion used to enforce it.
     from jdamr_cube_navigation.tf_replay_filter import stamp_seconds
 
     guard = (PACKAGE_ROOT / 'jdamr_cube_navigation'
@@ -664,20 +761,52 @@ def test_replay_guard_orders_odometry_against_scans():
 
 def test_autorun_never_drives_without_passing_every_gate():
     """A run the operator cannot watch must refuse itself on any doubt."""
-    # 2026-09-03: Wi-Fi dropped in the corridor and the start command never
-    # reached the robot.  Recording always lived on the Pi's SD card, so the
-    # link is only needed to start, stop and collect.  Moving the start into
-    # the robot removes the dependency, which means nobody is watching while
-    # it decides to move.
+    # Onboard scheduling removes Wi-Fi from the start path, so every gate and
+    # cleanup boundary must remain local to the robot.
     source = (PACKAGE_ROOT / 'scripts'
               / 'corridor_autorun.sh').read_text(encoding='utf-8')
 
-    for gate in ('lifecycle 매니저', '사전점검 FAIL', '전체 경로 계획 실패'):
+    for gate in (
+            'lifecycle 매니저', '사전점검 FAIL', '전체 경로 계획 실패',
+            '자원 게이트 FAIL'):
         assert gate in source
     assert source.count('주행하지 않는다') >= 4
+    # grep -c prints zero and exits non-zero when there is no match.  Appending
+    # ``|| echo 0`` would make the shell variable contain two lines and break
+    # the numeric lifecycle gate.
+    assert '2>/dev/null) || n=0' in source
+    assert '2>/dev/null || echo 0)' not in source
     assert 'jdamr_abort' in source
     # The stack must come down even when a gate aborts the script.
     assert 'trap stop_stack EXIT' in source
+    # Track the exact process groups started by this run.  Broad pkill patterns
+    # previously left a detached recorder running and could also stop another
+    # diagnostic session.
+    for pid_name in ('NAV_PID', 'METRICS_PID', 'ROUTE_PID', 'WIFI_PID'):
+        assert f'{pid_name}=$!' in source
+    assert 'kill -"$signal" -- "-$pid"' in source
+    assert 'group_alive()' in source
+    assert '$2 !~ /^Z/' in source
+    assert '주행 중 중단 파일 발견' in source
+    # The abort sentinel is checked once more immediately before process
+    # creation so a request arriving after the delay loop cannot race launch.
+    assert source.count('if [ -e "$ABORT_FILE" ]; then') >= 3
+    before_departure = source.split('say "출발"', 1)[0]
+    assert before_departure.count('if [ -e "$ABORT_FILE" ]; then') >= 2
+    assert source.index('배치 완료로 간주') < source.index('Nav2 와 기록 기동')
+    # Resource evidence must be scored before either no-execute success or a
+    # real route launch can be reported.
+    assert '--evaluate "$A/$RUN_ID.per_process.tsv"' in source
+    assert source.count('ros2 run jdamr_cube_navigation soak_metrics') == 2
+    assert source.count('--cores "$(nproc)"') == 2
+    resource_gate = source.index('자원 게이트 PASS')
+    assert resource_gate < source.index('if [ "$EXECUTE" -eq 0 ]')
+    assert resource_gate < source.index('say "출발"')
+    # Route cancellation has a shorter bound than recorder finalization.
+    assert 'ROUTE_STOP_GRACE_S=7' in source
+    assert '--kill-after="${ROUTE_STOP_GRACE_S}s"' in source
+    assert 'INT "$ROUTE_STOP_GRACE_S"' in source
+    assert 'pkill' not in source
     # Signal strength is logged to the robot so a dropped link still leaves
     # evidence of where the corridor coverage failed.
     assert '/proc/net/wireless' in source
@@ -685,9 +814,8 @@ def test_autorun_never_drives_without_passing_every_gate():
 
 def test_preflight_lets_the_costmap_refill_before_planning():
     """Planning against a just-cleared costmap detours around unknown space."""
-    # 2026-09-03: the same route planned 214.863 m immediately after a clear
-    # and 78.032 m three seconds later.  The planner runs with
-    # allow_unknown:false, so an empty global costmap looks impassable.
+    # With allow_unknown:false, an empty global costmap looks impassable.
+    # The executable wait stays pinned here; run results stay in reports.
     source = (PACKAGE_ROOT / 'scripts'
               / 'corridor_preflight.sh').read_text(encoding='utf-8')
     clear_block = source.split('코스트맵 초기화 ==', 1)[1]
@@ -697,9 +825,8 @@ def test_preflight_lets_the_costmap_refill_before_planning():
 
 def test_battery_freshness_is_not_scan_freshness():
     """A late battery reading is not a hazard; a blind robot is."""
-    # 2026-09-03: 8 m into a clean run with zero recoveries and 11.7 V, the
-    # drive cancelled on "battery stale: age=2.505s limit=2.500s".
-    # /battery_state runs near 0.83 Hz, so 2.5 s is barely two periods.
+    # Battery and motion sensors have different freshness contracts.  Their
+    # measured rates and cancellation history stay in evaluation reports.
     config = yaml.safe_load(ROUNDTRIP_ROUTE.read_text(encoding='utf-8'))
     source = (PACKAGE_ROOT / 'jdamr_cube_navigation'
               / 'corridor_route.py').read_text(encoding='utf-8')
@@ -717,10 +844,8 @@ def test_battery_freshness_is_not_scan_freshness():
 
 def test_onboard_core_uses_composition_with_a_liveness_guard():
     """Composition for speed; a guard for the failure it used to hide."""
-    # Measured on the same corridor and route: composed reached 37.60 m and
-    # 37.68 m, one-process-per-node never passed 10 m and load climbed
-    # 5.9 -> 17.8 while CPU held near 250% of 400%.  The split existed only to
-    # notice nodes leaving the DDS graph, so the guard takes that job back.
+    # Performance measurements stay in the evaluation report.  This test only
+    # pins the selected process topology and graph-loss detector.
     from jdamr_cube_navigation.nav2_liveness_guard import (
         DEFAULT_REQUIRED,
         missing_nodes,
@@ -749,18 +874,38 @@ def test_onboard_core_uses_composition_with_a_liveness_guard():
 
 
 def test_liveness_guard_tolerates_a_single_discovery_flicker():
-    """One missed discovery sample must not end a healthy drive."""
+    """Reset one graph miss, then fail on two consecutive misses."""
     from jdamr_cube_navigation.nav2_liveness_guard import Nav2LivenessGuard
+
+    class _Logger:
+        def info(self, _message):
+            pass
+
+        def warn(self, _message):
+            pass
 
     guard = object.__new__(Nav2LivenessGuard)
     guard.required = ('amcl',)
     guard.ready = True
     guard.failure = None
     guard.consecutive_misses = 0
+    present = []
+    guard._names = lambda: present
+    guard.get_logger = lambda: _Logger()
 
-    # The guard only acts on the second consecutive miss.
-    assert Nav2LivenessGuard._tick.__doc__ is None or True
-    source = (PACKAGE_ROOT / 'jdamr_cube_navigation'
-              / 'nav2_liveness_guard.py').read_text(encoding='utf-8')
-    assert 'consecutive_misses >= 2' in source
-    assert 'grace' in source
+    guard._tick()
+    assert guard.consecutive_misses == 1
+    assert guard.failure is None
+
+    present.append('/amcl')
+    guard._tick()
+    assert guard.consecutive_misses == 0
+    assert guard.failure is None
+
+    present.clear()
+    guard._tick()
+    with pytest.raises(SystemExit):
+        guard._tick()
+    assert guard.consecutive_misses == 2
+    assert guard.failure == (
+        'required Nav2 node(s) vanished from the graph: amcl')

@@ -1,7 +1,7 @@
 # jdamr_cube 전용 Nav2 파라미터.
 # ROS 2 Jazzy에 기본 설치된 nav2_bringup/params/nav2_params.yaml을 베이스로,
-# 현재 URDF의 주행부 외곽(전후 캐스터 포함 0.46 x 0.40m)과 저장된 맵 원점(스폰 위치 = 0,0,0)에
-# 맞춰 footprint, 초기 위치(initial_pose), 속도 제한만 수정했다. 나머지 항목은 Jazzy 기본값 유지.
+# footprint는 현재 URDF에서 유도하며 테스트가 두 값을 대조한다. 초기 위치와
+# 속도 제한을 포함한 변경 이력은 evaluation 보고서에서 관리한다.
 
 amcl:
   ros__parameters:
@@ -42,8 +42,7 @@ amcl:
     z_rand: 0.5
     z_short: 0.05
     scan_topic: scan
-    # room.world에서 로봇은 항상 (0,0,0)에 스폰되고 cartographer 맵의 원점도 그 지점이므로,
-    # RViz에서 "2D Pose Estimate"를 매번 클릭하지 않아도 되도록 초기 위치를 자동 설정.
+    # 시뮬레이션 spawn과 저장 지도 원점이 같은 구성에서 초기 위치를 자동 설정한다.
     set_initial_pose: true
     initial_pose:
       x: 0.0
@@ -57,9 +56,7 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: /odom
     bt_loop_duration: 10
-    # Separate Pi processes need a realistic DDS action acknowledgement window.
-    # 1000ms still aborted when the first goal followed the 80m preflight plan:
-    # planner_server was busy and did not acknowledge in time.
+    # BT action timeout과 함께 움직이는 실행 계약이며 테스트가 두 값을 대조한다.
     default_server_timeout: 3000
     wait_for_service_timeout: 5000
     action_server_result_timeout: 900.0
@@ -75,8 +72,8 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    # The physical robot's Wi-Fi TF stream cannot sustain a deterministic
-    # 20 Hz loop. Ten hertz avoids turning scheduling jitter into aborts.
+    # 제어 주기는 파이의 TF 처리 여유를 고려한 운용 설정이다. 측정 이력은
+    # evaluation 보고서에 두고 실행값은 테스트로 제한한다.
     controller_frequency: 10.0
     costmap_update_timeout: 1.0
     min_x_velocity_threshold: 0.001
@@ -86,7 +83,7 @@ controller_server:
     # through a short TF/costmap gap instead of abandoning the goal.
     failure_tolerance: 2.0
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["general_goal_checker"]
+    goal_checker_plugins: ["general_goal_checker", "position_goal_checker"]
     controller_plugins: ["FollowPath"]
     use_realtime_priority: false
 
@@ -101,6 +98,12 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.15
       yaw_goal_tolerance: 0.25
+    position_goal_checker:
+      stateful: True
+      # This route is complete when the base returns to the start position;
+      # final orientation is not part of the task contract.
+      plugin: "nav2_controller::PositionGoalChecker"
+      xy_goal_tolerance: 0.15
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.18
@@ -109,7 +112,7 @@ controller_server:
       max_lookahead_dist: 0.60
       lookahead_time: 1.5
       rotate_to_heading_angular_vel: 0.50
-      # Wi-Fi DDS 환경의 Cartographer TF 지연(실측 약 0.18 s)을 흡수한다.
+      # TF 지연을 흡수하는 운용 여유이며 변경 근거는 evaluation 보고서에 둔다.
       transform_tolerance: 0.5
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
@@ -145,7 +148,7 @@ local_costmap:
       height: 3
       resolution: 0.05
       transform_tolerance: 0.7
-      # URDF 주행부 외곽: 캐스터 x=+-0.20/r=0.03, 휠 y=+-0.175/폭=0.05.
+      # 테스트가 URDF collision geometry에서 footprint를 다시 유도한다.
       footprint: "[[0.23, 0.20], [0.23, -0.20], [-0.23, -0.20], [-0.23, 0.20]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       filters: ["keepout_filter"]
@@ -158,9 +161,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # 복도 좁은 구간의 폭이 1.20~1.50m 다. 0.55m 팽창은 양옆에서 1.1m 를
-        # 먹어 통과 가능 폭이 0.1~0.4m 밖에 남지 않는다. 로봇 폭이 0.40m 이므로
-        # 사실상 늘 경계선에 걸린다.
+        # 복도 여유와 footprint의 관계는 경로·설정 테스트에서 계산한다.
         inflation_radius: 0.30
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -183,8 +184,7 @@ global_costmap:
   global_costmap:
     ros__parameters:
       update_frequency: 1.0
-      # 저장 지도 전역 코스트맵은 894x212 = 189,528셀이다. 전체 격자를 초당
-      # 한 번 reliable DDS로 내보내면 파이 CPU와 무선 대역을 함께 먹는다.
+      # 전역 코스트맵은 전체 격자 대신 변경분만 전송한다.
       publish_frequency: 0.5
       global_frame: map
       robot_base_frame: base_link
@@ -221,8 +221,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # 지역 코스트맵과 같은 이유로 0.55 -> 0.30. 좁은 복도에서 0.55 는
-        # 계획을 통과 불가에 가깝게 만든다.
+        # 지역 코스트맵과 같은 통과 폭 계약을 사용한다.
         inflation_radius: 0.30
       always_send_full_costmap: False
 
@@ -239,7 +238,7 @@ map_saver:
 
 planner_server:
   ros__parameters:
-    # The corridor BT plans once per leg; continuous 1 Hz replanning is disabled.
+    # 복도 BT는 구간마다 한 번 계획하며 연속 재계획을 사용하지 않는다.
     expected_planner_frequency: 1.0
     planner_plugins: ["GridBased"]
     costmap_update_timeout: 1.0
@@ -332,8 +331,7 @@ collision_monitor:
     cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
-    # Nav2's documented default is 2 s. The former 0.5 s threshold was below
-    # the measured DDS jitter and repeatedly stopped a clear robot.
+    # 센서 변환 지연과 source timeout은 별도 실행 계약으로 유지한다.
     transform_tolerance: 0.5
     source_timeout: 2.0
     base_shift_correction: True
@@ -341,7 +339,7 @@ collision_monitor:
     polygons: ["StopZone", "SlowdownZone", "FootprintApproach"]
     StopZone:
       type: "polygon"
-      # URDF footprint에서 각 방향 5cm만 확장한다.
+      # 테스트가 URDF footprint와 정지 영역의 확장 관계를 계산한다.
       points: "[[0.28, 0.25], [0.28, -0.25], [-0.28, -0.25], [-0.28, 0.25]]"
       action_type: "stop"
       min_points: 3
@@ -350,7 +348,7 @@ collision_monitor:
       enabled: True
     SlowdownZone:
       type: "polygon"
-      # URDF footprint에서 각 방향 15cm 확장한 저속 구간이다.
+      # 테스트가 URDF footprint와 감속 영역의 확장 관계를 계산한다.
       points: "[[0.38, 0.35], [0.38, -0.35], [-0.38, -0.35], [-0.38, 0.35]]"
       action_type: "slowdown"
       min_points: 3

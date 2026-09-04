@@ -1,17 +1,10 @@
 """Fail loudly when a required Nav2 node leaves the ROS graph."""
 
-# 2026-09-01: running Nav2 in one composed container let internal nodes
-# disappear from the DDS graph while the container process stayed alive.
-# Nothing noticed, so the route executor waited on servers that no longer
-# existed.  The reaction then was to split every node into its own process so
-# launch could see a process die.  That worked as a detector but moved all
-# intra-robot traffic onto DDS/UDP, and the measured cost was severe: the
-# corridor drive reached 37.6 m composed and stalled at 10 m split, with load
-# climbing 5.9 -> 17.8 as the wireless link degraded.
-#
-# This guard restores the detection without paying that price.  Composition
-# keeps intra-process delivery; the guard watches the graph and exits non-zero
-# the moment a required node vanishes, which the launch treats as fatal.
+# A composed container can stay alive after internal nodes leave the graph, so
+# process exit alone is insufficient evidence of Nav2 liveness.  This guard is
+# a secondary detector beside lifecycle bonds.  It identifies graph loss; it
+# does not establish why callbacks, transforms, or bonds stopped.  Historical
+# measurements and causal limits live in evaluation/20260904_HANDOFF.md.
 
 import argparse
 import sys

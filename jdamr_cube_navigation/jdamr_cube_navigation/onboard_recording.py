@@ -39,16 +39,11 @@ OFFERED_PROFILES = {
     '/joint_states': ('reliable', 'volatile', 20.0),
 }
 
-# 2026-09-04: 기록은 제어 경로에 역압을 주면 안 된다.
-#
-# 기록기가 고주기 토픽을 reliable 로 구독하면, 기록기가 밀릴 때 발행자의
-# write 가 막힌다. 실주행에서 CPU 61~146%(400% 중), load 2.8~6.1 로 자원이
-# 남는데도 컨트롤 루프가 10Hz -> 1.7Hz 로 떨어지고 lifecycle heartbeat 가
-# 끊겨 노드 9개가 한꺼번에 사라졌다. 바빠서가 아니라 막혀서다.
-#
-# 고주기 센서·TF 는 best_effort 로 받는다. 부하가 걸리면 기록기가 몇 건을
-# 잃되 로봇은 계속 달린다. 저주기 토픽은 역압 위험이 없어 reliable 을
-# 유지하고, /tf_static 은 한 번만 오는 latched 라 반드시 reliable 이어야 한다.
+# 고주기 진단 기록은 제어보다 우선할 수 없으므로 best_effort reader를
+# 사용한다. Recorder 역압은 아직 검증되지 않은 가설이며, 이 설정은 제어
+# 경로와의 결합을 줄이는 예방책이다. 실행 근거와 재검증 조건은
+# evaluation/20260904_HANDOFF.md에 둔다. /tf_static과 저주기 판정 증거는
+# reliable을 유지한다.
 RECORDER_BEST_EFFORT = {
     '/scan',
     '/odom',
@@ -69,9 +64,8 @@ NOMINAL_RATES_HZ = {
     topic: profile[2] for topic, profile in OFFERED_PROFILES.items()
 }
 
-# The 2026-09-01 independent-process soak lost 3 messages while load1 reached
-# 9.85.  Two seconds of queue covers the scheduling stalls measured there
-# without letting the recorder hold stale data across a run.
+# Reliable diagnostic topics keep a bounded queue for short scheduler stalls.
+# The queue-duration contract is exercised in test_onboard_load.py.
 MIN_BUFFER_SECONDS = 2.0
 
 # Latched transforms are replayed once, so depth stays at the transient-local

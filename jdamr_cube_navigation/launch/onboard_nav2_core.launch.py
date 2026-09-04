@@ -1,20 +1,10 @@
 """Launch only the Nav2 components required by the onboard corridor run."""
 
-# 2026-09-04: back to a composed container, with a liveness guard.
-#
-# The 2026-09-01 split into one process per node was a reaction to internal
-# nodes silently leaving the DDS graph while the container process lived on.
-# It detected that failure, but it also pushed every intra-robot message onto
-# DDS/UDP.  Measured on the same corridor and route:
-#
-#   composed      : reached 37.60 m and 37.68 m
-#   one per node  : never past 10 m; load climbed 5.9 -> 17.8 while CPU held
-#                   near 250% of 400%, and TF gapped 3.1 s
-#
-# Indoors the split build is fine, so the cost only appears once the wireless
-# link degrades and intra-robot traffic waits behind it.  Composition keeps
-# that traffic in-process, and nav2_liveness_guard restores the detection the
-# split was bought for.
+# Run the corridor Nav2 subset in a composed container and keep graph-loss
+# detection separate.  Composition correlated with lower load in earlier
+# runs, but it does not prove intra-process delivery: rclcpp defaults that
+# option to false and this launch does not override it.  Run-specific evidence
+# and remaining causal uncertainty live in evaluation/20260904_HANDOFF.md.
 
 import os
 from pathlib import Path
@@ -87,9 +77,8 @@ def generate_launch_description():
     )
     remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
     lifecycle_bond = {
-        # The Pi answers lifecycle services slowly under Nav2 load.  On
-        # 2026-09-03 the default 4 s bond timeout reported a healthy keepout
-        # server as failed and aborted its bringup.
+        # Allow lifecycle service and bond handling to tolerate scheduler
+        # jitter.  The executable threshold is covered by launch tests.
         'bond_timeout': 10.0,
         'bond_respawn_max_duration': 20.0,
     }
@@ -207,7 +196,8 @@ def generate_launch_description():
     )
 
     # The container process surviving is not evidence that the nodes inside it
-    # are alive.  This is what the one-process-per-node split was bought for.
+    # are alive, so the graph-level guard keeps that failure observable while
+    # Nav2 remains composed.
     liveness_guard = Node(
         package='jdamr_cube_navigation',
         executable='nav2_liveness_guard',

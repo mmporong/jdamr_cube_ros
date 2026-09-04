@@ -218,10 +218,16 @@ def test_collision_monitor_has_stop_slowdown_and_two_second_approach():
 def test_mapping_behavior_tree_is_forward_only_but_keeps_safe_recoveries():
     tree = ET.parse(BT_PATH)
     element_names = {element.tag for element in tree.iter()}
+    selector = tree.find('.//GoalCheckerSelector')
+    follow_path = tree.find('.//FollowPath')
 
     assert 'BackUp' not in element_names
     assert 'Spin' in element_names
     assert 'Wait' in element_names
+    assert selector is not None
+    assert selector.attrib['default_goal_checker'] == 'general_goal_checker'
+    assert follow_path is not None
+    assert follow_path.attrib['goal_checker_id'] == '{selected_goal_checker}'
 
 
 def test_mapping_launch_uses_navigation_only_with_safe_defaults():

@@ -417,6 +417,107 @@ datasets:
     transport_loss: UNKNOWN
   exclusion_reasons:
   - 주행이 없으므로 성능 표본이 아님
+- dataset_id: corridor_roundtrip_20260904T115600
+  role: corridor_roundtrip
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/corridor_roundtrip_20260904T115600
+  storage:
+    identifier: mcap
+    relative_file: corridor_roundtrip_20260904T115600_0.mcap
+    size_bytes: 264238141
+    sha256: 921f51331f63c025ac88c17cbf8c839aed2f47a407f914339c516b7d76821a66
+    metadata_sha256: 014b68ad504228aeb6d0b26c0c9448f13ce55bdfc08adcddd83db2afa2233b59
+  capture:
+    started_at_unix_ns: 1788490569053568946
+    duration_ns: 1868595420259
+    message_count: 263763
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 세 번째 목표로 이동 중 x=7.079m에서 Nav2 TF 처리와 lifecycle bond가 붕괴했고 recorder는 수동 종료 전까지 계속 기록함
+  topics:
+  - name: /amcl_pose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    messages: 32
+    reliability: reliable
+    durability: transient_local
+  - name: /battery_state
+    type: sensor_msgs/msg/BatteryState
+    messages: 1866
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    messages: 1124
+    reliability: reliable
+    durability: volatile
+  - name: /cmd_vel_nav
+    type: geometry_msgs/msg/Twist
+    messages: 590
+    reliability: reliable
+    durability: volatile
+  - name: /collision_monitor_state
+    type: nav2_msgs/msg/CollisionMonitorState
+    messages: 2
+    reliability: reliable
+    durability: volatile
+  - name: /imu/data_raw
+    type: sensor_msgs/msg/Imu
+    messages: 93326
+    reliability: best_effort
+    durability: volatile
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    messages: 93324
+    reliability: reliable
+    durability: volatile
+  - name: /plan
+    type: nav_msgs/msg/Path
+    messages: 4
+    reliability: reliable
+    durability: volatile
+  - name: /scan
+    type: sensor_msgs/msg/LaserScan
+    messages: 17652
+    reliability: reliable
+    durability: volatile
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    messages: 55842
+    reliability: reliable
+    durability: volatile
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    messages: 1
+    reliability: reliable
+    durability: transient_local
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 263763
+    chunk_crc:
+      chunks_with_crc: 248
+      total_chunks: 248
+    data_section_crc: 1711586225
+    summary_crc: 1654658292
+    message_index:
+      records: 1276
+    chunk_index:
+      records: 248
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: PASS
+  recorder:
+    transport_loss: 0
+  exclusion_reasons:
+  - 80m 왕복 미완주
+  - recorder가 주행 종료 뒤에도 계속되어 전체 duration과 rate를 성능 비교에 사용할 수 없음
 - dataset_id: onboard_static_soak_20260901T155916
   role: onboard_static_soak
   qualification: DIAGNOSTIC_ONLY

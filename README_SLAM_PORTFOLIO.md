@@ -4,20 +4,32 @@
 
 ## 현재 상태
 
-- 계획 수립과 논문 대조는 `57ffd92`부터 이어지고 있다.
-- Phase 0 오프라인 평가 기준선과 Phase 1 실제 복도 Keepout·TF replay guard 사전구성은 2026-09-01에 구현·검증됐다. `jdamr_cube_navigation` 결과는 135 passed, 1 skipped다.
-- 평가 계약, dataset/map/calibration registry, MCAP writer 설정, QoS override, 무결성 검사 도구는 `jdamr_cube_navigation/evaluation/`에 있다.
-- 기존 G4 bag은 63,955개 메시지를 끝까지 읽고 해시와 토픽 수를 고정했지만 진단 reference일 뿐 새 합격 표본이 아니다. chunk CRC, 기록·재생 QoS, drop counter, 리프트 전 cutoff가 부족하다.
-- 2026-09-01 첫 저장지도 왕복은 복귀 중 Wi-Fi 지연으로 중단됐다. 106.9MiB·128,791개 메시지는 원인 분석과 오프라인 SLAM에는 쓸 수 있지만 transport loss 136건과 미완주 때문에 최종 비교 표본으로 승격하지 않는다.
-- 제어와 기록을 파이 안으로 옮긴 `7c78212`, 합성 인자 오류를 고친 `8b95165`, 복도에 불필요한 Nav2 서버를 제거한 `651cd16`을 반영했다.
-- 최소 온보드 구성은 107.862초 정적 소크에서 load1 1.17~1.93, 66.2~70.6°C, thermal throttle 0을 기록했다. MCAP 16,150개 메시지와 15개 chunk CRC가 통과했고 비영점 속도 명령 0건, odom 변위 0.025mm였다.
-- 늦게 시작한 경로 실행기가 AMCL의 latched pose를 놓치던 QoS 불일치를 `TRANSIENT_LOCAL` 구독으로 수정했다. 수정 뒤 최소 온보드 구성의 planning-only는 3,098 poses, 78.600m로 80m급 전체 왕복 경로를 통과했다.
-- 이어진 실차 네 기록은 모두 구조적으로 읽을 수 있지만 최종 성능 표본은 아니다. `165606`은 7개 구간 뒤 합성 컨테이너 내부 노드 소실, `170550`은 AMCL 원점 재설정과 과민한 공분산·freshness 게이트, `172141`은 남은 23.573m를 recovery 0으로 완주했지만 전체 왕복이 아니며 종료 전 합성 노드 bond 실패, `172738`은 독립 프로세스 전환 후 20ms action 응답 제한으로 첫 계획 요청이 중단됐다.
-- 반복 중단 수정본은 Nav2 필수 노드를 독립 프로세스로 격리하고, 구간마다 한 번만 계획하는 BT와 1,000ms action timeout을 사용한다. AMCL 게이트는 복도 종방향 x와 횡방향 y를 분리하고, 재개 시 현재 AMCL 위치와 첫 잔여 waypoint가 6m보다 멀면 출발 자체를 차단한다.
-- 독립 프로세스 수정본은 recorder를 포함한 330.747초 비주행 소크에서 필수 Nav2 노드가 모두 생존했고 bond 실패·SIGSEGV가 없었다. 종료 뒤 프로세스와 `/cmd_vel` 발행자는 0, 비영점 명령은 0건, odom 변위는 0.0253mm였고 MCAP 45/45 chunk CRC도 통과했다.
-- 같은 소크의 load1은 4.13에서 9.85까지 올라갔고 recorder transport loss가 3건 발생했다. 따라서 반복 노드 소실 수정은 통과했지만 파이 부하·최종 데이터 게이트는 실패이며, 프로토콜 적격 80m 표본은 여전히 0회다. 부하 절감을 위한 2-container 시험은 종료 시 강제 종료가 필요해 채택하지 않았다.
+- 오프라인 평가 기준선, Keepout, TF replay guard, 데이터·지도·보정 registry와 MCAP
+  무결성 검사는 구현돼 있다.
+- 프로토콜 적격 80m 왕복 표본은 아직 0회다. 기존 실차 bag은 원인 분석과 오프라인
+  SLAM 입력에는 쓸 수 있지만, 미완주 또는 기록 손실 때문에 최종 성능 표본은 아니다.
+- 최신 `corridor_roundtrip_20260904T115600`은 MCAP 263,763개 메시지와 모든 CRC를
+  통과했다. 세 번째 목표 도중 실제 `x=7.079m`에서 Nav2가 최신 sensor/TF를 사용하지
+  못하고 lifecycle이 무너졌으며, raw scan·odom·IMU는 그 뒤에도 계속 기록됐다.
+- 이 기록은 주행 종료 뒤 recorder가 31분 더 살아 있어 전체 duration과 평균 rate를
+  성능 지표로 쓰지 않는다. 고아 recorder는 해당 PID만 종료해 metadata를 마감했고,
+  이후 실행기는 자신이 시작한 프로세스 그룹 전체를 추적하도록 고쳤다.
+- 과거 자원 계측기는 rosbag의 토픽 인자를 실행 파일로 오인하고 합성 Nav2 container를
+  누락했다. 당시 프로세스별 CPU 결론은 폐기했으며, 수정본은 원문 command와 process
+  coverage가 없으면 PASS를 거부한다.
+- 현재 온보드 Nav2는 합성 컨테이너와 별도 lifecycle·graph liveness 감시를 함께 쓴다.
+  composition은 확인됐지만 intra-process 통신은 켜지 않았으므로 zero-copy라고 설명하지
+  않는다.
+- AMCL freshness는 출발 시에만 요구한다. 복도 BT만 `PositionGoalChecker`를 선택해
+  home 도달을 위치로 판정하고, 일반 자율주행의 방향 판정은 유지한다.
+- 고주기 recorder 구독은 best-effort로 낮췄지만 역압이 원인이었다는 가설은 아직
+  recording A/B로 검증하지 않았다. DDS 단계에서 빠진 메시지를 단순 메시지 수만으로
+  검출할 수도 없으므로, 적격 주행 전에는 토픽별 gap/rate 게이트도 추가해야 한다.
+  근본 원인은 계속 미규명 상태다.
+- 현재 로컬 검증은 `198 passed, 1 skipped`다. 수정본의 파이 비주행 기동과 실주행은
+  아직 수행하지 않았다.
 - SO-101 PRD는 Architect 승인 상태지만 구현 시작 전이라고 선언한다. 동시에 미추적 `mobile_mission.py`가 있어 이 차이를 읽기 전용 감사 결과로 남겼고 SO-101 파일은 수정하지 않았다.
-- 프로토콜 적격 실차 표본은 아직 0회다. 현재 세션은 작업자가 로봇 옆에 있다고 확인되지 않았으므로 `real_motion_authorized: false`다.
+- 현재 세션은 작업자가 로봇 옆에 있다고 확인되지 않았으므로 `real_motion_authorized: false`다.
 - 계획 문서가 인용하는 일부 기존 `.omx` 계획·테스트 명세는 아직 Git 미추적 상태다. 해당 파일을 임의로 함께 스테이징하지 않는다.
 
 ## 저장소 경계
@@ -27,7 +39,7 @@
 | 이 JD-AMR 저장소 | 센서 계약, Cartographer·SLAM Toolbox, 저장 지도 localization, ATE/RPE/NEES 평가, frontier, Nav2 fault injection, Sim-to-Real 검증 |
 | `so101-mobile-manipulation` | localization/TF 상태와 Nav 도착 오차 소비, 상태가 불량할 때 팔 동작 차단 |
 
-SLAM backend, launch, config, 평가 코드를 SO-101 저장소에 복제하지 않는다. SO-101 연계는 최종 Phase 9에서 결과 계약만 반영한다.
+SLAM backend, launch, config, 평가 코드를 SO-101 저장소에 복제하지 않는다. SO-101 연계는 최종 포트폴리오 승격 단계에서 결과 계약만 반영한다.
 
 ## 논문에서 실제로 반영할 것
 
@@ -83,9 +95,10 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
   "$HOME/jdamr_artifacts/g4_userloop_reset_20260824T175151/g4_userloop_reset_20260824T175151_0.mcap"
 ```
 
-현재 Phase 0 판정은 `OFFLINE_READY`, Phase 1 비주행 판정은 `ONBOARD_STATIC_READY`다.
+현재 Phase 0 판정은 `OFFLINE_READY`다. 이번 수정본의 온보드 비주행 판정은 아직
+재수집 전이므로 기존 `ONBOARD_STATIC_READY`를 승계하지 않는다.
 
-- navigation package: 135 passed, 1 skipped
+- navigation package: 198 passed, 1 skipped
 - G4 diagnostic bag: 63,955 messages, SHA-256 `9525afb5d693e63c9ff07541e761aca6f196b69374634d714d49142028cea6d6`
 - QoS override: ROS 2 Jazzy 파서에서 6개 profile 통과
 - 설치 레이아웃: evaluation 파일 10개 확인
@@ -99,19 +112,34 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 ## 전체 실행 순서와 통과 조건
 
-1. **온보드 비주행 검증 — 완료:** 지도·Keepout 해시, 필수 lifecycle, 단일 `/cmd_vel` 소유자, 지속 CPU가 코어 예산의 75% 이내, thermal throttle 0, 최고 온도 75도 이하, MCAP CRC, 종료 뒤 프로세스 0을 확인한다. 2026-09-03에 `load1 < 4`를 이 기준으로 교체했다.
-2. **80m급 왕복 1회:** 저장 지도+AMCL+Keepout으로 자율주행하고 파이 로컬 MCAP에 transport loss 0, 전 구간 완주, 시작점 복귀, 최종 정지, 배터리 10.5V 이상을 남긴다. 온라인 mapping은 주행 중 끈다. 사용자의 결정으로 별도 2~6m 단거리 단계는 생략한다.
-3. **자율 반복 2회:** 같은 프로토콜을 두 번 더 실행해 총 3개 적격 표본을 만든다. 수동으로 세 바퀴를 도는 방식이 아니라 자율주행 재현성 시험이다.
-4. **오프라인 2D SLAM 비교:** 각 raw bag을 격리 domain의 빈 상태에서 Cartographer와 SLAM Toolbox에 동일하게 재생한다. `/map`, 이동 명령, 기록 AMCL `map→odom`은 제외하고 폐루프 오차·loop audit·처리시간을 비교한다.
-5. **센서·TF 강건성:** 정지 노이즈, 주기 jitter, LiDAR dropout, wheel slip, 시간 지연, extrinsic 오차를 실측 분포로 주입한다. 한 번에 한 변수만 바꾸고 Huber·IMU 사용 여부를 비교한다.
-6. **Sim-to-Real:** 시뮬레이션 ground truth로 ATE/RPE/NEES를 계산하고 실차 분포로 센서·마찰·지연 randomization을 적용한다. 같은 복도와 별도 held-out 환경을 분리한다.
-7. **위치추정·탐색 선택:** AMCL과 SLAM Toolbox localization, kidnapped-robot recovery를 비교한다. frontier는 distance-only, gain proxy, 반복 방문 억제 정책을 비교하고 planner/controller 교체는 실제 실패가 재현될 때만 한다.
-8. **Visual SLAM 선택 트랙:** 카메라 timestamp·intrinsic·extrinsic과 이미지 기록이 확보된 뒤에만 2D LiDAR SLAM과 별도 실험으로 수행한다. 현재 bag에는 이미지가 없어 Visual SLAM 근거로 쓰지 않는다.
-9. **포트폴리오 승격:** 동일 복도 결과와 held-out 결과, 실패 사례, 정량 지표, 재현 명령을 묶는다. SO-101에는 SLAM 코드를 복제하지 않고 localization/TF/도착 오차 계약만 연결한다.
+1. **로컬 정적 검증(완료):** YAML·BT·셸 구문, 단위 테스트, 패키지 빌드와 전체
+   테스트를 통과하고 과거 결함 TSV가 `process_coverage=FAIL`로 재판정되는지 확인한다.
+2. **파이 비주행 기동:** 지도·Keepout 해시, lifecycle, 단일 `/cmd_vel` 소유자와 함께
+   `nav2_container`·recorder 원문 command가 TSV에 남는지 확인한다. 종료 뒤 잔류
+   프로세스 0과 `metadata.yaml` 생성을 확인한다.
+3. **짧은 위치 왕복:** 최종 yaw 정렬 없이 위치 도달로 끝나는지, AMCL 토픽 정지만으로
+   정상 주행을 취소하지 않는지 확인한다.
+4. **recording A/B:** 같은 경로와 실행 구조에서 기록 조건만 바꿔 TF 처리 지연,
+   container CPU, lifecycle heartbeat를 비교한다.
+5. **80m급 자율 왕복 3회:** 저장 지도+AMCL+Keepout으로 한 번 완주한 뒤 같은 프로토콜을
+   두 번 반복한다. 수동으로 세 바퀴를 도는 방식이 아니다.
+6. **오프라인 2D SLAM 비교:** 적격 raw bag을 Cartographer와 SLAM Toolbox에 동일하게
+   재생하고 폐루프 오차·loop audit·처리시간을 비교한다.
+7. **센서·TF 강건성 및 Sim-to-Real:** 실차 분포로 노이즈·dropout·wheel slip·시간
+   지연·extrinsic 오차를 한 번에 하나씩 주입하고, 시뮬레이션 ground truth로
+   ATE/RPE/NEES를 계산한다.
+8. **위치추정·탐색 선택:** AMCL과 SLAM Toolbox localization, kidnapped-robot recovery,
+   frontier 정책을 비교한다. planner/controller 교체는 재현된 실패 근거가 있을 때만 한다.
+9. **Visual SLAM 선택 트랙:** 카메라 timestamp·intrinsic·extrinsic과 이미지 기록이
+   확보된 뒤 2D LiDAR SLAM과 별도 실험으로 수행한다.
+10. **포트폴리오 승격:** 동일 복도와 held-out 결과, 실패 사례, 정량 지표, 재현 명령을
+    묶는다. SO-101에는 SLAM 코드를 복제하지 않고 localization/TF/도착 오차 계약만
+    연결한다.
 
-현재 위치는 **1 완료, 2는 여러 차례 실주행했지만 프로토콜 적격 표본 0회**다. 부분 복귀 성공과 각 실패 bag은 진단·오프라인 SLAM 입력으로 보존하고, 반복 중단 수정본의 비주행 소크를 통과한 뒤 같은 80m 경로를 처음부터 다시 수집한다.
+현재 위치는 **1 완료, 2 미수행**이다. 기존 부분 복귀와 실패 bag은 진단·오프라인 SLAM
+입력으로 보존하되, 새 코드의 합격 증거로 소급 사용하지 않는다.
 
-## 2026-09-03 주행 전 정비
+## 기존 정비 기록과 2026-09-04 정정
 
 실주행 없이 처리한 항목이다. 근거는 모두 저장소 안 파일과 회귀 테스트다.
 
@@ -121,7 +149,8 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
   기본 depth 10으로 떨어졌고, 50Hz `/imu/data_raw` 기준 0.2초 버퍼다. 2026-09-01
   소크의 load1 9.85 구간 정지 시간을 견디지 못한다.
 - 기록 계약을 `jdamr_cube_navigation/onboard_recording.py` 한 곳으로 모으고 launch가
-  이를 import한다. depth는 `rate x 2초`로 계산한다.
+  이를 import한다. reliable 토픽은 `rate x 2초`, best-effort 고주기 토픽은
+  `rate x 0.5초`로 계산한다.
 - bag 3종(`corridor_keepout_roundtrip_20260901T150446`,
   `onboard_minimal_soak_20260901T161338`, `static_repeat_stop_fix_20260901T174200`)의
   metadata를 대조해 발행자가 실제로 제시하는 QoS를 확인했다. `/imu/data_raw`는
@@ -146,8 +175,15 @@ PYTHONNOUSERSITE=1 PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
 
 - 이전 소크는 `load1` 총량만 남겨 9.85가 어느 프로세스에서 왔는지 근거가 없었다.
 - `jdamr_cube_navigation/soak_metrics.py`(실행 이름 `soak_metrics`)가 `/proc`을 직접
-  읽어 프로세스별 CPU·스레드·RSS를 TSV로 남기고, 종료 시 평균 CPU 내림차순 요약을
-  출력한다. ROS 의존성이 없어 파이에서 단독 실행된다.
+  읽어 전체 시스템 CPU와 프로세스별 CPU·스레드·RSS·원문 command를 TSV로 남긴다.
+  전체 CPU는 자원 게이트에, 프로세스 수치는 부하 귀속에 쓴다.
+- 이전 분류기는 토픽 인자까지 정규식으로 검색해 rosbag recorder를
+  `collision_monitor`로 잘못 붙였고, 합성 `nav2_container`는 누락했다. 수정본은 실행
+  파일 토큰으로 분류한다. recorder와 합성 컨테이너 또는 독립 Nav2 필수 집합이
+  워밍업 뒤 60초 이상 같은 샘플에 계속 있어야 하고 인접 샘플 간격도 10초를 넘으면
+  안 된다. 프로세스가 모두 사라진 시점도 sentinel 행으로 남겨
+  `process_coverage=FAIL`을 낸다. 따라서 이전 11:56 TSV의
+  `CPU 61~146%`는 폐기한다.
 
 ```bash
 ros2 run jdamr_cube_navigation soak_metrics \
@@ -157,24 +193,24 @@ ros2 run jdamr_cube_navigation soak_metrics \
 
 ### 부하 게이트 재정의 (2026-09-03)
 
-재측정 결과 `load1 < 4`는 측정 대상 자체가 틀렸다. 같은 구간에서 load1은 3.97~10.66으로
-출렁였지만 Nav2 프로세스 전체의 CPU는 파이 4코어 400% 중 **203%에서 평평**했고,
-스레드 197개, 온도 65~69도, thermal throttle `0x0`이었다. 리눅스 load average는 CPU를
-쓰는 스레드만이 아니라 I/O와 락을 기다리는 스레드까지 세는데, 이 구성은 12개 DDS
-참가자에 197개 스레드를 띄운다. 코어 두 개가 놀고 있는 상태에서 게이트가 실행을 막고
-있었다.
+기존 재측정에서는 load1과 프로세스 CPU 합계가 서로 다른 추세를 보였고, 이를 근거로
+`load1 < 4`를 단독 게이트에서 제외했다. 이 설계 판단은 유지한다. 다만 당시 분류기는
+원문 command를 남기지 않았고 recorder 오분류가 확인됐으므로, 과거의 **203%**와
+프로세스별 귀속값은 참고치로만 남긴다. 수정된 process coverage 게이트로 비주행 소크를
+다시 통과하기 전에는 CPU 여유가 검증됐다고 주장하지 않는다.
 
-게이트를 실측 가능한 세 항목으로 바꿨고, 문서상의 수동 기준이 아니라 코드가 판정한다.
+게이트를 실측 가능한 네 항목으로 바꿨고, 문서상의 수동 기준이 아니라 코드가 판정한다.
 
 | 항목 | 기준 | 2026-09-03 실측 |
 |---|---|---|
-| 지속 CPU (p90) | 코어 예산의 75% 이내 (4코어 = 300%) | 204% PASS |
+| 전체 시스템 지속 CPU (p90) | 코어 예산의 75% 이내 (4코어 = 300%) | 과거 수치 무효, 재측정 필요 |
 | thermal throttle | `0x0` | `0x0` PASS |
 | 최고 온도 | 75도 이하 (소프트 스로틀 80도 대비 여유) | 69.6도 PASS |
+| 프로세스 coverage | recorder+Nav2 필수 집합이 워밍업 뒤 60초 연속, 최대 샘플 간격 10초 | 과거 command 부재, 재측정 필요 |
 
-기동 순간 한 샘플은 296%까지 오르지만 이는 12개 프로세스가 동시에 configure되는
-구간이고 로봇이 움직이기 전에 끝난다. 그래서 순간 최대가 아니라 p90 지속 부하로
-판정하고 최대값은 참고로 함께 출력한다. load1은 계속 기록하되 판정에서는 뺐다.
+순간 최대와 프로세스별 합계는 진단용으로 함께 출력하되, 판정은 전체 시스템 CPU의
+p90 지속 부하를 사용한다. 워밍업 제외, 단위 변환, 프로세스 전멸 샘플 기록은 계산
+주석 대신 단위 테스트로 고정했다. load1은 계속 기록하되 판정에서는 뺐다.
 
 ```bash
 # 소크와 동시에 측정하며 판정
@@ -183,7 +219,8 @@ ros2 run jdamr_cube_navigation soak_metrics \
   --duration 330 --interval 5
 
 # 기존 TSV 재판정 (다른 기기에서 볼 때는 --cores 로 원본 기기 코어 수를 준다)
-python3 soak_metrics.py --evaluate <run_id>.per_process.tsv --cores 4
+ros2 run jdamr_cube_navigation soak_metrics \
+  --evaluate "$HOME/jdamr_artifacts/<run_id>.per_process.tsv" --cores 4
 ```
 
 게이트가 통과해도 실차 이동 권한은 별개다. 작업자가 로봇 옆에서 물리 전원을 즉시
@@ -192,8 +229,8 @@ python3 soak_metrics.py --evaluate <run_id>.per_process.tsv --cores 4
 
 ### 남은 것
 
-기록 게이트와 부하 게이트는 2026-09-03 소크에서 모두 통과했다. 다음은 80m 왕복
-실주행이다.
+기존 기록 게이트는 통과했다. 수정된 프로세스 coverage를 포함한 부하 게이트는 비주행
+소크 재검증이 필요하며, 그 다음이 짧은 위치 왕복과 80m 왕복이다.
 
 ## 포트폴리오로 보여줄 수 있는 것
 
@@ -224,10 +261,10 @@ python3 evaluation/render_route_map.py \
 | 대상 | 해결한 문제 | 이야기할 거리 |
 |---|---|---|
 | `frontier_explorer` (1,507줄) + `frontier_core` (560줄) | 자율 탐사 정책 | ROS 의존을 분리해 탐사 로직만 단위 테스트한다. distance-only 기준선과 gain proxy를 비교 대상으로 둔다 |
-| `corridor_route` | fail-closed 경로 실행기 | 사전 전체 계획, 배터리·센서 freshness·AMCL 축별 공분산 게이트, 재개 시 6m 거리 제한. 게이트 실패는 수치와 함께 로그에 남는다 |
+| `corridor_route` | fail-closed 경로 실행기 | 사전 전체 계획, 배터리·센서 freshness·AMCL 축별 공분산 게이트, 전체 시작은 home 1m 이내, 재개는 첫 잔여 waypoint 6m 이내로 제한한다. AMCL freshness는 출발 시에만 확인하고 최종 도달은 위치로 판정한다 |
 | `keepout_zone_capture` + `keepout_mask` | 운영자가 그린 금지구역을 마스크로 | 꼭짓점 순서 자동 보정, 0.55m 팽창, 해시 고정, 연결성 검사 |
 | `tf_replay_filter` | 오프라인 재생 시 TF 권한 충돌 | 기록된 AMCL `map→odom`을 제거해 새 mapping backend 하나만 권한자가 되게 한다. 이게 없으면 재생 결과가 기존 지도의 복사본이 된다 |
-| `soak_metrics` | 자원 게이트 판정 | load average가 대기 스레드를 세는 문제를 프로세스별 CPU 계측으로 대체했다 |
+| `soak_metrics` | 자원 게이트 판정 | 전체 시스템 CPU로 여유를 판정하고 프로세스별 CPU로 원인을 추적한다. 워밍업 뒤 60초 연속·최대 간격 10초 측정이 아니면 PASS를 거부한다 |
 | `evaluation/ledger.py` | 증거 원장 | 해시·무결성·게이트 판정을 같은 규칙으로 등록. 게이트 FAIL이면 승격을 거부한다 |
 | `evaluation/inspect_mcap.py` | 기록 무결성 | chunk/data/summary CRC와 인덱스를 분리해 확인 |
 | `scripts/corridor_preflight.sh` | 출발 전 자동 점검 | 도메인·RViz 순서·lifecycle·금지구역·`/cmd_vel` 소유권·코스트맵·배터리 |
@@ -284,4 +321,4 @@ python3 ledger.py map "$HOME/maps/<map>.yaml" \
 
 다음과 같이 요청하면 된다.
 
-> `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/README_SLAM_PORTFOLIO.md`와 `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/20260901_CORRIDOR_KEEPOUT_RUN.md`를 읽고 반복 중단 수정본의 정적 소크 결과부터 확인한 뒤 80m급 왕복 실주행을 처음부터 다시 수집해. 실제 이동은 내가 로봇 옆에서 비상 정지를 확보했다고 명시한 뒤에만 진행해.
+> `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/README_SLAM_PORTFOLIO.md`와 `$HOME/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/20260904_HANDOFF.md`를 읽고, 수정된 프로세스 계측의 비주행 결과부터 확인한 뒤 짧은 위치 왕복과 recording A/B를 순서대로 진행해. 실제 이동은 내가 로봇 옆에서 비상 정지를 확보했다고 명시한 뒤에만 진행해.
