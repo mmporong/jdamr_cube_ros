@@ -1,0 +1,104 @@
+[
+  {
+    "result_bag": "corridor_localdds_armed_20260904T152036__cartographer_result_0.mcap",
+    "result_bag_sha256": "4dbb6b1a50bcbff82b94b7aab8608e1ecf6f8c40824b0defed777e2944ecb23f",
+    "source_bag": "corridor_localdds_armed_20260904T152036_0.mcap",
+    "source_bag_sha256": "65105177e43eca6153d2543f3cf8e9cc9f7c62b77f258975fdcdbd10b5e2e16a",
+    "map_to_odom_updates": 15074,
+    "odometry_samples": 37810,
+    "trajectory_samples": 37810,
+    "estimated_length_m": 84.419,
+    "start_xy": [
+      0.0,
+      0.0
+    ],
+    "end_xy": [
+      0.879,
+      -0.47
+    ],
+    "start_to_end_m": 0.996,
+    "odometry_length_m": 79.269,
+    "amcl_length_m": 77.409,
+    "deviation_from_amcl": {
+      "samples": 759,
+      "aligned_yaw_deg": -3.66,
+      "rms_m": 0.552,
+      "max_m": 1.401
+    },
+    "deviation_from_odometry": {
+      "samples": 792,
+      "aligned_yaw_deg": -46.68,
+      "rms_m": 7.406,
+      "max_m": 17.192
+    },
+    "map_yaml": "corridor_localdds_armed_20260904T152036__cartographer_map.yaml",
+    "map_yaml_sha256": "132b3af726dc65def8158943ff0d83aea4ef30a8085a6280f8d96cfdcbda2e86",
+    "map_image_sha256": "89f561bfb5ebbdca05c6ec4af1c5b85d2f1ce9cc3214fea77e208feb2e706a6f",
+    "map": {
+      "width_cells": 922,
+      "height_cells": 228,
+      "extent_m": [
+        46.1,
+        11.4
+      ],
+      "occupied_cells": 3447,
+      "free_cells": 64459,
+      "unknown_cells": 142310,
+      "occupied_area_m2": 8.6175,
+      "free_area_m2": 161.1475,
+      "unknown_area_m2": 355.775
+    },
+    "backend": "cartographer"
+  },
+  {
+    "result_bag": "corridor_localdds_armed_20260904T152036__slam_toolbox_result_0.mcap",
+    "result_bag_sha256": "919cbee8b6b7d30cff9ef25a81fa5d97f0bd4b849d0d6db1d50a3ce529a24084",
+    "source_bag": "corridor_localdds_armed_20260904T152036_0.mcap",
+    "source_bag_sha256": "65105177e43eca6153d2543f3cf8e9cc9f7c62b77f258975fdcdbd10b5e2e16a",
+    "map_to_odom_updates": 38180,
+    "odometry_samples": 37810,
+    "trajectory_samples": 37806,
+    "estimated_length_m": 86.786,
+    "start_xy": [
+      0.0,
+      -0.0
+    ],
+    "end_xy": [
+      4.752,
+      7.806
+    ],
+    "start_to_end_m": 9.139,
+    "odometry_length_m": 79.269,
+    "amcl_length_m": 77.409,
+    "deviation_from_amcl": {
+      "samples": 781,
+      "aligned_yaw_deg": 21.5,
+      "rms_m": 1.944,
+      "max_m": 5.094
+    },
+    "deviation_from_odometry": {
+      "samples": 808,
+      "aligned_yaw_deg": -22.73,
+      "rms_m": 5.661,
+      "max_m": 12.834
+    },
+    "map_yaml": "corridor_localdds_armed_20260904T152036__slam_toolbox_map.yaml",
+    "map_yaml_sha256": "86d01cae98796f8b0edd7ec18cef17d059311a9a9250967ce722fb76183d7268",
+    "map_image_sha256": "f6e1d9c24ea6741c69620bd2abfea72c11143692a4b9a0c979a9ab4c244982f6",
+    "map": {
+      "width_cells": 860,
+      "height_cells": 622,
+      "extent_m": [
+        43.0,
+        31.1
+      ],
+      "occupied_cells": 5985,
+      "free_cells": 77759,
+      "unknown_cells": 451176,
+      "occupied_area_m2": 14.9625,
+      "free_area_m2": 194.3975,
+      "unknown_area_m2": 1127.94
+    },
+    "backend": "slam_toolbox"
+  }
+]

@@ -136,14 +136,21 @@ python3 jdamr_cube_navigation/evaluation/corridor_run_media.py \
     jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036
 ```
 
-## 다음 분석
+## 후속 오프라인 분석
 
-새 실차 주행 없이 이 MCAP으로 다음 두 작업을 진행할 수 있다.
+새 실차 주행 없이 성공 MCAP의 센서·시간 프로파일과 백엔드 비교를 마쳤다.
 
-1. Cartographer와 SLAM Toolbox에 같은 77m 구간을 격리 재생해 폐루프 오차, 지도 형태,
-   처리시간을 비교한다.
-2. scan range, odom increment, IMU 각속도, timestamp jitter의 분위수를 구해 시뮬레이션
-   noise와 dropout 범위를 정한다.
+1. 주행 성공 구간에서 LiDAR 9.653Hz, header 주기 jitter p99 0.002164초를 확인했다.
+   주행 직전 정적 구간의 IMU z축 robust sigma는 0.0018113rad/s였다.
+2. 같은 전체 MCAP을 격리 재생했을 때 Cartographer의 시작–종료 불일치는 0.996m,
+   SLAM Toolbox는 9.139m였다.
+3. 저장 지도 AMCL을 정확도 ground truth가 아닌 정렬 기준으로 사용했을 때 RMS는
+   Cartographer 0.552m, SLAM Toolbox 1.944m였다.
+4. 폐루프 일관성과 지도 형상이 같은 결론을 내므로 현재 복도 데이터에는 Cartographer를
+   기본 mapping backend로 선택한다.
+
+상세 결과는 `media/corridor_localdds_armed_20260904T152036/sensor_profile.md`와
+`media/corridor_localdds_armed_20260904T152036/slam_backend_comparison.md`에 있다.
 
 추가 주행은 성공률이나 반복성 수치가 필요할 때만 한다. 이번 기록 하나로 완주와 정체
 해결은 보여줄 수 있지만, N회 성공률은 주장하지 않는다.

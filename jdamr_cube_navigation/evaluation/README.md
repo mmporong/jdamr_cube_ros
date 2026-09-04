@@ -101,6 +101,26 @@ python3 jdamr_cube_navigation/evaluation/corridor_run_media.py \
 텔레메트리, GIF와 H.264 MP4가 포함된다. GIF는 실제 AMCL timestamp를 균등 시간축으로
 압축한 시각화이며 카메라 촬영 영상이 아니다.
 
+## 센서와 시간 프로파일
+
+성공 주행의 route log가 있으면 실제 목표 전송부터 성공 시각까지만 분석한다. IMU 정적
+노이즈는 주행 직전 60초를 별도 구간으로 잡아 이동 구간과 섞지 않는다. LiDAR의 `inf`는
+토픽 손실이 아니라 최대 거리 안에서 반사가 없었던 ray로 기록한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
+python3 jdamr_cube_navigation/evaluation/profile_sensor_streams.py \
+  --bag "$HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036" \
+  --output-dir \
+    jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036
+```
+
+출력은 sensor profile YAML/JSON/Markdown과 센서·시간 분포 PNG다. 실차에 외부 ground
+truth가 없으므로 LiDAR additive range noise와 odometry 정확도는 이 데이터만으로 만들지
+않는다. 시뮬레이션 후보값은 관측 범위의 시작점이며 튜닝 완료값이 아니다.
+
 ## 저장 지도 주행 bag의 오프라인 SLAM 재생
 
 저장 지도와 AMCL을 사용해 안전 경로로 수집한 bag도 새 지도 생성 입력으로 쓸 수 있다. 단, 새 mapping backend는 `use_sim_time=true`와 빈 상태로 먼저 실행하고, localization node와 저장 map server는 실행하지 않는다. 재생은 실차 domain 12가 아닌 격리 domain 199에서만 허용한다.
@@ -115,5 +135,19 @@ ros2 launch jdamr_cube_navigation offline_replay_guard.launch.py \
 ```
 
 이 launch는 `/scan`, `/odom`, `/tf`, `/tf_static`, `/imu/data_raw`, `/joint_states`만 재생한다. `/map`과 `/cmd_vel`은 재생 목록에 없으며, TF는 전용 토픽으로 우회한 뒤 기록된 `map -> odom`만 제거해서 원래 `/tf`로 전달한다. 따라서 `/tf`의 `odom -> base_footprint`와 센서 고정 TF는 보존되고, 새 mapping backend만 `map -> odom` 권한자가 된다. TF filter나 bag player가 종료되면 전체 재생도 종료한다. TF queue 유실을 막기 위해 `rate`는 실시간 1.0 이하만 허용한다.
+
+두 backend 실행이 끝나면 같은 원본 기준의 비교 자료를 만든다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+PYTHONNOUSERSITE=1 \
+PYTHONPATH="$HOME/.local/share/jdamr-slam-eval/python" \
+python3 jdamr_cube_navigation/evaluation/compare_slam_runs.py \
+  --results "$HOME/jdamr_artifacts/offline_slam_20260904" \
+  --source-root "$HOME/jdamr_artifacts" \
+  --output jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036/slam_backend_comparison.json \
+  --plot jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036/slam_backend_comparison.png \
+  --report jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036/slam_backend_comparison.md
+```
 
 설정 필드와 QoS 형식은 [rosbag2 MCAP 저장소 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/rosbag2_storage_mcap/README.md)와 [rosbag2 QoS override 공식 문서](https://github.com/ros2/rosbag2/blob/rolling/README.md)를 기준으로 한다.

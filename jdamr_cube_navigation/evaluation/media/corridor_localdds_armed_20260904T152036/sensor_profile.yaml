@@ -1,0 +1,802 @@
+schema_version: 1
+run_id: corridor_localdds_armed_20260904T152036
+source:
+  mcap: $HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036/corridor_localdds_armed_20260904T152036_0.mcap
+  mcap_sha256: 65105177e43eca6153d2543f3cf8e9cc9f7c62b77f258975fdcdbd10b5e2e16a
+capture:
+  start_unix_ns: 1788502857347218658
+  end_unix_ns: 1788503613575770157
+  duration_s: 756.229
+analysis_window:
+  kind: successful_route
+  start_unix_ns: 1788503005333895936
+  end_unix_ns: 1788503564024274432
+  route_log: $HOME/jdamr_artifacts/corridor_localdds_armed_20260904T152036.route.log
+  route_log_sha256: b779c9e50e2c1c40e7380681df5235c1980c4eb27fac3256c1689ef2e43349a5
+  duration_s: 558.69
+timing:
+  scan:
+    messages: 5394
+    observed_rate_hz: 9.653
+    header_non_increasing_samples: 0
+    recorder_before_header_samples: 0
+    recorder_interval_s:
+      samples: 5393
+      min: 0.095574
+      p01: 0.09956
+      p05: 0.101265
+      p50: 0.103509
+      p95: 0.106295
+      p99: 0.108233
+      max: 0.111922
+      mean: 0.103591
+      stddev: 0.001558
+    header_interval_s:
+      samples: 5393
+      min: 0.099915
+      p01: 0.10186
+      p05: 0.102646
+      p50: 0.103561
+      p95: 0.104637
+      p99: 0.105626
+      max: 0.107525
+      mean: 0.103592
+      stddev: 0.000627
+    header_abs_jitter_from_median_s:
+      samples: 5393
+      min: 0.0
+      p01: 6.0e-06
+      p05: 2.4e-05
+      p50: 0.000267
+      p95: 0.001356
+      p99: 0.002164
+      max: 0.003964
+      mean: 0.000422
+      stddev: 0.000464
+    recorder_minus_header_s:
+      samples: 5394
+      min: 0.100457
+      p01: 0.102617
+      p05: 0.103451
+      p50: 0.104693
+      p95: 0.107408
+      p99: 0.109299
+      max: 0.113747
+      mean: 0.105005
+      stddev: 0.001282
+  odom:
+    messages: 27934
+    observed_rate_hz: 50.0
+    header_non_increasing_samples: 0
+    recorder_before_header_samples: 0
+    recorder_interval_s:
+      samples: 27933
+      min: 0.010043
+      p01: 0.016507
+      p05: 0.017871
+      p50: 0.020007
+      p95: 0.022087
+      p99: 0.02357
+      max: 0.029342
+      mean: 0.02
+      stddev: 0.001303
+    header_interval_s:
+      samples: 27933
+      min: 0.016691
+      p01: 0.018885
+      p05: 0.019512
+      p50: 0.020001
+      p95: 0.020483
+      p99: 0.021149
+      max: 0.023316
+      mean: 0.02
+      stddev: 0.000348
+    header_abs_jitter_from_median_s:
+      samples: 27933
+      min: 0.0
+      p01: 0.0
+      p05: 2.0e-06
+      p50: 3.8e-05
+      p95: 0.000754
+      p99: 0.001432
+      max: 0.003315
+      mean: 0.000175
+      stddev: 0.0003
+    recorder_minus_header_s:
+      samples: 27934
+      min: 0.000176
+      p01: 0.000264
+      p05: 0.000289
+      p50: 0.000511
+      p95: 0.002507
+      p99: 0.003999
+      max: 0.010271
+      mean: 0.000867
+      stddev: 0.000824
+  imu:
+    messages: 27934
+    observed_rate_hz: 50.0
+    header_non_increasing_samples: 0
+    recorder_before_header_samples: 0
+    recorder_interval_s:
+      samples: 27933
+      min: 0.010042
+      p01: 0.016246
+      p05: 0.01765
+      p50: 0.020014
+      p95: 0.022284
+      p99: 0.02377
+      max: 0.028942
+      mean: 0.02
+      stddev: 0.001424
+    header_interval_s:
+      samples: 27933
+      min: 0.016691
+      p01: 0.018885
+      p05: 0.019512
+      p50: 0.020001
+      p95: 0.020483
+      p99: 0.021149
+      max: 0.023316
+      mean: 0.02
+      stddev: 0.000348
+    header_abs_jitter_from_median_s:
+      samples: 27933
+      min: 0.0
+      p01: 0.0
+      p05: 2.0e-06
+      p50: 3.8e-05
+      p95: 0.000754
+      p99: 0.001432
+      max: 0.003315
+      mean: 0.000175
+      stddev: 0.0003
+    recorder_minus_header_s:
+      samples: 27934
+      min: 0.000279
+      p01: 0.000347
+      p05: 0.000374
+      p50: 0.000768
+      p95: 0.002997
+      p99: 0.004448
+      max: 0.010333
+      mean: 0.001131
+      stddev: 0.000929
+  tf_odom_base:
+    messages: 11173
+    observed_rate_hz: 20.0
+    header_non_increasing_samples: 0
+    recorder_before_header_samples: 0
+    recorder_interval_s:
+      samples: 11172
+      min: 0.034017
+      p01: 0.037521
+      p05: 0.038699
+      p50: 0.046796
+      p95: 0.0613
+      p99: 0.062406
+      max: 0.066263
+      mean: 0.049999
+      stddev: 0.009972
+    header_interval_s:
+      samples: 11172
+      min: 0.036671
+      p01: 0.039386
+      p05: 0.039786
+      p50: 0.042817
+      p95: 0.060214
+      p99: 0.06061
+      max: 0.063247
+      mean: 0.049999
+      stddev: 0.009981
+    header_abs_jitter_from_median_s:
+      samples: 11172
+      min: 3.5e-05
+      p01: 0.001975
+      p05: 0.002518
+      p50: 0.005996
+      p95: 0.017398
+      p99: 0.017793
+      max: 0.02043
+      mean: 0.009975
+      stddev: 0.007191
+    recorder_minus_header_s:
+      samples: 11173
+      min: 0.00026
+      p01: 0.000331
+      p05: 0.000361
+      p50: 0.000629
+      p95: 0.002592
+      p99: 0.003631
+      max: 0.008444
+      mean: 0.000971
+      stddev: 0.000787
+  tf_map_odom:
+    messages: 5394
+    observed_rate_hz: 9.653
+    header_non_increasing_samples: 0
+    recorder_before_header_samples: 5394
+    recorder_interval_s:
+      samples: 5393
+      min: 0.042464
+      p01: 0.073792
+      p05: 0.09047
+      p50: 0.103393
+      p95: 0.116565
+      p99: 0.13317
+      max: 0.166762
+      mean: 0.103591
+      stddev: 0.008137
+    header_interval_s:
+      samples: 5393
+      min: 0.099915
+      p01: 0.10186
+      p05: 0.102646
+      p50: 0.103561
+      p95: 0.104637
+      p99: 0.105626
+      max: 0.107525
+      mean: 0.103592
+      stddev: 0.000627
+    header_abs_jitter_from_median_s:
+      samples: 5393
+      min: 0.0
+      p01: 6.0e-06
+      p05: 2.4e-05
+      p50: 0.000267
+      p95: 0.001356
+      p99: 0.002164
+      max: 0.003964
+      mean: 0.000422
+      stddev: 0.000464
+    recorder_minus_header_s:
+      samples: 5394
+      min: -0.897601
+      p01: -0.895864
+      p05: -0.895045
+      p50: -0.89309
+      p95: -0.879918
+      p99: -0.863815
+      max: -0.831017
+      mean: -0.891606
+      stddev: 0.005695
+cross_stream_alignment:
+  scan_to_odom:
+    signed_nearest_header_offset_s:
+      samples: 5394
+      min: -0.010348
+      p01: -0.009843
+      p05: -0.009027
+      p50: 0.000172
+      p95: 0.009033
+      p99: 0.00983
+      max: 0.095485
+      mean: 7.4e-05
+      stddev: 0.006009
+    absolute_nearest_header_offset_s:
+      samples: 5394
+      min: 0.0
+      p01: 0.000127
+      p05: 0.000606
+      p50: 0.005153
+      p95: 0.009563
+      p99: 0.009928
+      max: 0.095485
+      mean: 0.005156
+      stddev: 0.003088
+  scan_to_imu:
+    signed_nearest_header_offset_s:
+      samples: 5394
+      min: -0.010348
+      p01: -0.009843
+      p05: -0.009027
+      p50: 0.000172
+      p95: 0.009033
+      p99: 0.00983
+      max: 0.095485
+      mean: 7.4e-05
+      stddev: 0.006009
+    absolute_nearest_header_offset_s:
+      samples: 5394
+      min: 0.0
+      p01: 0.000127
+      p05: 0.000606
+      p50: 0.005153
+      p95: 0.009563
+      p99: 0.009928
+      max: 0.095485
+      mean: 0.005156
+      stddev: 0.003088
+  scan_to_odom_base_tf:
+    signed_nearest_header_offset_s:
+      samples: 5394
+      min: -0.030007
+      p01: -0.029034
+      p05: -0.025233
+      p50: 0.000251
+      p95: 0.025285
+      p99: 0.029045
+      max: 0.135004
+      mean: 1.5e-05
+      stddev: 0.015415
+    absolute_nearest_header_offset_s:
+      samples: 5394
+      min: 1.9e-05
+      p01: 0.000263
+      p05: 0.001537
+      p50: 0.012442
+      p95: 0.027578
+      p99: 0.029564
+      max: 0.135004
+      mean: 0.013077
+      stddev: 0.008161
+  scan_to_map_odom_tf:
+    signed_nearest_header_offset_s:
+      samples: 5394
+      min: -0.040678
+      p01: -0.03862
+      p05: -0.037688
+      p50: -0.036287
+      p95: -0.032464
+      p99: -0.031627
+      max: 1.0
+      mean: -0.03486
+      stddev: 0.027704
+    absolute_nearest_header_offset_s:
+      samples: 5394
+      min: 0.029365
+      p01: 0.031718
+      p05: 0.032481
+      p50: 0.03629
+      p95: 0.037704
+      p99: 0.038741
+      max: 1.0
+      mean: 0.036842
+      stddev: 0.025008
+scan:
+  frames: 5394
+  points_total: 5023326
+  points_valid: 3039080
+  points_invalid: 1984246
+  invalid_reason_counts:
+    nan: 0
+    positive_infinity: 1984246
+    negative_infinity: 0
+    below_range_min: 0
+    above_range_max: 0
+  valid_fraction: 0.604994
+  nonfinite_fraction: 0.395006
+  points_per_frame:
+    samples: 5394
+    min: 925.0
+    p01: 927.0
+    p05: 929.0
+    p50: 931.0
+    p95: 933.0
+    p99: 933.0
+    max: 935.0
+    mean: 931.28
+    stddev: 1.533
+  valid_fraction_per_frame:
+    samples: 5394
+    min: 0.418904
+    p01: 0.466095
+    p05: 0.50805
+    p50: 0.588614
+    p95: 0.754555
+    p99: 0.784103
+    max: 0.800643
+    mean: 0.605031
+    stddev: 0.074388
+  valid_range_m:
+    samples: 3039080
+    min: 0.4848
+    p01: 0.693
+    p05: 0.896
+    p50: 2.07
+    p95: 7.0503
+    p99: 11.4748
+    max: 15.9995
+    mean: 2.8019
+    stddev: 2.1288
+  declared_scan_time_s:
+    samples: 5394
+    min: 0.099977
+    p01: 0.10191
+    p05: 0.102694
+    p50: 0.103594
+    p95: 0.104556
+    p99: 0.105491
+    max: 0.106821
+    mean: 0.103592
+    stddev: 0.000587
+  declared_time_increment_s:
+    samples: 5394
+    min: 0.000107618
+    p01: 0.000109425
+    p05: 0.000110306
+    p50: 0.000111222
+    p95: 0.000112215
+    p99: 0.000113297
+    max: 0.000114985
+    mean: 0.000111236
+    stddev: 6.08e-07
+wheel_odometry:
+  samples: 27934
+  stationary_classification:
+    linear_speed_threshold_mps: 0.01
+    angular_speed_threshold_radps: 0.02
+    stationary_samples: 14
+    moving_samples: 27920
+  translation_increment_m:
+    samples: 27933
+    min: 0.0
+    p01: 0.0
+    p05: 0.000984
+    p50: 0.00323
+    p95: 0.003381
+    p99: 0.003432
+    max: 0.003583
+    mean: 0.002841
+    stddev: 0.000833
+  abs_yaw_increment_rad:
+    samples: 27933
+    min: 0.0
+    p01: 0.0
+    p05: 0.0
+    p50: 0.0008246
+    p95: 0.0038483
+    p99: 0.0098957
+    max: 0.0107203
+    mean: 0.0012623
+    stddev: 0.00162
+  linear_velocity_mps:
+    samples: 27934
+    min: -0.00379
+    p01: -0.0
+    p05: 0.04921
+    p50: 0.1615
+    p95: 0.16907
+    p99: 0.17159
+    max: 0.17916
+    mean: 0.14203
+    stddev: 0.0417
+  angular_velocity_radps:
+    samples: 27934
+    min: -0.53602
+    p01: -0.48104
+    p05: -0.13744
+    p50: 0.0
+    p95: 0.13744
+    p99: 0.23365
+    max: 0.53602
+    mean: -0.00924
+    stddev: 0.10227
+  stationary_translation_increment_m:
+    samples: 11
+    min: 0.0
+    p01: 0.0
+    p05: 0.0
+    p50: 0.0
+    p95: 3.79e-05
+    p99: 4.79e-05
+    max: 5.05e-05
+    mean: 6.9e-06
+    stddev: 1.56e-05
+  stationary_abs_yaw_increment_rad:
+    samples: 11
+    min: 0.0
+    p01: 0.0
+    p05: 0.0
+    p50: 0.0
+    p95: 0.00013744
+    p99: 0.00024739
+    max: 0.00027488
+    mean: 2.499e-05
+    stddev: 7.902e-05
+  decimated_path_length_m: 79.259
+  start_to_end_m: 31.9285
+imu:
+  samples: 27934
+  odom_motion_alignment:
+    max_allowed_offset_s: 0.05
+    classified_samples: 27934
+    unclassified_samples: 0
+    absolute_offset_s:
+      samples: 27934
+      min: 0.0
+      p01: 0.0
+      p05: 0.0
+      p50: 0.0
+      p95: 0.0
+      p99: 0.0
+      max: 0.0
+      mean: 0.0
+      stddev: 0.0
+  angular_velocity_x_radps:
+    samples: 27934
+    min: -0.226369
+    p01: -0.074176
+    p05: -0.049218
+    p50: 0.000524
+    p95: 0.046251
+    p99: 0.067544
+    max: 0.269304
+    mean: -0.000289
+    stddev: 0.029048
+  angular_velocity_y_radps:
+    samples: 27934
+    min: -0.133692
+    p01: -0.048695
+    p05: -0.033859
+    p50: -0.000698
+    p95: 0.032114
+    p99: 0.046775
+    max: 0.075747
+    mean: -0.000681
+    stddev: 0.019861
+  angular_velocity_z_radps:
+    samples: 27934
+    min: -0.553095
+    p01: -0.230907
+    p05: -0.132645
+    p50: 0.002094
+    p95: 0.139975
+    p99: 0.488518
+    max: 0.539307
+    mean: 0.006437
+    stddev: 0.102817
+  angular_velocity_norm_radps:
+    samples: 27934
+    min: 0.001896
+    p01: 0.009478
+    p05: 0.017356
+    p50: 0.055335
+    p95: 0.204657
+    p99: 0.502677
+    max: 0.553197
+    mean: 0.076481
+    stddev: 0.077474
+  stationary:
+    samples: 14
+    angular_velocity_z_radps:
+      samples: 14
+      min: -0.0258309
+      p01: -0.0230628
+      p05: -0.0119904
+      p50: -0.0001745
+      p95: 0.0056723
+      p99: 0.0102102
+      max: 0.0113446
+      mean: -0.0012841
+      stddev: 0.0077183
+    angular_velocity_norm_radps:
+      samples: 14
+      min: 0.0034112
+      p01: 0.003509
+      p05: 0.0039
+      p50: 0.0077531
+      p95: 0.0172764
+      p99: 0.0241431
+      max: 0.0258597
+      mean: 0.008857
+      stddev: 0.0054189
+  moving:
+    samples: 27920
+    angular_velocity_z_radps:
+      samples: 27920
+      min: -0.553095
+      p01: -0.230907
+      p05: -0.132645
+      p50: 0.002094
+      p95: 0.139975
+      p99: 0.488518
+      max: 0.539307
+      mean: 0.006441
+      stddev: 0.102842
+    angular_velocity_norm_radps:
+      samples: 27920
+      min: 0.001896
+      p01: 0.009693
+      p05: 0.017375
+      p50: 0.055353
+      p95: 0.204668
+      p99: 0.502686
+      max: 0.553197
+      mean: 0.076515
+      stddev: 0.077478
+stationary_noise_profile:
+  window:
+    kind: pre_route_prelude
+    requested_duration_s: 60.0
+    start_unix_ns: 1788502945333895936
+    end_unix_ns: 1788503005333895936
+  wheel_odometry:
+    samples: 3000
+    stationary_classification:
+      linear_speed_threshold_mps: 0.01
+      angular_speed_threshold_radps: 0.02
+      stationary_samples: 3000
+      moving_samples: 0
+    translation_increment_m:
+      samples: 2999
+      min: 0.0
+      p01: 0.0
+      p05: 0.0
+      p50: 0.0
+      p95: 0.0
+      p99: 0.0
+      max: 0.0
+      mean: 0.0
+      stddev: 0.0
+    abs_yaw_increment_rad:
+      samples: 2999
+      min: 0.0
+      p01: 0.0
+      p05: 0.0
+      p50: 0.0
+      p95: 0.0
+      p99: 0.0
+      max: 0.0
+      mean: 0.0
+      stddev: 0.0
+    linear_velocity_mps:
+      samples: 3000
+      min: 0.0
+      p01: 0.0
+      p05: 0.0
+      p50: 0.0
+      p95: 0.0
+      p99: 0.0
+      max: 0.0
+      mean: 0.0
+      stddev: 0.0
+    angular_velocity_radps:
+      samples: 3000
+      min: 0.0
+      p01: 0.0
+      p05: 0.0
+      p50: 0.0
+      p95: 0.0
+      p99: 0.0
+      max: 0.0
+      mean: 0.0
+      stddev: 0.0
+    stationary_translation_increment_m:
+      samples: 2999
+      min: 0.0
+      p01: 0.0
+      p05: 0.0
+      p50: 0.0
+      p95: 0.0
+      p99: 0.0
+      max: 0.0
+      mean: 0.0
+      stddev: 0.0
+    stationary_abs_yaw_increment_rad:
+      samples: 2999
+      min: 0.0
+      p01: 0.0
+      p05: 0.0
+      p50: 0.0
+      p95: 0.0
+      p99: 0.0
+      max: 0.0
+      mean: 0.0
+      stddev: 0.0
+    decimated_path_length_m: 0.0
+    start_to_end_m: 0.0
+  imu:
+    samples: 3000
+    odom_motion_alignment:
+      max_allowed_offset_s: 0.05
+      classified_samples: 3000
+      unclassified_samples: 0
+      absolute_offset_s:
+        samples: 3000
+        min: 0.0
+        p01: 0.0
+        p05: 0.0
+        p50: 0.0
+        p95: 0.0
+        p99: 0.0
+        max: 0.0
+        mean: 0.0
+        stddev: 0.0
+    angular_velocity_x_radps:
+      samples: 3000
+      min: -0.011519
+      p01: -0.008203
+      p05: -0.007156
+      p50: -0.001222
+      p95: 0.005934
+      p99: 0.006981
+      max: 0.00925
+      mean: -0.00093
+      stddev: 0.004352
+    angular_velocity_y_radps:
+      samples: 3000
+      min: -0.011519
+      p01: -0.008203
+      p05: -0.006632
+      p50: -0.000175
+      p95: 0.007505
+      p99: 0.009774
+      max: 0.012392
+      mean: 5.4e-05
+      stddev: 0.004342
+    angular_velocity_z_radps:
+      samples: 3000
+      min: -0.013788
+      p01: -0.005585
+      p05: -0.003316
+      p50: -0.000175
+      p95: 0.003142
+      p99: 0.005411
+      max: 0.013439
+      mean: -2.7e-05
+      stddev: 0.002189
+    angular_velocity_norm_radps:
+      samples: 3000
+      min: 0.000247
+      p01: 0.001797
+      p05: 0.002863
+      p50: 0.006275
+      p95: 0.009669
+      p99: 0.011193
+      max: 0.015051
+      mean: 0.006269
+      stddev: 0.002039
+    stationary:
+      samples: 3000
+      angular_velocity_z_radps:
+        samples: 3000
+        min: -0.0137881
+        p01: -0.0055851
+        p05: -0.0033161
+        p50: -0.0001745
+        p95: 0.0031416
+        p99: 0.0054105
+        max: 0.013439
+        mean: -2.66e-05
+        stddev: 0.0021892
+      angular_velocity_norm_radps:
+        samples: 3000
+        min: 0.0002468
+        p01: 0.0017968
+        p05: 0.0028626
+        p50: 0.0062747
+        p95: 0.009669
+        p99: 0.0111934
+        max: 0.0150514
+        mean: 0.0062691
+        stddev: 0.002039
+    moving:
+      samples: 0
+      angular_velocity_z_radps:
+        samples: 0
+      angular_velocity_norm_radps:
+        samples: 0
+simulation_initial_candidates:
+  measured_not_tuned: true
+  scan_nonfinite_ray_fraction: 0.395006
+  scan_period_s: 0.103561
+  scan_period_abs_jitter_p99_s: 0.002164
+  scan_recorder_minus_header_p95_s: 0.107408
+  imu_stationary_z_bias_radps: -0.0001745
+  imu_stationary_z_robust_sigma_radps: 0.0018113
+  odom_stationary_translation_increment_p99_m: 0.0
+  odom_stationary_abs_yaw_increment_p99_rad: 0.0
+limitations:
+- The real-robot bag has no external ground truth, so additive LiDAR range noise and
+  odometry accuracy are not identifiable.
+- Recorder latency includes driver, scheduling, DDS, and recorder effects; it is not
+  a sensor-only latency measurement.
+- Non-finite LiDAR rays are no-return observations, not evidence of transport-level
+  message dropout.
+- The map-to-odom TF header is future-dated by localization tolerance, so recorder-minus-header
+  is not latency for that TF.
+- Stationary segments are inferred from wheel-odometry twist thresholds and are not
+  an independently labelled experiment.
+- Simulation candidates are observed initial envelopes, not tuned or validated sim-to-real
+  parameters.

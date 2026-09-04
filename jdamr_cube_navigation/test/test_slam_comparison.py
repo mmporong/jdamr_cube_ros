@@ -1,10 +1,8 @@
 """Regression tests for the offline SLAM comparison maths."""
 
-# Both defects these tests pin were found by disbelieving an output rather
-# than by reading the code: a 23.6 m drive reported 304 m of path length
-# because 50 Hz odometry noise was summed pair by pair, and a 60 s replay
-# reported a 19.7 m "error" against AMCL because the backend's map frame
-# starts at the robot rather than at the pre-built map's origin.
+# These tests pin two output-integrity defects: high-rate odometry noise must
+# not inflate path length, and frame offsets must not be reported as backend
+# deviation from the saved-map localization reference.
 
 import math
 from pathlib import Path
@@ -20,9 +18,15 @@ pytest.importorskip('mcap_ros2',
 
 from compare_slam_runs import (  # noqa: E402,I100
     apply_rigid,
+    comparison_precondition_errors,
+    comparison_summary,
     compose,
     decimate,
+    main,
+    map_statistics,
+    nearest,
     path_length,
+    render_report,
     rigid_align,
     yaw_of,
 )
@@ -118,6 +122,142 @@ def test_yaw_of_reads_a_quarter_turn():
     ) == pytest.approx(90.0, abs=1e-6)
 
 
+def test_nearest_uses_sorted_timestamp_neighbours():
+    """Timestamp matching must stay correct after logarithmic lookup."""
+    samples = [(1.0, 'first'), (2.0, 'second'), (3.0, 'third')]
+
+    assert nearest(samples, 1.6) == samples[1]
+    assert nearest(samples, 0.9) == samples[0]
+    assert nearest(samples, 4.0) is None
+
+
+def test_map_statistics_preserves_unknown_cells_and_square_units(tmp_path):
+    """Trinary unknown pixels are neither free nor a one-dimensional length."""
+    image = tmp_path / 'map.pgm'
+    image.write_bytes(b'P5\n2 2\n255\n' + bytes((0, 254, 205, 128)))
+    metadata = tmp_path / 'map.yaml'
+    metadata.write_text(
+        'image: map.pgm\n'
+        'mode: trinary\n'
+        'resolution: 0.05\n'
+        'origin: [0, 0, 0]\n'
+        'negate: 0\n'
+        'occupied_thresh: 0.65\n'
+        'free_thresh: 0.196\n',
+        encoding='utf-8')
+
+    result = map_statistics(metadata)
+
+    assert result['occupied_cells'] == 1
+    assert result['free_cells'] == 1
+    assert result['unknown_cells'] == 2
+    assert result['occupied_area_m2'] == pytest.approx(0.0025)
+    assert 'occupied_length_m' not in result
+
+
+def test_backend_selection_requires_both_consistency_criteria_to_agree():
+    """Do not select a backend when observable criteria disagree."""
+    records = [
+        {'backend': 'a', 'start_to_end_m': 1.0,
+         'deviation_from_amcl': {'rms_m': 2.0}},
+        {'backend': 'b', 'start_to_end_m': 2.0,
+         'deviation_from_amcl': {'rms_m': 1.0}},
+    ]
+
+    assert comparison_summary(records)['selected_backend'] is None
+
+
+def test_backend_selection_requires_two_distinct_completed_backends():
+    """One replay result is evidence, but it is not a comparison."""
+    record = {'backend': 'a', 'start_to_end_m': 1.0,
+              'deviation_from_amcl': {'rms_m': 0.5}}
+
+    assert comparison_summary([record]) == {
+        'selected_backend': None,
+        'reason': 'insufficient_data',
+    }
+
+
+def test_comparison_rejects_mixed_source_bags():
+    """Backends are comparable only when their source bag is identical."""
+    records = [
+        {'backend': 'a', 'source_bag': 'one.mcap',
+         'source_bag_sha256': 'aaa', 'start_to_end_m': 1.0,
+         'deviation_from_amcl': {'rms_m': 0.5}, 'map': {},
+         'map_yaml': 'a.yaml'},
+        {'backend': 'b', 'source_bag': 'two.mcap',
+         'source_bag_sha256': 'bbb', 'start_to_end_m': 2.0,
+         'deviation_from_amcl': {'rms_m': 1.0}, 'map': {},
+         'map_yaml': 'b.yaml'},
+    ]
+
+    errors = comparison_precondition_errors(records)
+
+    assert 'all results must use one identical source bag hash' in errors
+    assert 'all results must use one identical source bag name' in errors
+
+
+def test_comparison_main_refuses_missing_map_without_writing_outputs(tmp_path):
+    """An incomplete replay must not produce portfolio comparison artifacts."""
+    results = tmp_path / 'results'
+    result_dir = results / 'run__cartographer_result'
+    result_dir.mkdir(parents=True)
+    (result_dir / 'result.mcap').touch()
+    (result_dir / 'metadata.yaml').write_text('complete: true\n')
+    source_root = tmp_path / 'source'
+    source_dir = source_root / 'run'
+    source_dir.mkdir(parents=True)
+    (source_dir / 'source.mcap').touch()
+    output = tmp_path / 'comparison.json'
+
+    with pytest.raises(SystemExit) as error:
+        main(['--results', str(results), '--source-root', str(source_root),
+              '--output', str(output)])
+
+    assert error.value.code == 2
+    assert not output.exists()
+
+
+def test_report_labels_amcl_as_reference_instead_of_ground_truth():
+    """Portfolio evidence must not turn AMCL consistency into accuracy."""
+    records = [
+        {'backend': 'a', 'estimated_length_m': 10.0,
+         'start_to_end_m': 1.0,
+         'deviation_from_amcl': {'rms_m': 0.5, 'max_m': 1.0},
+         'map': {'extent_m': [5.0, 2.0]}},
+        {'backend': 'b', 'estimated_length_m': 11.0,
+         'start_to_end_m': 2.0,
+         'deviation_from_amcl': {'rms_m': 1.0, 'max_m': 2.0},
+         'map': {'extent_m': [6.0, 3.0]}},
+    ]
+
+    report = render_report(records)
+
+    assert '`a`를 현재 복도 데이터의 기본 백엔드로 선택' in report
+    assert '외부 ground truth가 없으므로' in report
+    assert 'ATE/RPE가 아니다' in report
+
+
+def test_report_defers_selection_when_consistency_criteria_disagree():
+    """A split decision must be described as deferred, never as None."""
+    records = [
+        {'backend': 'a', 'estimated_length_m': 10.0,
+         'start_to_end_m': 1.0,
+         'deviation_from_amcl': {'rms_m': 2.0, 'max_m': 3.0},
+         'map': {'extent_m': [5.0, 2.0]}},
+        {'backend': 'b', 'estimated_length_m': 11.0,
+         'start_to_end_m': 2.0,
+         'deviation_from_amcl': {'rms_m': 1.0, 'max_m': 2.0},
+         'map': {'extent_m': [6.0, 3.0]}},
+    ]
+
+    report = render_report(records)
+
+    assert '선택을 보류한다' in report
+    assert '`None`' not in report
+    assert 'None배' not in report
+
+
 def _harness_source():
     return (Path(__file__).resolve().parents[1]
             / 'scripts' / 'offline_slam_replay.sh').read_text(encoding='utf-8')
@@ -125,8 +265,6 @@ def _harness_source():
 
 def test_slam_toolbox_is_started_through_its_lifecycle_launch():
     """ros2 run leaves the Jazzy node unconfigured and silently mapless."""
-    # 2026-09-03: async_slam_toolbox_node started, consumed nothing, and
-    # published no /map for a whole 303 s replay.  It is a lifecycle node.
     source = _harness_source()
 
     assert 'ros2 launch slam_toolbox online_async_launch.py' in source
@@ -152,31 +290,51 @@ def test_replay_refuses_the_physical_domain():
     source = _harness_source()
 
     assert 'ROS_DOMAIN_ID" = "12"' in source
+    assert 'ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST' in source
 
 
 def test_replay_aborts_without_progress_evidence():
     """No long job may keep running once it has stopped producing."""
-    # Three failures on 2026-09-03 shared one shape: the job ran to completion
-    # while producing nothing, and the loss was only visible afterwards in a
-    # log.  The harness now watches the backend process and the growth of
-    # the result recording.
     source = _harness_source()
 
     assert 'STALL_LIMIT' in source
+    assert 'STALL_LIMIT="${STALL_LIMIT:-240}"' in source
     assert 'kill -0 "$REPLAY_PID"' in source
     for reason in ('backend($probe) 가 죽었다',
                    '결과 기록이 ${STALL_LIMIT}초 동안 늘지 않았다'):
         assert reason in source
 
 
+def test_cleanup_only_stops_process_groups_started_by_the_harness():
+    """An offline experiment must not kill unrelated ROS processes."""
+    source = _harness_source()
+
+    assert 'pkill -f' not in source
+    assert 'PROCESS_GROUPS=()' in source
+    assert 'kill -TERM -- "-$process_group"' in source
+
+
+def test_replay_requires_finalized_result_and_saved_map():
+    """A backend comparison needs both a closed MCAP and final map files."""
+    source = _harness_source()
+
+    assert '최종 지도 저장 실패' in source
+    assert '결과 MCAP metadata 마감 실패' in source
+    assert '[ ! -s "$RESULT_DIR/metadata.yaml" ]' in source
+    assert '--storage-config-file "$WRITER_CONFIG"' in source
+
+
+def test_replay_detects_a_dead_result_recorder_immediately():
+    """A dead recorder must stop replay without waiting for the stall timer."""
+    source = _harness_source()
+
+    assert 'kill -0 "$RECORDER_PID"' in source
+    assert '결과 recorder 기동 실패' in source
+    assert '감시: 결과 recorder가 죽었다' in source
+
+
 def test_watchdog_uses_only_signals_that_cannot_time_out():
     """A watchdog that kills healthy runs is worse than none at all."""
-    # Two drafts of this watchdog aborted working runs.  The first gave
-    # slam_toolbox 120 s to publish a map when it needs about three minutes.
-    # The second polled `ros2 topic info /map`, whose discovery does not
-    # finish within 8 s on a loaded machine, and killed
-    # 165606/cartographer while it was actively building the map it later
-    # saved.  Only process liveness and recording growth are used now.
     source = _harness_source()
 
     assert 'topic info /map' not in source

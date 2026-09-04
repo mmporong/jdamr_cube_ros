@@ -30,9 +30,33 @@ files:
 - file: route_progress.csv
   size_bytes: 3312
   sha256: 55efa911a5e0f432922afa4a75d8f08acb182400d73ae2956f421a7df4189bf1
+- file: sensor_profile.json
+  size_bytes: 22365
+  sha256: 8e9e259d364b1f39efc5742d4142c6124aed5ebc99b685523a1c8fcc1c780f03
+- file: sensor_profile.md
+  size_bytes: 2767
+  sha256: 3f7b708907a87a0b87a368d451263f1d474825f04b3399b7c938f8afd4743d96
+- file: sensor_profile.png
+  size_bytes: 139498
+  sha256: 90359bf6200cf317e41899f4822fbfb1b17ae676021f2af2811a998c73dbef4d
+- file: sensor_profile.yaml
+  size_bytes: 17632
+  sha256: e670e17453dbb8ae956703ec2150e72727eabd28606056728c95f5216d383461
+- file: slam_backend_comparison.json
+  size_bytes: 3107
+  sha256: df20425799f25e78405fef9314e2ef0733541fc3262993ed69f70e148bc69d31
+- file: slam_backend_comparison.md
+  size_bytes: 1115
+  sha256: fe45610b9f55daafcc87fe2cfc0a8a8d6ee81ca38322ddf7d0e38caf19a55e91
+- file: slam_backend_comparison.png
+  size_bytes: 278694
+  sha256: 4591bbaaa1323f4fbdf8614b5c5cbaf6887ae99aad33daf64d4d4e0777ff99a4
 - file: success_card.png
   size_bytes: 54299
   sha256: 9c242cfa6e8e5f506b73e17456da29d97129cace778a75dfcf2ff89a7e133e9a
 - file: telemetry.png
   size_bytes: 268295
   sha256: 01127567c7394b554c6508657e057a6a0ff3440bf192e1d2cbccb2f12a5e299e
+- file: timing_profile.png
+  size_bytes: 177061
+  sha256: 36e27d600a5520077029fe3290c842e081674099f042c98784166704dd3ffa8b
