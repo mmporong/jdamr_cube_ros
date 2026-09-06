@@ -35,6 +35,19 @@ SENSOR_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST, depth=20,
     reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE)
+CLOUD_OBSERVATION_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST, depth=20,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE)
+POSE_OBSERVATION_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST, depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL)
+PAIRING_CONTRACT = 'FIFO_PAIRED_NO_COMMON_UPDATE_ID'
+OBSERVATION_QOS_CONTRACT = {
+    'particle_cloud': 'BEST_EFFORT_VOLATILE_SENSOR_DATA_QOS_COMPATIBLE',
+    'amcl_pose': 'RELIABLE_TRANSIENT_LOCAL_KEEP_LAST_1',
+}
 
 
 def _stamp_ns(stamp) -> int:
@@ -55,13 +68,13 @@ def particle_payload(cloud: ParticleCloud) -> tuple[str, int]:
             pose.orientation.x, pose.orientation.y,
             pose.orientation.z, pose.orientation.w, particle.weight)
         if any(not math.isfinite(float(value)) for value in values):
-            raise ValueError('particle cloud contains non-finite pose')
+            raise ValueError('particle cloud contains non-finite pose or weight')
         digest.update(struct.pack('<Q8d', index, *map(float, values)))
     return digest.hexdigest(), len(cloud.particles)
 
 
 class ParticleObserver(Node):
-    """Capture readiness, scan causality, and ordered particle payloads."""
+    """Capture readiness, scan linkage, and ordered particle payloads."""
 
     def __init__(self, args):
         """Create the evaluation-only observer and its subscriptions."""
@@ -74,6 +87,7 @@ class ParticleObserver(Node):
         self.map_count = 0
         self.odom_count = 0
         self.clock_count = 0
+        self.clock_samples = []
         self.tf_count = 0
         self.map_odom_tf_count = 0
         self.tf_static_count = 0
@@ -86,13 +100,14 @@ class ParticleObserver(Node):
         self.clouds = []
         self.pending_clouds = []
         self.pending_poses = []
+        self.callback_trace = []
         self.scan_stamps = []
         self.scan_arrival_steady_ns = {}
         self.scan_payload = hashlib.sha256()
         self.scan_header = hashlib.sha256()
         self.done = False
         self.failure = None
-        self.last_publisher_matched_count = -1
+        self.last_publisher_match_counts = (-1, -1)
         self._event('observer_started')
         self.initialpose_pub = self.create_publisher(
             PoseWithCovarianceStamped, '/initialpose', MAP_QOS)
@@ -110,10 +125,10 @@ class ParticleObserver(Node):
             LaserScan, '/scan', self._scan_raw, SENSOR_QOS, raw=True)
         self.cloud_sub = self.create_subscription(
             ParticleCloud, '/particle_cloud', self._cloud_raw,
-            SENSOR_QOS, raw=True)
+            CLOUD_OBSERVATION_QOS, raw=True)
         self.pose_sub = self.create_subscription(
             PoseWithCovarianceStamped, '/amcl_pose', self._pose_raw,
-            SENSOR_QOS, raw=True)
+            POSE_OBSERVATION_QOS, raw=True)
         self.timer = self.create_timer(
             0.02, self._tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
         self._write_state()
@@ -137,7 +152,14 @@ class ParticleObserver(Node):
             self._event('first_odom_received')
             self._write_state()
 
-    def _clock_raw(self, _serialized: bytes) -> None:
+    def _clock_raw(self, serialized: bytes) -> None:
+        message = deserialize_message(serialized, ClockMessage)
+        ros_ns = _stamp_ns(message.clock)
+        if self.clock_samples and ros_ns < self.clock_samples[-1]['ros_ns']:
+            self.failure = 'observed /clock moved backwards'
+            self.done = True
+        self.clock_samples.append({
+            'ros_ns': ros_ns, 'arrival_steady_ns': time.monotonic_ns()})
         self.clock_count += 1
         if self.clock_count == 1:
             self._event('first_clock_received')
@@ -186,12 +208,19 @@ class ParticleObserver(Node):
             if not self.scan_stamps:
                 return
             digest, count = particle_payload(message)
+            arrival_steady_ns = time.monotonic_ns()
+            cloud_stream_index = self.raw_cloud_received_count - 1
+            self.callback_trace.append({
+                'kind': 'particle_cloud', 'stream_index': cloud_stream_index,
+                'header_stamp_ns': _stamp_ns(message.header.stamp),
+                'arrival_steady_ns': arrival_steady_ns})
             self.pending_clouds.append({
                 'header_stamp_ns': _stamp_ns(message.header.stamp),
-                'arrival_steady_ns': time.monotonic_ns(),
+                'arrival_steady_ns': arrival_steady_ns,
                 'callback_ros_ns': self.get_clock().now().nanoseconds,
                 'frame_id': message.header.frame_id,
                 'particle_count': count, 'payload_sha256': digest,
+                'stream_index': cloud_stream_index,
             })
             self._drain_updates()
             self._write_state()
@@ -222,11 +251,18 @@ class ParticleObserver(Node):
             header_stamp_ns = _stamp_ns(message.header.stamp)
             if header_stamp_ns not in self.scan_stamps:
                 return
+            arrival_steady_ns = time.monotonic_ns()
+            pose_stream_index = self.amcl_pose_received_count - 1
+            self.callback_trace.append({
+                'kind': 'amcl_pose', 'stream_index': pose_stream_index,
+                'header_stamp_ns': header_stamp_ns,
+                'arrival_steady_ns': arrival_steady_ns})
             self.pending_poses.append({
                 'header_stamp_ns': header_stamp_ns,
-                'arrival_steady_ns': time.monotonic_ns(),
+                'arrival_steady_ns': arrival_steady_ns,
                 'callback_ros_ns': self.get_clock().now().nanoseconds,
                 'frame_id': message.header.frame_id,
+                'stream_index': pose_stream_index,
                 'pose': [float(value) for value in values[:7]],
                 'covariance': [float(value) for value in
                                message.pose.covariance],
@@ -243,19 +279,20 @@ class ParticleObserver(Node):
                len(self.clouds) < self.args.max_clouds):
             cloud = self.pending_clouds.pop(0)
             pose = self.pending_poses.pop(0)
-            trigger_stamp_ns = pose['header_stamp_ns']
-            if trigger_stamp_ns not in self.scan_stamps:
+            associated_scan_stamp_ns = pose['header_stamp_ns']
+            if associated_scan_stamp_ns not in self.scan_stamps:
                 raise ValueError('AMCL pose stamp is not an observed scan')
             scan_arrival_steady_ns = self.scan_arrival_steady_ns[
-                trigger_stamp_ns]
+                associated_scan_stamp_ns]
             latency_ns = pose['arrival_steady_ns'] - scan_arrival_steady_ns
             if latency_ns < 0:
                 raise ValueError('AMCL pose arrived before triggering scan')
             record = dict(cloud)
             record.update({
                 'index': len(self.clouds),
-                'triggering_scan_header_stamp_ns': trigger_stamp_ns,
-                'pose_header_stamp_ns': trigger_stamp_ns,
+                'fifo_associated_pose_scan_header_stamp_ns':
+                    associated_scan_stamp_ns,
+                'pose_header_stamp_ns': associated_scan_stamp_ns,
                 'pose_arrival_steady_ns': pose['arrival_steady_ns'],
                 'pose_callback_ros_ns': pose['callback_ros_ns'],
                 'pose_frame_id': pose['frame_id'],
@@ -263,15 +300,20 @@ class ParticleObserver(Node):
                 'covariance': pose['covariance'],
                 'scan_arrival_steady_ns': scan_arrival_steady_ns,
                 'scan_to_pose_steady_ns': latency_ns,
+                'cloud_stream_index': cloud['stream_index'],
+                'pose_stream_index': pose['stream_index'],
+                'pair_arrival_delta_ns': abs(
+                    cloud['arrival_steady_ns'] - pose['arrival_steady_ns']),
             })
             self.clouds.append(record)
             if len(self.clouds) == 1:
                 self._event('first_post_scan_cloud_received')
 
     def _tick(self) -> None:
-        matched = self.cloud_sub.get_publisher_count()
-        if matched != self.last_publisher_matched_count:
-            self.last_publisher_matched_count = matched
+        matched = (self.cloud_sub.get_publisher_count(),
+                   self.pose_sub.get_publisher_count())
+        if matched != self.last_publisher_match_counts:
+            self.last_publisher_match_counts = matched
             self._write_state()
         if (self.args.initialpose_request.exists() and
                 self.initialpose_count == 0):
@@ -310,6 +352,7 @@ class ParticleObserver(Node):
             'seed': self.args.seed,
             'max_clouds': self.args.max_clouds,
             'publisher_matched_count': publisher_matched,
+            'pose_publisher_matched_count': self.pose_sub.get_publisher_count(),
             'events': self.events,
             'readiness': {
                 'map_count': self.map_count,
@@ -330,6 +373,11 @@ class ParticleObserver(Node):
             'scan_header_stamps_ns': self.scan_stamps,
             'scan_header_stamp_sha256': self.scan_header.hexdigest(),
             'scan_payload_sha256': self.scan_payload.hexdigest(),
+            'clock_samples': self.clock_samples,
+            'callback_trace': self.callback_trace,
+            'pairing_contract': PAIRING_CONTRACT,
+            'observation_qos_contract': OBSERVATION_QOS_CONTRACT,
+            'pose_causality': 'NOT_PROVEN',
             'clouds': self.clouds,
             'failure': self.failure,
             'done': self.done,

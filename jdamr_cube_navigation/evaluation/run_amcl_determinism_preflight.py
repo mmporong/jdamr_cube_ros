@@ -17,17 +17,30 @@ import subprocess
 import tempfile
 import time
 
+from amcl_fault_contract import AMCL_BASELINE_FILES
 from amcl_fault_contract import canonical_json_bytes
 from amcl_fault_contract import current_free_bytes
 from amcl_fault_contract import exact_regular_file
+from amcl_fault_contract import OVERLAY_CHANGED_FILES
+from amcl_fault_contract import PF_C_PATH
 from amcl_fault_contract import REAL_BAG_SHA256
+from amcl_fault_contract import REAL_BAG_TOPIC_INVENTORY
 from amcl_fault_contract import REAL_MAP_PGM_SHA256
 from amcl_fault_contract import REAL_MAP_YAML_SHA256
 from amcl_fault_contract import sha256_file
 from amcl_fault_contract import STORAGE_LIMITS
 from amcl_fault_contract import strict_json_load
+from amcl_fault_contract import strict_json_loads
+from amcl_fault_contract import UPSTREAM_AMCL_TREE_FILE_COUNT
+from amcl_fault_contract import UPSTREAM_AMCL_TREE_SHA256
+from amcl_fault_contract import UPSTREAM_ARCHIVE_SHA256
+from amcl_fault_contract import UPSTREAM_ARCHIVE_SIZE_BYTES
+from amcl_fault_contract import UPSTREAM_ARCHIVE_URL
+from amcl_fault_contract import UPSTREAM_COMMIT
+from amcl_fault_contract import UPSTREAM_LICENSE_SHA256
 from amcl_fault_contract import validate_storage_budget
 from g002_tf_sanitizer import validate_sanitized_bag
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,11 +57,34 @@ AMCL_TF_ERROR_MARKERS = (
     'Failed to transform',
     'Lookup would require extrapolation',
 )
-CLAIM_SMOKE = 'AMCL_PARTICLE_PIPELINE_SMOKE_NO_MOTION'
-CLAIM_FULL = 'AMCL_PARTICLE_DETERMINISM_PREFLIGHT_NO_MOTION'
+CLAIM_SMOKE = (
+    'ORDERED_OBSERVED_PARTICLE_PAYLOAD_SEQUENCE_SMOKE_NO_MOTION')
+CLAIM_FULL = (
+    'ORDERED_OBSERVED_PARTICLE_PAYLOAD_SEQUENCE_DETERMINISM_NO_MOTION')
 FULL_SEEDS = (11, 11, 23)
 FULL_CLOUD_COUNT = 30
 FULL_SCAN_COUNT = 1937
+FULL_PREFIX_S = 220.0
+SMOKE_SEEDS = (11,)
+SMOKE_CLOUD_COUNT = 1
+SMOKE_PREFIX_S = 30.0
+PLAYBACK_RATE = 2.0
+PAIRING_CONTRACT = 'FIFO_PAIRED_NO_COMMON_UPDATE_ID'
+CLAIM_BOUNDARY = (
+    'PUBLISHER_BEST_EFFORT_DROP_FREE_AND_PER_UPDATE_CAUSALITY_NOT_PROVEN')
+OBSERVATION_QOS_CONTRACT = {
+    'particle_cloud': 'BEST_EFFORT_VOLATILE_SENSOR_DATA_QOS_COMPATIBLE',
+    'amcl_pose': 'RELIABLE_TRANSIENT_LOCAL_KEEP_LAST_1',
+}
+PAIRING_WINDOW_NS = 1_000_000_000
+P0_PARAMS = {
+    'min_particles': 500,
+    'max_particles': 2000,
+    'pf_err': 0.05,
+    'pf_z': 0.99,
+    'recovery_alpha_fast': 0.0,
+    'recovery_alpha_slow': 0.0,
+}
 
 
 def _event(name: str) -> dict:
@@ -68,10 +104,25 @@ def _relative_identity(path: Path, root: Path) -> dict:
 
 def _validate_source_records(records: dict) -> None:
     for record in records.values():
+        _identity_schema(record, 'prepared source identity')
         actual = _identity(Path(record['path']))
         if (actual['size_bytes'] != record['size_bytes'] or
                 actual['sha256'] != record['sha256']):
             raise ValueError('prepared source or production identity drift')
+
+
+def _validate_p0_params(contract: dict, params_path: Path) -> dict:
+    production_record = contract['production_inputs']['production_params']
+    _identity_schema(production_record, 'production P0 params')
+    actual = _identity(params_path)
+    if actual != production_record or contract['profiles']['P0'] != P0_PARAMS:
+        raise ValueError('P0 prepared contract identity drift')
+    document = yaml.safe_load(params_path.read_text(encoding='utf-8'))
+    parameters = document['amcl']['ros__parameters']
+    selected = {key: parameters[key] for key in P0_PARAMS}
+    if selected != P0_PARAMS:
+        raise ValueError('P0 AMCL parameter values drift')
+    return actual
 
 
 def _tree_bytes(root: Path) -> int:
@@ -88,6 +139,399 @@ def _payload_tree_bytes(root: Path) -> int:
 def _exact_keys(value: dict, expected: set[str], label: str) -> None:
     if type(value) is not dict or set(value) != expected:
         raise ValueError(f'{label} schema drift')
+
+
+def _canonical_json_load(path: Path) -> dict:
+    value = strict_json_load(path)
+    if path.read_bytes() != canonical_json_bytes(value):
+        raise ValueError(f'non-canonical JSON encoding: {path.name}')
+    return value
+
+
+def _sha256(value, label: str) -> str:
+    if (type(value) is not str or len(value) != 64 or
+            any(char not in '0123456789abcdef' for char in value)):
+        raise ValueError(f'{label} SHA-256 drift')
+    return value
+
+
+def _identity_schema(record: dict, label: str,
+                     relative: bool = False) -> None:
+    path_key = 'relative_path' if relative else 'path'
+    _exact_keys(record, {path_key, 'size_bytes', 'sha256'}, label)
+    path = record[path_key]
+    if type(path) is not str or not path:
+        raise ValueError(f'{label} path drift')
+    parsed = Path(path)
+    if relative:
+        if parsed.is_absolute() or '..' in parsed.parts or parsed.as_posix() != path:
+            raise ValueError(f'{label} relative path drift')
+    elif (not parsed.is_absolute() or parsed != parsed.expanduser() or
+          parsed != parsed.resolve()):
+        raise ValueError(f'{label} absolute path drift')
+    if type(record['size_bytes']) is not int or record['size_bytes'] < 0:
+        raise ValueError(f'{label} size drift')
+    _sha256(record['sha256'], label)
+
+
+def _tree_manifest(root: Path) -> dict:
+    records = sorted([
+        _relative_identity(path, root) for path in root.rglob('*')
+        if path.is_file() and not path.is_symlink()],
+        key=lambda record: record['relative_path'])
+    if any(path.is_symlink() or not (path.is_file() or path.is_dir())
+           for path in root.rglob('*')):
+        raise ValueError('tree contains symlink or special entry')
+    return {'root': str(root), 'file_count': len(records), 'files': records,
+            'tree_sha256': _tree_digest(records)}
+
+
+def _validate_tree_manifest(tree: dict, expected_names: set[str] | None,
+                            label: str) -> None:
+    _exact_keys(tree, {'root', 'file_count', 'files', 'tree_sha256'}, label)
+    root = Path(tree['root'])
+    if (type(tree['root']) is not str or not root.is_absolute() or
+            root != root.expanduser() or root != root.resolve()):
+        raise ValueError(f'{label} root drift')
+    records = tree['files']
+    if type(records) is not list or type(tree['file_count']) is not int:
+        raise ValueError(f'{label} cardinality drift')
+    for record in records:
+        _identity_schema(record, f'{label} file', relative=True)
+    paths = [record['relative_path'] for record in records]
+    if (tree['file_count'] != len(records) or paths != sorted(set(paths)) or
+            (expected_names is not None and set(paths) != expected_names) or
+            tree['tree_sha256'] != _tree_digest(records)):
+        raise ValueError(f'{label} inventory or digest drift')
+    if root.exists() and tree != _tree_manifest(root):
+        raise ValueError(f'{label} live tree drift')
+
+
+def _validate_source_tree(tree: dict, label: str) -> None:
+    _exact_keys(tree, {'file_count', 'files', 'tree_sha256'}, label)
+    records = tree['files']
+    if type(records) is not list or type(tree['file_count']) is not int:
+        raise ValueError(f'{label} cardinality drift')
+    for record in records:
+        _identity_schema(record, f'{label} file', relative=True)
+    paths = [record['relative_path'] for record in records]
+    if (tree['file_count'] != len(records) or paths != sorted(set(paths)) or
+            not paths or tree['tree_sha256'] != _tree_digest(records)):
+        raise ValueError(f'{label} inventory or digest drift')
+
+
+def _source_tree(root: Path) -> dict:
+    tree = _tree_manifest(root)
+    return {key: tree[key] for key in ('file_count', 'files', 'tree_sha256')}
+
+
+def _validate_overlay_snapshot(contract: dict, lock: dict) -> dict:
+    overlay = contract['source_overlay']
+    _exact_keys(overlay, {'root', 'lock', 'changed_files'}, 'source overlay')
+    _identity_schema(overlay['lock'], 'source overlay lock')
+    _exact_keys(lock, {
+        'schema_version', 'scope', 'upstream', 'baseline_tree', 'overlay_tree',
+        'changed_files', 'unchanged_pf_c', 'patch_classification'},
+        'source overlay snapshot')
+    changed_files = sorted(OVERLAY_CHANGED_FILES)
+    if (lock['schema_version'] != 1 or
+            lock['scope'] != 'evaluation-only; not a production install' or
+            lock['patch_classification'] !=
+            'upstream random_seed surface plus local pf_pdf corrective' or
+            lock['changed_files'] != changed_files or
+            overlay['changed_files'] != changed_files or
+            overlay['lock']['sha256'] !=
+            hashlib.sha256(canonical_json_bytes(lock)).hexdigest() or
+            overlay['lock']['size_bytes'] != len(canonical_json_bytes(lock)) or
+            type(lock['changed_files']) is not list or
+            lock['changed_files'] != sorted(set(lock['changed_files'])) or
+            any(type(value) is not str for value in lock['changed_files']) or
+            lock['unchanged_pf_c'] is not True):
+        raise ValueError('source overlay snapshot binding drift')
+    upstream = lock['upstream']
+    _exact_keys(upstream, {
+        'commit', 'archive_url', 'archive_size_bytes', 'archive_sha256',
+        'license'}, 'overlay upstream')
+    if (upstream['commit'] != UPSTREAM_COMMIT or
+            upstream['archive_url'] != UPSTREAM_ARCHIVE_URL or
+            upstream['archive_size_bytes'] != UPSTREAM_ARCHIVE_SIZE_BYTES or
+            upstream['archive_sha256'] != UPSTREAM_ARCHIVE_SHA256):
+        raise ValueError('overlay upstream canonical identity drift')
+    _identity_schema(upstream['license'], 'overlay upstream license', relative=True)
+    if (upstream['license']['relative_path'] != 'LICENSE' or
+            upstream['license']['sha256'] != UPSTREAM_LICENSE_SHA256):
+        raise ValueError('overlay upstream license identity drift')
+    _validate_source_tree(lock['baseline_tree'], 'baseline source tree')
+    _validate_source_tree(lock['overlay_tree'], 'overlay source tree')
+    if (lock['baseline_tree']['file_count'] !=
+            UPSTREAM_AMCL_TREE_FILE_COUNT or
+            lock['baseline_tree']['tree_sha256'] !=
+            UPSTREAM_AMCL_TREE_SHA256 or
+            lock['overlay_tree']['file_count'] !=
+            UPSTREAM_AMCL_TREE_FILE_COUNT):
+        raise ValueError('canonical AMCL source tree drift')
+    before = {
+        item['relative_path']: item for item in lock['baseline_tree']['files']}
+    after = {
+        item['relative_path']: item for item in lock['overlay_tree']['files']}
+    if set(before) != set(after):
+        raise ValueError('overlay source inventory drift')
+    actual_changed = {
+        f'nav2_amcl/{path}' for path in before if before[path] != after[path]}
+    pf_relative = PF_C_PATH.removeprefix('nav2_amcl/')
+    if (actual_changed != OVERLAY_CHANGED_FILES or
+            after.get(pf_relative, {}).get('sha256') !=
+            AMCL_BASELINE_FILES[PF_C_PATH]):
+        raise ValueError('overlay changed-file or pf.c invariant drift')
+    source_root = Path(overlay['root']) / 'nav2_amcl'
+    if source_root.exists() and _source_tree(source_root) != lock['overlay_tree']:
+        raise ValueError('live overlay source tree drift')
+    return lock['overlay_tree']
+
+
+def _validate_loaded_runtime(value: dict, label: str) -> None:
+    _exact_keys(value, {
+        'amcl_executable', 'libamcl_core', 'libpf_lib', 'rmw_library',
+        'procfs_load_evidence'}, label)
+    for name in ('amcl_executable', 'libamcl_core', 'libpf_lib', 'rmw_library'):
+        record = value[name]
+        _identity_schema(record, f'{label} {name}')
+        if _identity(Path(record['path'])) != record:
+            raise ValueError(f'{label} file identity drift: {name}')
+    procfs = value['procfs_load_evidence']
+    _exact_keys(procfs, {
+        'observation_method', 'executable_target',
+        'required_mapped_library_paths'}, f'{label} procfs evidence')
+    _exact_keys(procfs['required_mapped_library_paths'], {
+        'libamcl_core', 'libpf_lib', 'rmw_library'},
+        f'{label} procfs mapped paths')
+    if (procfs['observation_method'] !=
+            'proc_pid_exe_and_maps_before_replay' or
+            procfs['executable_target'] != value['amcl_executable']['path'] or
+            any(procfs['required_mapped_library_paths'][name] !=
+                value[name]['path'] for name in (
+                    'libamcl_core', 'libpf_lib', 'rmw_library'))):
+        raise ValueError(f'{label} procfs load evidence drift')
+
+
+def _finite_number(value, label: str, minimum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f'{label} numeric type drift')
+    result = float(value)
+    if not math.isfinite(result) or (minimum is not None and result < minimum):
+        raise ValueError(f'{label} finite range drift')
+    return result
+
+
+def _validate_event_record(event: dict, label: str,
+                           ros_clock: bool) -> None:
+    clock_key = 'ros_ns' if ros_clock else 'wall_ns'
+    _exact_keys(event, {'name', 'steady_ns', clock_key}, label)
+    if (type(event['name']) is not str or not event['name'] or
+            type(event['steady_ns']) is not int or event['steady_ns'] < 0 or
+            type(event[clock_key]) is not int or event[clock_key] < 0):
+        raise ValueError(f'{label} scalar drift')
+
+
+def _validate_operation(operation: dict) -> None:
+    _exact_keys(operation, {
+        'command', 'started', 'completed', 'returncode', 'output'},
+        'ROS CLI operation')
+    if (type(operation['command']) is not list or
+            any(type(value) is not str for value in operation['command']) or
+            type(operation['returncode']) is not int or
+            type(operation['output']) is not str or
+            len(operation['output'].encode('utf-8')) > MAX_LOG_BYTES):
+        raise ValueError('ROS CLI operation scalar drift')
+    _validate_event_record(operation['started'], 'operation start', False)
+    _validate_event_record(operation['completed'], 'operation completion', False)
+    if operation['completed']['steady_ns'] < operation['started']['steady_ns']:
+        raise ValueError('ROS CLI operation time order drift')
+
+
+def _validate_bootstrap_plan(plan: dict) -> None:
+    _exact_keys(plan, {
+        'source_start_storage_ns', 'previous_scan_storage_ns',
+        'first_main_scan_storage_ns', 'first_main_scan_header_ns',
+        'lower_tf_storage_ns', 'lower_tf_header_ns', 'upper_tf_storage_ns',
+        'upper_tf_header_ns', 'start_offset_ns', 'start_offset_s'},
+        'TF bootstrap plan')
+    integer_keys = set(plan) - {'start_offset_s'}
+    if any(type(plan[key]) is not int for key in integer_keys):
+        raise ValueError('TF bootstrap integer drift')
+    _finite_number(plan['start_offset_s'], 'TF bootstrap offset', 0.0)
+    if (plan['start_offset_ns'] <= 0 or
+            plan['start_offset_s'] != plan['start_offset_ns'] / 1_000_000_000 or
+            not plan['previous_scan_storage_ns'] <
+            plan['first_main_scan_storage_ns'] or
+            not plan['lower_tf_header_ns'] <=
+            plan['first_main_scan_header_ns'] <= plan['upper_tf_header_ns']):
+        raise ValueError('TF bootstrap consistency drift')
+
+
+def _validate_replay_summary(summary: dict, allowed_topics: list[str],
+                             label: str) -> None:
+    if (type(summary) is not dict or not summary or
+            not set(summary).issubset(set(allowed_topics))):
+        raise ValueError(f'{label} topic inventory drift')
+    for topic, record in summary.items():
+        _exact_keys(record, {
+            'message_count', 'storage_stamp_sha256', 'raw_payload_sha256',
+            'tf_semantic_sha256'}, f'{label} {topic}')
+        if type(record['message_count']) is not int or record['message_count'] <= 0:
+            raise ValueError(f'{label} message count drift')
+        _sha256(record['storage_stamp_sha256'], f'{label} storage stamps')
+        _sha256(record['raw_payload_sha256'], f'{label} raw payload')
+        semantic = record['tf_semantic_sha256']
+        if topic.startswith('/tf'):
+            _sha256(semantic, f'{label} TF semantics')
+        elif semantic is not None:
+            raise ValueError(f'{label} non-TF semantic digest drift')
+
+
+def _validate_observer_snapshot(observer: dict, label: str) -> None:
+    _exact_keys(observer, {
+        'schema_version', 'run_id', 'seed', 'max_clouds',
+        'publisher_matched_count', 'pose_publisher_matched_count',
+        'events', 'readiness',
+        'initialpose_count', 'pre_initial_scan_count',
+        'pre_initial_cloud_count', 'raw_cloud_received_count',
+        'amcl_pose_received_count', 'pending_cloud_count',
+        'pending_pose_count', 'scan_count', 'scan_header_stamps_ns',
+        'scan_header_stamp_sha256', 'scan_payload_sha256', 'clouds',
+        'clock_samples', 'callback_trace', 'pairing_contract',
+        'observation_qos_contract',
+        'pose_causality', 'failure', 'done',
+        'motion_command_applicability'}, label)
+    if (observer['schema_version'] != 1 or type(observer['run_id']) is not str or
+            type(observer['seed']) is not int or
+            type(observer['max_clouds']) is not int or
+            observer['max_clouds'] <= 0 or type(observer['done']) is not bool or
+            observer['pairing_contract'] != PAIRING_CONTRACT or
+            observer['observation_qos_contract'] !=
+            OBSERVATION_QOS_CONTRACT or
+            observer['pose_causality'] != 'NOT_PROVEN' or
+            observer['motion_command_applicability'] != 'NOT_APPLICABLE'):
+        raise ValueError(f'{label} scalar drift')
+    count_keys = (
+        'publisher_matched_count', 'pose_publisher_matched_count',
+        'initialpose_count',
+        'pre_initial_scan_count', 'pre_initial_cloud_count',
+        'raw_cloud_received_count', 'amcl_pose_received_count',
+        'pending_cloud_count', 'pending_pose_count', 'scan_count')
+    if any(type(observer[key]) is not int or observer[key] < 0
+           for key in count_keys):
+        raise ValueError(f'{label} count drift')
+    _exact_keys(observer['readiness'], {
+        'map_count', 'clock_count', 'odom_count', 'tf_count',
+        'map_odom_tf_count', 'tf_static_count'}, f'{label} readiness')
+    if any(type(value) is not int or value < 0
+           for value in observer['readiness'].values()):
+        raise ValueError(f'{label} readiness count drift')
+    if type(observer['events']) is not list:
+        raise ValueError(f'{label} events drift')
+    for event in observer['events']:
+        _validate_event_record(event, f'{label} event', True)
+    if (type(observer['clock_samples']) is not list or
+            len(observer['clock_samples']) != observer['readiness']['clock_count']):
+        raise ValueError(f'{label} clock sample cardinality drift')
+    previous_ros_ns = None
+    previous_arrival_ns = None
+    for sample in observer['clock_samples']:
+        _exact_keys(sample, {'ros_ns', 'arrival_steady_ns'}, f'{label} clock')
+        if (type(sample['ros_ns']) is not int or sample['ros_ns'] < 0 or
+                type(sample['arrival_steady_ns']) is not int or
+                sample['arrival_steady_ns'] < 0 or
+                (previous_ros_ns is not None and
+                 sample['ros_ns'] < previous_ros_ns) or
+                (previous_arrival_ns is not None and
+                 sample['arrival_steady_ns'] <= previous_arrival_ns)):
+            raise ValueError(f'{label} clock monotonicity drift')
+        previous_ros_ns = sample['ros_ns']
+        previous_arrival_ns = sample['arrival_steady_ns']
+    if type(observer['callback_trace']) is not list:
+        raise ValueError(f'{label} callback trace drift')
+    stream_counts = {'particle_cloud': 0, 'amcl_pose': 0}
+    previous_arrival_ns = None
+    for item in observer['callback_trace']:
+        _exact_keys(item, {
+            'kind', 'stream_index', 'header_stamp_ns', 'arrival_steady_ns'},
+            f'{label} callback')
+        if (item['kind'] not in stream_counts or
+                item['stream_index'] != stream_counts[item['kind']] or
+                type(item['header_stamp_ns']) is not int or
+                item['header_stamp_ns'] < 0 or
+                type(item['arrival_steady_ns']) is not int or
+                item['arrival_steady_ns'] < 0 or
+                (previous_arrival_ns is not None and
+                 item['arrival_steady_ns'] < previous_arrival_ns)):
+            raise ValueError(f'{label} callback order drift')
+        stream_counts[item['kind']] += 1
+        previous_arrival_ns = item['arrival_steady_ns']
+    if (stream_counts['particle_cloud'] !=
+            observer['raw_cloud_received_count'] or
+            stream_counts['amcl_pose'] != observer['amcl_pose_received_count']):
+        raise ValueError(f'{label} callback cardinality drift')
+    pair_orders = []
+    trace = observer['callback_trace']
+    if len(trace) % 2:
+        raise ValueError(f'{label} callback one-to-one window drift')
+    for pair_index in range(0, len(trace), 2):
+        pair = trace[pair_index:pair_index + 2]
+        kinds = tuple(item['kind'] for item in pair)
+        if (set(kinds) != {'particle_cloud', 'amcl_pose'} or
+                any(item['stream_index'] != pair_index // 2 for item in pair) or
+                pair[-1]['arrival_steady_ns'] - pair[0]['arrival_steady_ns'] >
+                PAIRING_WINDOW_NS):
+            raise ValueError(f'{label} callback one-to-one window drift')
+        pair_orders.append(kinds)
+    if pair_orders and len(set(pair_orders)) != 1:
+        raise ValueError(f'{label} callback cross-stream reorder drift')
+    stamps = observer['scan_header_stamps_ns']
+    if (type(stamps) is not list or
+            any(type(value) is not int or value < 0 for value in stamps) or
+            len(stamps) != observer['scan_count']):
+        raise ValueError(f'{label} scan stamps drift')
+    _sha256(observer['scan_header_stamp_sha256'], f'{label} scan headers')
+    _sha256(observer['scan_payload_sha256'], f'{label} scan payload')
+    if hashlib.sha256(''.join(f'{value}\n' for value in stamps).encode()).hexdigest() != \
+            observer['scan_header_stamp_sha256']:
+        raise ValueError(f'{label} scan header digest drift')
+    if type(observer['clouds']) is not list:
+        raise ValueError(f'{label} cloud list drift')
+    cloud_keys = {
+        'header_stamp_ns', 'arrival_steady_ns', 'callback_ros_ns', 'frame_id',
+        'particle_count', 'payload_sha256', 'index',
+        'fifo_associated_pose_scan_header_stamp_ns', 'pose_header_stamp_ns',
+        'pose_arrival_steady_ns', 'pose_callback_ros_ns', 'pose_frame_id',
+        'pose', 'covariance', 'scan_arrival_steady_ns',
+        'scan_to_pose_steady_ns', 'cloud_stream_index',
+        'pose_stream_index', 'pair_arrival_delta_ns'}
+    for index, cloud in enumerate(observer['clouds']):
+        _exact_keys(cloud, cloud_keys, f'{label} cloud')
+        if (cloud['index'] != index or type(cloud['particle_count']) is not int or
+                cloud['particle_count'] <= 0 or cloud['frame_id'] != 'map' or
+                cloud['pose_frame_id'] != 'map' or
+                cloud['cloud_stream_index'] != index or
+                cloud['pose_stream_index'] != index or
+                type(cloud['pair_arrival_delta_ns']) is not int or
+                not 0 <= cloud['pair_arrival_delta_ns'] <= PAIRING_WINDOW_NS):
+            raise ValueError(f'{label} cloud scalar drift')
+        _sha256(cloud['payload_sha256'], f'{label} particle payload')
+        if type(cloud['pose']) is not list or len(cloud['pose']) != 7 or \
+                type(cloud['covariance']) is not list or \
+                len(cloud['covariance']) != 36:
+            raise ValueError(f'{label} pose shape drift')
+        for value in (*cloud['pose'], *cloud['covariance']):
+            _finite_number(value, f'{label} pose value')
+        for key in (
+                'header_stamp_ns', 'arrival_steady_ns', 'callback_ros_ns',
+                'fifo_associated_pose_scan_header_stamp_ns',
+                'pose_header_stamp_ns',
+                'pose_arrival_steady_ns', 'pose_callback_ros_ns',
+                'scan_arrival_steady_ns', 'scan_to_pose_steady_ns'):
+            if type(cloud[key]) is not int or cloud[key] < 0:
+                raise ValueError(f'{label} cloud timestamp drift')
 
 
 def _runtime_guard(run_dir: Path) -> None:
@@ -142,7 +586,7 @@ def _stop(record: dict, run_dir: Path) -> dict:
             os.killpg(record['pgid'], sig)
             stages.append({'signal': sig.name, 'steady_ns': time.monotonic_ns()})
             try:
-                process.wait(timeout=wait_s)
+                _wait_process(record, run_dir, wait_s, enforce_guard=False)
             except subprocess.TimeoutExpired:
                 pass
     record['stream'].close()
@@ -154,15 +598,51 @@ def _stop(record: dict, run_dir: Path) -> dict:
             'log': _relative_identity(record['log_path'], run_dir)}
 
 
-def _run_cli(args: list[str], env: dict[str, str], timeout_s: float = 20.0
+def _wait_process(record: dict, run_dir: Path, timeout_s: float,
+                  enforce_guard: bool = True) -> int:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        returncode = record['process'].poll()
+        if returncode is not None:
+            return returncode
+        if enforce_guard:
+            _runtime_guard(run_dir)
+        time.sleep(0.02)
+    raise subprocess.TimeoutExpired(record['command'], timeout_s)
+
+
+def _guarded_sleep(duration_s: float, run_dir: Path) -> None:
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        _runtime_guard(run_dir)
+        time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+
+
+def _run_cli(args: list[str], env: dict[str, str], run_dir: Path,
+             timeout_s: float = 20.0
              ) -> dict:
     started = _event('request')
-    result = subprocess.run(
-        [str(ROS2), *args], env=env, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, timeout=timeout_s, check=False)
-    return {'command': [str(ROS2), *args], 'started': started,
-            'completed': _event('response'), 'returncode': result.returncode,
-            'output': result.stdout.decode('utf-8', errors='strict')}
+    command = [str(ROS2), *args]
+    with tempfile.NamedTemporaryFile(dir=run_dir) as stream:
+        process = subprocess.Popen(
+            command, env=env, stdout=stream, stderr=subprocess.STDOUT,
+            start_new_session=True)
+        record = {'process': process, 'command': command}
+        try:
+            returncode = _wait_process(record, run_dir, timeout_s)
+        except Exception:
+            if process.poll() is None:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                process.wait(timeout=2.0)
+            raise
+        stream.flush()
+        if stream.tell() > MAX_LOG_BYTES:
+            raise RuntimeError('ROS CLI output exceeds 2 MiB cap')
+        stream.seek(0)
+        output = stream.read().decode('utf-8', errors='strict')
+    return {'command': command, 'started': started,
+            'completed': _event('response'), 'returncode': returncode,
+            'output': output}
 
 
 def _wait_state(path: Path, predicate, timeout_s: float) -> dict:
@@ -353,6 +833,10 @@ def _replay_view_manifest(sanitized_root: Path, bootstrap: dict,
                      if row[0] == '/scan' and row[1] < split_ns]
     return {
         'schema_version': 1,
+        'clock_contract': {
+            'source': 'rosbag2_player_synthesized_clock',
+            'handoff': 'SEQUENTIAL_DUAL_PLAYER_CLOCK_HANDOFF',
+            'per_run_proof': 'run_evidence_clock_handoff'},
         'source_sanitizer_manifest_sha256': sha256_file(
             sanitized_root / 'sanitizer_manifest.json'),
         'bootstrap': bootstrap,
@@ -393,6 +877,13 @@ def _loaded_runtime_files(pid: int, executable: Path,
         if name != 'amcl_executable' and str(path) not in mapped:
             raise RuntimeError(f'AMCL required library not loaded: {name}')
         result[name] = _identity(path)
+    result['procfs_load_evidence'] = {
+        'observation_method': 'proc_pid_exe_and_maps_before_replay',
+        'executable_target': str(actual_executable),
+        'required_mapped_library_paths': {
+            name: str(path.resolve()) for name, path in expected.items()
+            if name != 'amcl_executable'},
+    }
     return result
 
 
@@ -410,7 +901,7 @@ def _needed_sonames(files: list[Path]) -> dict[str, list[str]]:
 
 
 def _build_provenance(executable: Path, overlay_root: Path,
-                      loaded_runtime: dict) -> dict:
+                      loaded_runtime: dict, overlay_tree_sha256: str) -> dict:
     build_root = executable.parents[4]
     cache = build_root / 'build/nav2_amcl/CMakeCache.txt'
     build_rc = build_root / 'build/nav2_amcl/colcon_build.rc'
@@ -428,6 +919,7 @@ def _build_provenance(executable: Path, overlay_root: Path,
         'schema_version': 1,
         'build_root': str(build_root),
         'source_root': str(overlay_root / 'nav2_amcl'),
+        'overlay_tree_sha256': overlay_tree_sha256,
         'cmake_cache': _identity(cache),
         'build_returncode_file': _identity(build_rc),
         'install_files': {path.name: _identity(path) for path in files},
@@ -508,15 +1000,40 @@ def _validate_replay_bootstrap(evidence: dict, run_dir: Path,
             first_cloud['steady_ns'] and
             initialpose['ros_ns'] <= first_scan['ros_ns'] <=
             first_cloud['ros_ns']):
-        raise ValueError('initialpose, scan, and cloud causal order drift')
+        raise ValueError('initialpose, scan, and cloud event order drift')
     if (evidence['observer']['scan_header_stamps_ns'][0] !=
             expected['first_main_scan_header_ns']):
         raise ValueError('first main scan does not match TF bootstrap plan')
 
 
-def _resource_summary(path: Path, run_dir: Path) -> dict:
-    rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()
+def _resource_rows(path: Path) -> list[dict]:
+    rows = [strict_json_loads(line)
+            for line in path.read_text(encoding='utf-8').splitlines()
             if line]
+    if not rows:
+        raise ValueError('resource sampler produced no rows')
+    previous_monotonic_s = None
+    for row in rows:
+        _exact_keys(row, {
+            'monotonic_s', 'cpu_total_s', 'cpu_pct_one_core', 'rss_mb',
+            'process_count'}, 'resource sample')
+        monotonic_s = _finite_number(
+            row['monotonic_s'], 'resource monotonic time', 0.0)
+        _finite_number(row['cpu_total_s'], 'resource CPU total', 0.0)
+        _finite_number(row['rss_mb'], 'resource RSS', 0.0)
+        if (row['cpu_pct_one_core'] is not None and
+                _finite_number(row['cpu_pct_one_core'], 'resource CPU', 0.0) < 0.0):
+            raise ValueError('resource CPU percentage drift')
+        if type(row['process_count']) is not int or row['process_count'] < 0:
+            raise ValueError('resource process count drift')
+        if previous_monotonic_s is not None and monotonic_s <= previous_monotonic_s:
+            raise ValueError('resource sample time order drift')
+        previous_monotonic_s = monotonic_s
+    return rows
+
+
+def _resource_summary(path: Path, run_dir: Path) -> dict:
+    rows = _resource_rows(path)
     finite_cpu = [row['cpu_pct_one_core'] for row in rows
                   if isinstance(row['cpu_pct_one_core'], (int, float))]
     return {
@@ -581,6 +1098,44 @@ def _scan_parity(observer: dict, sanitized_root: Path) -> dict:
     return result
 
 
+def _clock_handoff(prelude_observer: dict, final_observer: dict) -> dict:
+    prelude_count = prelude_observer['readiness']['clock_count']
+    prelude_samples = prelude_observer['clock_samples']
+    samples = final_observer['clock_samples']
+    if (prelude_count <= 0 or len(prelude_samples) != prelude_count or
+            len(samples) <= prelude_count):
+        raise ValueError('dual-player clock handoff samples missing')
+    if samples[:prelude_count] != prelude_samples:
+        raise ValueError('dual-player clock prelude prefix mismatch')
+    prelude_last = prelude_samples[-1]
+    main_first = samples[prelude_count]
+    if (main_first['ros_ns'] < prelude_last['ros_ns'] or
+            main_first['arrival_steady_ns'] <=
+            prelude_last['arrival_steady_ns']):
+        raise ValueError('dual-player clock handoff is not monotonic')
+    return {
+        'contract': 'SEQUENTIAL_DUAL_PLAYER_CLOCK_HANDOFF',
+        'prelude_clock_count': prelude_count,
+        'final_clock_count': len(samples),
+        'prelude_last': prelude_last,
+        'main_first': main_first,
+        'monotonic': True,
+        'simultaneous_publishers_excluded_by_process_order': True,
+    }
+
+
+def _validate_clock_handoff(value: dict, prelude_observer: dict,
+                            final_observer: dict) -> None:
+    _exact_keys(value, {
+        'contract', 'prelude_clock_count', 'final_clock_count',
+        'prelude_last', 'main_first', 'monotonic',
+        'simultaneous_publishers_excluded_by_process_order'},
+        'clock handoff')
+    expected = _clock_handoff(prelude_observer, final_observer)
+    if value != expected:
+        raise ValueError('clock handoff evidence drift')
+
+
 def _run_one(run_dir: Path, seed: int, domain_id: int, args,
              env_base: dict[str, str], bootstrap: dict) -> dict:
     profile = getattr(args, 'profile', 'P0')
@@ -627,20 +1182,23 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
             str(amcl['pgid']), '--output', str(run_dir / 'amcl_resource.jsonl'),
             '--interval-s', '0.5'], run_dir / 'resource_sampler.log', env)
         launched.append(resource)
-        time.sleep(1.0)
+        _guarded_sleep(1.0, run_dir)
         for node, transition in (
                 ('/map_server', 'configure'), ('/map_server', 'activate')):
-            operation = _run_cli(['lifecycle', 'set', node, transition], env)
+            operation = _run_cli(
+                ['lifecycle', 'set', node, transition], env, run_dir)
             operations.append(operation)
             if operation['returncode'] != 0 or 'successful' not in operation['output']:
                 raise RuntimeError(f'lifecycle failed: {node} {transition}')
         _wait_state(state, lambda value: value['readiness']['map_count'] > 0, 20.0)
         for transition in ('configure', 'activate'):
-            operation = _run_cli(['lifecycle', 'set', '/amcl', transition], env)
+            operation = _run_cli(
+                ['lifecycle', 'set', '/amcl', transition], env, run_dir)
             operations.append(operation)
             if operation['returncode'] != 0 or 'successful' not in operation['output']:
                 raise RuntimeError(f'AMCL lifecycle failed: {transition}')
-        readback = _run_cli(['param', 'get', '/amcl', 'random_seed'], env)
+        readback = _run_cli(
+            ['param', 'get', '/amcl', 'random_seed'], env, run_dir)
         operations.append(readback)
         readback_values = re.findall(
             r'^Integer value is: (-?[0-9]+)$', readback['output'],
@@ -658,7 +1216,7 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
             '--rate', str(args.playback_rate)],
             run_dir / 'tf_prelude_player.log', env)
         launched.append(prelude)
-        if prelude['process'].wait(timeout=20.0) != 0:
+        if _wait_process(prelude, run_dir, 20.0) != 0:
             raise RuntimeError('TF prelude player failed')
         events.append(_event('tf_prelude_completed'))
         prelude_observer = _wait_state(
@@ -676,7 +1234,9 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
             '--rate', str(args.playback_rate)],
             run_dir / 'player.log', env)
         launched.append(player)
-        _wait_state(state, lambda value: value['publisher_matched_count'] > 0, 20.0)
+        _wait_state(
+            state, lambda value: value['publisher_matched_count'] > 0 and
+            value['pose_publisher_matched_count'] > 0, 20.0)
         before_init = strict_json_load(state)
         if (before_init['scan_count'] != 0 or before_init['clouds'] or
                 before_init['pre_initial_cloud_count'] != 0):
@@ -685,7 +1245,7 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
         _wait_state(state, lambda value: value['initialpose_count'] == 1, 10.0)
         resume = _run_cli([
             'service', 'call', '/rosbag2_player/resume',
-            'rosbag2_interfaces/srv/Resume', '{}'], env)
+            'rosbag2_interfaces/srv/Resume', '{}'], env, run_dir)
         operations.append(resume)
         if resume['returncode'] != 0:
             raise RuntimeError('player resume failed')
@@ -714,6 +1274,10 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
     if any(amcl_tf_error_counts.values()):
         status = 'FAIL'
         failure = 'AMCL transform lookup drop observed'
+    clock_handoff = (_clock_handoff(prelude_observer, final)
+                     if prelude_observer is not None and final is not None
+                     else None)
+    _runtime_guard(run_dir)
     evidence = {
         'schema_version': 1, 'run_id': run_id, 'profile': profile,
         'seed': seed, 'domain_id': domain_id, 'status': status,
@@ -727,6 +1291,7 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
         'resource': resource_summary, 'teardown': teardown,
         'loaded_runtime': loaded_runtime,
         'prelude_observer': prelude_observer,
+        'clock_handoff': clock_handoff,
         'tf_bootstrap': bootstrap,
         'amcl_tf_error_counts': amcl_tf_error_counts,
         'transform_lookup_drop_count': transform_lookup_drop_count,
@@ -773,6 +1338,32 @@ def _validate_sanitizer_snapshot(manifest: dict) -> None:
             manifest['removed_map_to_odom_transforms'] != 7290 or
             manifest['source']['mcap_sha256'] != REAL_BAG_SHA256):
         raise ValueError('sanitizer snapshot canonical identity drift')
+    source = manifest['source']
+    _exact_keys(source, {
+        'path', 'mcap_size_bytes', 'mcap_sha256', 'metadata_sha256'},
+        'sanitizer source')
+    if (type(source['path']) is not str or not Path(source['path']).is_absolute() or
+            type(source['mcap_size_bytes']) is not int or
+            source['mcap_size_bytes'] <= 0):
+        raise ValueError('sanitizer source scalar drift')
+    _sha256(source['mcap_sha256'], 'sanitizer source MCAP')
+    _sha256(source['metadata_sha256'], 'sanitizer source metadata')
+    if manifest['input_topic_inventory'] != REAL_BAG_TOPIC_INVENTORY:
+        raise ValueError('sanitizer input topic inventory drift')
+    if (type(manifest['output_limit_bytes']) is not int or
+            manifest['output_limit_bytes'] <= 0):
+        raise ValueError('sanitizer output cap drift')
+    output = manifest['output']
+    _exact_keys(output, {
+        'mcap_name', 'mcap_size_bytes', 'mcap_sha256', 'metadata_sha256'},
+        'sanitizer output')
+    if (output['mcap_name'] != 'bag_0.mcap' or
+            type(output['mcap_size_bytes']) is not int or
+            output['mcap_size_bytes'] <= 0 or
+            output['mcap_size_bytes'] > manifest['output_limit_bytes']):
+        raise ValueError('sanitizer output scalar drift')
+    _sha256(output['mcap_sha256'], 'sanitizer output MCAP')
+    _sha256(output['metadata_sha256'], 'sanitizer output metadata')
     parity = manifest['tf_semantic_parity']
     _exact_keys(parity, {'dynamic_non_map', 'static'}, 'TF parity')
     for record in parity.values():
@@ -783,6 +1374,17 @@ def _validate_sanitizer_snapshot(manifest: dict) -> None:
         if (record['source_transform_count'] != record['output_transform_count'] or
                 record['source_ordered_digest'] != record['output_ordered_digest']):
             raise ValueError('sanitizer TF parity mismatch')
+        for key in ('source_ordered_digest', 'output_ordered_digest'):
+            _sha256(record[key], f'sanitizer TF parity {key}')
+        for key in ('message_count', 'source_transform_count',
+                    'output_transform_count'):
+            if type(record[key]) is not int or record[key] < 0:
+                raise ValueError('sanitizer TF parity count drift')
+    if (parity['dynamic_non_map']['message_count'] !=
+            REAL_BAG_TOPIC_INVENTORY['/tf'] or
+            parity['static']['message_count'] !=
+            REAL_BAG_TOPIC_INVENTORY['/tf_static']):
+        raise ValueError('sanitizer TF message cardinality drift')
     if set(manifest['topic_parity']) != {'/scan', '/odom', '/tf', '/tf_static'}:
         raise ValueError('sanitizer topic parity set drift')
     for topic, record in manifest['topic_parity'].items():
@@ -790,8 +1392,12 @@ def _validate_sanitizer_snapshot(manifest: dict) -> None:
         if topic in ('/scan', '/odom'):
             expected |= {'header_stamp_sha256', 'payload_sha256'}
         _exact_keys(record, expected, f'sanitizer parity {topic}')
-        if type(record['message_count']) is not int or record['message_count'] <= 0:
+        if (type(record['message_count']) is not int or
+                record['message_count'] != REAL_BAG_TOPIC_INVENTORY[topic]):
             raise ValueError('sanitizer parity count invalid')
+        for key, value in record.items():
+            if key != 'message_count':
+                _sha256(value, f'sanitizer parity {topic} {key}')
 
 
 def _tree_records(root: Path) -> list[dict]:
@@ -825,39 +1431,46 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         raise ValueError('artifact root must be canonical')
     if any(path.is_symlink() for path in root.rglob('*')):
         raise ValueError('artifact contains symlink')
+    actual_root_entries = {path.name for path in root.iterdir()}
     expected_root_entries = {
         'contract_snapshot.json', 'sanitizer_manifest_snapshot.json',
         'upstream_lock_snapshot.json', 'build_attestation.json',
         'replay_view_manifest.json', 'preflight_manifest.json',
-        *{f'run_{index}' for index in range(1, 4)}}
-    actual_root_entries = {path.name for path in root.iterdir()}
-    allowed_root_entries = {
-        'contract_snapshot.json', 'sanitizer_manifest_snapshot.json',
-        'upstream_lock_snapshot.json', 'build_attestation.json',
-        'replay_view_manifest.json', 'preflight_manifest.json'}
-    if (not actual_root_entries.issubset(expected_root_entries) or
-            not allowed_root_entries.issubset(actual_root_entries)):
+        *{f'run_{index}' for index in range(
+            1, 4 if expected_mode == 'full' else 2)}}
+    if actual_root_entries != expected_root_entries:
         raise ValueError('artifact root inventory drift')
-    manifest = strict_json_load(root / 'preflight_manifest.json')
+    manifest = _canonical_json_load(root / 'preflight_manifest.json')
     if set(manifest) != {
-            'schema_version', 'mode', 'claim_scope', 'source_contract',
-            'sanitizer_snapshot', 'upstream_lock_snapshot',
+            'schema_version', 'mode', 'claim_scope', 'claim_boundary',
+            'pairing_contract',
+            'observation_qos_contract',
+            'pose_causality', 'source_contract',
+            'sanitized_input', 'sanitizer_snapshot', 'upstream_lock_snapshot',
             'build_attestation', 'replay_view', 'runtime', 'runs',
             'comparison', 'tree_bytes', 'tree_records', 'tree_sha256'}:
         raise ValueError('preflight manifest schema drift')
-    if manifest['schema_version'] != 2 or manifest['mode'] != expected_mode:
+    if manifest['schema_version'] != 3 or manifest['mode'] != expected_mode:
         raise ValueError('preflight manifest version drift')
     expected_claim = CLAIM_FULL if expected_mode == 'full' else CLAIM_SMOKE
     if manifest['claim_scope'] != expected_claim:
         raise ValueError('preflight claim enum drift')
+    if (manifest['claim_boundary'] != CLAIM_BOUNDARY or
+            manifest['pairing_contract'] != PAIRING_CONTRACT or
+            manifest['observation_qos_contract'] !=
+            OBSERVATION_QOS_CONTRACT or
+            manifest['pose_causality'] != 'NOT_PROVEN'):
+        raise ValueError('particle/pose claim boundary drift')
     source_contract = manifest['source_contract']
     contract_snapshot = root / source_contract['relative_path']
     if (source_contract != _relative_identity(contract_snapshot, root) or
             contract_snapshot.name != 'contract_snapshot.json'):
         raise ValueError('source contract snapshot identity drift')
-    contract = strict_json_load(contract_snapshot)
+    contract = _canonical_json_load(contract_snapshot)
     _validate_source_records(contract['production_inputs'])
     _validate_source_records(contract['harness_sources'])
+    p0_params_identity = _validate_p0_params(
+        contract, Path(contract['production_inputs']['production_params']['path']))
     for key, filename in (
             ('sanitizer_snapshot', 'sanitizer_manifest_snapshot.json'),
             ('upstream_lock_snapshot', 'upstream_lock_snapshot.json'),
@@ -866,13 +1479,31 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         snapshot_path = root / filename
         if manifest[key] != _relative_identity(snapshot_path, root):
             raise ValueError(f'{key} identity drift')
-    sanitizer_snapshot = strict_json_load(
+    sanitizer_snapshot = _canonical_json_load(
         root / 'sanitizer_manifest_snapshot.json')
     _validate_sanitizer_snapshot(sanitizer_snapshot)
+    _validate_tree_manifest(
+        manifest['sanitized_input'],
+        {'bag_0.mcap', 'metadata.yaml', 'sanitizer_manifest.json'},
+        'sanitized input')
+    sanitized_records = {
+        item['relative_path']: item for item in manifest['sanitized_input']['files']}
+    if (sanitized_records['sanitizer_manifest.json']['size_bytes'] !=
+            manifest['sanitizer_snapshot']['size_bytes'] or
+            sanitized_records['sanitizer_manifest.json']['sha256'] !=
+            manifest['sanitizer_snapshot']['sha256'] or
+            sanitized_records['bag_0.mcap']['size_bytes'] !=
+            sanitizer_snapshot['output']['mcap_size_bytes'] or
+            sanitized_records['bag_0.mcap']['sha256'] !=
+            sanitizer_snapshot['output']['mcap_sha256'] or
+            sanitized_records['metadata.yaml']['sha256'] !=
+            sanitizer_snapshot['output']['metadata_sha256']):
+        raise ValueError('sanitized input leaf binding drift')
     runtime = manifest['runtime']
-    replay_view = strict_json_load(root / 'replay_view_manifest.json')
+    replay_view = _canonical_json_load(root / 'replay_view_manifest.json')
     _exact_keys(replay_view, {
-        'schema_version', 'source_sanitizer_manifest_sha256', 'bootstrap',
+        'schema_version', 'clock_contract',
+        'source_sanitizer_manifest_sha256', 'bootstrap',
         'skipped_scan_count', 'prelude_topics', 'main_topics', 'prelude',
         'main', 'prelude_last_storage_ns', 'main_first_storage_ns',
         'main_last_scan_storage_ns', 'storage_gap_ns',
@@ -884,10 +1515,34 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
             replay_view['storage_overlap_count'] != 0 or
             replay_view['storage_gap_ns'] <= 0):
         raise ValueError('replay view boundary drift')
-    build_attestation = strict_json_load(root / 'build_attestation.json')
+    if replay_view['clock_contract'] != {
+            'source': 'rosbag2_player_synthesized_clock',
+            'handoff': 'SEQUENTIAL_DUAL_PLAYER_CLOCK_HANDOFF',
+            'per_run_proof': 'run_evidence_clock_handoff'}:
+        raise ValueError('replay clock contract drift')
+    if (replay_view['prelude_topics'] != ['/odom', '/tf', '/tf_static'] or
+            replay_view['main_topics'] !=
+            ['/scan', '/odom', '/tf', '/tf_static'] or
+            replay_view['storage_gap_ns'] !=
+            replay_view['main_first_storage_ns'] -
+            replay_view['prelude_last_storage_ns'] or
+            replay_view['main_last_scan_storage_ns'] <
+            replay_view['main_first_storage_ns']):
+        raise ValueError('replay view internal consistency drift')
+    _validate_bootstrap_plan(replay_view['bootstrap'])
+    _validate_replay_summary(
+        replay_view['prelude'], replay_view['prelude_topics'], 'replay prelude')
+    _validate_replay_summary(
+        replay_view['main'], replay_view['main_topics'], 'replay main')
+    if '/scan' not in replay_view['main']:
+        raise ValueError('replay main scan evidence missing')
+    build_attestation = _canonical_json_load(root / 'build_attestation.json')
+    overlay_lock = _canonical_json_load(root / 'upstream_lock_snapshot.json')
+    overlay_tree = _validate_overlay_snapshot(contract, overlay_lock)
     _exact_keys(build_attestation, {
         'schema_version', 'upstream_lock_sha256', 'build_root',
-        'source_root', 'cmake_cache', 'build_returncode_file',
+        'source_root', 'overlay_tree_sha256', 'cmake_cache',
+        'build_returncode_file',
         'install_files', 'needed_sonames', 'loaded_runtime'},
         'build attestation')
     if (build_attestation['schema_version'] != 1 or
@@ -898,6 +1553,8 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
                  for name in values}) or
             build_attestation['source_root'] !=
             str(Path(contract['source_overlay']['root']) / 'nav2_amcl') or
+            build_attestation['overlay_tree_sha256'] !=
+            overlay_tree['tree_sha256'] or
             build_attestation['install_files']['amcl'] !=
             build_attestation['loaded_runtime']['amcl_executable'] or
             build_attestation['install_files']['libamcl_core.so'] !=
@@ -905,6 +1562,18 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
             build_attestation['install_files']['libpf_lib.so'] !=
             build_attestation['loaded_runtime']['libpf_lib']):
         raise ValueError('build attestation drift')
+    _validate_loaded_runtime(
+        build_attestation['loaded_runtime'], 'build loaded runtime')
+    _exact_keys(build_attestation['install_files'], {
+        'amcl', 'libamcl_core.so', 'libpf_lib.so'}, 'build install files')
+    for name, record in build_attestation['install_files'].items():
+        _identity_schema(record, f'build install {name}')
+    _exact_keys(build_attestation['needed_sonames'], {
+        'amcl', 'libamcl_core.so'}, 'build needed SONAMEs')
+    if any(type(names) is not list or names != sorted(set(names)) or
+           any(type(name) is not str or not name for name in names)
+           for names in build_attestation['needed_sonames'].values()):
+        raise ValueError('build needed SONAME schema drift')
     build_root = Path(build_attestation['build_root'])
     expected_install = build_root / 'install/nav2_amcl/lib'
     if (Path(build_attestation['loaded_runtime']['amcl_executable']['path']) !=
@@ -927,8 +1596,11 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
             runtime['rmw_implementation'] != 'rmw_cyclonedds_cpp' or
             runtime['ros_localhost_only'] != '1'):
         raise ValueError('runtime identity schema drift')
+    if Path(runtime['rmw_library']['path']).name != 'librmw_cyclonedds_cpp.so':
+        raise ValueError('runtime RMW library does not match implementation')
     for key in ('rmw_library', 'amcl_executable'):
         record = runtime[key]
+        _identity_schema(record, f'runtime {key}')
         if _identity(Path(record['path'])) != record:
             raise ValueError(f'runtime file identity drift: {key}')
     if (any(type(value) is not int or not 0 <= value <= 232
@@ -942,20 +1614,24 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
             manifest['tree_bytes'] > MAX_ARTIFACT_BYTES):
         raise ValueError('preflight artifact exceeds 32 MiB')
     runs = []
-    for record in manifest['runs']:
+    for index, record in enumerate(manifest['runs'], 1):
+        _identity_schema(record, 'run evidence record', relative=True)
+        if record['relative_path'] != f'run_{index}/evidence.json':
+            raise ValueError('run evidence order drift')
         path = root / record['relative_path']
         if path.is_symlink() or path.parent.parent != root:
             raise ValueError('run evidence path drift')
         if (_identity(path)['sha256'] != record['sha256'] or
                 path.stat().st_size != record['size_bytes']):
             raise ValueError('run evidence identity drift')
-        evidence = strict_json_load(path)
+        evidence = _canonical_json_load(path)
         _exact_keys(evidence, {
             'schema_version', 'run_id', 'profile', 'seed', 'domain_id',
             'status', 'failure', 'events', 'operations', 'observer_source',
             'observer', 'amcl_executable', 'map_yaml', 'params_file',
             'sanitized_manifest', 'resource', 'teardown', 'loaded_runtime',
-            'prelude_observer', 'tf_bootstrap', 'amcl_tf_error_counts',
+            'prelude_observer', 'clock_handoff', 'tf_bootstrap',
+            'amcl_tf_error_counts',
             'transform_lookup_drop_count', 'prefix_s', 'playback_rate',
             'survivor_count', 'output_mcap_count', 'cmd_vel_publisher',
             'scan_parity'}, 'run evidence')
@@ -966,6 +1642,60 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
                 type(evidence['domain_id']) is not int or
                 not 0 <= evidence['domain_id'] <= 232):
             raise ValueError('run scalar contract drift')
+        if evidence['tf_bootstrap'] != replay_view['bootstrap']:
+            raise ValueError('run replay bootstrap binding drift')
+        if (evidence['failure'] is not None or
+                evidence['status'] != 'PASS' or
+                evidence['prefix_s'] not in {SMOKE_PREFIX_S, FULL_PREFIX_S} or
+                evidence['playback_rate'] != PLAYBACK_RATE):
+            raise ValueError('run status or playback contract drift')
+        _exact_keys(evidence['amcl_tf_error_counts'],
+                    set(AMCL_TF_ERROR_MARKERS), 'AMCL TF error counts')
+        if any(type(value) is not int or value != 0
+               for value in evidence['amcl_tf_error_counts'].values()):
+            raise ValueError('AMCL TF error count drift')
+        _exact_keys(evidence['scan_parity'], {
+            'message_count', 'header_stamp_sha256', 'storage_stamp_sha256',
+            'payload_sha256', 'first_header_stamp_ns',
+            'last_header_stamp_ns'}, 'scan parity')
+        if (type(evidence['scan_parity']['message_count']) is not int or
+                evidence['scan_parity']['message_count'] <= 0 or
+                any(type(evidence['scan_parity'][key]) is not int or
+                    evidence['scan_parity'][key] < 0
+                    for key in ('first_header_stamp_ns',
+                                'last_header_stamp_ns'))):
+            raise ValueError('scan parity scalar drift')
+        for key in ('header_stamp_sha256', 'storage_stamp_sha256',
+                    'payload_sha256'):
+            _sha256(evidence['scan_parity'][key], f'scan parity {key}')
+        if evidence['run_id'] != evidence['observer']['run_id'] or \
+                evidence['seed'] != evidence['observer']['seed']:
+            raise ValueError('run and observer identity drift')
+        for key in ('observer_source', 'amcl_executable', 'map_yaml',
+                    'params_file', 'sanitized_manifest'):
+            _identity_schema(evidence[key], f'run {key}')
+        if (evidence['observer_source'] !=
+                contract['harness_sources']['amcl_particle_observer.py'] or
+                evidence['amcl_executable'] != evidence['loaded_runtime'][
+                    'amcl_executable'] or
+                evidence['map_yaml'] != contract['axis_a']['map']['yaml'] or
+                evidence['params_file'] != p0_params_identity):
+            raise ValueError('run source or executable identity drift')
+        if type(evidence['events']) is not list:
+            raise ValueError('run event list drift')
+        for event in evidence['events']:
+            _validate_event_record(event, 'run event', False)
+        if type(evidence['operations']) is not list:
+            raise ValueError('run operation list drift')
+        for operation in evidence['operations']:
+            _validate_operation(operation)
+        _validate_loaded_runtime(evidence['loaded_runtime'], 'run loaded runtime')
+        _validate_observer_snapshot(evidence['observer'], 'observer state')
+        _validate_observer_snapshot(evidence['prelude_observer'],
+                                    'prelude observer state')
+        _validate_clock_handoff(
+            evidence['clock_handoff'], evidence['prelude_observer'],
+            evidence['observer'])
         expected_run_files = {
             'amcl.log', 'amcl_resource.jsonl', 'evidence.json',
             'initialpose.request', 'map_server.log', 'observer.log',
@@ -974,6 +1704,28 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         if {item.name for item in path.parent.iterdir()} != expected_run_files:
             raise ValueError('run file inventory drift')
         for process in evidence['teardown']:
+            _exact_keys(process, {
+                'name', 'pid', 'pgid', 'command', 'started', 'returncode',
+                'stop_stages', 'survivors', 'log'}, 'teardown process')
+            if (type(process['name']) is not str or
+                    type(process['pid']) is not int or process['pid'] <= 0 or
+                    type(process['pgid']) is not int or process['pgid'] <= 0 or
+                    type(process['command']) is not list or
+                    any(type(value) is not str for value in process['command']) or
+                    type(process['returncode']) is not int or
+                    type(process['survivors']) is not list or
+                    any(type(value) is not int for value in process['survivors']) or
+                    type(process['stop_stages']) is not list):
+                raise ValueError('teardown process scalar drift')
+            _validate_event_record(process['started'], 'process start', False)
+            for stage_record in process['stop_stages']:
+                _exact_keys(stage_record, {'signal', 'steady_ns'}, 'stop stage')
+                if (stage_record['signal'] not in {
+                        'SIGINT', 'SIGTERM', 'SIGKILL'} or
+                        type(stage_record['steady_ns']) is not int or
+                        stage_record['steady_ns'] < 0):
+                    raise ValueError('stop stage scalar drift')
+            _identity_schema(process['log'], 'process log', relative=True)
             log_path = path.parent / process['log']['relative_path']
             if process['log'] != _relative_identity(log_path, path.parent):
                 raise ValueError('process log identity drift')
@@ -992,9 +1744,27 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         if ([stage['signal'] for stage in sampler_stages] != ['SIGINT']):
             raise ValueError('resource sampler termination drift')
         resource_path = path.parent / evidence['resource']['file']['relative_path']
+        _exact_keys(evidence['resource'], {
+            'sample_count', 'cpu_total_start_s', 'cpu_total_end_s',
+            'cpu_seconds', 'cpu_pct_median', 'cpu_pct_p95', 'max_rss_mb',
+            'file'}, 'resource summary')
+        _identity_schema(evidence['resource']['file'], 'resource file', relative=True)
+        for key in ('cpu_total_start_s', 'cpu_total_end_s', 'cpu_seconds',
+                    'cpu_pct_median', 'cpu_pct_p95', 'max_rss_mb'):
+            _finite_number(evidence['resource'][key], f'resource {key}', 0.0)
+        if (type(evidence['resource']['sample_count']) is not int or
+                evidence['resource']['sample_count'] <= 0 or
+                evidence['resource']['cpu_total_end_s'] <
+                evidence['resource']['cpu_total_start_s'] or
+                evidence['resource']['cpu_seconds'] !=
+                evidence['resource']['cpu_total_end_s'] -
+                evidence['resource']['cpu_total_start_s']):
+            raise ValueError('resource summary consistency drift')
         if evidence['resource']['file'] != _relative_identity(
                 resource_path, path.parent):
             raise ValueError('resource identity drift')
+        if len(_resource_rows(resource_path)) != evidence['resource']['sample_count']:
+            raise ValueError('resource raw sample cardinality drift')
         if (evidence['output_mcap_count'] != 0 or
                 evidence['survivor_count'] != 0 or
                 evidence['transform_lookup_drop_count'] != 0):
@@ -1016,36 +1786,34 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         if evidence['loaded_runtime'] != build_attestation['loaded_runtime']:
             raise ValueError('loaded runtime differs from build attestation')
         observer = evidence['observer']
-        _exact_keys(observer, {
-            'schema_version', 'run_id', 'seed', 'max_clouds',
-            'publisher_matched_count', 'events', 'readiness',
-            'initialpose_count', 'pre_initial_scan_count',
-            'pre_initial_cloud_count', 'raw_cloud_received_count',
-            'amcl_pose_received_count', 'pending_cloud_count',
-            'pending_pose_count', 'scan_count', 'scan_header_stamps_ns',
-            'scan_header_stamp_sha256', 'scan_payload_sha256', 'clouds',
-            'failure', 'done', 'motion_command_applicability'},
-            'observer state')
         if (observer['initialpose_count'] != 1 or
                 observer['pre_initial_scan_count'] != 0 or
                 observer['pre_initial_cloud_count'] != 0 or
                 observer['pending_cloud_count'] != 0 or
                 observer['pending_pose_count'] != 0 or
-                len(observer['clouds']) != observer['max_clouds']):
-            raise ValueError('observer causal cardinality drift')
+                len(observer['clouds']) != observer['max_clouds'] or
+                observer['raw_cloud_received_count'] !=
+                observer['max_clouds'] or
+                observer['amcl_pose_received_count'] !=
+                observer['max_clouds'] or
+                len(observer['callback_trace']) !=
+                2 * observer['max_clouds']):
+            raise ValueError('observer FIFO cardinality drift')
         if (observer['schema_version'] != 1 or observer['failure'] is not None or
                 observer['done'] is not True or
                 observer['publisher_matched_count'] < 1 or
+                observer['pose_publisher_matched_count'] < 1 or
                 observer['motion_command_applicability'] != 'NOT_APPLICABLE'):
             raise ValueError('observer completion contract drift')
-        triggers = [cloud['triggering_scan_header_stamp_ns']
-                    for cloud in observer['clouds']]
-        if (len(triggers) != len(set(triggers)) or
+        associated_scans = [
+            cloud['fifo_associated_pose_scan_header_stamp_ns']
+            for cloud in observer['clouds']]
+        if (len(associated_scans) != len(set(associated_scans)) or
                 any(value not in observer['scan_header_stamps_ns']
-                    for value in triggers)):
-            raise ValueError('cloud triggering scan membership drift')
+                    for value in associated_scans)):
+            raise ValueError('FIFO-associated pose scan membership drift')
         if any(cloud['pose_header_stamp_ns'] !=
-               cloud['triggering_scan_header_stamp_ns'] or
+               cloud['fifo_associated_pose_scan_header_stamp_ns'] or
                cloud['pose_frame_id'] != 'map' or cloud['frame_id'] != 'map' or
                type(cloud['particle_count']) is not int or
                cloud['particle_count'] <= 0 for cloud in observer['clouds']):
@@ -1055,24 +1823,55 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
                 evidence['operations']):
             raise ValueError('lifecycle/readback operation drift')
         runs.append(evidence)
+    replay_scan = replay_view['main']['/scan']
+    first_scan_parity = runs[0]['scan_parity']
+    if (replay_scan['message_count'] != first_scan_parity['message_count'] or
+            replay_scan['storage_stamp_sha256'] !=
+            first_scan_parity['storage_stamp_sha256'] or
+            replay_scan['raw_payload_sha256'] !=
+            first_scan_parity['payload_sha256']):
+        raise ValueError('replay view and accepted scan prefix drift')
+    sanitized_root = Path(manifest['sanitized_input']['root'])
+    if sanitized_root.exists():
+        expected_replay = _replay_view_manifest(
+            sanitized_root, replay_view['bootstrap'],
+            runs[0]['observer']['scan_header_stamps_ns'][-1])
+        if replay_view != expected_replay:
+            raise ValueError('live replay view recomputation drift')
     if manifest['comparison'] != _comparison(runs):
         raise ValueError('preflight comparison drift')
+    if ([run['domain_id'] for run in runs] != runtime['domain_ids'] or
+            len(runs) != len(runtime['domain_ids'])):
+        raise ValueError('run domain mapping drift')
     if expected_mode == 'full':
         if (len(runs) != 3 or tuple(run['seed'] for run in runs) != FULL_SEEDS or
                 [run['run_id'] for run in runs] != [
                     'p0__seed_11__attempt_1', 'p0__seed_11__attempt_2',
                     'p0__seed_23__attempt_3'] or
                 any(len(run['observer']['clouds']) != FULL_CLOUD_COUNT or
-                    run['observer']['scan_count'] != FULL_SCAN_COUNT
+                    run['observer']['scan_count'] != FULL_SCAN_COUNT or
+                    run['observer']['max_clouds'] != FULL_CLOUD_COUNT or
+                    run['prefix_s'] != FULL_PREFIX_S or
+                    run['playback_rate'] != PLAYBACK_RATE
                     for run in runs) or
+                any(run['scan_parity'] != runs[0]['scan_parity']
+                    for run in runs[1:]) or
                 not all(manifest['comparison'].values())):
             raise ValueError('full determinism contract failed')
         if (runtime['domain_ids'] != [
                 runs[0]['domain_id'] + index for index in range(3)] or
                 [run['domain_id'] for run in runs] != runtime['domain_ids']):
             raise ValueError('full domain mapping drift')
-    elif len(runs) != 1:
-        raise ValueError('smoke artifact must contain exactly one run')
+    elif (len(runs) != 1 or runs[0]['seed'] != SMOKE_SEEDS[0] or
+          runs[0]['run_id'] != 'p0__seed_11__attempt_1' or
+          runs[0]['observer']['max_clouds'] != SMOKE_CLOUD_COUNT or
+          len(runs[0]['observer']['clouds']) != SMOKE_CLOUD_COUNT or
+          runs[0]['prefix_s'] != SMOKE_PREFIX_S or
+          runs[0]['playback_rate'] != PLAYBACK_RATE or
+          manifest['comparison'] != {
+              'evaluated': False, 'same_seed_equal': None,
+              'different_seed_differs': None}):
+        raise ValueError('smoke artifact contract failed')
     return manifest
 
 
@@ -1086,6 +1885,36 @@ def validate_full_artifact(root: Path) -> dict:
     return _validate_artifact(root, 'full')
 
 
+def _mode_contract(args) -> tuple[str, tuple[int, ...]]:
+    mode = args.mode
+    if mode == 'smoke':
+        expected = (SMOKE_SEEDS, SMOKE_CLOUD_COUNT, SMOKE_PREFIX_S)
+    elif mode == 'full':
+        expected = (FULL_SEEDS, FULL_CLOUD_COUNT, FULL_PREFIX_S)
+    else:
+        raise ValueError('preflight mode must be smoke or full')
+    seeds, cloud_count, prefix_s = expected
+    if (tuple(args.seeds) != seeds or args.max_clouds != cloud_count or
+            args.prefix_s != prefix_s or args.playback_rate != PLAYBACK_RATE):
+        raise ValueError(f'{mode} preflight execution contract drift')
+    return mode, seeds
+
+
+def _publish_validated_stage(stage: Path, output_root: Path, validator,
+                             source_groups: tuple[dict, ...]) -> dict:
+    validator(stage)
+    for records in source_groups:
+        _validate_source_records(records)
+    stage.rename(output_root)
+    try:
+        for records in source_groups:
+            _validate_source_records(records)
+        return validator(output_root)
+    except Exception:
+        _safe_remove_created_root(output_root)
+        raise
+
+
 def run_preflight(args) -> dict:
     """Run one smoke or the exact same-seed/different-seed preflight."""
     output_root = _canonical_output_root(args.output_root)
@@ -1093,6 +1922,8 @@ def run_preflight(args) -> dict:
     if sanitized['source']['mcap_sha256'] != REAL_BAG_SHA256:
         raise ValueError('sanitized source is not canonical Axis A')
     contract = strict_json_load(args.prepared_root / 'contract.json')
+    mode, seeds = _mode_contract(args)
+    _validate_p0_params(contract, args.params_file)
     if (contract['axis_a']['map']['yaml']['sha256'] != REAL_MAP_YAML_SHA256 or
             contract['axis_a']['map']['pgm']['sha256'] != REAL_MAP_PGM_SHA256):
         raise ValueError('Axis A map identity drift')
@@ -1112,9 +1943,13 @@ def run_preflight(args) -> dict:
         if not path.is_absolute() or path != path.resolve():
             raise ValueError(f'input path must be absolute and canonical: {path}')
     bootstrap = _tf_bootstrap_plan(args.sanitized_root)
-    seeds = args.seeds
-    if tuple(seeds) not in ((11,), (11, 11, 23)):
-        raise ValueError('preflight seed plan must be [11] or [11,11,23]')
+    overlay_lock = strict_json_load(Path(contract['source_overlay']['lock']['path']))
+    overlay_tree = _validate_overlay_snapshot(contract, overlay_lock)
+    sanitized_input = _tree_manifest(args.sanitized_root)
+    _validate_tree_manifest(
+        sanitized_input,
+        {'bag_0.mcap', 'metadata.yaml', 'sanitizer_manifest.json'},
+        'sanitized input')
     with tempfile.TemporaryDirectory(
             prefix='.g002-preflight-', dir=output_root.parent) as temp_name:
         stage = Path(temp_name) / 'artifact'
@@ -1149,7 +1984,7 @@ def run_preflight(args) -> dict:
             **_build_provenance(
                 args.amcl_executable,
                 Path(contract['source_overlay']['root']),
-                runs[0]['loaded_runtime']),
+                runs[0]['loaded_runtime'], overlay_tree['tree_sha256']),
         }
         (stage / 'build_attestation.json').write_bytes(
             canonical_json_bytes(build_attestation))
@@ -1166,12 +2001,16 @@ def run_preflight(args) -> dict:
             records.append({'relative_path': str(path.relative_to(stage)),
                             'size_bytes': path.stat().st_size,
                             'sha256': sha256_file(path)})
-        mode = 'full' if tuple(seeds) == FULL_SEEDS else 'smoke'
         manifest = {
-            'schema_version': 2, 'mode': mode,
+            'schema_version': 3, 'mode': mode,
             'claim_scope': CLAIM_FULL if mode == 'full' else CLAIM_SMOKE,
+            'claim_boundary': CLAIM_BOUNDARY,
+            'pairing_contract': PAIRING_CONTRACT,
+            'observation_qos_contract': OBSERVATION_QOS_CONTRACT,
+            'pose_causality': 'NOT_PROVEN',
             'source_contract': _relative_identity(
                 stage / 'contract_snapshot.json', stage),
+            'sanitized_input': sanitized_input,
             'sanitizer_snapshot': _relative_identity(
                 stage / 'sanitizer_manifest_snapshot.json', stage),
             'upstream_lock_snapshot': _relative_identity(
@@ -1196,17 +2035,9 @@ def run_preflight(args) -> dict:
         (stage / 'preflight_manifest.json').write_bytes(
             canonical_json_bytes(manifest))
         validator = validate_full_artifact if mode == 'full' else validate_smoke_artifact
-        validator(stage)
-        _validate_source_records(contract['production_inputs'])
-        _validate_source_records(contract['harness_sources'])
-        stage.rename(output_root)
-    _validate_source_records(contract['production_inputs'])
-    _validate_source_records(contract['harness_sources'])
-    try:
-        return validator(output_root)
-    except Exception:
-        _safe_remove_created_root(output_root)
-        raise
+        return _publish_validated_stage(
+            stage, output_root, validator,
+            (contract['production_inputs'], contract['harness_sources']))
 
 
 def main() -> int:
@@ -1220,11 +2051,17 @@ def main() -> int:
     parser.add_argument('--map-yaml', required=True, type=Path)
     parser.add_argument('--rmw-library', required=True, type=Path)
     parser.add_argument('--domain-base', type=int, default=190)
-    parser.add_argument('--seeds', type=int, nargs='+', default=[11])
-    parser.add_argument('--max-clouds', type=int, default=30)
-    parser.add_argument('--prefix-s', type=float, default=90.0)
-    parser.add_argument('--playback-rate', type=float, default=2.0)
+    parser.add_argument('--mode', choices=('smoke', 'full'), required=True)
     args = parser.parse_args()
+    if args.mode == 'smoke':
+        args.seeds = list(SMOKE_SEEDS)
+        args.max_clouds = SMOKE_CLOUD_COUNT
+        args.prefix_s = SMOKE_PREFIX_S
+    else:
+        args.seeds = list(FULL_SEEDS)
+        args.max_clouds = FULL_CLOUD_COUNT
+        args.prefix_s = FULL_PREFIX_S
+    args.playback_rate = PLAYBACK_RATE
     run_preflight(args)
     return 0
 

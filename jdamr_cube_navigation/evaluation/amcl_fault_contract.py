@@ -105,8 +105,8 @@ def canonical_json_bytes(value: Any) -> bytes:
         separators=(',', ':'), allow_nan=False) + '\n').encode('utf-8')
 
 
-def strict_json_load(path: Path) -> Any:
-    """Load JSON while rejecting duplicate keys and non-finite numbers."""
+def strict_json_loads(payload: str) -> Any:
+    """Load JSON text while rejecting duplicate keys and non-finite numbers."""
     def pairs(items):
         result = {}
         for key, value in items:
@@ -118,8 +118,12 @@ def strict_json_load(path: Path) -> Any:
     def reject_constant(value):
         raise ValueError(f'non-finite JSON number: {value}')
     return json.loads(
-        path.read_text(encoding='utf-8'), object_pairs_hook=pairs,
-        parse_constant=reject_constant)
+        payload, object_pairs_hook=pairs, parse_constant=reject_constant)
+
+
+def strict_json_load(path: Path) -> Any:
+    """Load a UTF-8 JSON file through the strict decoder."""
+    return strict_json_loads(path.read_text(encoding='utf-8'))
 
 
 def exact_regular_file(path: Path, expected_sha256: str | None = None) -> dict:
