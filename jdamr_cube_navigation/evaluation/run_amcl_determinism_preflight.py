@@ -534,6 +534,19 @@ def _validate_observer_snapshot(observer: dict, label: str) -> None:
                 raise ValueError(f'{label} cloud timestamp drift')
 
 
+def _load_observer_state(record: dict, run_dir: Path) -> dict:
+    _identity_schema(record, 'observer state reference', relative=True)
+    if record['relative_path'] != 'observer_state.json':
+        raise ValueError('observer state reference path drift')
+    path = run_dir / record['relative_path']
+    if (path.is_symlink() or path.parent != run_dir or
+            record != _relative_identity(path, run_dir)):
+        raise ValueError('observer state reference identity drift')
+    observer = _canonical_json_load(path)
+    _validate_observer_snapshot(observer, 'observer state')
+    return observer
+
+
 def _runtime_guard(run_dir: Path) -> None:
     if current_free_bytes(run_dir) < STORAGE_LIMITS['abort_free_floor_bytes']:
         raise RuntimeError('runtime free-space floor crossed')
@@ -1274,15 +1287,20 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
     if any(amcl_tf_error_counts.values()):
         status = 'FAIL'
         failure = 'AMCL transform lookup drop observed'
-    clock_handoff = (_clock_handoff(prelude_observer, final)
-                     if prelude_observer is not None and final is not None
+    persisted_observer = (_canonical_json_load(state)
+                          if state.is_file() else None)
+    observer_state = (_relative_identity(state, run_dir)
+                      if state.is_file() else None)
+    clock_handoff = (_clock_handoff(prelude_observer, persisted_observer)
+                     if prelude_observer is not None and
+                     persisted_observer is not None
                      else None)
     _runtime_guard(run_dir)
     evidence = {
         'schema_version': 1, 'run_id': run_id, 'profile': profile,
         'seed': seed, 'domain_id': domain_id, 'status': status,
         'failure': failure, 'events': events, 'operations': operations,
-        'observer_source': observer_source, 'observer': final,
+        'observer_source': observer_source, 'observer_state': observer_state,
         'amcl_executable': _identity(args.amcl_executable),
         'map_yaml': _identity(args.map_yaml),
         'params_file': _identity(args.params_file),
@@ -1300,8 +1318,9 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
         'output_mcap_count': len(list(run_dir.rglob('*.mcap'))),
         'cmd_vel_publisher': 'NOT_APPLICABLE',
     }
-    if final is not None and final['scan_count']:
-        evidence['scan_parity'] = _scan_parity(final, args.sanitized_root)
+    if persisted_observer is not None and persisted_observer['scan_count']:
+        evidence['scan_parity'] = _scan_parity(
+            persisted_observer, args.sanitized_root)
     else:
         evidence['scan_parity'] = None
     (run_dir / 'evidence.json').write_bytes(canonical_json_bytes(evidence))
@@ -1628,7 +1647,7 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         _exact_keys(evidence, {
             'schema_version', 'run_id', 'profile', 'seed', 'domain_id',
             'status', 'failure', 'events', 'operations', 'observer_source',
-            'observer', 'amcl_executable', 'map_yaml', 'params_file',
+            'observer_state', 'amcl_executable', 'map_yaml', 'params_file',
             'sanitized_manifest', 'resource', 'teardown', 'loaded_runtime',
             'prelude_observer', 'clock_handoff', 'tf_bootstrap',
             'amcl_tf_error_counts',
@@ -1668,8 +1687,10 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         for key in ('header_stamp_sha256', 'storage_stamp_sha256',
                     'payload_sha256'):
             _sha256(evidence['scan_parity'][key], f'scan parity {key}')
-        if evidence['run_id'] != evidence['observer']['run_id'] or \
-                evidence['seed'] != evidence['observer']['seed']:
+        observer = _load_observer_state(evidence['observer_state'], path.parent)
+        evidence_with_observer = {**evidence, 'observer': observer}
+        if evidence['run_id'] != observer['run_id'] or \
+                evidence['seed'] != observer['seed']:
             raise ValueError('run and observer identity drift')
         for key in ('observer_source', 'amcl_executable', 'map_yaml',
                     'params_file', 'sanitized_manifest'):
@@ -1690,12 +1711,11 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         for operation in evidence['operations']:
             _validate_operation(operation)
         _validate_loaded_runtime(evidence['loaded_runtime'], 'run loaded runtime')
-        _validate_observer_snapshot(evidence['observer'], 'observer state')
         _validate_observer_snapshot(evidence['prelude_observer'],
                                     'prelude observer state')
         _validate_clock_handoff(
             evidence['clock_handoff'], evidence['prelude_observer'],
-            evidence['observer'])
+            observer)
         expected_run_files = {
             'amcl.log', 'amcl_resource.jsonl', 'evidence.json',
             'initialpose.request', 'map_server.log', 'observer.log',
@@ -1703,6 +1723,9 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         expected_run_files.add('tf_prelude_player.log')
         if {item.name for item in path.parent.iterdir()} != expected_run_files:
             raise ValueError('run file inventory drift')
+        if (_tree_bytes(path.parent) >
+                STORAGE_LIMITS['run_output_limit_bytes']):
+            raise ValueError('run tree exceeds metrics/log output cap')
         for process in evidence['teardown']:
             _exact_keys(process, {
                 'name', 'pid', 'pgid', 'command', 'started', 'returncode',
@@ -1778,14 +1801,13 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
                 manifest['sanitizer_snapshot']['size_bytes']):
             raise ValueError('run sanitizer snapshot identity drift')
         if sanitized_output_root.exists() and evidence['scan_parity'] != _scan_parity(
-                evidence['observer'], sanitized_output_root):
+                observer, sanitized_output_root):
             raise ValueError('run scan parity recomputation drift')
         _validate_replay_bootstrap(
-            evidence, path.parent, sanitized_output_root,
+            evidence_with_observer, path.parent, sanitized_output_root,
             replay_view['bootstrap'])
         if evidence['loaded_runtime'] != build_attestation['loaded_runtime']:
             raise ValueError('loaded runtime differs from build attestation')
-        observer = evidence['observer']
         if (observer['initialpose_count'] != 1 or
                 observer['pre_initial_scan_count'] != 0 or
                 observer['pre_initial_cloud_count'] != 0 or
@@ -1822,7 +1844,7 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
                 operation['returncode'] != 0 for operation in
                 evidence['operations']):
             raise ValueError('lifecycle/readback operation drift')
-        runs.append(evidence)
+        runs.append(evidence_with_observer)
     replay_scan = replay_view['main']['/scan']
     first_scan_parity = runs[0]['scan_parity']
     if (replay_scan['message_count'] != first_scan_parity['message_count'] or
@@ -1978,6 +2000,10 @@ def run_preflight(args) -> dict:
         if any(run['loaded_runtime'] != runs[0]['loaded_runtime']
                for run in runs[1:]):
             raise RuntimeError('loaded runtime differs between runs')
+        run_views = [
+            {**run, 'observer': _load_observer_state(
+                run['observer_state'], stage / f'run_{index}')}
+            for index, run in enumerate(runs, 1)]
         build_attestation = {
             'upstream_lock_sha256': sha256_file(
                 stage / 'upstream_lock_snapshot.json'),
@@ -1988,7 +2014,8 @@ def run_preflight(args) -> dict:
         }
         (stage / 'build_attestation.json').write_bytes(
             canonical_json_bytes(build_attestation))
-        scan_views = [run['observer']['scan_header_stamps_ns'] for run in runs]
+        scan_views = [
+            run['observer']['scan_header_stamps_ns'] for run in run_views]
         if any(view != scan_views[0] for view in scan_views[1:]):
             raise RuntimeError('run source scan views differ')
         replay_view = _replay_view_manifest(
@@ -2027,7 +2054,7 @@ def run_preflight(args) -> dict:
                                for index in range(len(seeds))],
                 'amcl_executable': _identity(args.amcl_executable),
             },
-            'runs': records, 'comparison': _comparison(runs),
+            'runs': records, 'comparison': _comparison(run_views),
             'tree_bytes': _payload_tree_bytes(stage),
             'tree_records': _tree_records(stage),
             'tree_sha256': _tree_digest(_tree_records(stage)),

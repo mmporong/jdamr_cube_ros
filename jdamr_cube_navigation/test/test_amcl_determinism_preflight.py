@@ -483,13 +483,18 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
             'playback_rate': runner.PLAYBACK_RATE,
             'cmd_vel_publisher': 'NOT_APPLICABLE',
         }
+        observer_value = evidence.pop('observer')
         evidence['clock_handoff'] = runner._clock_handoff(
-            evidence['prelude_observer'], evidence['observer'])
+            evidence['prelude_observer'], observer_value)
         for name in (
                 'amcl.log', 'initialpose.request', 'map_server.log',
-                'observer.log', 'observer_state.json', 'player.log',
+                'observer.log', 'player.log',
                 'resource_sampler.log', 'tf_prelude_player.log'):
             (run_dir / name).write_text('', encoding='utf-8')
+        observer_state = run_dir / 'observer_state.json'
+        observer_state.write_bytes(canonical_json_bytes(observer_value))
+        evidence['observer_state'] = runner._relative_identity(
+            observer_state, run_dir)
         resource = run_dir / 'amcl_resource.jsonl'
         resource.write_bytes(canonical_json_bytes({
             'monotonic_s': 1.0, 'cpu_total_s': 0.0,
@@ -516,7 +521,7 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
                     run_dir / 'tf_prelude_player.log', run_dir)})
         path = run_dir / 'evidence.json'
         path.write_bytes(canonical_json_bytes(evidence))
-        evidence_values.append(evidence)
+        evidence_values.append({**evidence, 'observer': observer_value})
         runs.append({'relative_path': str(path.relative_to(root)),
                      'size_bytes': path.stat().st_size,
                      'sha256': sha256_file(path)})
@@ -570,6 +575,67 @@ def _refresh_manifest(root: Path) -> None:
     manifest['tree_records'] = runner._tree_records(root)
     manifest['tree_sha256'] = runner._tree_digest(manifest['tree_records'])
     manifest_path.write_bytes(canonical_json_bytes(manifest))
+
+
+def _rewrite_observer_state(root: Path, mutate, run_index: int = 1) -> None:
+    state_path = root / f'run_{run_index}/observer_state.json'
+    state = runner.strict_json_load(state_path)
+    mutate(state)
+    state_path.write_bytes(canonical_json_bytes(state))
+    evidence_path = root / f'run_{run_index}/evidence.json'
+    evidence = runner.strict_json_load(evidence_path)
+    evidence['observer_state'] = runner._relative_identity(
+        state_path, state_path.parent)
+    evidence_path.write_bytes(canonical_json_bytes(evidence))
+    _refresh_manifest(root)
+
+
+def test_full_large_clock_state_is_referenced_once_under_run_cap(
+        monkeypatch, tmp_path):
+    _mock_replay_recompute(monkeypatch)
+    monkeypatch.setattr(runner, '_scan_parity', _scan_parity)
+    monkeypatch.setattr(runner, '_validate_replay_bootstrap',
+                        lambda *_args: None)
+    root = _artifact(tmp_path, (11, 11, 23))
+    for run_index in range(1, 4):
+        state_path = root / f'run_{run_index}/observer_state.json'
+        state = runner.strict_json_load(state_path)
+        prelude_prefix = state['clock_samples'][:1]
+        state['clock_samples'] = [
+            *prelude_prefix,
+            *({'ros_ns': value + 99, 'arrival_steady_ns': value}
+              for value in range(2, 25_001)),
+        ]
+        state['readiness']['clock_count'] = len(state['clock_samples'])
+        state_path.write_bytes(canonical_json_bytes(state))
+        assert (2 * state_path.stat().st_size >
+                runner.STORAGE_LIMITS['run_output_limit_bytes'])
+        evidence_path = root / f'run_{run_index}/evidence.json'
+        evidence = runner.strict_json_load(evidence_path)
+        evidence['observer_state'] = runner._relative_identity(
+            state_path, state_path.parent)
+        evidence['clock_handoff'] = runner._clock_handoff(
+            evidence['prelude_observer'], state)
+        evidence_path.write_bytes(canonical_json_bytes(evidence))
+    _refresh_manifest(root)
+    for run_index in range(1, 4):
+        assert (runner._tree_bytes(root / f'run_{run_index}') <=
+                runner.STORAGE_LIMITS['run_output_limit_bytes'])
+    assert runner.validate_full_artifact(root)
+
+
+def test_validator_rejects_observer_state_reference_identity_drift(
+        monkeypatch, tmp_path):
+    _mock_replay_recompute(monkeypatch)
+    monkeypatch.setattr(runner, '_scan_parity', _scan_parity)
+    monkeypatch.setattr(runner, '_validate_replay_bootstrap',
+                        lambda *_args: None)
+    root = _artifact(tmp_path)
+    state_path = root / 'run_1/observer_state.json'
+    state_path.write_bytes(state_path.read_bytes() + b' ')
+    _refresh_manifest(root)
+    with pytest.raises(ValueError, match='reference identity drift'):
+        runner.validate_smoke_artifact(root)
 
 
 def _mock_replay_recompute(monkeypatch):
@@ -789,17 +855,17 @@ def test_validator_rejects_fifo_pairing_evidence_drift(
                 'RELIABLE')
         manifest_path.write_bytes(canonical_json_bytes(manifest))
     else:
-        evidence_path = root / 'run_1/evidence.json'
-        evidence = runner.strict_json_load(evidence_path)
         if attack == 'drop':
-            evidence['observer']['callback_trace'].pop()
+            _rewrite_observer_state(
+                root, lambda state: state['callback_trace'].pop())
         elif attack == 'reorder':
-            evidence['observer']['callback_trace'][0]['kind'] = 'amcl_pose'
+            _rewrite_observer_state(
+                root, lambda state: state['callback_trace'][0].__setitem__(
+                    'kind', 'amcl_pose'))
         else:
-            evidence['observer']['clouds'][0]['pair_arrival_delta_ns'] = (
-                runner.PAIRING_WINDOW_NS + 1)
-        evidence_path.write_bytes(canonical_json_bytes(evidence))
-        _refresh_manifest(root)
+            _rewrite_observer_state(
+                root, lambda state: state['clouds'][0].__setitem__(
+                    'pair_arrival_delta_ns', runner.PAIRING_WINDOW_NS + 1))
     with pytest.raises(ValueError, match='claim boundary|callback|cloud scalar'):
         runner.validate_smoke_artifact(root)
 
@@ -811,11 +877,9 @@ def test_validator_rejects_dual_player_clock_handoff_drift(
     monkeypatch.setattr(runner, '_validate_replay_bootstrap',
                         lambda *_args: None)
     root = _artifact(tmp_path)
-    evidence_path = root / 'run_1/evidence.json'
-    evidence = runner.strict_json_load(evidence_path)
-    evidence['observer']['clock_samples'][1]['ros_ns'] = 99
-    evidence_path.write_bytes(canonical_json_bytes(evidence))
-    _refresh_manifest(root)
+    _rewrite_observer_state(
+        root, lambda state: state['clock_samples'][1].__setitem__(
+            'ros_ns', 99))
     with pytest.raises(ValueError, match='clock monotonicity'):
         runner.validate_smoke_artifact(root)
 
@@ -827,11 +891,9 @@ def test_validator_rejects_dual_player_clock_prelude_prefix_mismatch(
     monkeypatch.setattr(runner, '_validate_replay_bootstrap',
                         lambda *_args: None)
     root = _artifact(tmp_path)
-    evidence_path = root / 'run_1/evidence.json'
-    evidence = runner.strict_json_load(evidence_path)
-    evidence['observer']['clock_samples'][0]['ros_ns'] = 99
-    evidence_path.write_bytes(canonical_json_bytes(evidence))
-    _refresh_manifest(root)
+    _rewrite_observer_state(
+        root, lambda state: state['clock_samples'][0].__setitem__(
+            'ros_ns', 99))
     with pytest.raises(ValueError, match='clock prelude prefix mismatch'):
         runner.validate_smoke_artifact(root)
 
