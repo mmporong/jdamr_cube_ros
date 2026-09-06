@@ -13,6 +13,8 @@ from amcl_fault_contract import AXIS_B_SCENARIOS
 from amcl_fault_contract import canonical_json_bytes
 from amcl_fault_contract import current_free_bytes
 from amcl_fault_contract import exact_regular_file
+from amcl_fault_contract import G002_ARTIFACT_LIMIT_BYTES
+from amcl_fault_contract import G002_RUN_OUTPUT_LIMIT_BYTES
 from amcl_fault_contract import map_identity
 from amcl_fault_contract import OVERLAY_CHANGED_FILES
 from amcl_fault_contract import PROFILES
@@ -282,7 +284,8 @@ def prepare_benchmark(output_root: Path, overlay_root: Path,
         'storage_contract': budget,
         'run_artifact_policy': {
             'output_mcap_count': 0,
-            'per_run_limit_bytes': STORAGE_LIMITS['run_output_limit_bytes'],
+            'per_run_limit_bytes': G002_RUN_OUTPUT_LIMIT_BYTES,
+            'total_limit_bytes': G002_ARTIFACT_LIMIT_BYTES,
             'repeated_runs': 'metrics-only',
         },
         'production_inputs': {

@@ -4,7 +4,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from amcl_fault_contract import canonical_json_bytes, sha256_file
+from amcl_fault_contract import canonical_json_bytes, MIB, sha256_file
 from amcl_fault_contract import strict_json_loads
 import amcl_particle_observer as observer
 import pytest
@@ -281,6 +281,11 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
             'production_params': runner._identity(params)},
         'harness_sources': {
             'amcl_particle_observer.py': runner._identity(Path('/usr/bin/true'))},
+        'run_artifact_policy': {
+            'output_mcap_count': 0,
+            'per_run_limit_bytes': runner.G002_RUN_OUTPUT_LIMIT_BYTES,
+            'total_limit_bytes': runner.G002_ARTIFACT_LIMIT_BYTES,
+            'repeated_runs': 'metrics-only'},
         'source_overlay': {
             'root': str(tmp_path / 'overlay'),
             'lock': runner._identity(upstream), 'changed_files': []}}))
@@ -604,12 +609,12 @@ def test_full_large_clock_state_is_referenced_once_under_run_cap(
         state['clock_samples'] = [
             *prelude_prefix,
             *({'ros_ns': value + 99, 'arrival_steady_ns': value}
-              for value in range(2, 25_001)),
+              for value in range(2, 50_001)),
         ]
         state['readiness']['clock_count'] = len(state['clock_samples'])
         state_path.write_bytes(canonical_json_bytes(state))
-        assert (2 * state_path.stat().st_size >
-                runner.STORAGE_LIMITS['run_output_limit_bytes'])
+        assert 2 * MIB < state_path.stat().st_size
+        assert state_path.stat().st_size < runner.G002_RUN_OUTPUT_LIMIT_BYTES
         evidence_path = root / f'run_{run_index}/evidence.json'
         evidence = runner.strict_json_load(evidence_path)
         evidence['observer_state'] = runner._relative_identity(
@@ -620,7 +625,7 @@ def test_full_large_clock_state_is_referenced_once_under_run_cap(
     _refresh_manifest(root)
     for run_index in range(1, 4):
         assert (runner._tree_bytes(root / f'run_{run_index}') <=
-                runner.STORAGE_LIMITS['run_output_limit_bytes'])
+                runner.G002_RUN_OUTPUT_LIMIT_BYTES)
     assert runner.validate_full_artifact(root)
 
 
@@ -635,6 +640,43 @@ def test_validator_rejects_observer_state_reference_identity_drift(
     state_path.write_bytes(state_path.read_bytes() + b' ')
     _refresh_manifest(root)
     with pytest.raises(ValueError, match='reference identity drift'):
+        runner.validate_smoke_artifact(root)
+
+
+def test_validator_rejects_stale_two_mib_prepared_policy(
+        monkeypatch, tmp_path):
+    _mock_replay_recompute(monkeypatch)
+    root = _artifact(tmp_path)
+    contract_path = root / 'contract_snapshot.json'
+    contract = runner.strict_json_load(contract_path)
+    contract['run_artifact_policy']['per_run_limit_bytes'] = 2 * MIB
+    contract_path.write_bytes(canonical_json_bytes(contract))
+    _refresh_manifest(root)
+    with pytest.raises(ValueError, match='run artifact policy drift'):
+        runner.validate_smoke_artifact(root)
+
+
+def test_validator_rejects_run_tree_above_eight_mib(
+        monkeypatch, tmp_path):
+    _mock_replay_recompute(monkeypatch)
+    root = _artifact(tmp_path)
+    state_path = root / 'run_1/observer_state.json'
+    with state_path.open('ab') as stream:
+        stream.truncate(runner.G002_RUN_OUTPUT_LIMIT_BYTES + 1)
+    _refresh_manifest(root)
+    with pytest.raises(ValueError, match='run tree exceeds 8 MiB'):
+        runner.validate_smoke_artifact(root)
+
+
+def test_validator_rejects_total_artifact_above_thirty_two_mib(
+        monkeypatch, tmp_path):
+    _mock_replay_recompute(monkeypatch)
+    root = _artifact(tmp_path)
+    state_path = root / 'run_1/observer_state.json'
+    with state_path.open('ab') as stream:
+        stream.truncate(runner.G002_ARTIFACT_LIMIT_BYTES + 1)
+    _refresh_manifest(root)
+    with pytest.raises(ValueError, match='artifact exceeds 32 MiB'):
         runner.validate_smoke_artifact(root)
 
 
@@ -932,7 +974,8 @@ def test_publish_cleanup_is_atomic_after_post_rename_failure(
     assert not output.exists()
 
 
-def test_runtime_guard_rejects_free_space_and_log_cap(monkeypatch, tmp_path):
+def test_runtime_guard_rejects_free_space_log_and_run_caps(
+        monkeypatch, tmp_path):
     monkeypatch.setattr(
         runner, 'current_free_bytes',
         lambda _path: runner.STORAGE_LIMITS['abort_free_floor_bytes'] - 1)
@@ -943,6 +986,12 @@ def test_runtime_guard_rejects_free_space_and_log_cap(monkeypatch, tmp_path):
         lambda _path: runner.STORAGE_LIMITS['abort_free_floor_bytes'])
     (tmp_path / 'oversize.log').write_bytes(b'x' * (runner.MAX_LOG_BYTES + 1))
     with pytest.raises(RuntimeError, match='log exceeds'):
+        runner._runtime_guard(tmp_path)
+    (tmp_path / 'oversize.log').unlink()
+    payload = tmp_path / 'oversize.bin'
+    with payload.open('wb') as stream:
+        stream.truncate(runner.G002_RUN_OUTPUT_LIMIT_BYTES + 1)
+    with pytest.raises(RuntimeError, match='exceeds 8 MiB'):
         runner._runtime_guard(tmp_path)
 
 

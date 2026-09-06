@@ -21,6 +21,8 @@ from amcl_fault_contract import AMCL_BASELINE_FILES
 from amcl_fault_contract import canonical_json_bytes
 from amcl_fault_contract import current_free_bytes
 from amcl_fault_contract import exact_regular_file
+from amcl_fault_contract import G002_ARTIFACT_LIMIT_BYTES
+from amcl_fault_contract import G002_RUN_OUTPUT_LIMIT_BYTES
 from amcl_fault_contract import OVERLAY_CHANGED_FILES
 from amcl_fault_contract import PF_C_PATH
 from amcl_fault_contract import REAL_BAG_SHA256
@@ -51,7 +53,6 @@ ROS2 = Path('/opt/ros/jazzy/bin/ros2')
 MAP_SERVER = Path('/opt/ros/jazzy/lib/nav2_map_server/map_server')
 ALLOWED_SEEDS = (11, 23)
 MAX_LOG_BYTES = 2 * 1024 * 1024
-MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 AMCL_TF_ERROR_MARKERS = (
     'Message Filter dropping message',
     'Failed to transform',
@@ -123,6 +124,18 @@ def _validate_p0_params(contract: dict, params_path: Path) -> dict:
     if selected != P0_PARAMS:
         raise ValueError('P0 AMCL parameter values drift')
     return actual
+
+
+def _validate_run_artifact_policy(contract: dict) -> None:
+    policy = contract['run_artifact_policy']
+    _exact_keys(policy, {
+        'output_mcap_count', 'per_run_limit_bytes', 'total_limit_bytes',
+        'repeated_runs'}, 'G002 run artifact policy')
+    if (policy['output_mcap_count'] != 0 or
+            policy['per_run_limit_bytes'] != G002_RUN_OUTPUT_LIMIT_BYTES or
+            policy['total_limit_bytes'] != G002_ARTIFACT_LIMIT_BYTES or
+            policy['repeated_runs'] != 'metrics-only'):
+        raise ValueError('G002 run artifact policy drift')
 
 
 def _tree_bytes(root: Path) -> int:
@@ -553,8 +566,8 @@ def _runtime_guard(run_dir: Path) -> None:
     for path in run_dir.glob('*.log'):
         if path.stat().st_size > MAX_LOG_BYTES:
             raise RuntimeError(f'run log exceeds 2 MiB cap: {path.name}')
-    if _tree_bytes(run_dir) > STORAGE_LIMITS['run_output_limit_bytes']:
-        raise RuntimeError('run output exceeds 2 MiB cap')
+    if _tree_bytes(run_dir) > G002_RUN_OUTPUT_LIMIT_BYTES:
+        raise RuntimeError('G002 run output exceeds 8 MiB cap')
 
 
 def _canonical_output_root(path: Path) -> Path:
@@ -1324,8 +1337,8 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
     else:
         evidence['scan_parity'] = None
     (run_dir / 'evidence.json').write_bytes(canonical_json_bytes(evidence))
-    if _tree_bytes(run_dir) > STORAGE_LIMITS['run_output_limit_bytes']:
-        raise RuntimeError('run metrics/log output exceeds 2 MiB cap')
+    if _tree_bytes(run_dir) > G002_RUN_OUTPUT_LIMIT_BYTES:
+        raise RuntimeError('G002 run metrics/log output exceeds 8 MiB cap')
     return evidence
 
 
@@ -1486,6 +1499,7 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
             contract_snapshot.name != 'contract_snapshot.json'):
         raise ValueError('source contract snapshot identity drift')
     contract = _canonical_json_load(contract_snapshot)
+    _validate_run_artifact_policy(contract)
     _validate_source_records(contract['production_inputs'])
     _validate_source_records(contract['harness_sources'])
     p0_params_identity = _validate_p0_params(
@@ -1630,7 +1644,7 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
     if (manifest['tree_records'] != records or
             manifest['tree_sha256'] != _tree_digest(records) or
             manifest['tree_bytes'] != _payload_tree_bytes(root) or
-            manifest['tree_bytes'] > MAX_ARTIFACT_BYTES):
+            manifest['tree_bytes'] > G002_ARTIFACT_LIMIT_BYTES):
         raise ValueError('preflight artifact exceeds 32 MiB')
     runs = []
     for index, record in enumerate(manifest['runs'], 1):
@@ -1643,6 +1657,8 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         if (_identity(path)['sha256'] != record['sha256'] or
                 path.stat().st_size != record['size_bytes']):
             raise ValueError('run evidence identity drift')
+        if _tree_bytes(path.parent) > G002_RUN_OUTPUT_LIMIT_BYTES:
+            raise ValueError('run tree exceeds 8 MiB output cap')
         evidence = _canonical_json_load(path)
         _exact_keys(evidence, {
             'schema_version', 'run_id', 'profile', 'seed', 'domain_id',
@@ -1723,9 +1739,6 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         expected_run_files.add('tf_prelude_player.log')
         if {item.name for item in path.parent.iterdir()} != expected_run_files:
             raise ValueError('run file inventory drift')
-        if (_tree_bytes(path.parent) >
-                STORAGE_LIMITS['run_output_limit_bytes']):
-            raise ValueError('run tree exceeds metrics/log output cap')
         for process in evidence['teardown']:
             _exact_keys(process, {
                 'name', 'pid', 'pgid', 'command', 'started', 'returncode',
@@ -1945,6 +1958,7 @@ def run_preflight(args) -> dict:
         raise ValueError('sanitized source is not canonical Axis A')
     contract = strict_json_load(args.prepared_root / 'contract.json')
     mode, seeds = _mode_contract(args)
+    _validate_run_artifact_policy(contract)
     _validate_p0_params(contract, args.params_file)
     if (contract['axis_a']['map']['yaml']['sha256'] != REAL_MAP_YAML_SHA256 or
             contract['axis_a']['map']['pgm']['sha256'] != REAL_MAP_PGM_SHA256):
@@ -1954,7 +1968,7 @@ def run_preflight(args) -> dict:
     _validate_source_records(contract['production_inputs'])
     _validate_source_records(contract['harness_sources'])
     budget = validate_storage_budget(
-        current_free_bytes(output_root.parent), MAX_ARTIFACT_BYTES,
+        current_free_bytes(output_root.parent), G002_ARTIFACT_LIMIT_BYTES,
         _tree_bytes(args.sanitized_root))
     if not budget['pass']:
         raise RuntimeError(f'storage gate failed: {budget["failures"]}')
