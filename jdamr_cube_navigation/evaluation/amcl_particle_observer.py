@@ -288,6 +288,7 @@ class ParticleObserver(Node):
             if latency_ns < 0:
                 raise ValueError('AMCL pose arrived before triggering scan')
             record = dict(cloud)
+            cloud_stream_index = record.pop('stream_index')
             record.update({
                 'index': len(self.clouds),
                 'fifo_associated_pose_scan_header_stamp_ns':
@@ -300,7 +301,7 @@ class ParticleObserver(Node):
                 'covariance': pose['covariance'],
                 'scan_arrival_steady_ns': scan_arrival_steady_ns,
                 'scan_to_pose_steady_ns': latency_ns,
-                'cloud_stream_index': cloud['stream_index'],
+                'cloud_stream_index': cloud_stream_index,
                 'pose_stream_index': pose['stream_index'],
                 'pair_arrival_delta_ns': abs(
                     cloud['arrival_steady_ns'] - pose['arrival_steady_ns']),

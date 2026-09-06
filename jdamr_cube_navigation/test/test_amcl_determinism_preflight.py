@@ -595,6 +595,42 @@ def _rewrite_observer_state(root: Path, mutate, run_index: int = 1) -> None:
     _refresh_manifest(root)
 
 
+def _runtime_persisted_cloud() -> dict:
+    state = SimpleNamespace(
+        pending_clouds=[{
+            'header_stamp_ns': 1, 'arrival_steady_ns': 10,
+            'callback_ros_ns': 1, 'frame_id': 'map', 'particle_count': 1,
+            'payload_sha256': 'a' * 64, 'stream_index': 0}],
+        pending_poses=[{
+            'header_stamp_ns': 1, 'arrival_steady_ns': 10,
+            'callback_ros_ns': 1, 'frame_id': 'map', 'stream_index': 0,
+            'pose': [0.0] * 7, 'covariance': [0.0] * 36}],
+        args=SimpleNamespace(max_clouds=1), clouds=[], scan_stamps=[1],
+        scan_arrival_steady_ns={1: 9}, _event=lambda _name: None)
+    observer.ParticleObserver._drain_updates(state)
+    return state.clouds[0]
+
+
+def test_runtime_persisted_cloud_has_exact_schema_and_rejects_extra_key(
+        monkeypatch, tmp_path):
+    _mock_replay_recompute(monkeypatch)
+    monkeypatch.setattr(runner, '_scan_parity', _scan_parity)
+    monkeypatch.setattr(runner, '_validate_replay_bootstrap',
+                        lambda *_args: None)
+    root = _artifact(tmp_path)
+    persisted_cloud = _runtime_persisted_cloud()
+    assert 'stream_index' not in persisted_cloud
+    assert persisted_cloud['cloud_stream_index'] == 0
+    _rewrite_observer_state(
+        root, lambda state: state['clouds'].__setitem__(0, persisted_cloud))
+    assert runner.validate_smoke_artifact(root)
+    _rewrite_observer_state(
+        root, lambda state: state['clouds'][0].__setitem__(
+            'stream_index', 0))
+    with pytest.raises(ValueError, match='observer state cloud schema drift'):
+        runner.validate_smoke_artifact(root)
+
+
 def test_full_large_clock_state_is_referenced_once_under_run_cap(
         monkeypatch, tmp_path):
     _mock_replay_recompute(monkeypatch)
