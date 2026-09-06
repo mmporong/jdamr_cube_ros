@@ -64,6 +64,7 @@ class ParticleObserver(Node):
     """Capture readiness, scan causality, and ordered particle payloads."""
 
     def __init__(self, args):
+        """Create the evaluation-only observer and its subscriptions."""
         super().__init__(
             'g002_amcl_particle_observer', parameter_overrides=[
                 Parameter('use_sim_time', Parameter.Type.BOOL, True)])
@@ -282,7 +283,12 @@ class ParticleObserver(Node):
                 message = PoseWithCovarianceStamped()
                 message.header.frame_id = 'map'
                 message.header.stamp = self.get_clock().now().to_msg()
-                message.pose.pose.orientation.w = 1.0
+                message.pose.pose.position.x = self.args.initial_x_m
+                message.pose.pose.position.y = self.args.initial_y_m
+                message.pose.pose.orientation.z = math.sin(
+                    self.args.initial_yaw_rad / 2.0)
+                message.pose.pose.orientation.w = math.cos(
+                    self.args.initial_yaw_rad / 2.0)
                 message.pose.covariance[0] = 0.25
                 message.pose.covariance[7] = 0.25
                 message.pose.covariance[35] = (math.pi / 12.0) ** 2
@@ -347,6 +353,9 @@ def main() -> int:
     parser.add_argument('--max-clouds', type=int, default=30)
     parser.add_argument('--state', required=True, type=Path)
     parser.add_argument('--initialpose-request', required=True, type=Path)
+    parser.add_argument('--initial-x-m', type=float, default=0.0)
+    parser.add_argument('--initial-y-m', type=float, default=0.0)
+    parser.add_argument('--initial-yaw-rad', type=float, default=0.0)
     args = parser.parse_args()
     rclpy.init()
     node = ParticleObserver(args)

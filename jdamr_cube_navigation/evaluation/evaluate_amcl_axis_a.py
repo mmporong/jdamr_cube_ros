@@ -61,7 +61,8 @@ def _finite(value: Any, label: str, minimum: float | None = None) -> float:
 
 
 def percentile(values: list[float], fraction: float) -> float:
-    """Return a deterministic nearest-rank percentile.
+    """
+    Return a deterministic nearest-rank percentile.
 
     The rank is ``ceil(fraction * sample_count) - 1`` in zero-based indexing.
     This keeps the observed value rather than interpolating particle counts.

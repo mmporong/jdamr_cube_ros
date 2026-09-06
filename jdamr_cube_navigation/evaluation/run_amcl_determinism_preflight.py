@@ -617,7 +617,10 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
         launched.append(_start('observer', [
             '/usr/bin/python3', str(OBSERVER), '--run-id', run_id,
             '--seed', str(seed), '--max-clouds', str(args.max_clouds),
-            '--state', str(state), '--initialpose-request', str(request)],
+            '--state', str(state), '--initialpose-request', str(request),
+            '--initial-x-m', str(getattr(args, 'initial_x_m', 0.0)),
+            '--initial-y-m', str(getattr(args, 'initial_y_m', 0.0)),
+            '--initial-yaw-rad', str(getattr(args, 'initial_yaw_rad', 0.0))],
             run_dir / 'observer.log', env))
         resource = _start('resource_sampler', [
             '/usr/bin/python3', str(SAMPLER), '--process-group',
