@@ -151,6 +151,14 @@ def run_smoke(asset_root: Path, output_root: Path) -> dict:
             'evaluator_source': file_identity(Path(
                 __import__('evaluate_frontier_policy').__file__).resolve()),
             'runner_source': file_identity(Path(__file__).resolve()),
+            'runtime_executor': 'NOT_APPLICABLE_SMOKE',
+            'runtime_proofs': [],
+            'contract_identity': file_identity(Path(
+                __import__('frontier_policy_contract').__file__).resolve()),
+            'execution_plan_sha256': 'NOT_APPLICABLE_SMOKE',
+            'frontier_policy_handoff': {
+                'decision': 'NOT_EVALUATED', 'selected_policy': 'current',
+                'production_change_authorized': False},
             'tree_files': records, 'tree_sha256': tree_sha,
             'storage_limit_bytes': ARTIFACT_LIMIT_BYTES}
         (stage / 'manifest.json').write_bytes(canonical_json_bytes(manifest))

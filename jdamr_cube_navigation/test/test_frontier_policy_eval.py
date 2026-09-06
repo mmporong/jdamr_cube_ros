@@ -134,6 +134,14 @@ def test_current_nearest_and_gain_nav_formulas_and_ties():
             for index in (9, 2)]
     assert [item['cell_index'] for item in policy_rank(
         'gain_nav', tied)] == [2, 9]
+    gain_tie = [
+        {'cell_index': 9, 'gain_cells': 2.0, 'bfs_distance_m': 1.0,
+         'heading_rad': 0.0, 'nav_length_m': 2.0},
+        {'cell_index': 8, 'gain_cells': 1.0, 'bfs_distance_m': 1.0,
+         'heading_rad': 0.0, 'nav_length_m': 1.0},
+    ]
+    assert [item['cell_index'] for item in policy_rank(
+        'gain_nav', gain_tie)] == [8, 9]
 
 
 def test_current_formula_matches_production_frontier_score():

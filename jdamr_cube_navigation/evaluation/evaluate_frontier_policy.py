@@ -315,11 +315,19 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
     if (not root.is_absolute() or not root.is_dir() or root.is_symlink() or
             expected_mode not in ('smoke', 'full')):
         raise ValueError('non-canonical G005 artifact root')
+    if expected_mode == 'full':
+        from run_frontier_policy_full import (
+            FULL_RUNTIME_BLOCKER, FULL_RUNTIME_PATH_ENABLED)
+        if not FULL_RUNTIME_PATH_ENABLED:
+            raise ValueError(FULL_RUNTIME_BLOCKER)
     manifest = strict_json_load(root / 'manifest.json')
     manifest_keys = {'schema_version', 'mode', 'claim_scope', 'asset_root',
                      'asset_manifest', 'full_plan', 'executed_plan', 'runs',
                      'promotion', 'evaluator_source', 'runner_source',
-                     'tree_files', 'tree_sha256', 'storage_limit_bytes'}
+                     'runtime_executor', 'runtime_proofs', 'tree_files',
+                     'tree_sha256', 'storage_limit_bytes',
+                     'contract_identity', 'execution_plan_sha256',
+                     'frontier_policy_handoff'}
     if (type(manifest) is not dict or set(manifest) != manifest_keys or
             manifest['schema_version'] != 1 or manifest['mode'] != expected_mode or
             manifest['claim_scope'] !=
@@ -337,7 +345,10 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
         raise ValueError('G005 asset identity drift')
     if manifest['evaluator_source'] != file_identity(Path(__file__).resolve()):
         raise ValueError('G005 evaluator source drift')
-    from run_frontier_policy_smoke import __file__ as runner_file
+    if expected_mode == 'smoke':
+        from run_frontier_policy_smoke import __file__ as runner_file
+    else:
+        from run_frontier_policy_full import __file__ as runner_file
     if manifest['runner_source'] != file_identity(Path(runner_file).resolve()):
         raise ValueError('G005 runner source drift')
     run_paths = [root / item['path'] for item in manifest['runs']]
@@ -353,6 +364,83 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
             manifest['runs'] != [{'path': name} for name in expected_names] or
             len(run_paths) != len(expected_plan)):
         raise ValueError('G005 executed plan drift')
+    if expected_mode == 'smoke':
+        if (manifest['runtime_executor'] != 'NOT_APPLICABLE_SMOKE' or
+                manifest['runtime_proofs'] != [] or
+                manifest['execution_plan_sha256'] != 'NOT_APPLICABLE_SMOKE' or
+                manifest['frontier_policy_handoff'] != {
+                    'decision': 'NOT_EVALUATED',
+                    'selected_policy': 'current',
+                    'production_change_authorized': False}):
+            raise ValueError('G005 smoke runtime proof drift')
+    else:
+        from run_frontier_policy_full import (
+            validate_paired_first_decisions, validate_runtime_proof)
+        proof_names = [f'{policy}__seed_{seed}.runtime.json'
+                       for policy, seed in FULL_PLAN]
+        if (type(manifest['runtime_executor']) is not dict or
+                set(manifest['runtime_executor']) != {
+                    'argv', 'executable'} or
+                type(manifest['runtime_executor']['argv']) is not list or
+                not manifest['runtime_executor']['argv'] or
+                type(manifest['runtime_executor']['executable']) is not dict or
+                type(manifest['execution_plan_sha256']) is not str or
+                len(manifest['execution_plan_sha256']) != 64 or
+                manifest['runtime_proofs'] != [
+                    {'path': name} for name in proof_names]):
+            raise ValueError('G005 full runtime executor drift')
+        executable_record = manifest['runtime_executor']['executable']
+        executable_path = Path(executable_record.get('path', ''))
+        if (not executable_path.is_absolute() or
+                executable_record != file_identity(executable_path)):
+            raise ValueError('G005 full runtime executable identity drift')
+        execution_plan_path = root / 'execution_plan.json'
+        if (not execution_plan_path.is_file() or
+                execution_plan_path.is_symlink() or
+                file_identity(execution_plan_path)['sha256'] !=
+                manifest['execution_plan_sha256']):
+            raise ValueError('G005 execution plan identity drift')
+        execution_plan = strict_json_load(execution_plan_path)
+        if (type(execution_plan) is not dict or
+                execution_plan.get('schema_version') != 1 or
+                execution_plan.get('mode') != 'full' or
+                execution_plan.get('claim_scope') !=
+                'G005_EXECUTION_PLAN_NO_RUNTIME_CLAIM' or
+                type(execution_plan.get('requests')) is not list or
+                len(execution_plan['requests']) != 15):
+            raise ValueError('G005 execution plan schema drift')
+        runtime_proofs = []
+        for proof_name, plan in zip(proof_names, expected_plan):
+            proof_path = root / proof_name
+            if (proof_path.parent != root or not proof_path.is_file() or
+                    proof_path.is_symlink() or
+                    proof_path.stat().st_size > RUN_OUTPUT_LIMIT_BYTES):
+                raise ValueError('G005 runtime proof path or cap drift')
+            proof = strict_json_load(proof_path)
+            validate_runtime_proof(
+                proof, plan['policy'], plan['layout_seed'])
+            if proof['asset_identity'] != file_identity(
+                    asset_root / f"layout_{plan['layout_seed']}_gt.json"):
+                raise ValueError('G005 runtime proof asset binding drift')
+            runtime_proofs.append(proof)
+        validate_paired_first_decisions(runtime_proofs)
+        for request, proof in zip(execution_plan['requests'], runtime_proofs):
+            for key in ('run_id', 'policy', 'layout_seed', 'request_sha256',
+                        'asset_identity', 'shared_initial_sha256',
+                        'shared_reveal_sha256', 'shared_runtime_sha256',
+                        'simulation_horizon_s'):
+                if request.get(key) != proof[key]:
+                    raise ValueError('G005 execution plan proof binding drift')
+        for seed in sorted({seed for _, seed in FULL_PLAN}):
+            paired = [item for item in runtime_proofs
+                      if item['layout_seed'] == seed]
+            for key in ('asset_identity', 'shared_initial_sha256',
+                        'shared_reveal_sha256', 'shared_runtime_sha256'):
+                from frontier_policy_contract import canonical_json_bytes
+                import hashlib
+                if len({hashlib.sha256(canonical_json_bytes(item[key])).hexdigest()
+                        for item in paired}) != 1:
+                    raise ValueError('G005 paired runtime parity drift')
     runs = []
     for path, plan in zip(run_paths, expected_plan):
         if (path.parent != root or not path.is_file() or path.is_symlink() or
@@ -364,10 +452,32 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
         else:
             _validate_full_evidence(
                 value, plan['policy'], plan['layout_seed'])
+            from run_frontier_policy_full import compact_runtime_proof
+            proof = strict_json_load(
+                root / f"{plan['policy']}__seed_{plan['layout_seed']}"
+                '.runtime.json')
+            if value != compact_runtime_proof(proof):
+                raise ValueError('G005 compact metrics are not proof-derived')
         runs.append(value)
     expected_promotion = promotion_decision(runs if expected_mode == 'full' else [])
     if manifest['promotion'] != expected_promotion:
         raise ValueError('G005 promotion result drift')
+    from frontier_policy_contract import __file__ as contract_file
+    if manifest['contract_identity'] != file_identity(
+            Path(contract_file).resolve()):
+        raise ValueError('G005 contract identity drift')
+    expected_handoff = {
+        'decision': ('GAIN_NAV_EVAL_CANDIDATE'
+                     if expected_promotion['promote_gain_nav'] else
+                     ('NOT_EVALUATED' if expected_mode == 'smoke' else
+                      'RETAIN_CURRENT')),
+        'selected_policy': ('gain_nav'
+                            if expected_promotion['promote_gain_nav'] else
+                            'current'),
+        'production_change_authorized': False,
+    }
+    if manifest['frontier_policy_handoff'] != expected_handoff:
+        raise ValueError('G005 frontier policy handoff drift')
     file_names = sorted(path.name for path in root.iterdir()
                         if path.name != 'manifest.json')
     if any(path.is_symlink() or not path.is_file() for path in root.iterdir()):

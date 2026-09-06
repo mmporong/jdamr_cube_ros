@@ -234,7 +234,8 @@ def policy_rank(policy: str, candidates: list[dict]) -> list[dict]:
                            length_range if length_range else 0.0)
             item['utility'] = 0.5 * gain_norm - 0.5 * length_norm
         return sorted(candidates, key=lambda item: (
-            -item['utility'], item['cell_index']))
+            -item['utility'], item['nav_length_m'],
+            -item['gain_cells'], item['cell_index']))
 
 
 def decision_token(run_id: str, policy: str, map_sequence: int,
