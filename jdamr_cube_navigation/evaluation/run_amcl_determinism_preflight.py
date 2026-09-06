@@ -22,6 +22,7 @@ from amcl_fault_contract import canonical_json_bytes
 from amcl_fault_contract import current_free_bytes
 from amcl_fault_contract import exact_regular_file
 from amcl_fault_contract import G002_ARTIFACT_LIMIT_BYTES
+from amcl_fault_contract import G002_CLOCK_QUIET_NS
 from amcl_fault_contract import G002_RUN_OUTPUT_LIMIT_BYTES
 from amcl_fault_contract import OVERLAY_CHANGED_FILES
 from amcl_fault_contract import PF_C_PATH
@@ -362,6 +363,74 @@ def _validate_operation(operation: dict) -> None:
         raise ValueError('ROS CLI operation time order drift')
 
 
+def _operation_contract(seed: int) -> list[dict]:
+    return [
+        {'args': ['lifecycle', 'set', '/map_server', 'configure'],
+         'output_contract': 'LIFECYCLE_SUCCESS'},
+        {'args': ['lifecycle', 'set', '/map_server', 'activate'],
+         'output_contract': 'LIFECYCLE_SUCCESS'},
+        {'args': ['lifecycle', 'set', '/amcl', 'configure'],
+         'output_contract': 'LIFECYCLE_SUCCESS'},
+        {'args': ['lifecycle', 'set', '/amcl', 'activate'],
+         'output_contract': 'LIFECYCLE_SUCCESS'},
+        {'args': ['param', 'get', '/amcl', 'random_seed'],
+         'output_contract': f'Integer value is: {seed}'},
+        {'args': [
+            'service', 'call', '/rosbag2_player/resume',
+            'rosbag2_interfaces/srv/Resume', '{}'],
+         'output_contract': 'RESUME_RESPONSE'},
+    ]
+
+
+_ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+_RCL_WARNING_RE = re.compile(
+    r'^\[WARN\] \[[0-9]+\.[0-9]{9}\] \[rcl\]: ('
+    r'ROS_LOCALHOST_ONLY is deprecated but still honored if it is enabled\. '
+    r'Use ROS_AUTOMATIC_DISCOVERY_RANGE and ROS_STATIC_PEERS instead\.|'
+    r"'localhost_only' is enabled, 'automatic_discovery_range' and "
+    r"'static_peers' will be ignored\.)$")
+
+
+def _semantic_output_lines(output: str) -> list[str]:
+    lines = [line.strip() for line in
+             _ANSI_ESCAPE_RE.sub('', output).splitlines() if line.strip()]
+    warning_count = 0
+    while lines and _RCL_WARNING_RE.fullmatch(lines[0]):
+        warning_count += 1
+        lines.pop(0)
+    if warning_count > 4:
+        raise ValueError('ROS CLI warning prefix cardinality drift')
+    return lines
+
+
+def _validate_operation_output(operation: dict, output_contract: str) -> None:
+    lines = _semantic_output_lines(operation['output'])
+    if output_contract == 'LIFECYCLE_SUCCESS':
+        expected = ['Transitioning successful']
+    elif output_contract == 'RESUME_RESPONSE':
+        expected = [
+            'requester: making request: '
+            'rosbag2_interfaces.srv.Resume_Request()',
+            'response:', 'rosbag2_interfaces.srv.Resume_Response()']
+    else:
+        expected = [output_contract]
+    if lines != expected:
+        raise ValueError('ROS CLI semantic output drift')
+
+
+def _validate_run_operations(operations: list[dict], seed: int) -> None:
+    contract = _operation_contract(seed)
+    if type(operations) is not list or len(operations) != len(contract):
+        raise ValueError('run operation cardinality drift')
+    for operation, expected in zip(operations, contract):
+        _validate_operation(operation)
+        if (operation['command'] != [str(ROS2), *expected['args']] or
+                operation['returncode'] != 0):
+            raise ValueError('run operation command or order drift')
+        output_contract = expected['output_contract']
+        _validate_operation_output(operation, output_contract)
+
+
 def _validate_bootstrap_plan(plan: dict) -> None:
     _exact_keys(plan, {
         'source_start_storage_ns', 'previous_scan_storage_ns',
@@ -644,6 +713,16 @@ def _guarded_sleep(duration_s: float, run_dir: Path) -> None:
         time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
 
 
+def _atomic_replace_text(path: Path, value: str) -> None:
+    with tempfile.NamedTemporaryFile(
+            dir=path.parent, mode='w', encoding='utf-8', delete=False) as stream:
+        temp_path = Path(stream.name)
+        stream.write(value)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temp_path.replace(path)
+
+
 def _run_cli(args: list[str], env: dict[str, str], run_dir: Path,
              timeout_s: float = 20.0
              ) -> dict:
@@ -705,6 +784,57 @@ def _wait_measurement(path: Path, player: dict, timeout_s: float) -> dict:
                     f'player ended before cloud limit: {state}')
         time.sleep(0.02)
     raise TimeoutError(f'measurement timeout: {path}')
+
+
+def _request_observer_snapshot(state: Path, request: Path, ack: Path,
+                               token: str, run_dir: Path,
+                               timeout_s: float) -> tuple[dict, dict]:
+    _atomic_replace_text(request, token + '\n')
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        _runtime_guard(run_dir)
+        if ack.is_file():
+            acknowledgement = _canonical_json_load(ack)
+            _exact_keys(acknowledgement, {
+                'request_token', 'snapshot_ref', 'snapshot_sha256',
+                'clock_count', 'last_clock_arrival_steady_ns',
+                'ack_steady_ns', 'observed_quiet_ns',
+                'publisher_endpoint_count'},
+                'observer snapshot acknowledgement')
+            snapshot_path = run_dir / acknowledgement['snapshot_ref']
+            snapshot = _canonical_json_load(snapshot_path)
+            snapshot_sha256 = hashlib.sha256(
+                canonical_json_bytes(snapshot)).hexdigest()
+            if (acknowledgement['request_token'] != token or
+                    acknowledgement['snapshot_ref'] !=
+                    f'prelude_snapshot.{token}.json' or
+                    acknowledgement['snapshot_sha256'] != snapshot_sha256 or
+                    acknowledgement['clock_count'] !=
+                    snapshot['readiness']['clock_count'] or
+                    acknowledgement['publisher_endpoint_count'] != 0 or
+                    acknowledgement['last_clock_arrival_steady_ns'] !=
+                    snapshot['clock_samples'][-1]['arrival_steady_ns'] or
+                    acknowledgement['observed_quiet_ns'] !=
+                    acknowledgement['ack_steady_ns'] -
+                    acknowledgement['last_clock_arrival_steady_ns'] or
+                    acknowledgement['observed_quiet_ns'] <
+                    G002_CLOCK_QUIET_NS):
+                raise ValueError('observer snapshot acknowledgement drift')
+            evidence = {
+                'request': _relative_identity(request, run_dir),
+                'ack': _relative_identity(ack, run_dir),
+                'snapshot': _relative_identity(snapshot_path, run_dir),
+                'snapshot_sha256': snapshot_sha256,
+                'clock_count': acknowledgement['clock_count'],
+                'last_clock_arrival_steady_ns':
+                    acknowledgement['last_clock_arrival_steady_ns'],
+                'ack_steady_ns': acknowledgement['ack_steady_ns'],
+                'observed_quiet_ns': acknowledgement['observed_quiet_ns'],
+                'publisher_endpoint_count': 0,
+            }
+            return snapshot, evidence
+        time.sleep(0.02)
+    raise TimeoutError('observer snapshot acknowledgement timeout')
 
 
 def _select_tf_bootstrap_plan(scans: list[tuple[int, int]],
@@ -835,6 +965,8 @@ def _replay_view_manifest(sanitized_root: Path, bootstrap: dict,
         result = {}
         for topic in ('/scan', '/odom', '/tf', '/tf_static'):
             topic_rows = [row for row in selected if row[0] == topic]
+            if not topic_rows:
+                continue
             raw = hashlib.sha256()
             storage = hashlib.sha256()
             semantic = hashlib.sha256()
@@ -1124,7 +1256,17 @@ def _scan_parity(observer: dict, sanitized_root: Path) -> dict:
     return result
 
 
-def _clock_handoff(prelude_observer: dict, final_observer: dict) -> dict:
+def _clock_handoff(prelude_observer: dict, final_observer: dict,
+                   prelude_snapshot: dict,
+                   main_player_started: dict) -> dict:
+    _validate_event_record(main_player_started, 'main player start', False)
+    if (main_player_started['name'] != 'started' or
+            main_player_started['steady_ns'] <=
+            prelude_snapshot['ack_steady_ns']):
+        raise ValueError('main player started before clock source barrier')
+    publishers_excluded_by_order = (
+        main_player_started['steady_ns'] >
+        prelude_snapshot['ack_steady_ns'])
     prelude_count = prelude_observer['readiness']['clock_count']
     prelude_samples = prelude_observer['clock_samples']
     samples = final_observer['clock_samples']
@@ -1137,29 +1279,95 @@ def _clock_handoff(prelude_observer: dict, final_observer: dict) -> dict:
     main_first = samples[prelude_count]
     if (main_first['ros_ns'] < prelude_last['ros_ns'] or
             main_first['arrival_steady_ns'] <=
-            prelude_last['arrival_steady_ns']):
+            prelude_snapshot['ack_steady_ns'] or
+            main_first['arrival_steady_ns'] <
+            main_player_started['steady_ns']):
         raise ValueError('dual-player clock handoff is not monotonic')
     return {
-        'contract': 'SEQUENTIAL_DUAL_PLAYER_CLOCK_HANDOFF',
+        'contract': 'BOUNDED_QUIESCENCE_CLOCK_SOURCE_HANDOFF',
+        'source_attribution_boundary':
+            'GID_NOT_EXPOSED_BY_RCLPY_MESSAGE_INFO',
+        'quiet_window_ns': G002_CLOCK_QUIET_NS,
         'prelude_clock_count': prelude_count,
         'final_clock_count': len(samples),
         'prelude_last': prelude_last,
+        'barrier_ack_steady_ns': prelude_snapshot['ack_steady_ns'],
+        'main_player_started': main_player_started,
         'main_first': main_first,
         'monotonic': True,
-        'simultaneous_publishers_excluded_by_process_order': True,
+        'simultaneous_publishers_excluded_by_process_order':
+            publishers_excluded_by_order,
     }
 
 
 def _validate_clock_handoff(value: dict, prelude_observer: dict,
-                            final_observer: dict) -> None:
+                            final_observer: dict, prelude_snapshot: dict,
+                            main_player_started: dict) -> None:
     _exact_keys(value, {
-        'contract', 'prelude_clock_count', 'final_clock_count',
-        'prelude_last', 'main_first', 'monotonic',
+        'contract', 'source_attribution_boundary', 'quiet_window_ns',
+        'prelude_clock_count', 'final_clock_count', 'prelude_last',
+        'barrier_ack_steady_ns', 'main_player_started', 'main_first', 'monotonic',
         'simultaneous_publishers_excluded_by_process_order'},
         'clock handoff')
-    expected = _clock_handoff(prelude_observer, final_observer)
+    expected = _clock_handoff(
+        prelude_observer, final_observer, prelude_snapshot,
+        main_player_started)
     if value != expected:
         raise ValueError('clock handoff evidence drift')
+
+
+def _validate_prelude_snapshot(value: dict, observer: dict,
+                               run_dir: Path) -> None:
+    _exact_keys(value, {
+        'request', 'ack', 'snapshot', 'snapshot_sha256', 'clock_count',
+        'last_clock_arrival_steady_ns', 'ack_steady_ns',
+        'observed_quiet_ns', 'publisher_endpoint_count'},
+        'prelude snapshot evidence')
+    for key, filename in (
+            ('request', 'prelude_snapshot.request'),
+            ('ack', 'prelude_snapshot.ack.json'),
+            ('snapshot', 'prelude_snapshot.prelude_complete.json')):
+        _identity_schema(value[key], f'prelude snapshot {key}', relative=True)
+        path = run_dir / value[key]['relative_path']
+        if (value[key]['relative_path'] != filename or
+                value[key] != _relative_identity(path, run_dir)):
+            raise ValueError('prelude snapshot file identity drift')
+    acknowledgement = _canonical_json_load(
+        run_dir / value['ack']['relative_path'])
+    _exact_keys(acknowledgement, {
+        'request_token', 'snapshot_ref', 'snapshot_sha256', 'clock_count',
+        'last_clock_arrival_steady_ns', 'ack_steady_ns',
+        'observed_quiet_ns', 'publisher_endpoint_count'},
+        'prelude snapshot acknowledgement')
+    persisted_snapshot = _canonical_json_load(
+        run_dir / value['snapshot']['relative_path'])
+    expected_sha256 = hashlib.sha256(
+        canonical_json_bytes(observer)).hexdigest()
+    if ((run_dir / value['request']['relative_path']).read_text(
+            encoding='utf-8') != 'prelude_complete\n' or
+            value['snapshot_sha256'] != expected_sha256 or
+            persisted_snapshot != observer or
+            value['clock_count'] != observer['readiness']['clock_count'] or
+            value['last_clock_arrival_steady_ns'] !=
+            observer['clock_samples'][-1]['arrival_steady_ns'] or
+            value['ack_steady_ns'] <=
+            value['last_clock_arrival_steady_ns'] or
+            value['observed_quiet_ns'] !=
+            value['ack_steady_ns'] - value['last_clock_arrival_steady_ns'] or
+            value['observed_quiet_ns'] < G002_CLOCK_QUIET_NS or
+            value['publisher_endpoint_count'] != 0 or
+            acknowledgement['snapshot_sha256'] != expected_sha256 or
+            acknowledgement['clock_count'] != value['clock_count'] or
+            acknowledgement['request_token'] != 'prelude_complete' or
+            acknowledgement['snapshot_ref'] !=
+            'prelude_snapshot.prelude_complete.json' or
+            acknowledgement['last_clock_arrival_steady_ns'] !=
+            value['last_clock_arrival_steady_ns'] or
+            acknowledgement['ack_steady_ns'] != value['ack_steady_ns'] or
+            acknowledgement['observed_quiet_ns'] !=
+            value['observed_quiet_ns'] or
+            acknowledgement['publisher_endpoint_count'] != 0):
+        raise ValueError('prelude snapshot acknowledgement drift')
 
 
 def _run_one(run_dir: Path, seed: int, domain_id: int, args,
@@ -1174,12 +1382,17 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
                 'RMW_IMPLEMENTATION': 'rmw_cyclonedds_cpp'})
     state = run_dir / 'observer_state.json'
     request = run_dir / 'initialpose.request'
+    snapshot_request = run_dir / 'prelude_snapshot.request'
+    snapshot_ack = run_dir / 'prelude_snapshot.ack.json'
+    operation_contract = _operation_contract(seed)
     events = [_event('run_started')]
     launched = []
     operations = []
     observer_source = _identity(OBSERVER)
     loaded_runtime = None
     prelude_observer = None
+    prelude_snapshot = None
+    main_player_started = None
     try:
         launched.append(_start('map_server', [
             str(MAP_SERVER), '--ros-args', '-r', '__node:=map_server',
@@ -1199,6 +1412,8 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
             '/usr/bin/python3', str(OBSERVER), '--run-id', run_id,
             '--seed', str(seed), '--max-clouds', str(args.max_clouds),
             '--state', str(state), '--initialpose-request', str(request),
+            '--snapshot-request', str(snapshot_request),
+            '--snapshot-ack', str(snapshot_ack),
             '--initial-x-m', str(getattr(args, 'initial_x_m', 0.0)),
             '--initial-y-m', str(getattr(args, 'initial_y_m', 0.0)),
             '--initial-yaw-rad', str(getattr(args, 'initial_yaw_rad', 0.0))],
@@ -1209,29 +1424,27 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
             '--interval-s', '0.5'], run_dir / 'resource_sampler.log', env)
         launched.append(resource)
         _guarded_sleep(1.0, run_dir)
-        for node, transition in (
-                ('/map_server', 'configure'), ('/map_server', 'activate')):
-            operation = _run_cli(
-                ['lifecycle', 'set', node, transition], env, run_dir)
+        for expected in operation_contract[:2]:
+            operation = _run_cli(expected['args'], env, run_dir)
             operations.append(operation)
-            if operation['returncode'] != 0 or 'successful' not in operation['output']:
-                raise RuntimeError(f'lifecycle failed: {node} {transition}')
+            if operation['returncode'] != 0:
+                raise RuntimeError('map lifecycle transition failed')
+            _validate_operation_output(
+                operation, expected['output_contract'])
         _wait_state(state, lambda value: value['readiness']['map_count'] > 0, 20.0)
-        for transition in ('configure', 'activate'):
-            operation = _run_cli(
-                ['lifecycle', 'set', '/amcl', transition], env, run_dir)
+        for expected in operation_contract[2:4]:
+            operation = _run_cli(expected['args'], env, run_dir)
             operations.append(operation)
-            if operation['returncode'] != 0 or 'successful' not in operation['output']:
-                raise RuntimeError(f'AMCL lifecycle failed: {transition}')
-        readback = _run_cli(
-            ['param', 'get', '/amcl', 'random_seed'], env, run_dir)
+            if operation['returncode'] != 0:
+                raise RuntimeError('AMCL lifecycle transition failed')
+            _validate_operation_output(
+                operation, expected['output_contract'])
+        readback = _run_cli(operation_contract[4]['args'], env, run_dir)
         operations.append(readback)
-        readback_values = re.findall(
-            r'^Integer value is: (-?[0-9]+)$', readback['output'],
-            re.MULTILINE)
-        if (readback['returncode'] != 0 or
-                readback_values != [str(seed)]):
-            raise RuntimeError('AMCL random_seed readback mismatch')
+        if readback['returncode'] != 0:
+            raise RuntimeError('AMCL random_seed readback failed')
+        _validate_operation_output(
+            readback, operation_contract[4]['output_contract'])
         loaded_runtime = _loaded_runtime_files(
             amcl['pid'], args.amcl_executable, args.rmw_library)
         prelude = _start('tf_prelude_player', [
@@ -1245,11 +1458,16 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
         if _wait_process(prelude, run_dir, 20.0) != 0:
             raise RuntimeError('TF prelude player failed')
         events.append(_event('tf_prelude_completed'))
-        prelude_observer = _wait_state(
-            state, lambda value: value['readiness']['odom_count'] > 0 and
-            value['readiness']['tf_count'] > 0 and
-            value['readiness']['tf_static_count'] > 0 and
-            value['readiness']['clock_count'] > 0, 20.0)
+        prelude_observer, prelude_snapshot = _request_observer_snapshot(
+            state, snapshot_request, snapshot_ack, 'prelude_complete',
+            run_dir, 20.0)
+        _validate_observer_snapshot(
+            prelude_observer, 'runtime prelude observer state')
+        if (prelude_observer['readiness']['odom_count'] <= 0 or
+                prelude_observer['readiness']['tf_count'] <= 0 or
+                prelude_observer['readiness']['tf_static_count'] <= 0 or
+                prelude_observer['readiness']['clock_count'] <= 0):
+            raise RuntimeError('prelude snapshot readiness failed')
         player = _start('player', [
             str(ROS2), 'bag', 'play', str(args.sanitized_root),
             '--storage', 'mcap', '--topics', '/scan', '/odom', '/tf',
@@ -1259,6 +1477,7 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
             '--playback-duration', str(args.prefix_s),
             '--rate', str(args.playback_rate)],
             run_dir / 'player.log', env)
+        main_player_started = player['started']
         launched.append(player)
         _wait_state(
             state, lambda value: value['publisher_matched_count'] > 0 and
@@ -1269,12 +1488,11 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
             raise RuntimeError('scan or particle observed before initialization')
         request.write_text('publish once\n', encoding='utf-8')
         _wait_state(state, lambda value: value['initialpose_count'] == 1, 10.0)
-        resume = _run_cli([
-            'service', 'call', '/rosbag2_player/resume',
-            'rosbag2_interfaces/srv/Resume', '{}'], env, run_dir)
+        resume = _run_cli(operation_contract[5]['args'], env, run_dir)
         operations.append(resume)
         if resume['returncode'] != 0:
             raise RuntimeError('player resume failed')
+        _validate_run_operations(operations, seed)
         final = _wait_measurement(state, player, 180.0)
         if final['failure'] is not None:
             raise RuntimeError(final['failure'])
@@ -1304,9 +1522,13 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
                           if state.is_file() else None)
     observer_state = (_relative_identity(state, run_dir)
                       if state.is_file() else None)
-    clock_handoff = (_clock_handoff(prelude_observer, persisted_observer)
+    clock_handoff = (_clock_handoff(
+        prelude_observer, persisted_observer, prelude_snapshot,
+        main_player_started)
                      if prelude_observer is not None and
-                     persisted_observer is not None
+                     persisted_observer is not None and
+                     prelude_snapshot is not None and
+                     main_player_started is not None
                      else None)
     _runtime_guard(run_dir)
     evidence = {
@@ -1322,6 +1544,7 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
         'resource': resource_summary, 'teardown': teardown,
         'loaded_runtime': loaded_runtime,
         'prelude_observer': prelude_observer,
+        'prelude_snapshot': prelude_snapshot,
         'clock_handoff': clock_handoff,
         'tf_bootstrap': bootstrap,
         'amcl_tf_error_counts': amcl_tf_error_counts,
@@ -1665,7 +1888,8 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
             'status', 'failure', 'events', 'operations', 'observer_source',
             'observer_state', 'amcl_executable', 'map_yaml', 'params_file',
             'sanitized_manifest', 'resource', 'teardown', 'loaded_runtime',
-            'prelude_observer', 'clock_handoff', 'tf_bootstrap',
+            'prelude_observer', 'prelude_snapshot', 'clock_handoff',
+            'tf_bootstrap',
             'amcl_tf_error_counts',
             'transform_lookup_drop_count', 'prefix_s', 'playback_rate',
             'survivor_count', 'output_mcap_count', 'cmd_vel_publisher',
@@ -1722,20 +1946,29 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
             raise ValueError('run event list drift')
         for event in evidence['events']:
             _validate_event_record(event, 'run event', False)
-        if type(evidence['operations']) is not list:
-            raise ValueError('run operation list drift')
-        for operation in evidence['operations']:
-            _validate_operation(operation)
+        _validate_run_operations(evidence['operations'], evidence['seed'])
         _validate_loaded_runtime(evidence['loaded_runtime'], 'run loaded runtime')
         _validate_observer_snapshot(evidence['prelude_observer'],
                                     'prelude observer state')
+        _validate_prelude_snapshot(
+            evidence['prelude_snapshot'], evidence['prelude_observer'],
+            path.parent)
+        player_records = [record for record in evidence['teardown']
+                          if type(record) is dict and
+                          record.get('name') == 'player']
+        if len(player_records) != 1 or 'started' not in player_records[0]:
+            raise ValueError('main player start evidence missing')
         _validate_clock_handoff(
             evidence['clock_handoff'], evidence['prelude_observer'],
-            observer)
+            observer, evidence['prelude_snapshot'],
+            player_records[0]['started'])
         expected_run_files = {
             'amcl.log', 'amcl_resource.jsonl', 'evidence.json',
             'initialpose.request', 'map_server.log', 'observer.log',
-            'observer_state.json', 'player.log', 'resource_sampler.log'}
+            'observer_state.json', 'player.log', 'prelude_snapshot.request',
+            'prelude_snapshot.ack.json',
+            'prelude_snapshot.prelude_complete.json',
+            'resource_sampler.log'}
         expected_run_files.add('tf_prelude_player.log')
         if {item.name for item in path.parent.iterdir()} != expected_run_files:
             raise ValueError('run file inventory drift')
@@ -1853,10 +2086,6 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
                type(cloud['particle_count']) is not int or
                cloud['particle_count'] <= 0 for cloud in observer['clouds']):
             raise ValueError('particle/pose FIFO evidence drift')
-        if len(evidence['operations']) != 6 or any(
-                operation['returncode'] != 0 for operation in
-                evidence['operations']):
-            raise ValueError('lifecycle/readback operation drift')
         runs.append(evidence_with_observer)
     replay_scan = replay_view['main']['/scan']
     first_scan_parity = runs[0]['scan_parity']

@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import os
 from pathlib import Path
 import struct
 import tempfile
 import time
 
-from amcl_fault_contract import canonical_json_bytes
+from amcl_fault_contract import canonical_json_bytes, G002_CLOCK_QUIET_NS
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav2_msgs.msg import ParticleCloud
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -88,6 +89,7 @@ class ParticleObserver(Node):
         self.odom_count = 0
         self.clock_count = 0
         self.clock_samples = []
+        self.last_clock_arrival_steady_ns = None
         self.tf_count = 0
         self.map_odom_tf_count = 0
         self.tf_static_count = 0
@@ -108,6 +110,7 @@ class ParticleObserver(Node):
         self.done = False
         self.failure = None
         self.last_publisher_match_counts = (-1, -1)
+        self.last_snapshot_request = None
         self._event('observer_started')
         self.initialpose_pub = self.create_publisher(
             PoseWithCovarianceStamped, '/initialpose', MAP_QOS)
@@ -152,14 +155,16 @@ class ParticleObserver(Node):
             self._event('first_odom_received')
             self._write_state()
 
-    def _clock_raw(self, serialized: bytes) -> None:
+    def _clock_raw(self, serialized: bytes, _message_info) -> None:
         message = deserialize_message(serialized, ClockMessage)
         ros_ns = _stamp_ns(message.clock)
         if self.clock_samples and ros_ns < self.clock_samples[-1]['ros_ns']:
             self.failure = 'observed /clock moved backwards'
             self.done = True
+        arrival_steady_ns = time.monotonic_ns()
         self.clock_samples.append({
-            'ros_ns': ros_ns, 'arrival_steady_ns': time.monotonic_ns()})
+            'ros_ns': ros_ns, 'arrival_steady_ns': arrival_steady_ns})
+        self.last_clock_arrival_steady_ns = arrival_steady_ns
         self.clock_count += 1
         if self.clock_count == 1:
             self._event('first_clock_received')
@@ -311,6 +316,7 @@ class ParticleObserver(Node):
                 self._event('first_post_scan_cloud_received')
 
     def _tick(self) -> None:
+        self._service_snapshot_request()
         matched = (self.cloud_sub.get_publisher_count(),
                    self.pose_sub.get_publisher_count())
         if matched != self.last_publisher_match_counts:
@@ -385,13 +391,65 @@ class ParticleObserver(Node):
             'motion_command_applicability': 'NOT_APPLICABLE',
         }
 
-    def _write_state(self) -> None:
+    def _service_snapshot_request(self) -> None:
+        request = self.args.snapshot_request
+        if not request.is_file():
+            return
+        token = request.read_text(encoding='utf-8').strip()
+        if not token or token == self.last_snapshot_request:
+            return
+        if token != 'prelude_complete':
+            return
+        now_ns = time.monotonic_ns()
+        endpoint_count = len(self.get_publishers_info_by_topic('/clock'))
+        if (endpoint_count != 0 or self.last_clock_arrival_steady_ns is None or
+                now_ns - self.last_clock_arrival_steady_ns <
+                G002_CLOCK_QUIET_NS):
+            return
+        payload = canonical_json_bytes(self._snapshot())
+        self._write_state(payload)
+        snapshot_path = self.args.snapshot_ack.parent / (
+            f'prelude_snapshot.{token}.json')
+        self._atomic_write_new(snapshot_path, payload)
+        ack_steady_ns = time.monotonic_ns()
+        acknowledgement = {
+            'request_token': token,
+            'snapshot_ref': snapshot_path.name,
+            'snapshot_sha256': hashlib.sha256(payload).hexdigest(),
+            'clock_count': self.clock_count,
+            'last_clock_arrival_steady_ns':
+                self.last_clock_arrival_steady_ns,
+            'ack_steady_ns': ack_steady_ns,
+            'observed_quiet_ns':
+                ack_steady_ns - self.last_clock_arrival_steady_ns,
+            'publisher_endpoint_count': endpoint_count}
+        self._atomic_write_new(
+            self.args.snapshot_ack, canonical_json_bytes(acknowledgement))
+        self.last_snapshot_request = token
+
+    @staticmethod
+    def _atomic_write_new(path: Path, payload: bytes) -> None:
+        with tempfile.NamedTemporaryFile(
+                dir=path.parent, delete=False) as stream:
+            temp_path = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temp_path, path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def _write_state(self, payload: bytes | None = None) -> str:
         self.args.state.parent.mkdir(parents=True, exist_ok=True)
+        if payload is None:
+            payload = canonical_json_bytes(self._snapshot())
         with tempfile.NamedTemporaryFile(
                 dir=self.args.state.parent, delete=False) as stream:
             temp_path = Path(stream.name)
-            stream.write(canonical_json_bytes(self._snapshot()))
+            stream.write(payload)
         temp_path.replace(self.args.state)
+        return hashlib.sha256(payload).hexdigest()
 
 
 def main() -> int:
@@ -402,6 +460,8 @@ def main() -> int:
     parser.add_argument('--max-clouds', type=int, default=30)
     parser.add_argument('--state', required=True, type=Path)
     parser.add_argument('--initialpose-request', required=True, type=Path)
+    parser.add_argument('--snapshot-request', required=True, type=Path)
+    parser.add_argument('--snapshot-ack', required=True, type=Path)
     parser.add_argument('--initial-x-m', type=float, default=0.0)
     parser.add_argument('--initial-y-m', type=float, default=0.0)
     parser.add_argument('--initial-yaw-rad', type=float, default=0.0)

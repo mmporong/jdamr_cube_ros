@@ -2,6 +2,7 @@
 """Regression tests for the G002 AMCL determinism preflight."""
 
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 from amcl_fault_contract import canonical_json_bytes, MIB, sha256_file
@@ -31,6 +32,37 @@ def _run(seed, digests, status='PASS'):
         'observer': {'clouds': [
             {'payload_sha256': digest} for digest in digests]},
     }
+
+
+def _operation_fixture(seed: int) -> list[dict]:
+    result = []
+    for expected in runner._operation_contract(seed):
+        output_contract = expected['output_contract']
+        if output_contract == 'LIFECYCLE_SUCCESS':
+            output = 'Transitioning successful\n'
+        elif output_contract == 'RESUME_RESPONSE':
+            output = (
+                'requester: making request: '
+                'rosbag2_interfaces.srv.Resume_Request()\n'
+                'response:\nrosbag2_interfaces.srv.Resume_Response()\n')
+        else:
+            output = output_contract + '\n'
+        result.append({
+            'command': [str(runner.ROS2), *expected['args']],
+            'started': {'name': 'request', 'steady_ns': 1, 'wall_ns': 1},
+            'completed': {'name': 'response', 'steady_ns': 2, 'wall_ns': 2},
+            'returncode': 0, 'output': output})
+    return result
+
+
+def _v03_warning_prefix(repeated: bool = False) -> str:
+    pair = (
+        '[WARN] [1788703751.985631652] [rcl]: ROS_LOCALHOST_ONLY is '
+        'deprecated but still honored if it is enabled. Use '
+        'ROS_AUTOMATIC_DISCOVERY_RANGE and ROS_STATIC_PEERS instead.\n'
+        "[WARN] [1788703751.985640238] [rcl]: 'localhost_only' is enabled, "
+        "'automatic_discovery_range' and 'static_peers' will be ignored.\n")
+    return pair * (2 if repeated else 1)
 
 
 def _scan_parity(value, _root):
@@ -92,6 +124,56 @@ def test_comparison_requires_exact_plan_and_seed_divergence():
     assert runner._comparison([_run(11, ['a'])])['evaluated'] is False
 
 
+@pytest.mark.parametrize('attack', ['command', 'order', 'output', 'seed'])
+def test_run_operation_contract_rejects_mutation(attack):
+    operations = _operation_fixture(11)
+    if attack == 'command':
+        operations[0]['command'][-1] = 'activate'
+    elif attack == 'order':
+        operations[0], operations[1] = operations[1], operations[0]
+    elif attack == 'output':
+        operations[0]['output'] = 'successful-ish'
+    else:
+        operations[4]['output'] = 'Integer value is: 23\n'
+    with pytest.raises(ValueError, match='command|order|output|seed'):
+        runner._validate_run_operations(operations, 11)
+
+
+def test_run_operation_contract_accepts_v03_warning_prefix_and_ansi():
+    operations = _operation_fixture(11)
+    for index, operation in enumerate(operations):
+        operation['output'] = (
+            _v03_warning_prefix(repeated=index == 0) + '\n' +
+            '\x1b[32m' + operation['output'] + '\x1b[0m\n')
+    runner._validate_run_operations(operations, 11)
+
+
+@pytest.mark.parametrize(
+    'attack', ['unknown_warning', 'extra', 'semantic', 'too_many_warnings',
+               'trailing_warning'])
+def test_run_operation_contract_rejects_unapproved_output(attack):
+    operations = _operation_fixture(11)
+    if attack == 'unknown_warning':
+        operations[0]['output'] = (
+            '[WARN] [1788703751.985631652] [rcl]: unknown warning\n' +
+            operations[0]['output'])
+    elif attack == 'extra':
+        operations[0]['output'] += 'extra success\n'
+    elif attack == 'semantic':
+        operations[5]['output'] = (
+            'requester: making request: rosbag2_interfaces.srv.Resume_Request()\n'
+            'response:\nwrong.Response()\n')
+    elif attack == 'too_many_warnings':
+        operations[0]['output'] = (
+            _v03_warning_prefix(repeated=True) +
+            _v03_warning_prefix().splitlines()[0] + '\n' +
+            operations[0]['output'])
+    else:
+        operations[0]['output'] += _v03_warning_prefix()
+    with pytest.raises(ValueError, match='semantic output|warning prefix'):
+        runner._validate_run_operations(operations, 11)
+
+
 @pytest.mark.parametrize('mode,seeds,clouds,prefix_s', [
     ('smoke', [11], 1, 30.0),
     ('full', [11, 11, 23], 30, 220.0),
@@ -131,7 +213,179 @@ def test_main_player_stays_paused_until_initialpose_after_tf_prelude():
     assert "'--topics', '/odom', '/tf', '/tf_static'" in run_one
     assert "'/rosbag2_player/burst'" not in run_one
     assert run_one.index("request.write_text('publish once") < run_one.index(
-        "'/rosbag2_player/resume'")
+        '_run_cli(operation_contract[5]')
+    assert runner._operation_contract(11)[5]['args'][2] == (
+        '/rosbag2_player/resume')
+
+
+def test_runtime_replay_view_emits_only_selected_topics_and_validates_exactly(
+        monkeypatch, tmp_path):
+    rows = [
+        ('/odom', b'odom-prelude', 10),
+        ('/tf', b'tf-prelude', 20),
+        ('/tf_static', b'tf-static-prelude', 30),
+        ('/scan', b'scan-skipped', 40),
+        ('/odom', b'odom-main', 110),
+        ('/tf', b'tf-main', 120),
+        ('/scan', b'scan-first', 140),
+        ('/scan', b'scan-last', 200),
+    ]
+
+    class Reader:
+        def __init__(self):
+            self.rows = iter(rows)
+            self.current = None
+
+        def open(self, *_args):  # noqa: A003
+            self.current = None
+
+        def has_next(self):
+            if self.current is None:
+                self.current = next(self.rows, None)
+            return self.current is not None
+
+        def read_next(self):
+            result = self.current
+            self.current = None
+            return result
+
+        def close(self):
+            pass
+
+    fake_rosbag = SimpleNamespace(
+        SequentialReader=Reader,
+        StorageOptions=lambda **_kwargs: None,
+        ConverterOptions=lambda *_args: None)
+    monkeypatch.setitem(sys.modules, 'rosbag2_py', fake_rosbag)
+    import rclpy.serialization as serialization
+    scan_stamps = {
+        b'scan-skipped': 40, b'scan-first': 100,
+        b'scan-last': 200}
+
+    def deserialize(serialized, _message_type):
+        stamp_ns = scan_stamps[serialized]
+        return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(
+            sec=0, nanosec=stamp_ns)))
+
+    monkeypatch.setattr(serialization, 'deserialize_message', deserialize)
+    monkeypatch.setattr(
+        runner, '_semantic_tf_payload', lambda serialized: serialized)
+    sanitized = tmp_path / 'sanitized'
+    sanitized.mkdir()
+    (sanitized / 'sanitizer_manifest.json').write_bytes(b'{}\n')
+    bootstrap = {
+        'source_start_storage_ns': 0,
+        'previous_scan_storage_ns': 40,
+        'first_main_scan_storage_ns': 140,
+        'first_main_scan_header_ns': 100,
+        'lower_tf_storage_ns': 20,
+        'lower_tf_header_ns': 20,
+        'upper_tf_storage_ns': 120,
+        'upper_tf_header_ns': 120,
+        'start_offset_ns': 100,
+        'start_offset_s': 1e-7,
+    }
+    view = runner._replay_view_manifest(sanitized, bootstrap, 200)
+    assert list(view['prelude']) == ['/odom', '/tf', '/tf_static']
+    assert list(view['main']) == ['/scan', '/odom', '/tf']
+    runner._validate_replay_summary(
+        view['prelude'], view['prelude_topics'], 'replay prelude')
+    runner._validate_replay_summary(
+        view['main'], view['main_topics'], 'replay main')
+    extra = dict(view['prelude'])
+    extra['/scan'] = dict(view['main']['/scan'])
+    with pytest.raises(ValueError, match='topic inventory drift'):
+        runner._validate_replay_summary(
+            extra, view['prelude_topics'], 'replay prelude')
+    zero = {topic: dict(record) for topic, record in view['prelude'].items()}
+    zero['/odom']['message_count'] = 0
+    with pytest.raises(ValueError, match='message count drift'):
+        runner._validate_replay_summary(
+            zero, view['prelude_topics'], 'replay prelude')
+
+
+def test_observer_snapshot_request_writes_bounded_ack(monkeypatch, tmp_path):
+    request = tmp_path / 'snapshot.request'
+    ack = tmp_path / 'snapshot.ack.json'
+    request.write_text('prelude_complete\n', encoding='utf-8')
+    snapshot = {
+        'readiness': {'clock_count': 7},
+        'clock_samples': [{'ros_ns': 1, 'arrival_steady_ns': 10}]}
+    monkeypatch.setattr(
+        observer.time, 'monotonic_ns',
+        lambda: 10 + runner.G002_CLOCK_QUIET_NS)
+    state = SimpleNamespace(
+        args=SimpleNamespace(snapshot_request=request, snapshot_ack=ack),
+        last_snapshot_request=None, clock_count=7,
+        last_clock_arrival_steady_ns=10,
+        get_publishers_info_by_topic=lambda _topic: [],
+        _snapshot=lambda: snapshot,
+        _write_state=lambda _payload: None,
+        _atomic_write_new=observer.ParticleObserver._atomic_write_new)
+    observer.ParticleObserver._service_snapshot_request(state)
+    acknowledgement = runner.strict_json_load(ack)
+    assert acknowledgement['request_token'] == 'prelude_complete'
+    assert acknowledgement['publisher_endpoint_count'] == 0
+    assert acknowledgement['observed_quiet_ns'] >= runner.G002_CLOCK_QUIET_NS
+    assert runner.strict_json_load(
+        tmp_path / acknowledgement['snapshot_ref']) == snapshot
+    first_identity = runner._identity(ack)
+    observer.ParticleObserver._service_snapshot_request(state)
+    assert runner._identity(ack) == first_identity
+
+
+@pytest.mark.parametrize('endpoint_count,elapsed_ns', [
+    (1, 250_000_000), (0, 249_999_999)])
+def test_observer_snapshot_barrier_waits_for_quiescence(
+        monkeypatch, tmp_path, endpoint_count, elapsed_ns):
+    request = tmp_path / 'snapshot.request'
+    ack = tmp_path / 'snapshot.ack.json'
+    request.write_text('prelude_complete\n', encoding='utf-8')
+    monkeypatch.setattr(observer.time, 'monotonic_ns', lambda: elapsed_ns)
+    state = SimpleNamespace(
+        args=SimpleNamespace(snapshot_request=request, snapshot_ack=ack),
+        last_snapshot_request=None, clock_count=1,
+        last_clock_arrival_steady_ns=0,
+        get_publishers_info_by_topic=lambda _topic: [object()] * endpoint_count)
+    observer.ParticleObserver._service_snapshot_request(state)
+    assert not ack.exists()
+
+
+def test_observer_snapshot_rejects_non_contract_token(tmp_path):
+    request = tmp_path / 'snapshot.request'
+    ack = tmp_path / 'snapshot.ack.json'
+    request.write_text('../escape\n', encoding='utf-8')
+    state = SimpleNamespace(
+        args=SimpleNamespace(snapshot_request=request, snapshot_ack=ack),
+        last_snapshot_request=None)
+    observer.ParticleObserver._service_snapshot_request(state)
+    assert not ack.exists()
+    assert not (tmp_path.parent / 'escape').exists()
+
+
+def test_runner_snapshot_request_rejects_timeout_and_fake_ack(tmp_path):
+    state = tmp_path / 'observer_state.json'
+    request = tmp_path / 'snapshot.request'
+    ack = tmp_path / 'snapshot.ack.json'
+    state.write_bytes(canonical_json_bytes({
+        'readiness': {'clock_count': 1}}))
+    with pytest.raises(TimeoutError, match='acknowledgement timeout'):
+        runner._request_observer_snapshot(
+            state, request, ack, 'prelude_complete', tmp_path, 0.0)
+    snapshot = tmp_path / 'prelude_snapshot.prelude_complete.json'
+    snapshot.write_bytes(canonical_json_bytes({
+        'readiness': {'clock_count': 1},
+        'clock_samples': [{'ros_ns': 1, 'arrival_steady_ns': 1}]}))
+    ack.write_bytes(canonical_json_bytes({
+        'request_token': 'fake', 'snapshot_ref': snapshot.name,
+        'snapshot_sha256': '0' * 64, 'clock_count': 1,
+        'last_clock_arrival_steady_ns': 1,
+        'ack_steady_ns': 1 + runner.G002_CLOCK_QUIET_NS,
+        'observed_quiet_ns': runner.G002_CLOCK_QUIET_NS,
+        'publisher_endpoint_count': 0}))
+    with pytest.raises(ValueError, match='acknowledgement drift'):
+        runner._request_observer_snapshot(
+            state, request, ack, 'prelude_complete', tmp_path, 0.1)
 
 
 def test_replay_bootstrap_validator_binds_commands_order_and_zero_tf_errors(
@@ -354,14 +608,37 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
         'bootstrap': bootstrap, 'skipped_scan_count': 2,
         'prelude_topics': ['/odom', '/tf', '/tf_static'],
         'main_topics': ['/scan', '/odom', '/tf', '/tf_static'],
-        'prelude': {'/odom': {
-            'message_count': 1, 'storage_stamp_sha256': 'e' * 64,
-            'raw_payload_sha256': 'f' * 64, 'tf_semantic_sha256': None}},
-        'main': {'/scan': {
-            'message_count': replay_scan_count,
-            'storage_stamp_sha256': '9' * 64,
-            'raw_payload_sha256': '8' * 64,
-            'tf_semantic_sha256': None}},
+        'prelude': {
+            '/odom': {
+                'message_count': 1, 'storage_stamp_sha256': 'e' * 64,
+                'raw_payload_sha256': 'f' * 64,
+                'tf_semantic_sha256': None},
+            '/tf': {
+                'message_count': 1, 'storage_stamp_sha256': 'e' * 64,
+                'raw_payload_sha256': 'f' * 64,
+                'tf_semantic_sha256': 'd' * 64},
+            '/tf_static': {
+                'message_count': 1, 'storage_stamp_sha256': 'e' * 64,
+                'raw_payload_sha256': 'f' * 64,
+                'tf_semantic_sha256': 'd' * 64}},
+        'main': {
+            '/scan': {
+                'message_count': replay_scan_count,
+                'storage_stamp_sha256': '9' * 64,
+                'raw_payload_sha256': '8' * 64,
+                'tf_semantic_sha256': None},
+            '/odom': {
+                'message_count': 1, 'storage_stamp_sha256': 'e' * 64,
+                'raw_payload_sha256': 'f' * 64,
+                'tf_semantic_sha256': None},
+            '/tf': {
+                'message_count': 1, 'storage_stamp_sha256': 'e' * 64,
+                'raw_payload_sha256': 'f' * 64,
+                'tf_semantic_sha256': 'd' * 64},
+            '/tf_static': {
+                'message_count': 1, 'storage_stamp_sha256': 'e' * 64,
+                'raw_payload_sha256': 'f' * 64,
+                'tf_semantic_sha256': 'd' * 64}},
         'prelude_last_storage_ns': 10,
         'main_first_storage_ns': 20, 'main_last_scan_storage_ns': 30,
         'storage_gap_ns': 10, 'storage_overlap_count': 0,
@@ -403,8 +680,13 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
              'header_stamp_ns': cloud_index + 1,
              'arrival_steady_ns': cloud_index + 10})]
         prelude_clock_samples = [{'ros_ns': 100, 'arrival_steady_ns': 1}]
+        barrier_ack_ns = runner.G002_CLOCK_QUIET_NS + 1
+        main_player_started = {
+            'name': 'started', 'steady_ns': barrier_ack_ns + 100,
+            'wall_ns': barrier_ack_ns + 100}
         final_clock_samples = [
-            *prelude_clock_samples, {'ros_ns': 101, 'arrival_steady_ns': 2}]
+            *prelude_clock_samples,
+            {'ros_ns': 101, 'arrival_steady_ns': barrier_ack_ns + 101}]
         process_names = (
             'player', 'tf_prelude_player', 'resource_sampler', 'observer',
             'amcl', 'map_server')
@@ -413,12 +695,7 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
             'run_id': f'p0__seed_{seed}__attempt_{index}',
             'profile': 'P0', 'domain_id': 190 + index - 1,
             'status': 'PASS', 'failure': None, 'seed': seed,
-            'events': [], 'operations': [{
-                'command': ['/opt/ros/jazzy/bin/ros2'],
-                'started': {'name': 'request', 'steady_ns': 1, 'wall_ns': 1},
-                'completed': {'name': 'response', 'steady_ns': 2, 'wall_ns': 2},
-                'returncode': 0, 'output': '',
-            } for _ in range(6)],
+            'events': [], 'operations': _operation_fixture(seed),
             'observer_source': runner._identity(Path('/usr/bin/true')),
             'observer': {
                 'schema_version': 1,
@@ -488,9 +765,42 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
             'playback_rate': runner.PLAYBACK_RATE,
             'cmd_vel_publisher': 'NOT_APPLICABLE',
         }
+        prelude_snapshot_sha256 = __import__('hashlib').sha256(
+            canonical_json_bytes(evidence['prelude_observer'])).hexdigest()
+        snapshot_request = run_dir / 'prelude_snapshot.request'
+        snapshot_request.write_text('prelude_complete\n', encoding='utf-8')
+        immutable_snapshot = (
+            run_dir / 'prelude_snapshot.prelude_complete.json')
+        immutable_snapshot.write_bytes(
+            canonical_json_bytes(evidence['prelude_observer']))
+        snapshot_ack = run_dir / 'prelude_snapshot.ack.json'
+        snapshot_ack.write_bytes(canonical_json_bytes({
+            'request_token': 'prelude_complete',
+            'snapshot_ref': immutable_snapshot.name,
+            'snapshot_sha256': prelude_snapshot_sha256,
+            'clock_count': evidence['prelude_observer']['readiness'][
+                'clock_count'],
+            'last_clock_arrival_steady_ns': 1,
+            'ack_steady_ns': barrier_ack_ns,
+            'observed_quiet_ns': runner.G002_CLOCK_QUIET_NS,
+            'publisher_endpoint_count': 0}))
+        evidence['prelude_snapshot'] = {
+            'request': runner._relative_identity(snapshot_request, run_dir),
+            'ack': runner._relative_identity(snapshot_ack, run_dir),
+            'snapshot': runner._relative_identity(
+                immutable_snapshot, run_dir),
+            'snapshot_sha256': prelude_snapshot_sha256,
+            'clock_count': evidence['prelude_observer']['readiness'][
+                'clock_count'],
+            'last_clock_arrival_steady_ns': 1,
+            'ack_steady_ns': barrier_ack_ns,
+            'observed_quiet_ns': runner.G002_CLOCK_QUIET_NS,
+            'publisher_endpoint_count': 0,
+        }
         observer_value = evidence.pop('observer')
         evidence['clock_handoff'] = runner._clock_handoff(
-            evidence['prelude_observer'], observer_value)
+            evidence['prelude_observer'], observer_value,
+            evidence['prelude_snapshot'], main_player_started)
         for name in (
                 'amcl.log', 'initialpose.request', 'map_server.log',
                 'observer.log', 'player.log',
@@ -516,7 +826,9 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
             evidence['teardown'].append({
                 'name': process_name, 'returncode': returncode,
                 'pid': index, 'pgid': index, 'command': ['/usr/bin/true'],
-                'started': {'name': 'started', 'steady_ns': 1, 'wall_ns': 1},
+                'started': (main_player_started if process_name == 'player'
+                            else {'name': 'started', 'steady_ns': 1,
+                                  'wall_ns': 1}),
                 'survivors': [],
                 'stop_stages': ([{'signal': 'SIGINT', 'steady_ns': 2}]
                                 if process_name == 'resource_sampler' else []),
@@ -642,21 +954,26 @@ def test_full_large_clock_state_is_referenced_once_under_run_cap(
         state_path = root / f'run_{run_index}/observer_state.json'
         state = runner.strict_json_load(state_path)
         prelude_prefix = state['clock_samples'][:1]
+        evidence_path = root / f'run_{run_index}/evidence.json'
+        evidence = runner.strict_json_load(evidence_path)
+        main_started = next(
+            item['started'] for item in evidence['teardown']
+            if item['name'] == 'player')
         state['clock_samples'] = [
             *prelude_prefix,
-            *({'ros_ns': value + 99, 'arrival_steady_ns': value}
+            *({'ros_ns': value + 99,
+               'arrival_steady_ns': main_started['steady_ns'] + value}
               for value in range(2, 50_001)),
         ]
         state['readiness']['clock_count'] = len(state['clock_samples'])
         state_path.write_bytes(canonical_json_bytes(state))
         assert 2 * MIB < state_path.stat().st_size
         assert state_path.stat().st_size < runner.G002_RUN_OUTPUT_LIMIT_BYTES
-        evidence_path = root / f'run_{run_index}/evidence.json'
-        evidence = runner.strict_json_load(evidence_path)
         evidence['observer_state'] = runner._relative_identity(
             state_path, state_path.parent)
         evidence['clock_handoff'] = runner._clock_handoff(
-            evidence['prelude_observer'], state)
+            evidence['prelude_observer'], state,
+            evidence['prelude_snapshot'], main_started)
         evidence_path.write_bytes(canonical_json_bytes(evidence))
     _refresh_manifest(root)
     for run_index in range(1, 4):
@@ -973,6 +1290,93 @@ def test_validator_rejects_dual_player_clock_prelude_prefix_mismatch(
         root, lambda state: state['clock_samples'][0].__setitem__(
             'ros_ns', 99))
     with pytest.raises(ValueError, match='clock prelude prefix mismatch'):
+        runner.validate_smoke_artifact(root)
+
+
+@pytest.mark.parametrize('attack', ['pre_ack', 'between_ack_and_main'])
+def test_validator_rejects_clock_sample_outside_main_source_boundary(
+        monkeypatch, tmp_path, attack):
+    _mock_replay_recompute(monkeypatch)
+    monkeypatch.setattr(runner, '_scan_parity', _scan_parity)
+    monkeypatch.setattr(runner, '_validate_replay_bootstrap',
+                        lambda *_args: None)
+    root = _artifact(tmp_path)
+    evidence_path = root / 'run_1/evidence.json'
+    evidence = runner.strict_json_load(evidence_path)
+    ack_ns = evidence['prelude_snapshot']['ack_steady_ns']
+    main_ns = evidence['clock_handoff']['main_player_started']['steady_ns']
+    arrival_ns = ack_ns - 1 if attack == 'pre_ack' else ack_ns + 1
+    assert arrival_ns < main_ns
+    _rewrite_observer_state(
+        root, lambda state: state['clock_samples'][1].__setitem__(
+            'arrival_steady_ns', arrival_ns))
+    with pytest.raises(ValueError, match='clock handoff is not monotonic'):
+        runner.validate_smoke_artifact(root)
+
+
+def test_validator_rejects_mutated_main_started_before_ack(
+        monkeypatch, tmp_path):
+    _mock_replay_recompute(monkeypatch)
+    monkeypatch.setattr(runner, '_scan_parity', _scan_parity)
+    monkeypatch.setattr(runner, '_validate_replay_bootstrap',
+                        lambda *_args: None)
+    root = _artifact(tmp_path)
+    evidence_path = root / 'run_1/evidence.json'
+    evidence = runner.strict_json_load(evidence_path)
+    started = {
+        'name': 'started',
+        'steady_ns': evidence['prelude_snapshot']['ack_steady_ns'] - 1,
+        'wall_ns': evidence['prelude_snapshot']['ack_steady_ns'] - 1}
+    player = next(
+        item for item in evidence['teardown'] if item['name'] == 'player')
+    player['started'] = started
+    evidence['clock_handoff']['main_player_started'] = started
+    evidence_path.write_bytes(canonical_json_bytes(evidence))
+    _refresh_manifest(root)
+    with pytest.raises(ValueError, match='started before clock source barrier'):
+        runner.validate_smoke_artifact(root)
+
+
+@pytest.mark.parametrize('attack', ['endpoint', 'quiet', 'token', 'snapshot'])
+def test_validator_rejects_hostile_quiescence_snapshot(
+        monkeypatch, tmp_path, attack):
+    _mock_replay_recompute(monkeypatch)
+    monkeypatch.setattr(runner, '_scan_parity', _scan_parity)
+    monkeypatch.setattr(runner, '_validate_replay_bootstrap',
+                        lambda *_args: None)
+    root = _artifact(tmp_path)
+    run_dir = root / 'run_1'
+    evidence_path = run_dir / 'evidence.json'
+    evidence = runner.strict_json_load(evidence_path)
+    ack_path = run_dir / 'prelude_snapshot.ack.json'
+    ack = runner.strict_json_load(ack_path)
+    if attack == 'endpoint':
+        evidence['prelude_snapshot']['publisher_endpoint_count'] = 1
+        ack['publisher_endpoint_count'] = 1
+    elif attack == 'quiet':
+        quiet_ns = runner.G002_CLOCK_QUIET_NS - 1
+        evidence['prelude_snapshot']['observed_quiet_ns'] = quiet_ns
+        evidence['prelude_snapshot']['ack_steady_ns'] = 1 + quiet_ns
+        ack['observed_quiet_ns'] = quiet_ns
+        ack['ack_steady_ns'] = 1 + quiet_ns
+    elif attack == 'token':
+        ack['request_token'] = 'replayed_token'
+    else:
+        snapshot_path = run_dir / ack['snapshot_ref']
+        snapshot = runner.strict_json_load(snapshot_path)
+        snapshot['seed'] = 23
+        snapshot_path.write_bytes(canonical_json_bytes(snapshot))
+        digest = sha256_file(snapshot_path)
+        evidence['prelude_snapshot']['snapshot'] = runner._relative_identity(
+            snapshot_path, run_dir)
+        evidence['prelude_snapshot']['snapshot_sha256'] = digest
+        ack['snapshot_sha256'] = digest
+    ack_path.write_bytes(canonical_json_bytes(ack))
+    evidence['prelude_snapshot']['ack'] = runner._relative_identity(
+        ack_path, run_dir)
+    evidence_path.write_bytes(canonical_json_bytes(evidence))
+    _refresh_manifest(root)
+    with pytest.raises(ValueError, match='snapshot'):
         runner.validate_smoke_artifact(root)
 
 

@@ -77,6 +77,7 @@ GIB = 1024 ** 3
 MIB = 1024 ** 2
 G002_RUN_OUTPUT_LIMIT_BYTES = 8 * MIB
 G002_ARTIFACT_LIMIT_BYTES = 32 * MIB
+G002_CLOCK_QUIET_NS = 250_000_000
 STORAGE_LIMITS = {
     'minimum_start_free_bytes': 6 * GIB,
     'projected_combined_limit_bytes': 2 * GIB,
