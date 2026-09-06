@@ -18,6 +18,7 @@ pytest.importorskip('mcap_ros2',
 
 from compare_slam_runs import (  # noqa: E402,I100
     apply_rigid,
+    common_reference_deviations,
     comparison_precondition_errors,
     comparison_summary,
     compose,
@@ -107,6 +108,24 @@ def test_rigid_align_never_rescales_the_trajectory():
     assert math.dist(moved[0], moved[-1]) == pytest.approx(2.0, abs=1e-6)
 
 
+def test_common_reference_deviation_uses_one_timestamp_hash():
+    """Variants must be compared on exactly the same AMCL samples."""
+    reference = _straight_line(2.0, 0.1)
+    trajectories = {
+        'subdivision_1': _straight_line(2.0, 0.05),
+        'subdivision_2': [
+            (stamp, x, y + 0.1, yaw)
+            for stamp, x, y, yaw in _straight_line(2.0, 0.05)],
+    }
+
+    result = common_reference_deviations(trajectories, reference)
+
+    assert result['samples'] > 2
+    hashes = {
+        value['timestamp_sha256'] for value in result['variants'].values()}
+    assert hashes == {result['timestamp_sha256']}
+
+
 def test_compose_matches_a_hand_computed_transform():
     """map->odom composed with odom->base must rotate the child offset."""
     composed = compose((1.0, 2.0, math.radians(90.0)), (3.0, 0.0, 0.0))
@@ -153,6 +172,40 @@ def test_map_statistics_preserves_unknown_cells_and_square_units(tmp_path):
     assert result['unknown_cells'] == 2
     assert result['occupied_area_m2'] == pytest.approx(0.0025)
     assert 'occupied_length_m' not in result
+
+
+def test_map_statistics_accepts_cartographer_pgm_comments(tmp_path):
+    """Cartographer comments in the PGM header must not shift dimensions."""
+    image = tmp_path / 'map.pgm'
+    image.write_bytes(
+        b'P5\n# Cartographer map; 0.050000 m/pixel\n2 2\n255\n' +
+        bytes((0, 254, 205, 128)))
+    metadata = tmp_path / 'map.yaml'
+    metadata.write_text(
+        'image: map.pgm\nresolution: 0.05\nnegate: 0\n'
+        'occupied_thresh: 0.65\nfree_thresh: 0.196\n')
+
+    result = map_statistics(metadata)
+
+    assert result['width_cells'] == 2
+    assert result['height_cells'] == 2
+
+
+@pytest.mark.parametrize('payload', (
+    b'P5\n# no dimensions\n',
+    b'P5\n2 2\n255\n\x00',
+))
+def test_map_statistics_rejects_truncated_cartographer_pgm(tmp_path, payload):
+    """A comment-aware parser must still reject incomplete map evidence."""
+    image = tmp_path / 'map.pgm'
+    image.write_bytes(payload)
+    metadata = tmp_path / 'map.yaml'
+    metadata.write_text(
+        'image: map.pgm\nresolution: 0.05\nnegate: 0\n'
+        'occupied_thresh: 0.65\nfree_thresh: 0.196\n')
+
+    with pytest.raises(ValueError, match='truncated|dimensions'):
+        map_statistics(metadata)
 
 
 def test_backend_selection_requires_both_consistency_criteria_to_agree():
@@ -341,6 +394,16 @@ def test_cleanup_only_stops_process_groups_started_by_the_harness():
     assert 'pkill -f' not in source
     assert 'PROCESS_GROUPS=()' in source
     assert 'kill -TERM -- "-$process_group"' in source
+    term_index = source.index('kill -TERM -- "-$process_group"')
+    kill_index = source.index('kill -KILL -- "-$process_group"')
+    survivor_index = source.index('remaining_groups=()')
+    assert term_index < kill_index < survivor_index
+    assert 'groups_present=0' in source
+    assert 'refresh_owned_groups' in source
+    assert 'scan_replay_processes.py' in source
+    assert 'identity_survivors' in source
+    assert 'export JDAMR_REPLAY_RUN_ID="$RUN_ID"' in source
+    assert 'register_group "$SAMPLE_PID"' in source
 
 
 def test_replay_requires_finalized_result_and_saved_map():
@@ -351,6 +414,36 @@ def test_replay_requires_finalized_result_and_saved_map():
     assert '결과 MCAP metadata 마감 실패' in source
     assert '[ ! -s "$RESULT_DIR/metadata.yaml" ]' in source
     assert '--storage-config-file "$WRITER_CONFIG"' in source
+
+
+def test_cartographer_replay_uses_generated_config_and_finalization_order():
+    """A/B configs stay external and maps derive from shutdown pbstreams."""
+    source = _harness_source()
+
+    assert '--cartographer-config' in source
+    assert '-configuration_basename "$CFG_BASENAME"' in source
+    assert '-save_state_filename "$PBSTREAM"' in source
+    stages = [
+        source.index('FINALIZER_TRIGGER'),
+        source.index('touch "$FINALIZER_TRIGGER"'),
+        source.index('kill -INT -- "-$BACKEND_PID"'),
+        source.index('cartographer_pbstream_to_ros_map'),
+    ]
+    assert stages == sorted(stages)
+    assert 'finalize_cartographer_replay.py' in source
+    assert 'stats_path:=' in source
+    assert 'sample_process_group_resources.py' in source
+    assert '-map_filestem "$OUT/${RUN_ID}_map"' in source
+    assert '"$BACKEND_PID" "$CARTOGRAPHER_SHUTDOWN_TIMEOUT"' in source
+    assert 'CARTOGRAPHER_SHUTDOWN_TIMEOUT="${CARTOGRAPHER_SHUTDOWN_TIMEOUT:-90}"' in source
+    assert 'kill -KILL -- "-$process_group"' in source
+    assert 'Running final trajectory optimization' in source
+
+    finalizer = (Path(__file__).resolve().parents[1] / 'evaluation' /
+                 'finalize_cartographer_replay.py').read_text()
+    assert 'self.finish_client' in finalizer
+    assert 'run_final_optimization' not in finalizer
+    assert 'WriteState' not in finalizer
 
 
 def test_replay_detects_a_dead_result_recorder_immediately():

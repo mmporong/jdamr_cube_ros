@@ -46,9 +46,11 @@
     "software": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["git_sha", "ros_distro", "packages"],
+      "required": ["git_sha", "workspace_dirty", "workspace_diff_sha256", "ros_distro", "packages"],
       "properties": {
-        "git_sha": {"$ref": "#/$defs/sha256"},
+        "git_sha": {"$ref": "#/$defs/git_commit"},
+        "workspace_dirty": {"type": "boolean"},
+        "workspace_diff_sha256": {"$ref": "#/$defs/sha256"},
         "ros_distro": {"const": "jazzy"},
         "packages": {
           "type": "object",
@@ -128,8 +130,8 @@
       "properties": {
         "status": {"enum": ["PASS", "FAIL", "INVALID"]},
         "terminal_reason": {"type": "string", "minLength": 1},
-        "contact_count": {"type": "integer", "minimum": 0},
-        "invalid_goal_count": {"type": "integer", "minimum": 0}
+        "contact_count": {"type": ["integer", "null"], "minimum": 0},
+        "invalid_goal_count": {"type": ["integer", "null"], "minimum": 0}
       }
     },
     "artifacts": {
@@ -139,6 +141,7 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "pose2d": {
       "type": "object",
       "additionalProperties": false,

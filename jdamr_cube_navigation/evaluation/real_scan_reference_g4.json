@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "source_bag": {
+    "path": "/home/lim/jdamr_artifacts/corridor_localdds_armed_20260904T152036",
+    "mcap_sha256": "65105177e43eca6153d2543f3cf8e9cc9f7c62b77f258975fdcdbd10b5e2e16a"
+  },
+  "scan_messages": 7304,
+  "reader": {
+    "rosbag2_py": "0.26.11-1noble.20260616.083139",
+    "rosbag2_storage_mcap": "0.26.11-1noble.20260616.074830"
+  },
+  "frame_id": "laser_link",
+  "coverage_rad": {
+    "minimum": 6.276242613792419,
+    "maximum": 6.276592135429382,
+    "mean": 6.276435539493621
+  },
+  "sample_count": {
+    "minimum": 905,
+    "maximum": 953,
+    "most_common": 931,
+    "most_common_count": 3262
+  },
+  "angle_increment_sign": "negative",
+  "robot_forward_nearest_beam": {
+    "selection": "minimum absolute circular angle after applying laser_link to base_link yaw",
+    "valid_range_count": 1441,
+    "total_scan_count": 7304,
+    "valid_fraction": 0.1973,
+    "valid_range_min_m": 0.836,
+    "valid_range_median_m": 3.769
+  },
+  "range_min_m": 0.2800000011920929,
+  "range_min_matching_messages": 7304,
+  "range_max_m": 16.0,
+  "no_return_observations": {
+    "authoritative_scope": "all /scan messages in the source MCAP",
+    "message_count": 7304,
+    "beam_inclusion": "every value in sensor_msgs/msg/LaserScan.ranges",
+    "sample_count": 6799118,
+    "finite_count": 4248911,
+    "positive_infinity_count": 2550207,
+    "negative_infinity_count": 0,
+    "nan_count": 0,
+    "positive_infinity_fraction": 0.3750790911409392,
+    "calculation": "positive_infinity_count / sample_count",
+    "successful_route_window_comparison": {
+      "profile_path": "media/corridor_localdds_armed_20260904T152036/sensor_profile.json",
+      "profile_sha256": "8e9e259d364b1f39efc5742d4142c6124aed5ebc99b685523a1c8fcc1c780f03",
+      "message_count": 5394,
+      "sample_count": 5023326,
+      "positive_infinity_count": 1984246,
+      "positive_infinity_fraction": 0.395006,
+      "difference_reason": "the profile restricts input to the successful-route time window"
+    }
+  },
+  "gazebo_gpu_lidar_contract": {
+    "gz_sensors_version": "8.2.2",
+    "source": "https://github.com/gazebosim/gz-sensors/blob/gz-sensors8_8.2.2/src/GpuLidarSensor.cc",
+    "range_min_behavior": "GPU ray near clip plane with out-of-range values reported as infinity",
+    "runtime_probe_is_authoritative": true
+  },
+  "claim": "idealized Gazebo lidar reflecting observed G4 full azimuth and reported minimum range",
+  "known_simulation_differences": [
+    "update_rate",
+    "range_limits",
+    "sample_count",
+    "angle_increment_sign"
+  ],
+  "limitations": [
+    "range_min does not establish footprint proximity collision safety",
+    "near-field Collision Monitor behavior is evaluated separately in G004"
+  ]
+}

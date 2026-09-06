@@ -21,6 +21,7 @@ from compare_slam_runs import (
     rigid_align,
     yaw_of,
 )
+
 from mcap_ros2.reader import read_ros2_messages
 
 
@@ -99,6 +100,15 @@ def _root_mean_square(values: Sequence[float]) -> float:
     return math.sqrt(sum(value * value for value in values) / len(values))
 
 
+def metric_groups_are_finite(*groups: dict[str, Any]) -> bool:
+    """Return whether every numeric metric value is finite."""
+    return all(
+        math.isfinite(value)
+        for group in groups
+        for value in group.values()
+        if isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
 def absolute_trajectory_error(
         pairs: Sequence[tuple[Pose2, Pose2]]) -> dict[str, Any]:
     """Return SE(2)-aligned translational and yaw ATE."""
@@ -171,8 +181,15 @@ def relative_pose_error(
     }
 
 
-def analyse(bag: Path, backend: str) -> dict[str, Any]:
+def analyse(
+        bag: Path, backend: str,
+        commanded_path_m: float | None = None,
+        corridor_distance_m: float | None = None) -> dict[str, Any]:
     """Analyse one finalized simulation result bag."""
+    if commanded_path_m is not None and commanded_path_m <= 0.0:
+        raise ValueError('commanded path length must be positive')
+    if corridor_distance_m is not None and corridor_distance_m <= 0.0:
+        raise ValueError('corridor distance must be positive')
     map_to_odom = read_map_to_odom(bag)
     odometry = read_odometry(bag)
     truth = read_ground_truth(bag)
@@ -191,6 +208,42 @@ def analyse(bag: Path, backend: str) -> dict[str, Any]:
         raise ValueError('not enough synchronized odometry/truth pairs')
     slam_ate = absolute_trajectory_error(pairs)
     odometry_ate = absolute_trajectory_error(odometry_pairs)
+    slam_rpe = relative_pose_error(pairs)
+    odometry_rpe = relative_pose_error(odometry_pairs)
+    truth_path_m = path_length(truth)
+    completion = None
+    if commanded_path_m is not None:
+        completion_ratio = truth_path_m / commanded_path_m
+        completion = {
+            'commanded_path_m': commanded_path_m,
+            'ground_truth_path_ratio': completion_ratio,
+            'completed': completion_ratio >= 0.9,
+            'criterion': 'ground-truth path is at least 90% of commanded path',
+        }
+        if corridor_distance_m is not None:
+            start_xy = truth[0][1:3]
+            distances = [math.dist(sample[1:3], start_xy)
+                         for sample in truth]
+            outbound_progress_m = max(distances)
+            return_progress_m = outbound_progress_m - distances[-1]
+            outbound_complete = (
+                outbound_progress_m >= 0.9 * corridor_distance_m)
+            return_complete = return_progress_m >= 0.9 * corridor_distance_m
+            completion.update({
+                'outbound_progress_m': outbound_progress_m,
+                'return_progress_m': return_progress_m,
+                'outbound_completed': outbound_complete,
+                'return_completed': return_complete,
+                'completed': (
+                    completion['completed'] and outbound_complete
+                    and return_complete),
+                'criterion': (
+                    'ground-truth total, outbound, and return progress are '
+                    'each at least 90% of command'),
+            })
+    finite_metrics = metric_groups_are_finite(
+        slam_ate, slam_rpe, odometry_ate, odometry_rpe)
+    synchronization_coverage = len(pairs) / len(estimated)
     return {
         'schema_version': 1,
         'backend': backend,
@@ -203,7 +256,7 @@ def analyse(bag: Path, backend: str) -> dict[str, Any]:
             'topic': '/ground_truth_pose',
             'independent_of_wheel_odometry': True,
             'samples': len(truth),
-            'path_length_m': path_length(truth),
+            'path_length_m': truth_path_m,
         },
         'slam': {
             'map_to_odom_samples': len(map_to_odom),
@@ -213,13 +266,15 @@ def analyse(bag: Path, backend: str) -> dict[str, Any]:
         'synchronization': {
             'max_offset_s': 0.075,
             'matched_samples': len(pairs),
+            'estimated_sample_coverage': synchronization_coverage,
+            'coverage_passed': synchronization_coverage >= 0.9,
         },
         'ate': slam_ate,
-        'rpe': relative_pose_error(pairs),
+        'rpe': slam_rpe,
         'wheel_odometry_reference': {
             'path_length_m': path_length(odometry),
             'ate': odometry_ate,
-            'rpe': relative_pose_error(odometry_pairs),
+            'rpe': odometry_rpe,
         },
         'comparison': {
             'slam_to_wheel_ate_rms_ratio': (
@@ -230,6 +285,13 @@ def analyse(bag: Path, backend: str) -> dict[str, Any]:
                 slam_ate['translation_rms_m']
                 < odometry_ate['translation_rms_m']),
         },
+        'completion': completion,
+        'validity': {
+            'finite_ate': finite_metrics,
+            'synchronization_coverage_passed': (
+                synchronization_coverage >= 0.9),
+            'valid': finite_metrics and synchronization_coverage >= 0.9,
+        },
         'method': {
             'alignment': 'SE(2) rigid transform without scale',
             'rpe_delta_s': 1.0,
@@ -238,16 +300,21 @@ def analyse(bag: Path, backend: str) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Evaluate a recorded simulation bag against Gazebo ground truth."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bag', type=Path, required=True)
     parser.add_argument('--backend', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--commanded-path-m', type=float)
+    parser.add_argument('--corridor-distance-m', type=float)
     args = parser.parse_args(argv)
     if not args.bag.is_file():
         parser.error('--bag must be one finalized MCAP file')
     if args.output.exists():
         parser.error('--output must not already exist')
-    result = analyse(args.bag, args.backend)
+    result = analyse(
+        args.bag, args.backend, args.commanded_path_m,
+        args.corridor_distance_m)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')

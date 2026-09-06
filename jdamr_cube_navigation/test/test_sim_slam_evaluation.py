@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'evaluation'))
 
 from evaluate_sim_slam import (  # noqa: E402,I100
     absolute_trajectory_error,
+    analyse,
+    metric_groups_are_finite,
     relative_pose_error,
     time_match,
 )
@@ -76,3 +78,17 @@ def test_rpe_wraps_heading_error_at_pi_boundary():
     result = relative_pose_error(list(zip(estimated, truth)))
 
     assert result['yaw_max_rad'] < 0.03
+
+
+def test_analyse_rejects_nonpositive_commanded_path(tmp_path):
+    """Completion ratios must never be computed from invalid commands."""
+    with pytest.raises(ValueError):
+        analyse(tmp_path / 'missing.mcap', 'cartographer', 0.0)
+
+
+def test_metric_validity_rejects_nonfinite_ate_or_rpe():
+    """A finite ATE cannot hide a non-finite RPE result."""
+    assert metric_groups_are_finite(
+        {'translation_rms_m': 0.1}, {'translation_rms_m': 0.02})
+    assert not metric_groups_are_finite(
+        {'translation_rms_m': 0.1}, {'translation_rms_m': math.inf})

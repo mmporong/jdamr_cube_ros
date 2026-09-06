@@ -202,6 +202,56 @@ python3 jdamr_cube_navigation/evaluation/compare_sim_slam_experiments.py \
 ATE/RPE가 모두 낮아 Cartographer를 유지한다. 자세한 수치·입력 해시·단일 시드 한계는
 `media/sim_slam_corridor_gt_20260904/sim_slam_robustness.md`에 있다.
 
+### Cartographer 5-seed 단일 요인 강건성 행렬
+
+`run_sim_slam_robustness.py`는 성공 실차 bag의 센서 프로파일을 입력으로 읽고, 고정된
+Cartographer 설정·world·왕복 경로에서 정확히 5개 seed를 실행한다. 기준선 외 조건은
+LiDAR 주기, timestamp jitter, 거리 노이즈, scan 메시지 dropout, wheel scale, wheel
+slip, TF delay, scan transport delay 중 하나만 바꾼다. 거리·wheel·transport 값은 실차
+bag만으로 측정할 수 없으므로 `measured_observation`으로 기록하지 않고
+`derived_stress` 또는 `synthetic_stress`로 남긴다. 각 provenance에는 원본 JSON의
+SHA-256과 JSON pointer가 포함된다.
+
+먼저 실행 없는 dry-run으로 45개 명령과 단일 요인 계약을 검증한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_cube_ws/install/setup.bash"
+python3 jdamr_cube_navigation/evaluation/run_sim_slam_robustness.py \
+  --sensor-profile \
+    jdamr_cube_navigation/evaluation/media/corridor_localdds_armed_20260904T152036/sensor_profile.json \
+  --base-urdf jdamr_cube_description/urdf/jdamr_cube.urdf \
+  --base-bridge jdamr_cube_gazebo/params/bridge.yaml \
+  --world jdamr_cube_gazebo/worlds/slam_corridor.world \
+  --out-root "$HOME/jdamr_artifacts/sim_slam_robustness_<date>"
+```
+
+`matrix_manifest.json`의 조건·seed·명령을 검토한 뒤 같은 명령에 `--execute`를 붙이면
+전체 행렬을 순차 실행한다. 기존 출력과 내용이 다른 generated 파일이나 run 디렉터리는
+덮어쓰지 않는다. 조건마다 증거가 유효한 5개 seed가 모두 있어야 완전한 조건으로
+집계한다. 그중 완주 기준을 충족하지 못한 실행은 성능 결과인 `FAIL`, 프로세스·schema·
+입력/산출물 hash·동기화 coverage·fault realization·resource 증거가 불완전한 실행은
+`INVALID`다. 따라서 `FAIL`은 5-seed 분포와 completion rate의 분모에 남고,
+`INVALID`가 하나라도 있으면 그 조건은 `INCOMPLETE`다.
+
+각 run에는 다음 증거가 남는다.
+
+- `run_manifest.json`: `experiment_manifest.schema.json`을 실행 중 검증한 표준 manifest
+- `execution_manifest.json`: 실제 명령, 프로세스 exit code, 입력 및 fault 해시
+- `metrics.json`: GT total/outbound/return 완주, finite ATE/RPE, timestamp coverage
+- `fault_stats.json`: 요청값이 실제 적용된 dropout·jitter·noise·delay·wheel 통계
+- `resource_samples.jsonl`: 0.5초 CPU/RSS 원본 표본. CPU는 한 코어 100% 기준이다.
+- `map_state.pbstream`, `map.yaml`, `map.pgm`: 비어 있지 않은 지도와 SHA-256
+
+집계기는 matrix의 seed·backend·world·경로·Cartographer 설정·workspace fingerprint와
+각 run identity를 다시 대조한다. 표준 manifest를 schema로 재검증하고, 모든 artifact와
+원본 bag의 SHA-256, resource JSONL의 유한값과 요약 재현, PGM의 unknown/free/occupied
+픽셀 존재까지 통과한 실행만 성능 분포에 포함한다.
+
+강건성 실행은 카메라 bridge와 생성 URDF의 카메라 센서를 끈다. 따라서 CPU/RSS는
+2D LiDAR SLAM 경로를 측정하며 Visual SLAM이나 Depth 카메라 성능을 포함하지 않는다.
+
 ## 저장 지도 주행 bag의 오프라인 SLAM 재생
 
 저장 지도와 AMCL을 사용해 안전 경로로 수집한 bag도 새 지도 생성 입력으로 쓸 수 있다. 단, 새 mapping backend는 `use_sim_time=true`와 빈 상태로 먼저 실행하고, localization node와 저장 map server는 실행하지 않는다. 재생은 실차 domain 12가 아닌 격리 domain 199에서만 허용한다.
@@ -273,3 +323,83 @@ bash jdamr_cube_navigation/scripts/offline_slam_replay.sh \
 ```
 
 현재 복도 실험의 판정과 한계는 `20260904_SLAM_TOOLBOX_ROOT_CAUSE.md`에 기록했다.
+
+## G004 Collision Monitor 시뮬레이션 평가
+
+G004는 Gazebo 시뮬레이션에서 Nav2 주행 명령과 Collision Monitor의 정지·재개 동작을
+검증한 결과다. Collision Monitor는 속도 명령 앞단에서 센서 입력을 감시해 정지 명령을
+내리는 Nav2 구성 요소이고, StopZone은 장애물 점이 들어오면 즉시 정지시키는 전방
+다각형 영역이다. `invalid source`는 설정한 시간 안에 새 센서 입력이 없어 해당 입력을
+유효하지 않다고 판정한 상태다.
+
+평가는 기준 주행, 갑작스러운 장애물, monitor scan timeout의 세 시나리오를 난수 초기값(seed)
+11·23·42·67·89에서 각각 실행한 15회(3개 시나리오 × 5개 seed)로 구성했다. 15회 모두
+각 실행에서 한 번 전송한 목표와 동일한 UUID의 상태가 `SUCCEEDED`로 끝났고 접촉·목표
+취소·예상 밖 종료·잔류 프로세스는 각각 0건이었다. 표의 범위는 다섯 seed의
+최소–중앙–최대값이다.
+
+| 시나리오 | 핵심 결과 |
+|---|---|
+| 갑작스러운 장애물 | scan-gate 입력 발행부터 최종 속도 0 수신까지 0.0112–0.0337–0.0519 s, 정지 거리 0.0540–0.0540–0.0627 m, 로봇 footprint와 장애물 사이 최소 여유 0.0828–0.0882–0.0886 m |
+| monitor scan timeout | 동결 승인부터 최종 속도 0 관측까지 0.2215–0.2453–0.2521 s, 정지 시 센서 나이 0.302–0.327–0.330 s, 정지 거리 0.0172–0.0194–0.0213 m |
+
+scan-gate는 평가용 Collision Monitor scan 전달 노드다. 갑작스러운 장애물 반응 시간은
+이 노드의 동일 프로세스 monotonic clock으로 잰 장애물 포함 scan 발행부터 최종 속도 0
+수신까지이며, 센서 획득과 외부 전송 지연은 포함하지 않는다.
+
+여기서 ground-truth는 시뮬레이터가 제공한 로봇의 정답 위치이며 localization 추정치와
+구분한다. MCAP은 ROS 2 토픽 메시지를 보존한 bag 저장 형식이다. 대표 bag은 전체 15회를
+사후 선별한 것이 아니라 미리 고정한 seed 11을 시나리오별로 다시 기록한 세 MCAP이다.
+Keepout은 지도에서 진입 금지 영역을 경로 계획 단계에 반영하고, Collision Monitor는
+실행 중 센서 입력을 바탕으로 속도 명령을 정지시키므로 역할과 증거가 다르다.
+
+검증된 산출물은 다음 세 경로에 보존한다.
+
+- 전체 15회: `$HOME/jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_full15_cyclone`
+  (3,452,814 B, 전체 행렬에서는 bag과 영상을 기록하지 않음)
+- 대표 MCAP 3개: `$HOME/jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_representatives_seed11_cyclone`
+  (51,459,184 B, MCAP 합계 50,029,263 B)
+- 최종 미디어: `$HOME/jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_media`
+  (346,213 B, 1280×720 H.264 MP4 3개와 요약 GIF 1개)
+
+미디어는 위 MCAP의 경로와 상태 전환을 재생한 자료다. 모든 프레임에 Gazebo
+simulation/MCAP replay임을 표시하며, 장애물·timeout 영상은 짧은 정지 구간을 알아볼 수
+있도록 사건 중심으로 시간을 확대한 비실시간 재생이다. 이 결과는 실차 안전 인증이나
+사람 인식을 검증하지 않으며, 화면 진행 비율도 실제 시간 비율로 해석하지 않는다.
+
+전체 행렬, 대표 기록, 미디어는 다음 명령으로 원본 해시와 파생 결과를 다시 검증한다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_cube_ws/install/setup.bash"
+export PYTHONPATH="$PWD/jdamr_cube_navigation/evaluation:$PYTHONPATH"
+
+python3 - <<'PY'
+from pathlib import Path
+from run_sim_collision_monitor_eval import validate_source_matrix
+
+root = Path.home() / 'jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_full15_cyclone'
+result = validate_source_matrix(root)
+assert len(result['evidence_manifest']) == 15, result
+print('PASS', result['aggregate_sha256'])
+PY
+
+python3 jdamr_cube_navigation/evaluation/evaluate_sim_collision_monitor.py \
+  --promotion-root \
+  "$HOME/jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_representatives_seed11_cyclone"
+
+python3 jdamr_cube_navigation/evaluation/render_sim_collision_monitor_media.py \
+  --matrix-root \
+  "$HOME/jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_full15_cyclone" \
+  --representative-root \
+  "$HOME/jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_representatives_seed11_cyclone" \
+  --output-dir \
+  "$HOME/jdamr_artifacts/sim_collision_monitor_eval_20260906_v08_media" \
+  --verify-existing
+```
+
+용량 정책은 전체 행렬 512 MiB 이하, 대표 bag 한 개당 128 MiB 이하, 대표 루트 512 MiB
+이하다. 최종 v08 전체 행렬·대표 기록·미디어는 보존하고, 승인된 후속 결과로 대체된
+v05·v07 대표 기록과 v08 미디어 후보·이전본만 삭제했다. 다른 실험 산출물은 이 정리
+범위에 포함하지 않았다.

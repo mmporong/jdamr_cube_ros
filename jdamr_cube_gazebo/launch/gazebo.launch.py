@@ -1,6 +1,9 @@
+"""Launch the JDAMR Gazebo simulation and configurable ROS bridges."""
+
 import os
 
 from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
 from launch.actions import (AppendEnvironmentVariable, DeclareLaunchArgument,
                             IncludeLaunchDescription, OpaqueFunction,
@@ -9,6 +12,7 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+
 from launch_ros.actions import Node
 
 
@@ -77,21 +81,23 @@ def _robot_actions(context, urdf_file, controllers_yaml, use_sim_time,
 
 
 def generate_launch_description():
+    """Build the Gazebo launch graph for GUI, sensors, and controllers."""
     pkg_gazebo_dir = get_package_share_directory('jdamr_cube_gazebo')
     pkg_ros_gz_sim_dir = get_package_share_directory('ros_gz_sim')
     pkg_description_dir = get_package_share_directory('jdamr_cube_description')
 
     # gz_ros2_control-system 플러그인은 <parameters> 안의 package:// URI를 스스로 해석하지
     # 못하고 그대로 --params-file 인자로 넘겨 gz-sim이 죽는다. 실제 설치 경로로 치환한다.
-    so101_controllers_yaml = os.path.join(pkg_description_dir, 'config', 'so101_controllers.yaml')
-
-    bridge_config_file = os.path.join(pkg_gazebo_dir, 'params', 'bridge.yaml')
+    so101_controllers_yaml = os.path.join(
+        pkg_description_dir, 'config', 'so101_controllers.yaml')
 
     urdf_file = LaunchConfiguration('urdf_file')
+    bridge_config = LaunchConfiguration('bridge_config')
     world = LaunchConfiguration('world')
     seed = LaunchConfiguration('seed')
     use_sim_time = LaunchConfiguration('use_sim_time')
     gui = LaunchConfiguration('gui')
+    enable_image_bridges = LaunchConfiguration('enable_image_bridges')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
     z_pose = LaunchConfiguration('z_pose')
@@ -107,6 +113,11 @@ def generate_launch_description():
             pkg_description_dir, 'urdf', 'jdamr_cube.urdf'),
         description='Base or generated URDF used for this simulation run')
 
+    declare_bridge_config_cmd = DeclareLaunchArgument(
+        'bridge_config',
+        default_value=os.path.join(pkg_gazebo_dir, 'params', 'bridge.yaml'),
+        description='ROS-Gazebo bridge YAML; fault runs use raw proxy topics')
+
     declare_use_sim_time_cmd = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
@@ -121,14 +132,22 @@ def generate_launch_description():
         default_value='true',
         description='false면 Gazebo GUI 없이 서버만 실행 (시각화는 RViz2 사용)')
 
+    declare_enable_image_bridges_cmd = DeclareLaunchArgument(
+        'enable_image_bridges', default_value='true',
+        description=(
+            'Start camera image bridges; SLAM robustness runs disable them'))
+
     declare_x_pose_cmd = DeclareLaunchArgument(
-        'x_pose', default_value='0.0', description='Initial x position of the robot')
+        'x_pose', default_value='0.0',
+        description='Initial x position of the robot')
 
     declare_y_pose_cmd = DeclareLaunchArgument(
-        'y_pose', default_value='0.0', description='Initial y position of the robot')
+        'y_pose', default_value='0.0',
+        description='Initial y position of the robot')
 
     declare_z_pose_cmd = DeclareLaunchArgument(
-        'z_pose', default_value='0.01', description='Initial z position of the robot')
+        'z_pose', default_value='0.01',
+        description='Initial z position of the robot')
 
     # URDF의 package:// 메쉬 URI는 스폰 시 model://로 변환되는데, gz 서버가 이를
     # 해석하려면 GZ_SIM_RESOURCE_PATH에 share 디렉터리가 있어야 한다. 없으면 SO-101
@@ -173,34 +192,36 @@ def generate_launch_description():
     bridge_node = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
-        arguments=['--ros-args', '-p', f'config_file:={bridge_config_file}'],
+        arguments=['--ros-args', '-p', ['config_file:=', bridge_config]],
         output='screen')
 
     wrist_camera_bridge_node = Node(
         package='ros_gz_image',
         executable='image_bridge',
         arguments=['wrist_camera/image_raw'],
-        output='screen')
+        output='screen', condition=IfCondition(enable_image_bridges))
 
     rgbd_camera_bridge_node = Node(
         package='ros_gz_image',
         executable='image_bridge',
         arguments=['rgbd_camera/image', 'rgbd_camera/depth_image'],
-        output='screen')
+        output='screen', condition=IfCondition(enable_image_bridges))
 
     # LeRobot 시연 모사 관측 카메라 (room.world의 demo_cam_up/side)
     demo_camera_bridge_node = Node(
         package='ros_gz_image',
         executable='image_bridge',
         arguments=['demo_up/image_raw', 'demo_side/image_raw'],
-        output='screen')
+        output='screen', condition=IfCondition(enable_image_bridges))
 
     ld = LaunchDescription()
     ld.add_action(declare_world_cmd)
     ld.add_action(declare_urdf_file_cmd)
+    ld.add_action(declare_bridge_config_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_seed_cmd)
     ld.add_action(declare_gui_cmd)
+    ld.add_action(declare_enable_image_bridges_cmd)
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
     ld.add_action(declare_z_pose_cmd)

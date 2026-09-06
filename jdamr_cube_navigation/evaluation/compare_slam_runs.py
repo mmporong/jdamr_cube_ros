@@ -171,9 +171,23 @@ def map_statistics(map_yaml: Path):
     """Return occupied/free cell counts and metric extent of a saved map."""
     import yaml
     document = yaml.safe_load(map_yaml.read_text(encoding='utf-8'))
-    raw = (map_yaml.parent / document['image']).read_bytes()
-    width, height = map(int, raw.split(b'\n', 3)[1].split())
-    data = raw[-width * height:]
+    with (map_yaml.parent / document['image']).open('rb') as stream:
+        if stream.readline().strip() != b'P5':
+            raise ValueError('saved map is not a binary PGM')
+        header_tokens = []
+        while len(header_tokens) < 3:
+            line = stream.readline()
+            if not line:
+                raise ValueError('saved map has a truncated PGM header')
+            if line.lstrip().startswith(b'#'):
+                continue
+            header_tokens.extend(line.split())
+        width, height, max_value = map(int, header_tokens[:3])
+        if max_value != 255:
+            raise ValueError('saved map PGM maximum must be 255')
+        data = stream.read()
+    if len(data) != width * height:
+        raise ValueError('saved map PGM dimensions do not match its payload')
     resolution = float(document['resolution'])
     occupied_threshold = float(document['occupied_thresh'])
     free_threshold = float(document['free_thresh'])
@@ -201,13 +215,32 @@ def map_statistics(map_yaml: Path):
     }
 
 
+def _timestamp_sha256(samples):
+    """Hash an ordered trajectory timestamp set without decimal rounding."""
+    digest = hashlib.sha256()
+    for sample in samples:
+        digest.update(f'{sample[0]:.9f}\n'.encode())
+    return digest.hexdigest()
+
+
+def _analysis_window(samples, start_unix_ns=None, end_unix_ns=None):
+    """Return samples inside an inclusive absolute timestamp window."""
+    if start_unix_ns is None and end_unix_ns is None:
+        return samples
+    start_s = float('-inf') if start_unix_ns is None else start_unix_ns * 1e-9
+    end_s = float('inf') if end_unix_ns is None else end_unix_ns * 1e-9
+    return [sample for sample in samples if start_s <= sample[0] <= end_s]
+
+
 def deviation(trajectory, reference):
     """Return residuals after aligning the estimate onto the reference."""
     pairs = []
+    paired_timestamps = []
     for stamp, x, y, _ in decimate(trajectory, 0.10):
         match = nearest(reference, stamp)
         if match is not None:
             pairs.append(((x, y), (match[1], match[2])))
+            paired_timestamps.append((stamp,))
     if len(pairs) < 2:
         return None
     transform = rigid_align([p[0] for p in pairs], [p[1] for p in pairs])
@@ -215,30 +248,103 @@ def deviation(trajectory, reference):
         return None
     residuals = [math.dist(apply_rigid(transform, *source), target)
                  for source, target in pairs]
+    rms_m_raw = math.sqrt(sum(r * r for r in residuals) / len(residuals))
     return {
         'samples': len(residuals),
+        'timestamp_sha256': _timestamp_sha256(paired_timestamps),
         'aligned_yaw_deg': round(math.degrees(transform[0]), 2),
-        'rms_m': round(
-            math.sqrt(sum(r * r for r in residuals) / len(residuals)), 3),
+        'rms_m_raw': rms_m_raw,
+        'rms_m': round(rms_m_raw, 3),
+        'max_m_raw': max(residuals),
         'max_m': round(max(residuals), 3),
     }
 
 
-def analyse(result_bag: Path, source_bag: Path, map_yaml: Path | None):
+def common_reference_deviations(trajectories, reference):
+    """Evaluate every trajectory on one shared reference timestamp set."""
+    common = []
+    for reference_sample in decimate(reference, 0.10):
+        matches = {
+            label: nearest(trajectory, reference_sample[0])
+            for label, trajectory in trajectories.items()
+        }
+        if all(match is not None for match in matches.values()):
+            common.append((reference_sample, matches))
+    if len(common) < 2:
+        raise ValueError('fewer than two common AMCL reference samples')
+    timestamps = [(reference_sample[0],) for reference_sample, _ in common]
+    timestamp_sha256 = _timestamp_sha256(timestamps)
+    variants = {}
+    for label in trajectories:
+        source_points = [
+            (matches[label][1], matches[label][2]) for _, matches in common]
+        target_points = [
+            (reference_sample[1], reference_sample[2])
+            for reference_sample, _ in common]
+        transform = rigid_align(source_points, target_points)
+        if transform is None:
+            raise ValueError(f'cannot align common reference samples: {label}')
+        residuals = [
+            math.dist(apply_rigid(transform, *source), target)
+            for source, target in zip(source_points, target_points)
+        ]
+        rms_m_raw = math.sqrt(
+            sum(residual * residual for residual in residuals) /
+            len(residuals))
+        variants[label] = {
+            'samples': len(residuals),
+            'timestamp_sha256': timestamp_sha256,
+            'aligned_yaw_deg': round(math.degrees(transform[0]), 2),
+            'rms_m_raw': rms_m_raw,
+            'rms_m': round(rms_m_raw, 3),
+            'max_m_raw': max(residuals),
+            'max_m': round(max(residuals), 3),
+        }
+    return {
+        'samples': len(common),
+        'timestamp_sha256': timestamp_sha256,
+        'variants': variants,
+    }
+
+
+def analyse(
+        result_bag: Path, source_bag: Path, map_yaml: Path | None,
+        *, start_unix_ns=None, end_unix_ns=None):
     """Return one comparison record for a replayed backend run."""
     map_to_odom = read_map_to_odom(result_bag)
     odometry = read_odometry(source_bag)
     amcl = read_amcl(source_bag)
-    trajectory = estimated_trajectory(map_to_odom, odometry)
+    trajectory = _analysis_window(
+        estimated_trajectory(map_to_odom, odometry),
+        start_unix_ns, end_unix_ns)
+    odometry = _analysis_window(odometry, start_unix_ns, end_unix_ns)
+    amcl = _analysis_window(amcl, start_unix_ns, end_unix_ns)
+    map_to_odom_window = _analysis_window(
+        map_to_odom, start_unix_ns, end_unix_ns)
 
     record = {
         'result_bag': result_bag.name,
         'result_bag_sha256': _sha256(result_bag),
         'source_bag': source_bag.name,
         'source_bag_sha256': _sha256(source_bag),
-        'map_to_odom_updates': len(map_to_odom),
+        'map_to_odom_updates': len(map_to_odom_window),
         'odometry_samples': len(odometry),
         'trajectory_samples': len(trajectory),
+        'trajectory_timestamp_sha256': _timestamp_sha256(trajectory),
+        'analysis_window': {
+            'start_unix_ns': start_unix_ns,
+            'end_unix_ns': end_unix_ns,
+        },
+        'map_to_odom_first_unix_ns': (
+            round(map_to_odom[0][0] * 1e9) if map_to_odom else None),
+        'map_to_odom_last_unix_ns': (
+            round(map_to_odom[-1][0] * 1e9) if map_to_odom else None),
+        'map_to_odom_window_covered': (
+            bool(map_to_odom)
+            and (start_unix_ns is None
+                 or map_to_odom[0][0] * 1e9 <= start_unix_ns)
+            and (end_unix_ns is None
+                 or map_to_odom[-1][0] * 1e9 >= end_unix_ns)),
     }
     if trajectory:
         record['estimated_length_m'] = round(path_length(trajectory), 3)
@@ -246,8 +352,10 @@ def analyse(result_bag: Path, source_bag: Path, map_yaml: Path | None):
                               round(trajectory[0][2], 3)]
         record['end_xy'] = [round(trajectory[-1][1], 3),
                             round(trajectory[-1][2], 3)]
-        record['start_to_end_m'] = round(
-            math.dist(trajectory[0][1:3], trajectory[-1][1:3]), 3)
+        start_to_end_m_raw = math.dist(
+            trajectory[0][1:3], trajectory[-1][1:3])
+        record['start_to_end_m_raw'] = start_to_end_m_raw
+        record['start_to_end_m'] = round(start_to_end_m_raw, 3)
     if odometry:
         record['odometry_length_m'] = round(path_length(odometry), 3)
     if amcl:

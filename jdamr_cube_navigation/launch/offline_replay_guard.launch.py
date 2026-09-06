@@ -43,13 +43,14 @@ def generate_launch_description():
     rate = LaunchConfiguration('rate')
     delay = LaunchConfiguration('delay')
     duration = LaunchConfiguration('duration')
+    stats_path = LaunchConfiguration('stats_path')
 
     tf_filter = Node(
         package='jdamr_cube_navigation',
         executable='tf_replay_filter',
         name='tf_replay_filter',
         output='screen',
-        parameters=[{'use_sim_time': True}],
+        parameters=[{'use_sim_time': True, 'stats_path': stats_path}],
     )
     playback = ExecuteProcess(
         cmd=[
@@ -83,6 +84,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'offline_domain_id', default_value='199',
             description='Must match an isolated ROS_DOMAIN_ID; 12 is blocked'),
+        DeclareLaunchArgument(
+            'stats_path', default_value='',
+            description='Optional replay forwarding evidence JSON path'),
         OpaqueFunction(function=_preflight),
         RegisterEventHandler(OnProcessExit(
             target_action=tf_filter,

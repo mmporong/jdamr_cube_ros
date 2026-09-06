@@ -23,6 +23,9 @@ setup(
             glob('scripts/*.sh')),
         (os.path.join('share', package_name, 'evaluation'),
             glob('evaluation/*.*')),
+        (os.path.join('share', package_name, 'evaluation', 'assets',
+                      'nav_obstacle'),
+            glob('evaluation/assets/nav_obstacle/*')),
     ],
     install_requires=['setuptools'],
     extras_require={'test': ['pytest']},
@@ -46,6 +49,14 @@ setup(
             'jdamr_cube_navigation.nav2_liveness_guard:main',
             'sim_slam_route = '
             'jdamr_cube_navigation.sim_slam_route:main',
+            'sim_fault_injector = '
+            'jdamr_cube_navigation.sim_fault_injector:main',
+            'sim_nav_obstacle_scenario = '
+            'jdamr_cube_navigation.sim_nav_obstacle_scenario:main',
+            'sim_scan_gate = '
+            'jdamr_cube_navigation.sim_scan_gate:main',
+            'sim_collision_monitor_scenario = '
+            'jdamr_cube_navigation.sim_collision_monitor_scenario:main',
         ],
     },
 )

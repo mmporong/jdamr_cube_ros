@@ -1,7 +1,11 @@
 """Guard an offline SLAM replay: drop recorded TF authority and late odometry."""
 
+import json
+from pathlib import Path
+
 from nav_msgs.msg import Odometry
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
@@ -30,6 +34,11 @@ def stamp_seconds(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
 
 
+def stamp_nanoseconds(stamp):
+    """Return a builtin_interfaces stamp without float precision loss."""
+    return stamp.sec * 1_000_000_000 + stamp.nanosec
+
+
 class TfReplayFilter(Node):
     """Bridge recorded TF topics while excluding AMCL map-to-odom."""
 
@@ -37,18 +46,28 @@ class TfReplayFilter(Node):
         super().__init__('tf_replay_filter')
         self.declare_parameter('drop_parent', 'map')
         self.declare_parameter('drop_child', 'odom')
+        self.declare_parameter('stats_path', '')
         self.drop_parent = self.get_parameter(
             'drop_parent').get_parameter_value().string_value
         self.drop_child = self.get_parameter(
             'drop_child').get_parameter_value().string_value
+        self.stats_path = self.get_parameter(
+            'stats_path').get_parameter_value().string_value
         self.dropped = 0
-        # Cartographer aborts when odometry arrives with a stamp older than
-        # the newest scan-derived pose.  corridor_keepout_roundtrip_
-        # 20260901T150446 carries 63 such messages, up to 1.340 s inverted,
-        # because Wi-Fi delayed them past the scans during recording.  The
-        # guard drops those few rather than letting the backend die mid-run,
-        # and both backends receive the identical filtered stream.
+        # Cartographer aborts when delayed odometry is older than the newest
+        # scan-derived pose. Drop that reordered input symmetrically; each
+        # run manifest records the observed forwarded and dropped counts.
         self.newest_scan = None
+        self.first_scan = None
+        self.first_scan_ns = None
+        self.newest_scan_ns = None
+        self.scan_count = 0
+        self.first_odometry = None
+        self.last_odometry = None
+        self.first_odometry_received = None
+        self.last_odometry_received = None
+        self.first_odometry_received_ns = None
+        self.last_odometry_received_ns = None
         self.late_odometry = 0
         self.forwarded_odometry = 0
 
@@ -97,11 +116,23 @@ class TfReplayFilter(Node):
 
     def _scan_callback(self, message):
         stamp = stamp_seconds(message.header.stamp)
+        stamp_ns = stamp_nanoseconds(message.header.stamp)
+        self.scan_count += 1
+        if self.first_scan is None:
+            self.first_scan = stamp
+            self.first_scan_ns = stamp_ns
         if self.newest_scan is None or stamp > self.newest_scan:
             self.newest_scan = stamp
+            self.newest_scan_ns = stamp_ns
 
     def _odometry_callback(self, message):
         stamp = stamp_seconds(message.header.stamp)
+        stamp_ns = stamp_nanoseconds(message.header.stamp)
+        if self.first_odometry_received is None:
+            self.first_odometry_received = stamp
+            self.first_odometry_received_ns = stamp_ns
+        self.last_odometry_received = stamp
+        self.last_odometry_received_ns = stamp_ns
         if self.newest_scan is not None and stamp < self.newest_scan:
             self.late_odometry += 1
             if self.late_odometry % 10 == 1:
@@ -110,7 +141,34 @@ class TfReplayFilter(Node):
                     f'before the newest scan; total={self.late_odometry}')
             return
         self.forwarded_odometry += 1
+        if self.first_odometry is None:
+            self.first_odometry = stamp
+        self.last_odometry = stamp
         self.odometry_publisher.publish(message)
+
+    def write_stats(self):
+        """Persist replay forwarding counts for the evidence manifest."""
+        if not self.stats_path:
+            return
+        document = {
+            'scan_forwarded': self.scan_count,
+            'scan_first_s': self.first_scan,
+            'scan_last_s': self.newest_scan,
+            'scan_first_unix_ns': self.first_scan_ns,
+            'scan_last_unix_ns': self.newest_scan_ns,
+            'recorded_map_to_odom_dropped': self.dropped,
+            'odometry_forwarded': self.forwarded_odometry,
+            'odometry_dropped_late': self.late_odometry,
+            'odometry_first_s': self.first_odometry,
+            'odometry_last_s': self.last_odometry,
+            'odometry_received_first_s': self.first_odometry_received,
+            'odometry_received_last_s': self.last_odometry_received,
+            'odometry_received_first_unix_ns': (
+                self.first_odometry_received_ns),
+            'odometry_received_last_unix_ns': self.last_odometry_received_ns,
+        }
+        Path(self.stats_path).write_text(
+            json.dumps(document, indent=2), encoding='utf-8')
 
     def _dynamic_callback(self, message):
         filtered = self._filtered(message)
@@ -129,9 +187,10 @@ def main():
     node = TfReplayFilter()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node.write_stats()
         print(
             f'offline replay guard stopped; localization transforms '
             f'dropped={node.dropped}; odometry forwarded='

@@ -38,7 +38,9 @@ def load_runs(results_root: Path) -> list[dict[str, Any]]:
     for profile in PROFILES:
         for backend in BACKENDS:
             run_dir = results_root / f'{profile}__{backend}'
-            manifest_path = run_dir / 'run_manifest.json'
+            manifest_path = run_dir / 'execution_manifest.json'
+            if not manifest_path.is_file():
+                manifest_path = run_dir / 'run_manifest.json'
             metrics_path = run_dir / 'metrics.json'
             if not manifest_path.is_file() or not metrics_path.is_file():
                 raise ValueError(f'incomplete run directory: {run_dir}')
@@ -264,18 +266,24 @@ def render_markdown(summary: dict[str, Any]) -> str:
     lines.extend([
         '',
         '기준 조건에서 SLAM Toolbox의 이동 ATE는 Cartographer의 '
-        f"{baseline['slam_toolbox_to_cartographer_ate_translation_ratio']:.2f}배, "
+        f"{baseline['slam_toolbox_to_cartographer_ate_translation_ratio']:.2f}"
+        '배, '
         f"{summary['experiment']['rpe_delta_s']:g}초 이동 RPE는 "
-        f"{baseline['slam_toolbox_to_cartographer_rpe_translation_ratio']:.2f}배였다. "
+        f"{baseline['slam_toolbox_to_cartographer_rpe_translation_ratio']:.2f}"
+        '배였다. '
         '노이즈 조건에서는 각각 '
-        f"{stressed['slam_toolbox_to_cartographer_ate_translation_ratio']:.2f}배와 "
-        f"{stressed['slam_toolbox_to_cartographer_rpe_translation_ratio']:.2f}배였다.",
+        f"{stressed['slam_toolbox_to_cartographer_ate_translation_ratio']:.2f}"
+        '배와 '
+        f"{stressed['slam_toolbox_to_cartographer_rpe_translation_ratio']:.2f}"
+        '배였다.',
         '',
         '## 센서 노이즈 민감도',
         '',
         'LiDAR 가우시안 표준편차를 '
-        f"{sensor_profiles['baseline_10hz']['lidar_noise_stddev_m']['to']:g}m에서 "
-        f"{sensor_profiles['lidar_noise_5x']['lidar_noise_stddev_m']['to']:g}m로 "
+        f"{sensor_profiles['baseline_10hz']['lidar_noise_stddev_m']['to']:g}"
+        'm에서 '
+        f"{sensor_profiles['lidar_noise_5x']['lidar_noise_stddev_m']['to']:g}"
+        'm로 '
         '높였을 때 '
         'Cartographer의 이동 ATE는 '
         f"{cartographer_noise['ate_translation_rms_m_change_percent']:+.1f}%, "
@@ -309,11 +317,14 @@ def render_markdown(summary: dict[str, Any]) -> str:
         '- Kümmerle et al., [On Measuring the Accuracy of SLAM Algorithms]'
         '(https://doi.org/10.1007/s10514-009-9155-6): 전역 원점보다 '
         '상대 pose 관계를 이용한 SLAM 비교의 필요성을 제시한다.',
-        '- Sturm et al., [A Benchmark for the Evaluation of RGB-D SLAM Systems]'
+        '- Sturm et al., [A Benchmark for the Evaluation of RGB-D SLAM '
+        'Systems]'
         '(https://cvg.cit.tum.de/_media/spezial/bib/sturm12iros.pdf): '
-        'timestamp 연계, 정답 궤적 정렬, ATE/RPE 계산 절차를 참고해 2D SE(2)로 적용했다.',
+        'timestamp 연계, 정답 궤적 정렬, ATE/RPE 계산 절차를 참고해 '
+        '2D SE(2)로 적용했다.',
         '- Hess et al., [Real-Time Loop Closure in 2D LIDAR SLAM]'
-        '(https://research.google/pubs/real-time-loop-closure-in-2d-lidar-slam/): '
+        '(https://research.google/pubs/'
+        'real-time-loop-closure-in-2d-lidar-slam/): '
         'Cartographer의 scan-to-submap 제약과 실시간 loop closure 설계 근거다.',
         '- Macenski and Jambrecic, [SLAM Toolbox: SLAM for the dynamic world]'
         '(https://joss.theoj.org/papers/10.21105/joss.02783): '
@@ -378,7 +389,8 @@ def render_plot(summary: dict[str, Any], output: Path) -> None:
         fontweight='bold')
     fig.text(
         0.5, 0.01,
-        'One seed / one route; synthetic Gaussian LiDAR stress. No scale alignment.',
+        'One seed / one route; synthetic Gaussian LiDAR stress. '
+        'No scale alignment.',
         ha='center', fontsize=9, color='#444444')
     fig.tight_layout(rect=(0, 0.05, 1, 0.94))
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -387,6 +399,7 @@ def render_plot(summary: dict[str, Any], output: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Compare validated simulation runs and write report artifacts."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results-root', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
