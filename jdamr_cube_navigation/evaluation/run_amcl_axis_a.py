@@ -11,6 +11,7 @@ import tempfile
 
 from amcl_fault_contract import canonical_json_bytes, current_free_bytes
 from amcl_fault_contract import STORAGE_LIMITS, strict_json_load
+from evaluate_amcl_axis_a import _load_base_view
 from evaluate_amcl_axis_a import _tree_bytes, _tree_digest, _tree_records
 from evaluate_amcl_axis_a import CLAIM_FULL, CLAIM_SMOKE, FULL_PLAN, PROFILES
 from evaluate_amcl_axis_a import derive_metrics, pair_recorded, profile_overrides
@@ -72,13 +73,14 @@ def run(args) -> dict:
             args.profile = profile
             args.run_id = run_id
             args.amcl_overrides = profile_overrides(profile)
-            base = preflight._run_one(
+            result = preflight._run_one(
                 stage / f'run_{index + 1}', seed, domain_id,
                 args, dict(os.environ), bootstrap)
-            if base['status'] != 'PASS':
-                raise RuntimeError(f'Axis A run failed: {base["failure"]}')
-            pairs = pair_recorded(base['observer']['clouds'], recorded)
             base_path = stage / f'run_{index + 1}/evidence.json'
+            if result['status'] != 'PASS':
+                raise RuntimeError(f'Axis A run failed: {result["failure"]}')
+            base = _load_base_view(base_path)
+            pairs = pair_recorded(base['observer']['clouds'], recorded)
             axis = {
                 'schema_version': 1, 'run_id': run_id, 'profile': profile,
                 'seed': seed, 'domain_id': domain_id, 'status': 'PASS',

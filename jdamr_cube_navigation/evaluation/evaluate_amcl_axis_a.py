@@ -14,6 +14,8 @@ from amcl_fault_contract import strict_json_load
 from rclpy.serialization import deserialize_message
 import rosbag2_py
 from rosidl_runtime_py.utilities import get_message
+from run_amcl_determinism_preflight import _canonical_json_load
+from run_amcl_determinism_preflight import _load_observer_state
 from run_amcl_determinism_preflight import _relative_identity
 from run_amcl_determinism_preflight import _resource_summary
 from run_amcl_determinism_preflight import _validate_sanitizer_snapshot
@@ -44,6 +46,14 @@ FULL_PREFIX_S = 220.0
 SMOKE_CLOUD_COUNT = 1
 SMOKE_PREFIX_S = 30.0
 PLAYBACK_RATE = 2.0
+
+
+def _load_base_view(base_path: Path) -> dict:
+    base = _canonical_json_load(base_path)
+    if 'observer' in base:
+        raise ValueError('base evidence must not embed observer state')
+    observer = _load_observer_state(base['observer_state'], base_path.parent)
+    return {**base, 'observer': observer}
 
 
 def _exact_keys(value: Any, expected: set[str], label: str) -> None:
@@ -203,7 +213,7 @@ def _validate_recorded_pairs(base: dict, pairs: list[dict]) -> None:
             if type(pair[key]) is not int or pair[key] < 0:
                 raise ValueError(f'invalid recorded pair integer: {key}')
         if (pair['generated_scan_header_stamp_ns'] !=
-                cloud['triggering_scan_header_stamp_ns'] or
+                cloud['fifo_associated_pose_scan_header_stamp_ns'] or
                 pair['generated_pose'] != cloud['pose'] or
                 pair['recorded_frame_id'] != 'map'):
             raise ValueError('recorded pair source binding drift')
@@ -279,7 +289,7 @@ def pair_recorded(clouds: list[dict], recorded: list[dict]) -> list[dict]:
     """Pair each generated update to the nearest recorded pose timestamp."""
     pairs = []
     for cloud in clouds:
-        stamp_ns = cloud['triggering_scan_header_stamp_ns']
+        stamp_ns = cloud['fifo_associated_pose_scan_header_stamp_ns']
         reference = min(
             recorded, key=lambda item: abs(item['header_stamp_ns'] - stamp_ns))
         generated = cloud['pose']
@@ -394,7 +404,7 @@ def validate_axis_a_artifact(root: Path, expected_mode: str) -> dict:
         base_path = root / evidence['base_evidence']['relative_path']
         if evidence['base_evidence'] != _relative_identity(base_path, root):
             raise ValueError('base evidence identity drift')
-        base = strict_json_load(base_path)
+        base = _load_base_view(base_path)
         if (base['profile'] != evidence['profile'] or
                 base['seed'] != evidence['seed'] or
                 base['domain_id'] != evidence['domain_id'] or

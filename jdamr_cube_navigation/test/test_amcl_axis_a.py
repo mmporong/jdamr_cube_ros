@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hostile regression tests for the G002 Axis A evaluator."""
 
+import hashlib
 from pathlib import Path
 
 from amcl_fault_contract import canonical_json_bytes, strict_json_load
@@ -44,13 +45,47 @@ def _base(profile='P0', seed=11, domain_id=180):
         'prefix_s': 30.0, 'playback_rate': 2.0,
         'resource': {'cpu_seconds': 0.2},
         'observer': {
-            'scan_count': 2,
-            'readiness': {'map_odom_tf_count': 1},
+            'schema_version': 1, 'run_id': f'axis_a__{profile}__seed_{seed}',
+            'seed': seed, 'max_clouds': 1,
+            'publisher_matched_count': 1,
+            'pose_publisher_matched_count': 1,
+            'events': [],
+            'readiness': {
+                'map_count': 1, 'clock_count': 1, 'odom_count': 1,
+                'tf_count': 1, 'map_odom_tf_count': 1,
+                'tf_static_count': 1},
+            'initialpose_count': 1, 'pre_initial_scan_count': 0,
+            'pre_initial_cloud_count': 0, 'raw_cloud_received_count': 1,
+            'amcl_pose_received_count': 1, 'pending_cloud_count': 0,
+            'pending_pose_count': 0, 'scan_count': 2,
+            'scan_header_stamps_ns': [10, 11],
+            'scan_header_stamp_sha256': hashlib.sha256(
+                b'10\n11\n').hexdigest(),
+            'scan_payload_sha256': '8' * 64,
+            'clock_samples': [{'ros_ns': 1, 'arrival_steady_ns': 1}],
+            'callback_trace': [
+                {'kind': 'particle_cloud', 'stream_index': 0,
+                 'header_stamp_ns': 12, 'arrival_steady_ns': 5_000_014},
+                {'kind': 'amcl_pose', 'stream_index': 0,
+                 'header_stamp_ns': 10, 'arrival_steady_ns': 5_000_015}],
+            'pairing_contract': preflight.PAIRING_CONTRACT,
+            'observation_qos_contract': preflight.OBSERVATION_QOS_CONTRACT,
+            'pose_causality': 'NOT_PROVEN', 'failure': None, 'done': True,
+            'motion_command_applicability': 'NOT_APPLICABLE',
             'clouds': [{
-                'triggering_scan_header_stamp_ns': 10,
+                'header_stamp_ns': 12, 'arrival_steady_ns': 5_000_014,
+                'callback_ros_ns': 12, 'frame_id': 'map',
+                'particle_count': 500, 'payload_sha256': 'a' * 64,
+                'index': 0,
+                'fifo_associated_pose_scan_header_stamp_ns': 10,
+                'pose_header_stamp_ns': 10,
+                'pose_arrival_steady_ns': 5_000_015,
+                'pose_callback_ros_ns': 10, 'pose_frame_id': 'map',
+                'pose': pose, 'covariance': covariance,
+                'scan_arrival_steady_ns': 15,
                 'scan_to_pose_steady_ns': 5_000_000,
-                'particle_count': 500, 'pose': pose,
-                'covariance': covariance,
+                'cloud_stream_index': 0, 'pose_stream_index': 0,
+                'pair_arrival_delta_ns': 1,
             }],
         },
         'teardown': [{
@@ -114,8 +149,13 @@ def _artifact(root: Path):
         '"cpu_pct_one_core":20.0,"rss_mb":2.0,"process_count":1}\n',
         encoding='utf-8')
     base['resource'] = preflight._resource_summary(resource_path, run_dir)
+    observer_state = run_dir / 'observer_state.json'
+    observer_state.write_bytes(canonical_json_bytes(base.pop('observer')))
+    base['observer_state'] = preflight._relative_identity(
+        observer_state, run_dir)
     base_path = run_dir / 'evidence.json'
     base_path.write_bytes(canonical_json_bytes(base))
+    base_view = evaluator._load_base_view(base_path)
     pairs = [_pair()]
     axis = {
         'schema_version': 1, 'run_id': 'axis_a__P0__seed_11',
@@ -124,7 +164,7 @@ def _artifact(root: Path):
         'base_evidence': preflight._relative_identity(base_path, root),
         'profile_parameters': evaluator.PROFILES['P0'],
         'recorded_pose_pairs': pairs,
-        'metrics': evaluator.derive_metrics(base, pairs),
+        'metrics': evaluator.derive_metrics(base_view, pairs),
         'map_odom_authority': {
             'sanitized_input_count': 0, 'generated_observed_count': 1,
             'sole_runtime_authority': True},
@@ -179,6 +219,15 @@ def _rewrite(root: Path, axis_mutator=None, manifest_mutator=None):
     manifest_path.write_bytes(canonical_json_bytes(manifest))
 
 
+def _refresh_base_and_manifest(root: Path) -> None:
+    base_path = root / 'run_1/evidence.json'
+    axis_path = root / 'run_1/axis_a_evidence.json'
+    axis = strict_json_load(axis_path)
+    axis['base_evidence'] = preflight._relative_identity(base_path, root)
+    axis_path.write_bytes(canonical_json_bytes(axis))
+    _rewrite(root)
+
+
 def test_profile_overrides_are_exact_and_unknown_rejected():
     assert evaluator.profile_overrides('P1') == (
         ('min_particles', '2000'), ('max_particles', '2000'),
@@ -205,6 +254,52 @@ def test_observer_waits_for_map_odom_authority_after_cloud_limit():
 def test_smoke_validator_accepts_exact_fixture(tmp_path):
     root = _artifact(tmp_path / 'artifact')
     assert evaluator.validate_axis_a_smoke(root)['mode'] == 'smoke'
+
+
+def test_runtime_shaped_base_view_is_memory_only(tmp_path):
+    root = _artifact(tmp_path / 'artifact')
+    base_path = root / 'run_1/evidence.json'
+    persisted = strict_json_load(base_path)
+    assert 'observer' not in persisted
+    view = evaluator._load_base_view(base_path)
+    assert view['observer']['clouds'][0][
+        'fifo_associated_pose_scan_header_stamp_ns'] == 10
+    assert 'observer' not in strict_json_load(base_path)
+
+
+@pytest.mark.parametrize(
+    'attack', ['escape', 'symlink', 'stale_hash', 'missing'])
+def test_observer_state_reference_hostile_inputs_fail_closed(
+        tmp_path, attack):
+    root = _artifact(tmp_path / 'artifact')
+    run_dir = root / 'run_1'
+    state_path = run_dir / 'observer_state.json'
+    base_path = run_dir / 'evidence.json'
+    if attack == 'escape':
+        outside = root / 'observer_state.json'
+        outside.write_bytes(state_path.read_bytes())
+        base = strict_json_load(base_path)
+        base['observer_state'] = {
+            'relative_path': '../observer_state.json',
+            'size_bytes': outside.stat().st_size,
+            'sha256': hashlib.sha256(outside.read_bytes()).hexdigest()}
+        base_path.write_bytes(canonical_json_bytes(base))
+        _refresh_base_and_manifest(root)
+    elif attack == 'symlink':
+        outside = root / 'outside_observer_state.json'
+        state_path.replace(outside)
+        state_path.symlink_to(outside)
+        _refresh_base_and_manifest(root)
+    elif attack == 'stale_hash':
+        state = strict_json_load(state_path)
+        state['run_id'] = 'mutated'
+        state_path.write_bytes(canonical_json_bytes(state))
+        _rewrite(root)
+    else:
+        state_path.unlink()
+        _rewrite(root)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        evaluator.validate_axis_a_smoke(root)
 
 
 @pytest.mark.parametrize('mutation', [
