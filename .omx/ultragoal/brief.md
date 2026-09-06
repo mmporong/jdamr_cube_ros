@@ -1,0 +1,1 @@
+2D LiDAR만으로 JD-AMR의 실차 직전 자율주행 후보를 완성한다. 기존 실차 77.09m 성공과 Cartographer 기준선을 보존하며, 실측 기반 다중-seed 강건성, AMCL 재지역화, 고정 장애물 재계획, 돌발 장애물 감속·정지·재출발, frontier paired 평가, held-out 통합 검증을 순서대로 수행한다. Depth 카메라와 Visual SLAM은 범위에서 제외한다. 실제 로봇 이동, 실차 명령, 외부 배포와 push는 수행하지 않는다. 기존 capstone 및 범위 밖 변경을 수정하거나 스테이징하지 않는다.
