@@ -11,6 +11,8 @@
 - `mcap_writer_options.yaml`: 다음 MCAP 기록에서 CRC와 인덱스를 보존하는 저장 설정
 - `qos_overrides.yaml`: 기록·재생에 공통으로 사용할 명시적 QoS
 - `phase0_status.yaml`: 현재 오프라인 게이트와 SO101 경계 감사 결과
+- `20260907_SLAM_ADVANCEMENT_PLAN.md`: 완료된 증거와 G002 실패 원인 개선·G005
+  구성요소 대조까지 연결한 실행 순서
 - `inspect_mcap.py`: ROS 노드와 재생 없이 MCAP 전체 메시지와 CRC를 읽는 검사 도구
 - `corridor_run_media.py`: 주행 구간 지표와 CSV·PNG·GIF·MP4를 MCAP에서 재생성하는 도구
 - `make_sim_sensor_variant.py`: URDF 센서율·노이즈를 허용 목록 안에서 바꾸고 해시 manifest를 만드는 도구
