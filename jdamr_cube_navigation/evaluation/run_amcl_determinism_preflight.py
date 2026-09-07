@@ -144,6 +144,18 @@ def _tree_bytes(root: Path) -> int:
                if path.is_file() and not path.is_symlink())
 
 
+def _runtime_tree_bytes(root: Path) -> int:
+    """Measure a live run tree while tolerating vanished atomic temp files."""
+    total = 0
+    for path in root.rglob('*'):
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
 def _payload_tree_bytes(root: Path) -> int:
     return sum(path.stat().st_size for path in root.rglob('*')
                if path.is_file() and not path.is_symlink() and
@@ -635,7 +647,7 @@ def _runtime_guard(run_dir: Path) -> None:
     for path in run_dir.glob('*.log'):
         if path.stat().st_size > MAX_LOG_BYTES:
             raise RuntimeError(f'run log exceeds 2 MiB cap: {path.name}')
-    if _tree_bytes(run_dir) > G002_RUN_OUTPUT_LIMIT_BYTES:
+    if _runtime_tree_bytes(run_dir) > G002_RUN_OUTPUT_LIMIT_BYTES:
         raise RuntimeError('G002 run output exceeds 8 MiB cap')
 
 
@@ -1560,7 +1572,7 @@ def _run_one(run_dir: Path, seed: int, domain_id: int, args,
     else:
         evidence['scan_parity'] = None
     (run_dir / 'evidence.json').write_bytes(canonical_json_bytes(evidence))
-    if _tree_bytes(run_dir) > G002_RUN_OUTPUT_LIMIT_BYTES:
+    if _runtime_tree_bytes(run_dir) > G002_RUN_OUTPUT_LIMIT_BYTES:
         raise RuntimeError('G002 run metrics/log output exceeds 8 MiB cap')
     return evidence
 
@@ -2142,6 +2154,149 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
 def validate_smoke_artifact(root: Path) -> dict:
     """Validate exactly one no-motion pipeline smoke run."""
     return _validate_artifact(root, 'smoke')
+
+
+def validate_replay_run_evidence(
+        path: Path, *, expected_run_id: str, expected_profile: str,
+        expected_seed: int, expected_domain_id: int, expected_prefix_s: float,
+        expected_playback_rate: float, expected_max_clouds: int,
+        expected_observer_source: dict, expected_amcl_executable: dict,
+        expected_map_yaml: dict, expected_params_file: dict,
+        expected_sanitized_manifest: dict, expected_loaded_runtime: dict,
+        sanitized_root: Path, expected_bootstrap: dict,
+        allowed_extra_files: tuple[str, ...] = ()) -> dict:
+    """Validate one reusable AMCL replay run and return its observer view."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('run evidence must be a regular file')
+    run_dir = path.parent
+    evidence = _canonical_json_load(path)
+    _exact_keys(evidence, {
+        'schema_version', 'run_id', 'profile', 'seed', 'domain_id',
+        'status', 'failure', 'events', 'operations', 'observer_source',
+        'observer_state', 'amcl_executable', 'map_yaml', 'params_file',
+        'sanitized_manifest', 'resource', 'teardown', 'loaded_runtime',
+        'prelude_observer', 'prelude_snapshot', 'clock_handoff', 'tf_bootstrap',
+        'amcl_tf_error_counts', 'transform_lookup_drop_count', 'prefix_s',
+        'playback_rate', 'survivor_count', 'output_mcap_count',
+        'cmd_vel_publisher', 'scan_parity'}, 'run evidence')
+    if (evidence['schema_version'] != 1 or
+            evidence['run_id'] != expected_run_id or
+            evidence['profile'] != expected_profile or
+            evidence['seed'] != expected_seed or
+            evidence['domain_id'] != expected_domain_id or
+            not 0 <= expected_domain_id <= 232 or
+            evidence['status'] != 'PASS' or evidence['failure'] is not None or
+            evidence['prefix_s'] != expected_prefix_s or
+            evidence['playback_rate'] != expected_playback_rate or
+            evidence['survivor_count'] != 0 or
+            evidence['output_mcap_count'] != 0 or
+            evidence['cmd_vel_publisher'] != 'NOT_APPLICABLE'):
+        raise ValueError('run scalar contract drift')
+    identities = {
+        'observer_source': expected_observer_source,
+        'amcl_executable': expected_amcl_executable,
+        'map_yaml': expected_map_yaml,
+        'params_file': expected_params_file,
+        'sanitized_manifest': expected_sanitized_manifest,
+    }
+    for key, expected in identities.items():
+        _identity_schema(evidence[key], f'run {key}')
+        if evidence[key] != expected:
+            raise ValueError(f'run identity drift: {key}')
+    _validate_loaded_runtime(evidence['loaded_runtime'], 'run loaded runtime')
+    if evidence['loaded_runtime'] != expected_loaded_runtime:
+        raise ValueError('run loaded runtime drift')
+    if type(evidence['events']) is not list:
+        raise ValueError('run event list drift')
+    for event in evidence['events']:
+        _validate_event_record(event, 'run event', False)
+    if ([event['name'] for event in evidence['events']] !=
+            ['run_started', 'tf_prelude_completed', 'measurement_finalized'] or
+            any(left['steady_ns'] >= right['steady_ns']
+                for left, right in zip(evidence['events'],
+                                       evidence['events'][1:]))):
+        raise ValueError('run event order drift')
+    _validate_run_operations(evidence['operations'], expected_seed)
+    observer = _load_observer_state(evidence['observer_state'], run_dir)
+    _validate_observer_snapshot(observer, 'final observer state')
+    _validate_observer_snapshot(evidence['prelude_observer'],
+                                'prelude observer state')
+    _validate_prelude_snapshot(
+        evidence['prelude_snapshot'], evidence['prelude_observer'], run_dir)
+    players = [item for item in evidence['teardown']
+               if type(item) is dict and item.get('name') == 'player']
+    if len(players) != 1:
+        raise ValueError('main player process drift')
+    _validate_clock_handoff(
+        evidence['clock_handoff'], evidence['prelude_observer'], observer,
+        evidence['prelude_snapshot'], players[0]['started'])
+    expected_files = {
+        'amcl.log', 'amcl_resource.jsonl', 'evidence.json',
+        'initialpose.request', 'map_server.log', 'observer.log',
+        'observer_state.json', 'player.log', 'prelude_snapshot.request',
+        'prelude_snapshot.ack.json',
+        'prelude_snapshot.prelude_complete.json', 'resource_sampler.log',
+        'tf_prelude_player.log'}
+    expected_files.update(allowed_extra_files)
+    if {item.name for item in run_dir.iterdir()} != expected_files:
+        raise ValueError('run file inventory drift')
+    for process in evidence['teardown']:
+        _exact_keys(process, {
+            'name', 'pid', 'pgid', 'command', 'started', 'returncode',
+            'stop_stages', 'survivors', 'log'}, 'teardown process')
+        if (type(process['pid']) is not int or process['pid'] <= 0 or
+                type(process['pgid']) is not int or process['pgid'] <= 0 or
+                type(process['command']) is not list or
+                any(type(item) is not str for item in process['command']) or
+                type(process['returncode']) is not int or
+                type(process['survivors']) is not list or
+                type(process['stop_stages']) is not list):
+            raise ValueError('teardown process scalar drift')
+        _validate_event_record(process['started'], 'process start', False)
+        for stop in process['stop_stages']:
+            _exact_keys(stop, {'signal', 'steady_ns'}, 'stop stage')
+            if (stop['signal'] not in {'SIGINT', 'SIGTERM', 'SIGKILL'} or
+                    type(stop['steady_ns']) is not int or stop['steady_ns'] < 0):
+                raise ValueError('stop stage drift')
+        log_path = run_dir / process['log']['relative_path']
+        if process['log'] != _relative_identity(log_path, run_dir):
+            raise ValueError('teardown log identity drift')
+    expected_processes = {
+        'player': 0, 'tf_prelude_player': 0, 'resource_sampler': -2,
+        'observer': 0, 'amcl': 0, 'map_server': 0}
+    processes = {item['name']: item for item in evidence['teardown']}
+    if (set(processes) != set(expected_processes) or
+            len(processes) != len(evidence['teardown']) or
+            any(processes[name]['returncode'] != code or
+                processes[name]['survivors']
+                for name, code in expected_processes.items())):
+        raise ValueError('process termination contract drift')
+    if [item['signal'] for item in
+            processes['resource_sampler']['stop_stages']] != ['SIGINT']:
+        raise ValueError('resource sampler termination drift')
+    resource_path = run_dir / evidence['resource']['file']['relative_path']
+    if evidence['resource'] != _resource_summary(resource_path, run_dir):
+        raise ValueError('resource summary drift')
+    if (any(value != 0 for value in evidence['amcl_tf_error_counts'].values()) or
+            evidence['transform_lookup_drop_count'] != 0):
+        raise ValueError('AMCL transform lookup error observed')
+    view = {**evidence, 'observer': observer}
+    _validate_replay_bootstrap(
+        view, run_dir, sanitized_root, expected_bootstrap)
+    if evidence['scan_parity'] != _scan_parity(observer, sanitized_root):
+        raise ValueError('run scan parity drift')
+    if (observer['run_id'] != expected_run_id or
+            observer['seed'] != expected_seed or
+            observer['max_clouds'] != expected_max_clouds or
+            observer['failure'] is not None or observer['done'] is not True or
+            observer['initialpose_count'] != 1 or
+            observer['pending_cloud_count'] != 0 or
+            observer['pending_pose_count'] != 0 or
+            len(observer['clouds']) != expected_max_clouds):
+        raise ValueError('observer completion contract drift')
+    if _tree_bytes(run_dir) > G002_RUN_OUTPUT_LIMIT_BYTES:
+        raise ValueError('run tree exceeds 8 MiB output cap')
+    return view
 
 
 def validate_full_artifact(root: Path) -> dict:

@@ -34,6 +34,8 @@ GT_YAW_TOLERANCE_RAD = LIDAR_BEAM_RAD
 ODOM_CONTINUITY_TOLERANCE_M = 0.10
 STATIONARY_SPEED_MPS = 0.01
 ROTATION_TARGET_RAD = 2.0 * math.pi
+INITIAL_OBSERVATION_RAD = 0.8
+POST_ZERO_OBSERVATION_RAD = 1.2
 ROTATION_CRUISE_RADPS = 0.5
 ROTATION_SLOW_ZONE_RAD = 0.20
 ROTATION_MIN_RADPS = 0.05
@@ -82,6 +84,7 @@ def validate_kidnapped_trace(value: dict) -> dict:
         'schema_version', 'events', 'pre_teleport_gt', 'post_teleport_gt',
         'pre_teleport_odom', 'post_teleport_odom', 't0_scan_stamp_ns',
         'unwrapped_observation_yaw_rad', 'contact_count', 'final_zero',
+        'initial_observation_yaw_rad', 'post_zero_observation_yaw_rad',
         'zero_hold_s', 'stationary_sample_count', 'failure', 'driver_source'}
     if type(value) is not dict or set(value) != expected:
         raise ValueError('kidnapped trace schema drift')
@@ -92,12 +95,18 @@ def validate_kidnapped_trace(value: dict) -> dict:
     events = value['events']
     if type(events) is not list:
         raise ValueError('kidnapped event list drift')
-    required = ['stationary_confirmed', 'teleport_requested',
+    required = ['initial_observation_complete', 'stationary_confirmed',
+                'teleport_requested',
                 'teleport_ack', 'teleport_gt_verified', 't0_scan',
-                'rotation_complete', 'zero_hold_complete']
+                'rotation_complete', 'zero_hold_complete',
+                'post_zero_observation_complete',
+                'final_zero_hold_complete']
     if any(
             type(event) is not dict or
-            set(event) != {'name', 'steady_ns', 'ros_ns'} or
+            set(event) != ({'name', 'steady_ns', 'ros_ns',
+                            'scan_header_stamp_ns'}
+                           if event.get('name') == 't0_scan' else
+                           {'name', 'steady_ns', 'ros_ns'}) or
             type(event['steady_ns']) is not int or
             type(event['ros_ns']) is not int or
             event['steady_ns'] <= 0 or event['ros_ns'] < 0
@@ -109,6 +118,13 @@ def validate_kidnapped_trace(value: dict) -> dict:
     if any(left['steady_ns'] >= right['steady_ns']
            for left, right in zip(events, events[1:])):
         raise ValueError('kidnapped event order drift')
+    if any(left['ros_ns'] > right['ros_ns']
+           for left, right in zip(events, events[1:])):
+        raise ValueError('kidnapped ROS sim-time order drift')
+    motion_events = events[names.index('t0_scan'):]
+    if any(left['ros_ns'] >= right['ros_ns']
+           for left, right in zip(motion_events, motion_events[1:])):
+        raise ValueError('kidnapped motion event sim-time drift')
     pre_gt = value['pre_teleport_gt']
     post_gt = value['post_teleport_gt']
     if not all(_pose3(pose) for pose in (
@@ -133,11 +149,17 @@ def validate_kidnapped_trace(value: dict) -> dict:
                     if event['name'] == 'teleport_gt_verified')
     if (type(value['t0_scan_stamp_ns']) is not int or
             value['t0_scan_stamp_ns'] <= 0 or
+            t0['scan_header_stamp_ns'] != value['t0_scan_stamp_ns'] or
             t0['steady_ns'] <= verified['steady_ns'] or
             not _finite_number(value['unwrapped_observation_yaw_rad']) or
             value['unwrapped_observation_yaw_rad'] < ROTATION_TARGET_RAD or
             value['unwrapped_observation_yaw_rad'] >
             ROTATION_TARGET_RAD + GT_YAW_TOLERANCE_RAD or
+            not _finite_number(value['initial_observation_yaw_rad']) or
+            value['initial_observation_yaw_rad'] < INITIAL_OBSERVATION_RAD or
+            not _finite_number(value['post_zero_observation_yaw_rad']) or
+            value['post_zero_observation_yaw_rad'] <
+            POST_ZERO_OBSERVATION_RAD or
             type(value['contact_count']) is not int or
             value['contact_count'] != 0 or value['final_zero'] is not True or
             not _finite_number(value['zero_hold_s']) or
@@ -168,8 +190,10 @@ class KidnappedDriver(Node):
         self.t0_scan_stamp_ns = None
         self.contact_count = 0
         self.accumulated_yaw_rad = 0.0
+        self.initial_observation_yaw_rad = 0.0
+        self.post_zero_observation_yaw_rad = 0.0
         self.last_yaw = None
-        self.phase = 'WAIT_STATIONARY'
+        self.phase = 'INITIAL_ROTATE'
         self.zero_started = None
         self.done = False
         self.failure = None
@@ -186,9 +210,16 @@ class KidnappedDriver(Node):
                                      self._contact, 10)
         self.create_timer(0.02, self._tick)
 
-    def _event(self, name):
-        self.events.append({'name': name, 'steady_ns': time.monotonic_ns(),
-                            'ros_ns': self.get_clock().now().nanoseconds})
+    def _event(self, name, scan_header_stamp_ns=None):
+        event = {'name': name, 'steady_ns': time.monotonic_ns(),
+                 'ros_ns': self.get_clock().now().nanoseconds}
+        if name == 't0_scan':
+            if type(scan_header_stamp_ns) is not int:
+                raise ValueError('t0 event requires scan header stamp')
+            event['scan_header_stamp_ns'] = scan_header_stamp_ns
+        elif scan_header_stamp_ns is not None:
+            raise ValueError('scan header stamp is only valid for t0')
+        self.events.append(event)
 
     def _gt(self, message):
         pose = message.pose
@@ -200,10 +231,15 @@ class KidnappedDriver(Node):
             self.post_odom = list(self.odom)
             self._event('teleport_gt_verified')
             self.phase = 'WAIT_T0'
-        elif self.phase == 'ROTATE':
+        elif self.phase in ('INITIAL_ROTATE', 'ROTATE', 'POST_ZERO_ROTATE'):
             if self.last_yaw is not None:
-                self.accumulated_yaw_rad += abs(
-                    _angle_delta(current[2], self.last_yaw))
+                delta = abs(_angle_delta(current[2], self.last_yaw))
+                if self.phase == 'INITIAL_ROTATE':
+                    self.initial_observation_yaw_rad += delta
+                elif self.phase == 'ROTATE':
+                    self.accumulated_yaw_rad += delta
+                else:
+                    self.post_zero_observation_yaw_rad += delta
             self.last_yaw = current[2]
 
     def _odom(self, message):
@@ -221,7 +257,7 @@ class KidnappedDriver(Node):
             self.t0_scan_stamp_ns = (
                 int(message.header.stamp.sec) * 1_000_000_000 +
                 int(message.header.stamp.nanosec))
-            self._event('t0_scan')
+            self._event('t0_scan', self.t0_scan_stamp_ns)
             self.last_yaw = self.gt[2]
             self.phase = 'ROTATE'
 
@@ -243,7 +279,21 @@ class KidnappedDriver(Node):
 
     def _tick(self):
         try:
-            if (self.phase == 'WAIT_STATIONARY' and self.stationary_count >= 10
+            if self.phase == 'INITIAL_ROTATE':
+                command = Twist()
+                command.angular.z = rotation_command_radps(
+                    self.initial_observation_yaw_rad)
+                self.cmd_pub.publish(command)
+                if self.initial_observation_yaw_rad >= INITIAL_OBSERVATION_RAD:
+                    self._event('initial_observation_complete')
+                    self.zero_started = time.monotonic()
+                    self.phase = 'INITIAL_ZERO_HOLD'
+            elif self.phase == 'INITIAL_ZERO_HOLD':
+                self.cmd_pub.publish(Twist())
+                if time.monotonic() - self.zero_started >= ZERO_HOLD_S:
+                    self.stationary_count = 0
+                    self.phase = 'WAIT_STATIONARY'
+            elif (self.phase == 'WAIT_STATIONARY' and self.stationary_count >= 10
                     and self.gt is not None and self.odom is not None):
                 self.pre_gt = list(self.gt)
                 self.pre_odom = list(self.odom)
@@ -264,6 +314,22 @@ class KidnappedDriver(Node):
                 self.cmd_pub.publish(Twist())
                 if time.monotonic() - self.zero_started >= ZERO_HOLD_S:
                     self._event('zero_hold_complete')
+                    self.last_yaw = self.gt[2]
+                    self.phase = 'POST_ZERO_ROTATE'
+            elif self.phase == 'POST_ZERO_ROTATE':
+                command = Twist()
+                command.angular.z = rotation_command_radps(
+                    self.post_zero_observation_yaw_rad)
+                self.cmd_pub.publish(command)
+                if self.post_zero_observation_yaw_rad >= \
+                        POST_ZERO_OBSERVATION_RAD:
+                    self._event('post_zero_observation_complete')
+                    self.zero_started = time.monotonic()
+                    self.phase = 'FINAL_ZERO_HOLD'
+            elif self.phase == 'FINAL_ZERO_HOLD':
+                self.cmd_pub.publish(Twist())
+                if time.monotonic() - self.zero_started >= ZERO_HOLD_S:
+                    self._event('final_zero_hold_complete')
                     self.done = True
         except Exception as exc:
             self.failure = f'{type(exc).__name__}: {exc}'
@@ -279,8 +345,12 @@ class KidnappedDriver(Node):
                 'post_teleport_odom': self.post_odom,
                 't0_scan_stamp_ns': self.t0_scan_stamp_ns,
                 'unwrapped_observation_yaw_rad': self.accumulated_yaw_rad,
+                'initial_observation_yaw_rad':
+                    self.initial_observation_yaw_rad,
+                'post_zero_observation_yaw_rad':
+                    self.post_zero_observation_yaw_rad,
                 'contact_count': self.contact_count,
-                'final_zero': self.phase == 'ZERO_HOLD' or self.done,
+                'final_zero': self.phase == 'FINAL_ZERO_HOLD' or self.done,
                 'zero_hold_s': (time.monotonic() - self.zero_started
                                 if self.zero_started else 0.0),
                 'stationary_sample_count': self.stationary_count,
