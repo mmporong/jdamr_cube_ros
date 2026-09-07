@@ -57,6 +57,8 @@ setup(
             'jdamr_cube_navigation.sim_scan_gate:main',
             'sim_collision_monitor_scenario = '
             'jdamr_cube_navigation.sim_collision_monitor_scenario:main',
+            'g005_ground_truth_localization = '
+            'jdamr_cube_navigation.g005_ground_truth_localization:main',
         ],
     },
 )

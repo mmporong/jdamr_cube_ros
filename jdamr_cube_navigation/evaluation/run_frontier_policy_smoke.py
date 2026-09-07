@@ -53,7 +53,7 @@ def run_smoke(asset_root: Path, output_root: Path) -> dict:
     start_index = start_cell[1] * width + start_cell[0]
     observed = [-1] * len(layout['data'])
     for scan_index in range(3):
-        newer = reveal_scan(layout, observed, start_index, scan_index)
+        newer = reveal_scan(layout, observed, start_index, 0.0, scan_index)
         if any(old != -1 and old != new
                for old, new in zip(observed, newer)):
             raise ValueError('G005 reveal was not monotonic')

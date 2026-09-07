@@ -2,16 +2,25 @@
 """Regression and hostile tests for the G005 frontier policy harness."""
 
 from copy import deepcopy
+import hashlib
 import math
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import evaluate_frontier_policy as evaluator
+
 from frontier_policy_contract import (
     build_layout,
     canonical_json_bytes,
     connected_reachable_cells,
     decision_token,
+    file_identity,
     FULL_PLAN,
+    LAYOUT_SEEDS,
+    lidar_beam_angle_rad,
+    LIDAR_MAX_ANGLE_RAD,
+    LIDAR_MIN_ANGLE_RAD,
+    lidar_world_beam_angle_rad,
     neutral_sample,
     policy_rank,
     reveal_scan,
@@ -20,9 +29,23 @@ from frontier_policy_contract import (
     unresolved_after_three,
     validate_planner_batch,
 )
-from generate_frontier_policy_assets import generate, validate_assets
+
+from generate_frontier_policy_assets import (
+    _evaluation_nav2_params,
+    _evaluation_robot_urdf,
+    _occupied_rectangles,
+    _sdf,
+    EVALUATION_NAV2_PARAMS_NAME,
+    EVALUATION_ROBOT_NAME,
+    generate,
+    validate_assets,
+)
+
 import pytest
+
 from run_frontier_policy_smoke import run_smoke
+
+import yaml
 
 
 def _candidates():
@@ -81,9 +104,9 @@ def test_layout_reachable_denominator_and_reveal_are_deterministic_monotonic():
     assert len(reachable) > 100
     start = layout['start_cell'][1] * layout['width'] + layout['start_cell'][0]
     observed = [-1] * len(layout['data'])
-    first = reveal_scan(layout, observed, start, 0)
-    second = reveal_scan(layout, first, start, 1)
-    assert first == reveal_scan(layout, observed, start, 0)
+    first = reveal_scan(layout, observed, start, 0.0, 0)
+    second = reveal_scan(layout, first, start, 0.0, 1)
+    assert first == reveal_scan(layout, observed, start, 0.0, 0)
     assert all(left == -1 or left == right
                for left, right in zip(first, second))
     assert all(value in (-1, truth)
@@ -110,7 +133,7 @@ def test_reveal_rejects_a_cell_class_flip():
     observed = [-1] * len(layout['data'])
     observed[start] = 100
     with pytest.raises(ValueError, match='class flip'):
-        reveal_scan(layout, observed, start, 2)
+        reveal_scan(layout, observed, start, 0.0, 2)
 
 
 def test_neutral_sample_is_order_independent_and_limited():
@@ -198,9 +221,178 @@ def test_asset_generation_and_tree_tampering_fail_closed(tmp_path):
     manifest = generate(root, 'smoke')
     assert manifest['layout_seeds'] == [11]
     assert len(manifest['full_plan']) == 15
+    assert (root / EVALUATION_NAV2_PARAMS_NAME).is_file()
     assert validate_assets(root, 'smoke') == manifest
     (root / 'shadow.txt').write_text('x', encoding='utf-8')
     with pytest.raises(ValueError, match='inventory'):
+        validate_assets(root, 'smoke')
+
+
+def test_evaluation_robot_variant_binds_preregistered_lidar_profile():
+    root = ET.fromstring(_evaluation_robot_urdf())
+    sensors = [sensor for gazebo in root.findall('gazebo')
+               if gazebo.attrib.get('reference') == 'laser_link'
+               for sensor in gazebo.findall('sensor')
+               if sensor.attrib.get('name') == 'laser_sensor']
+    assert len(sensors) == 1
+    sensor = sensors[0]
+    assert sensor.findtext('update_rate') == '10.0'
+    assert sensor.findtext('lidar/scan/horizontal/samples') == '360'
+    assert sensor.findtext('lidar/scan/horizontal/min_angle') == '-2.862'
+    assert sensor.findtext('lidar/scan/horizontal/max_angle') == '2.862'
+    assert sensor.findtext('lidar/range/max') == '8.0'
+
+
+def test_lidar_beam_geometry_matches_endpoint_inclusive_gazebo_profile():
+    assert lidar_beam_angle_rad(0) == LIDAR_MIN_ANGLE_RAD
+    assert lidar_beam_angle_rad(359) == LIDAR_MAX_ANGLE_RAD
+    expected_increment = (
+        LIDAR_MAX_ANGLE_RAD - LIDAR_MIN_ANGLE_RAD) / 359
+    assert lidar_beam_angle_rad(1) - lidar_beam_angle_rad(0) == (
+        pytest.approx(expected_increment))
+    with pytest.raises(ValueError, match='outside'):
+        lidar_beam_angle_rad(360)
+    for base_yaw in (0.0, math.pi / 2.0, math.pi):
+        assert lidar_world_beam_angle_rad(0, base_yaw) == pytest.approx(
+            base_yaw + math.pi + LIDAR_MIN_ANGLE_RAD)
+    with pytest.raises(ValueError, match='finite'):
+        lidar_world_beam_angle_rad(0, math.nan)
+
+
+def test_reveal_geometry_removes_rotated_map_origin_from_world_heading():
+    layout = build_layout(11)
+    start = layout['start_cell'][1] * layout['width'] + layout['start_cell'][0]
+    observed = [-1] * len(layout['data'])
+    baseline = reveal_scan(layout, observed, start, 0.0, 0)
+    rotated = deepcopy(layout)
+    rotated['origin_m_rad'][2] = 0.7
+    assert reveal_scan(rotated, observed, start, 0.7, 0) == baseline
+
+
+def test_evaluation_nav2_profile_freezes_only_global_static_and_inflation():
+    params = yaml.safe_load(_evaluation_nav2_params())
+    global_params = params['global_costmap']['global_costmap'][
+        'ros__parameters']
+    local_params = params['local_costmap']['local_costmap'][
+        'ros__parameters']
+    assert global_params['plugins'] == ['static_layer', 'inflation_layer']
+    assert global_params['filters'] == []
+    assert local_params['plugins'] == ['obstacle_layer', 'inflation_layer']
+    assert local_params['filters'] == ['keepout_filter']
+
+
+@pytest.mark.parametrize('layout_seed', LAYOUT_SEEDS)
+def test_generated_world_preserves_occupancy_with_merged_wall_rectangles(
+        layout_seed):
+    layout = build_layout(layout_seed)
+    resolution = layout['resolution_m_per_cell']
+    origin_x, origin_y, _ = layout['origin_m_rad']
+    world = ET.fromstring(_sdf(layout)).find('world')
+    covered = set()
+    wall_models = [model for model in world.findall('model')
+                   if model.attrib['name'].startswith('wall_rect_')]
+    for model in wall_models:
+        pose = [float(value) for value in model.findtext('pose').split()]
+        size = [float(value) for value in model.findtext(
+            'link/collision/geometry/box/size').split()]
+        sensor = model.find('link/sensor')
+        assert sensor is not None
+        assert sensor.attrib == {'name': 'contact_sensor', 'type': 'contact'}
+        assert sensor.findtext('always_on') == 'true'
+        assert sensor.findtext('update_rate') == '50'
+        assert sensor.findtext('contact/collision') == 'collision'
+        assert sensor.findtext('contact/topic') == '/g005_contacts'
+        x0 = round((pose[0] - size[0] / 2.0 - origin_x) / resolution)
+        x1 = round((pose[0] + size[0] / 2.0 - origin_x) / resolution)
+        y0 = round((pose[1] - size[1] / 2.0 - origin_y) / resolution)
+        y1 = round((pose[1] + size[1] / 2.0 - origin_y) / resolution)
+        cells = {y * layout['width'] + x
+                 for y in range(y0, y1) for x in range(x0, x1)}
+        assert not covered.intersection(cells)
+        covered.update(cells)
+    occupied = {index for index, value in enumerate(layout['data'])
+                if value >= 65}
+    assert covered == occupied
+    assert len(wall_models) == len(_occupied_rectangles(layout))
+    assert len(wall_models) < len(occupied)
+
+
+def test_generated_world_has_required_gazebo_systems_and_ground_plane():
+    layout = build_layout(11)
+    root = ET.fromstring(_sdf(layout))
+    world = root.find('world')
+    assert world is not None
+    plugins = {plugin.attrib['filename']: plugin
+               for plugin in world.findall('plugin')}
+    plugin_names = {name: plugin.attrib['name']
+                    for name, plugin in plugins.items()}
+    assert plugin_names == {
+        'gz-sim-physics-system': 'gz::sim::systems::Physics',
+        'gz-sim-user-commands-system': 'gz::sim::systems::UserCommands',
+        'gz-sim-scene-broadcaster-system':
+        'gz::sim::systems::SceneBroadcaster',
+        'gz-sim-contact-system': 'gz::sim::systems::Contact',
+        'gz-sim-sensors-system': 'gz::sim::systems::Sensors',
+        'gz-sim-imu-system': 'gz::sim::systems::Imu',
+    }
+    sensors = plugins['gz-sim-sensors-system']
+    assert sensors.findtext('render_engine') == 'ogre2'
+    model_names = [model.attrib['name'] for model in world.findall('model')]
+    assert 'ground_plane' in model_names
+    ground = next(model for model in world.findall('model')
+                  if model.attrib['name'] == 'ground_plane')
+    assert ground.findtext('static') == 'true'
+    assert ground.findtext(
+        'link/collision/geometry/plane/normal') == '0 0 1'
+    assert ground.findtext(
+        'link/collision/geometry/plane/size') == '100 100'
+    wall_names = [name for name in model_names
+                  if name.startswith('wall_rect_')]
+    assert len(wall_names) == len(_occupied_rectangles(layout))
+
+
+def test_asset_validator_rejects_resealed_world_geometry_tamper(tmp_path):
+    root = tmp_path / 'assets'
+    generate(root, 'smoke')
+    world_path = root / 'layout_11.world'
+    original = world_path.read_bytes()
+    tampered = original.replace(
+        b'<pose>0.000000 -3.625000',
+        b'<pose>0.125000 -3.625000', 1)
+    assert tampered != original
+    world_path.write_bytes(tampered)
+    manifest_path = root / 'asset_manifest.json'
+    manifest = strict_json_load(manifest_path)
+    world_identity = file_identity(world_path, relative_to=root)
+    manifest['layouts']['11']['sdf_sha256'] = world_identity['sha256']
+    manifest['asset_files'] = sorted([
+        file_identity(path, relative_to=root)
+        for path in root.iterdir() if path.name != 'asset_manifest.json'
+    ], key=lambda item: item['path'])
+    manifest['asset_tree_sha256'] = hashlib.sha256(
+        canonical_json_bytes(manifest['asset_files'])).hexdigest()
+    manifest_path.write_bytes(canonical_json_bytes(manifest))
+    with pytest.raises(ValueError, match='SDF geometry drift'):
+        validate_assets(root, 'smoke')
+
+
+def test_asset_validator_rejects_resealed_evaluation_robot_tamper(tmp_path):
+    root = tmp_path / 'assets'
+    generate(root, 'smoke')
+    robot_path = root / EVALUATION_ROBOT_NAME
+    robot_path.write_bytes(robot_path.read_bytes().replace(
+        b'<update_rate>10.0</update_rate>',
+        b'<update_rate>2.0</update_rate>', 1))
+    manifest_path = root / 'asset_manifest.json'
+    manifest = strict_json_load(manifest_path)
+    manifest['asset_files'] = sorted([
+        file_identity(path, relative_to=root)
+        for path in root.iterdir() if path.name != 'asset_manifest.json'
+    ], key=lambda item: item['path'])
+    manifest['asset_tree_sha256'] = hashlib.sha256(
+        canonical_json_bytes(manifest['asset_files'])).hexdigest()
+    manifest_path.write_bytes(canonical_json_bytes(manifest))
+    with pytest.raises(ValueError, match='robot profile drift'):
         validate_assets(root, 'smoke')
 
 

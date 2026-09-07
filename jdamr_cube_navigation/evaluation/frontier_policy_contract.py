@@ -23,6 +23,9 @@ FOOTPRINT_CLEARANCE_M = 0.20
 LIDAR_RATE_HZ = 10.0
 LIDAR_BEAMS = 360
 LIDAR_RANGE_M = 8.0
+LIDAR_MIN_ANGLE_RAD = -2.862
+LIDAR_MAX_ANGLE_RAD = 2.862
+LIDAR_BASE_YAW_RAD = math.pi
 SAMPLE_LIMIT = 5
 RUN_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024
 ARTIFACT_LIMIT_BYTES = 32 * 1024 * 1024
@@ -136,7 +139,9 @@ def connected_reachable_cells(layout: dict) -> list[int]:
             if (other < 0 or other >= len(data) or
                     other in reached or not safe(other)):
                 continue
-            if abs(other % width - x) + abs(other // width - index // width) != 1:
+            cell_delta = (abs(other % width - x) +
+                          abs(other // width - index // width))
+            if cell_delta != 1:
                 continue
             reached.add(other)
             queue.append(other)
@@ -150,10 +155,29 @@ def _noise_value(layout_seed: int, sensor_origin_cell: int,
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], 'little')
 
 
+def lidar_beam_angle_rad(beam_bin: int) -> float:
+    """Return the exact endpoint-inclusive Gazebo horizontal beam angle."""
+    if type(beam_bin) is not int or not 0 <= beam_bin < LIDAR_BEAMS:
+        raise ValueError('LiDAR beam index is outside the profile')
+    return (LIDAR_MIN_ANGLE_RAD +
+            (LIDAR_MAX_ANGLE_RAD - LIDAR_MIN_ANGLE_RAD) *
+            beam_bin / (LIDAR_BEAMS - 1))
+
+
+def lidar_world_beam_angle_rad(beam_bin: int, base_yaw_rad: float) -> float:
+    """Transform one laser-frame beam through the fixed base extrinsic."""
+    if (type(base_yaw_rad) not in (int, float) or
+            not math.isfinite(float(base_yaw_rad))):
+        raise ValueError('LiDAR base yaw is not finite')
+    return (float(base_yaw_rad) + LIDAR_BASE_YAW_RAD +
+            lidar_beam_angle_rad(beam_bin))
+
+
 def reveal_scan(layout: dict, observed: list[int], pose_cell: int,
-                scan_index: int) -> list[int]:
+                pose_yaw_rad: float, origin_scan_index: int) -> list[int]:
     """Reveal GT classes monotonically using public delay/dropout lookup."""
-    if len(observed) != len(layout['data']) or scan_index < 0:
+    if (len(observed) != len(layout['data']) or
+            type(origin_scan_index) is not int or origin_scan_index < 0):
         raise ValueError('reveal input shape drift')
     result = list(observed)
     width = layout['width']
@@ -161,7 +185,8 @@ def reveal_scan(layout: dict, observed: list[int], pose_cell: int,
     origin_y = pose_cell // width
     max_cells = math.floor(LIDAR_RANGE_M / layout['resolution_m_per_cell'])
     for beam_bin in range(LIDAR_BEAMS):
-        angle_rad = 2.0 * math.pi * beam_bin / LIDAR_BEAMS
+        angle_rad = (lidar_world_beam_angle_rad(beam_bin, pose_yaw_rad) -
+                     layout['origin_m_rad'][2])
         for step in range(1, max_cells + 1):
             x = origin_x + round(math.cos(angle_rad) * step)
             y = origin_y + round(math.sin(angle_rad) * step)
@@ -172,7 +197,7 @@ def reveal_scan(layout: dict, observed: list[int], pose_cell: int,
                 layout['layout_seed'], pose_cell, beam_bin, target)
             dropout = noise % 1000 < 20
             delay_scans = (noise // 1000) % 3
-            if not dropout and scan_index >= delay_scans:
+            if not dropout and origin_scan_index >= delay_scans:
                 current = result[target]
                 truth = layout['data'][target]
                 if current not in (-1, truth):
@@ -186,7 +211,8 @@ def reveal_scan(layout: dict, observed: list[int], pose_cell: int,
     return result
 
 
-def neutral_sample(layout_seed: int, candidate_cell_indices: list[int]) -> dict:
+def neutral_sample(
+        layout_seed: int, candidate_cell_indices: list[int]) -> dict:
     """Select at most five candidates by policy-neutral stable hashing."""
     if len(candidate_cell_indices) != len(set(candidate_cell_indices)):
         raise ValueError('candidate IDs must be unique')
