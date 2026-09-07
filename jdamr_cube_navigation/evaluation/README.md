@@ -13,6 +13,8 @@
 - `phase0_status.yaml`: 현재 오프라인 게이트와 SO101 경계 감사 결과
 - `20260907_SLAM_ADVANCEMENT_PLAN.md`: 완료된 증거와 G002 실패 원인 개선·G005
   구성요소 대조까지 연결한 실행 순서
+- `20260907_G005_VERTICAL_READINESS.md`: 실제 Gazebo·Nav2 기반 G005 실행 경로의
+  검증 결과, 주장 범위와 full15 실행 절차
 - `inspect_mcap.py`: ROS 노드와 재생 없이 MCAP 전체 메시지와 CRC를 읽는 검사 도구
 - `corridor_run_media.py`: 주행 구간 지표와 CSV·PNG·GIF·MP4를 MCAP에서 재생성하는 도구
 - `make_sim_sensor_variant.py`: URDF 센서율·노이즈를 허용 목록 안에서 바꾸고 해시 manifest를 만드는 도구
@@ -83,6 +85,17 @@ PYTHONPATH="jdamr_cube_navigation/evaluation:$PYTHONPATH" \
 여기서 kidnapped 결과는 자동 복구 행동을 시험한 것이 아니다. 미리 기록한 회전 관측을
 동일하게 재생한 estimator-only 비교이며, 폐루프 정지·복구·목표 재개는 후속 단계에서
 선택 후보가 있을 때만 별도로 검증한다.
+
+## G005 프런티어 정책 평가
+
+G005의 실제 실행 경로는 구현과 수직 스모크까지 완료했다. 고정 asset에서 실제 Gazebo와
+Nav2 action을 기동하고, 지도·LiDAR·TF·lifecycle·`/cmd_vel` 권한·프로세스 자원을
+run 전체에서 검증한 뒤 결과를 봉인한다. 짧은 수직 스모크에서는 Nav2 목표 수락, 비영
+이동 명령, 10 Hz LiDAR 32/32 수락, runtime invalid 0, 잔존 프로세스 0을 확인했다.
+
+정책 3개 × layout seed 5개의 full15 본평가는 아직 실행하지 않았다. 따라서 현재 결론은
+`평가 실행 준비 완료`이며 정책 우승이나 production 승격이 아니다. 구현·검증·용어·실행
+명령과 주장 경계는 `20260907_G005_VERTICAL_READINESS.md`에 정리했다.
 
 `inspect_mcap.py`와 미디어 생성기는 `requirements.txt`에 고정한 MCAP reader, ROS 2
 decoder, 수치·그림 라이브러리를 사용한다. 로봇 런타임의 전역 Python 환경이나 OS

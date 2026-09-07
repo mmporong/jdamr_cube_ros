@@ -209,7 +209,9 @@ clearance 비율 0.95 이상, unreachable·failure regression 0이어야 한다.
 
 ## 실행 순서
 
-현재 1~4단계는 완료됐다.
+현재 1~5단계는 완료됐다. G005는 실제 Gazebo·Nav2 실행 경로와 수직 스모크까지
+완료했지만, 6단계 full15 본평가는 아직 실행하지 않았다. 구현 검증과 주장 범위는
+`20260907_G005_VERTICAL_READINESS.md`에 기록했다.
 
 1. G002 Axis B의 GT 불연속·관측 schedule·claim 경계를 보완한다.
 2. 정상 초기화·초기 오프셋·kidnapped 입력을 Gazebo에서 한 번씩 생성한다.
