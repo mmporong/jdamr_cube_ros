@@ -20,6 +20,43 @@
 - `compare_sim_slam_experiments.py`: 동일 조건의 backend·센서 stress 행렬을 검증하고 비교 자료를 만드는 도구
 - `../launch/offline_replay_guard.launch.py`: 저장 지도와 이동 명령을 재생하지 않고 AMCL `map -> odom`을 제거하는 launch
 
+## AMCL 재지역화 평가
+
+G002는 실차 bag의 처리 비용을 비교하는 Axis A와, Gazebo ground truth가 있는 세 가지
+재지역화 상황을 비교하는 Axis B로 나뉜다. `P0`는 현재 production 설정, `P1`은 입자 수를
+고정한 대조군, `P2`는 recovery particle 주입 후보 설정이다. AMCL seed는 같은 입력에서
+추정기 내부 난수 영향만 반복하기 위한 값이며 서로 다른 환경을 뜻하지 않는다.
+
+최종 canonical 산출물은 다음과 같다.
+
+- Axis A 15회: `/home/lim/jdamr_artifacts/amcl_axis_a_20260907_v06_full15`
+- Axis B 입력 3개: `/home/lim/jdamr_artifacts/amcl_axis_b_inputs_20260907_v13`
+- Axis B 45회: `/home/lim/jdamr_artifacts/amcl_axis_b_20260907_v02_full45`
+
+재검증은 용량을 중복하지 않기 위해 원본·정제 실차 bag, Axis B canonical 입력 3개와
+production map·parameter 파일을 위 절대경로에서 다시 연다. 따라서 이 외부 입력을 경로와
+SHA-256이 유지된 상태로 함께 보존해야 하며, 결과 디렉터리 하나만 옮기는 방식은 지원하지
+않는다.
+
+Axis B는 정상 초기화와 0.5m/15도 초기 오프셋을 세 프로필 모두 복구했지만, 8m 순간
+이동 후 정답 초기 위치를 다시 주지 않는 kidnapped 상황은 모두 복구하지 못했다. 전체
+45회에서 false convergence는 없었고 P2의 Axis A CPU 개별 최대 비율이 1.1543으로
+1.10 상한을 넘었으므로 P0를 유지한다.
+
+각 실행은 다음을 hard gate로 검증한다.
+
+1. 입력 bag에서 `map -> odom` 변환이 0건이다.
+2. 격리 domain의 `/tf` 발행 endpoint는 `/amcl`과 `/rosbag2_player`뿐이다.
+3. 관측된 `map -> odom` 변환은 1건 이상이다.
+4. Gazebo Contact sensor의 ROS 발행자 1개를 확인하고 contact 메시지는 0건이다.
+5. 실행 종료 시 최종 속도와 생존 프로세스가 0이다.
+6. 평가 runner·evaluator·observer와 Axis B 입력 generator·driver의 source bytes를
+   artifact의 `harness_sources/`에 보존한다.
+
+여기서 kidnapped 결과는 자동 복구 행동을 시험한 것이 아니다. 미리 기록한 회전 관측을
+동일하게 재생한 estimator-only 비교이며, 폐루프 정지·복구·목표 재개는 후속 단계에서
+선택 후보가 있을 때만 별도로 검증한다.
+
 `inspect_mcap.py`와 미디어 생성기는 `requirements.txt`에 고정한 MCAP reader, ROS 2
 decoder, 수치·그림 라이브러리를 사용한다. 로봇 런타임의 전역 Python 환경이나 OS
 패키지를 바꾸지 않도록 평가 전용 디렉터리에 설치한다. MP4 변환에는 시스템 `ffmpeg`를

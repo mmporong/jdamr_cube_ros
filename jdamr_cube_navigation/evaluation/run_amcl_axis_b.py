@@ -15,21 +15,27 @@ from amcl_fault_contract import canonical_json_bytes, STORAGE_LIMITS
 from amcl_fault_contract import strict_json_load
 from evaluate_amcl_axis_a import profile_overrides
 from evaluate_amcl_axis_b import (
+    _amcl_motion_gate_contract,
     _expected_cloud_count,
     _t0_scan_index,
     _tree_digest,
     _tree_records,
-    authority_limited_promotion,
     axis_a_ratios,
     CLAIM_FULL,
     CLAIM_SMOKE,
+    CLOSED_LOOP_RECOVERY_BEHAVIOR_EVALUATED,
+    EVALUATION_DESIGN,
     FULL_PLAN,
     FULL_PREFIX_S,
+    GT_USAGE,
+    INPUT_DIVERSITY_ACROSS_ESTIMATOR_SEEDS,
     kidnapped_metrics,
+    OBSERVATION_SCHEDULE_SOURCE,
     PLAYBACK_RATE,
     promotion_decision,
     recovery_metrics,
     SCHEMA_VERSION,
+    SEED_SEMANTICS,
     SMOKE_PREFIX_S,
     validate_manifest,
 )
@@ -37,10 +43,11 @@ from generate_amcl_axis_b_input import SCENARIOS, validate_input
 from geometry_msgs.msg import PoseStamped, Twist
 from prepare_amcl_fault_benchmark import current_free_bytes
 from rclpy.serialization import deserialize_message
+from ros_gz_interfaces.msg import Contacts
 import rosbag2_py
-from rosidl_runtime_py.utilities import get_message
 import run_amcl_determinism_preflight as preflight
 from sensor_msgs.msg import LaserScan
+from tf2_msgs.msg import TFMessage
 
 
 GT_PAIR_MAX_DELTA_NS = 100_000_000
@@ -55,10 +62,9 @@ def _input_truth(root: Path) -> dict:
     reader.open(rosbag2_py.StorageOptions(
         uri=str(root), storage_id='mcap'),
         rosbag2_py.ConverterOptions('cdr', 'cdr'))
-    topic_types = {item.name: get_message(item.type)
-                   for item in reader.get_all_topics_and_types()}
     scans = []
     poses = []
+    odom_tf_poses = []
     contact_count = 0
     final_twist = None
     while reader.has_next():
@@ -75,25 +81,59 @@ def _input_truth(root: Path) -> dict:
                               pose.position.x, pose.position.y, pose.position.z,
                               pose.orientation.x, pose.orientation.y,
                               pose.orientation.z, pose.orientation.w]})
+        elif topic == '/tf':
+            message = deserialize_message(serialized, TFMessage)
+            for transform in message.transforms:
+                if (transform.header.frame_id.lstrip('/') == 'odom' and
+                        transform.child_frame_id.lstrip('/') ==
+                        'base_footprint'):
+                    value = transform.transform
+                    odom_tf_poses.append({
+                        'stamp_ns': _stamp_ns(transform.header.stamp),
+                        'pose': [value.translation.x, value.translation.y,
+                                 2.0 * math.atan2(
+                                     value.rotation.z, value.rotation.w)]})
         elif topic == '/contact':
-            message = deserialize_message(serialized, topic_types[topic])
-            contact_count += len(message.contacts)
+            contact = deserialize_message(serialized, Contacts)
+            contact_count += len(contact.contacts)
         elif topic == '/cmd_vel':
             message = deserialize_message(serialized, Twist)
             final_twist = [message.linear.x, message.linear.y,
                            message.angular.z]
     reader.close()
-    if not scans or not poses or final_twist is None:
+    if not scans or not poses or not odom_tf_poses or final_twist is None:
         raise ValueError('Axis B input truth topics are incomplete')
     if (any(not item['frame_id'] for item in poses) or
             len({item['frame_id'] for item in poses}) != 1 or
             any(not math.isfinite(float(value))
                 for item in poses for value in item['pose']) or
+            any(not math.isfinite(float(value))
+                for item in odom_tf_poses for value in item['pose']) or
             any(left['stamp_ns'] >= right['stamp_ns']
-                for left, right in zip(poses, poses[1:]))):
+                for left, right in zip(poses, poses[1:])) or
+            any(left['stamp_ns'] >= right['stamp_ns']
+                for left, right in zip(odom_tf_poses, odom_tf_poses[1:]))):
         raise ValueError('Axis B GT is non-finite')
+    manifest = strict_json_load(root / 'axis_b_input_manifest.json')
+    capture = strict_json_load(Path(manifest['source_evidence']['path']))
+    discontinuity_header_stamp_ns = None
+    t0_scan_stamp_ns = None
+    if manifest['scenario'] == 'kidnapped':
+        trace = strict_json_load(Path(manifest['trace_evidence']['path']))
+        discontinuity_header_stamp_ns = \
+            trace['teleport_gt_verified_header_stamp_ns']
+        t0_scan_stamp_ns = trace['t0_scan_stamp_ns']
+        if discontinuity_header_stamp_ns > t0_scan_stamp_ns:
+            raise ValueError('kidnapped teleport boundary exceeds t0')
     return {'scan_stamps_ns': scans, 'gt_poses': poses,
-            'contact_count': contact_count, 'final_twist': final_twist}
+            'odom_tf_poses': odom_tf_poses,
+            'final_twist': final_twist,
+            'contact_count': contact_count,
+            'contact_source_connected':
+                capture['contact_endpoint_probe']['publisher_count'] == 1,
+            'teleport_discontinuity_header_stamp_ns':
+                discontinuity_header_stamp_ns,
+            't0_scan_stamp_ns': t0_scan_stamp_ns}
 
 
 def _pair_gt(clouds: list[dict], truth: dict) -> list[dict]:
@@ -118,6 +158,16 @@ def _pair_gt(clouds: list[dict], truth: dict) -> list[dict]:
             lower_index = upper_index - 1
         lower = truth['gt_poses'][lower_index]
         upper = truth['gt_poses'][upper_index]
+        discontinuity = truth.get(
+            'teleport_discontinuity_header_stamp_ns')
+        t0_scan_stamp_ns = truth.get('t0_scan_stamp_ns')
+        if (lower_index != upper_index and discontinuity is not None and
+                lower['stamp_ns'] < discontinuity <= upper['stamp_ns']):
+            raise ValueError(
+                'GT bracket crosses kidnapped teleport discontinuity')
+        if (discontinuity is not None and t0_scan_stamp_ns is not None and
+                discontinuity <= stamp_ns < t0_scan_stamp_ns):
+            raise ValueError('AMCL scan lies inside kidnapped teleport gap')
         before_delta = stamp_ns - lower['stamp_ns']
         after_delta = upper['stamp_ns'] - stamp_ns
         if (before_delta < 0 or after_delta < 0 or
@@ -147,51 +197,8 @@ def _pair_gt(clouds: list[dict], truth: dict) -> list[dict]:
 
 
 def _axis_b_bootstrap(root: Path) -> dict:
-    """Choose an offset after the matching TF and before the next scan."""
-    reader = rosbag2_py.SequentialReader()
-    reader.open(rosbag2_py.StorageOptions(
-        uri=str(root), storage_id='mcap'),
-        rosbag2_py.ConverterOptions('cdr', 'cdr'))
-    from tf2_msgs.msg import TFMessage
-    scans = []
-    transforms = []
-    source_start_ns = None
-    while reader.has_next():
-        topic, serialized, storage_ns = reader.read_next()
-        if source_start_ns is None:
-            source_start_ns = storage_ns
-        if topic == '/scan':
-            scans.append((storage_ns, _stamp_ns(
-                deserialize_message(serialized, LaserScan).header.stamp)))
-        elif topic == '/tf':
-            message = deserialize_message(serialized, TFMessage)
-            transforms.extend(
-                (storage_ns, _stamp_ns(value.header.stamp))
-                for value in message.transforms
-                if value.header.frame_id == 'odom' and
-                value.child_frame_id == 'base_footprint')
-    reader.close()
-    for index, (scan_storage_ns, scan_header_ns) in enumerate(scans[1:], 1):
-        before = [item for item in transforms if item[1] <= scan_header_ns]
-        after = [item for item in transforms if item[1] >= scan_header_ns]
-        if not before or not after:
-            continue
-        lower = max(before, key=lambda item: item[1])
-        upper = min(after, key=lambda item: item[1])
-        if upper[0] >= scan_storage_ns:
-            continue
-        start_storage_ns = (upper[0] + scan_storage_ns) // 2
-        return {
-            'source_start_storage_ns': source_start_ns,
-            'previous_scan_storage_ns': scans[index - 1][0],
-            'first_main_scan_storage_ns': scan_storage_ns,
-            'first_main_scan_header_ns': scan_header_ns,
-            'lower_tf_storage_ns': lower[0], 'lower_tf_header_ns': lower[1],
-            'upper_tf_storage_ns': upper[0], 'upper_tf_header_ns': upper[1],
-            'start_offset_ns': start_storage_ns - source_start_ns,
-            'start_offset_s': (start_storage_ns - source_start_ns) / 1e9,
-        }
-    raise ValueError('Axis B input has no scan with prior TF bracket')
+    """Use the preflight canonical TF bootstrap contract unchanged."""
+    return preflight._tf_bootstrap_plan(root)
 
 
 def initial_estimate(scenario: str) -> list[float]:
@@ -258,6 +265,25 @@ def readiness(mode: str, input_roots: dict[str, Path],
     }
 
 
+def _execution_contract(
+    state: dict,
+) -> tuple[list[tuple[str, str, int]], dict[str, Path]]:
+    """Rebuild the executable plan and inputs from passed readiness state."""
+    plan = [(row['scenario'], row['profile'], row['seed'])
+            for row in state['plan']]
+    required = list(dict.fromkeys(scenario for scenario, _, _ in plan))
+    records = state['canonical_inputs']
+    if ([row.get('scenario') for row in records] != required or
+            any(set(row) != {'scenario', 'root', 'manifest'}
+                for row in records)):
+        raise ValueError('Axis B readiness execution contract drift')
+    roots = parse_input_roots([
+        f'{row["scenario"]}={row["root"]}' for row in records])
+    if list(roots) != required:
+        raise ValueError('Axis B readiness execution contract drift')
+    return plan, roots
+
+
 def _canonical_output(path: Path) -> Path:
     path = path.expanduser()
     if (not path.is_absolute() or path.exists() or path.is_symlink() or
@@ -273,14 +299,21 @@ def run(args) -> dict:
     state = readiness(args.mode, input_roots, args.axis_a_root)
     if state['status'] != 'PASS':
         raise RuntimeError('PENDING: ' + '; '.join(state['blockers']))
+    plan, input_roots = _execution_contract(state)
     if args.domain_base != 180:
         raise ValueError('Axis B canonical domain base is 180')
     if current_free_bytes(output_root.parent) < \
             STORAGE_LIMITS['minimum_start_free_bytes']:
         raise RuntimeError('less than 6 GiB free before Axis B evaluation')
-    plan = [('correct_init', 'P0', 11)] if args.mode == 'smoke' else list(FULL_PLAN)
     contract = strict_json_load(args.prepared_root / 'contract.json')
     preflight._validate_source_records(contract['production_inputs'])
+    if preflight._identity(args.map_yaml) != \
+            contract['axis_b']['map_profile']['yaml']:
+        raise ValueError('Axis B map snapshot identity drift')
+    motion_gate = _amcl_motion_gate_contract(args.params_file)
+    if motion_gate['params_file'] != \
+            contract['production_inputs']['production_params']:
+        raise ValueError('Axis B AMCL parameter snapshot identity drift')
     attestation = strict_json_load(
         args.attestation_root / 'build_attestation.json')
     if (attestation['loaded_runtime']['amcl_executable'] !=
@@ -297,6 +330,17 @@ def run(args) -> dict:
                         stage / 'contract_snapshot.json')
         shutil.copyfile(args.attestation_root / 'build_attestation.json',
                         stage / 'runtime_attestation_snapshot.json')
+        harness_source_paths = (
+            Path(__file__).resolve(),
+            Path(__file__).with_name('evaluate_amcl_axis_b.py').resolve(),
+            Path(__file__).with_name(
+                'generate_amcl_axis_b_input.py').resolve(),
+            Path(__file__).with_name('axis_b_kidnapped_driver.py').resolve(),
+            Path(__file__).with_name('amcl_particle_observer.py').resolve(),
+            Path(__file__).with_name(
+                'run_amcl_determinism_preflight.py').resolve())
+        harness_sources = preflight._snapshot_harness_sources(
+            stage, harness_source_paths)
         runs = []
         promotion_rows = []
         truths = {scenario: _input_truth(root)
@@ -343,13 +387,8 @@ def run(args) -> dict:
                 metrics = recovery_metrics(current['clouds'], pairs, t0)
             gates = {
                 'input_parity': True, 'profile_parity': True,
-                'map_odom_authority': {
-                    'input_transform_count': 0,
-                    'isolated_expected_runtime_sources': ['amcl'],
-                    'proof_status':
-                        'ISOLATED_EXPECTED_RUNTIME_SOURCE_NO_GID_PROOF',
-                    'observed_transform_count':
-                        current['readiness']['map_odom_tf_count']},
+                'map_odom_authority': preflight._map_odom_authority(
+                    current, base['teardown'], 'FINAL'),
                 'lifecycle_active': all(
                     operation['returncode'] == 0
                     for operation in base['operations']),
@@ -363,6 +402,8 @@ def run(args) -> dict:
                     metrics['post_zero_hold_observed']
                     if scenario == 'kidnapped' else 'NOT_APPLICABLE'),
                 'contact_zero': truths[scenario]['contact_count'] == 0,
+                'contact_source_connected':
+                    truths[scenario]['contact_source_connected'],
                 'final_zero': all(abs(value) <= 1e-9
                                   for value in truths[scenario]['final_twist']),
                 'survivor_zero': base['survivor_count'] == 0,
@@ -370,7 +411,7 @@ def run(args) -> dict:
             }
             scalar_gates = [value for value in gates.values()
                             if type(value) is not dict]
-            if (gates['map_odom_authority']['observed_transform_count'] <= 0 or
+            if (not gates['map_odom_authority']['sole_runtime_authority'] or
                     not all(value is True or
                             value in ('PASS', 'NOT_APPLICABLE')
                             for value in scalar_gates)):
@@ -413,28 +454,28 @@ def run(args) -> dict:
                 stage / 'contract_snapshot.json', stage),
             'runtime_attestation': preflight._relative_identity(
                 stage / 'runtime_attestation_snapshot.json', stage),
-            'harness_sources': {source.name: preflight._identity(source)
-                                for source in (
-                Path(__file__).resolve(),
-                Path(__file__).with_name('evaluate_amcl_axis_b.py').resolve(),
-                Path(__file__).with_name(
-                    'generate_amcl_axis_b_input.py').resolve(),
-                Path(__file__).with_name('axis_b_kidnapped_driver.py').resolve(),
-                Path(__file__).with_name('amcl_particle_observer.py').resolve(),
-                Path(__file__).with_name(
-                    'run_amcl_determinism_preflight.py').resolve())},
+            'harness_sources': harness_sources,
             'run_contract': {'cloud_counts': cloud_counts, 'prefix_s': prefix_s,
                              'playback_rate': PLAYBACK_RATE,
-                             'output_mcap_count': 0},
+                             'output_mcap_count': 0,
+                             'amcl_motion_gate': motion_gate},
             'runs': runs,
-            'promotion': authority_limited_promotion(promotion_decision(
+            'promotion': promotion_decision(
                 promotion_rows if args.mode == 'full' else [],
                 axis_a_ratios(args.axis_a_root)
-                if args.mode == 'full' else None)),
+                if args.mode == 'full' else None),
             'tree_records': tree_records,
             'tree_sha256': _tree_digest(tree_records),
             'tree_bytes': sum(row['size_bytes'] for row in tree_records),
             'production_unchanged': True,
+            'evaluation_design': EVALUATION_DESIGN,
+            'closed_loop_recovery_behavior_evaluated':
+                CLOSED_LOOP_RECOVERY_BEHAVIOR_EVALUATED,
+            'observation_schedule_source': OBSERVATION_SCHEDULE_SOURCE,
+            'seed_semantics': SEED_SEMANTICS,
+            'input_diversity_across_estimator_seeds':
+                INPUT_DIVERSITY_ACROSS_ESTIMATOR_SEEDS,
+            'gt_usage': GT_USAGE,
         }
         (stage / 'axis_b_manifest.json').write_bytes(
             canonical_json_bytes(manifest))

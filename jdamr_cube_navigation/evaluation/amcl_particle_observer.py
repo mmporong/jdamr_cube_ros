@@ -353,6 +353,26 @@ class ParticleObserver(Node):
 
     def _snapshot(self) -> dict:
         publisher_matched = self.cloud_sub.get_publisher_count()
+        tf_publisher_endpoints = []
+        for endpoint in self.get_publishers_info_by_topic('/tf'):
+            gid_bytes = [int(value) for value in endpoint.endpoint_gid]
+            qos = endpoint.qos_profile
+            tf_publisher_endpoints.append({
+                'node_name': endpoint.node_name,
+                'node_namespace': endpoint.node_namespace,
+                'topic_type': endpoint.topic_type,
+                'endpoint_gid_bytes': gid_bytes,
+                'endpoint_gid_hex': bytes(gid_bytes).hex(),
+                'qos': {
+                    'reliability': int(qos.reliability),
+                    'durability': int(qos.durability),
+                    'history': int(qos.history),
+                    'depth': int(qos.depth),
+                },
+            })
+        tf_publisher_endpoints.sort(
+            key=lambda item: (item['node_namespace'], item['node_name'],
+                              item['endpoint_gid_hex']))
         return {
             'schema_version': 1,
             'run_id': self.args.run_id,
@@ -369,6 +389,7 @@ class ParticleObserver(Node):
                 'map_odom_tf_count': self.map_odom_tf_count,
                 'tf_static_count': self.tf_static_count,
             },
+            'tf_publisher_endpoints': tf_publisher_endpoints,
             'initialpose_count': self.initialpose_count,
             'pre_initial_scan_count': self.pre_initial_scan_count,
             'pre_initial_cloud_count': self.pre_initial_cloud_count,

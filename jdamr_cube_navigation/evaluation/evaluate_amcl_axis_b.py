@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import math
 from pathlib import Path
@@ -12,35 +13,103 @@ from amcl_fault_contract import canonical_json_bytes, G002_ARTIFACT_LIMIT_BYTES
 from amcl_fault_contract import PROFILES, SEEDS, STORAGE_LIMITS
 from amcl_fault_contract import strict_json_load, strict_json_loads
 from axis_b_kidnapped_driver import (
-    INITIAL_OBSERVATION_RAD,
     POST_ZERO_OBSERVATION_RAD,
-    ROTATION_TARGET_RAD,
 )
 from evaluate_amcl_axis_a import profile_overrides
 from evaluate_amcl_axis_a import validate_axis_a_full
 from generate_amcl_axis_b_input import SCENARIOS, validate_input
 import run_amcl_determinism_preflight as preflight
+import yaml
 
 
-SCHEMA_VERSION = 2
-CLAIM_SMOKE = 'AXIS_B_RELOCALIZATION_SMOKE_SIMULATION_ONLY'
-CLAIM_FULL = 'AXIS_B_RELOCALIZATION_PROFILE_MATRIX_SIMULATION_ONLY'
+SCHEMA_VERSION = 3
+CLAIM_SMOKE = (
+    'AXIS_B_FIXED_INPUT_FORCED_ROTATION_RELOCALIZATION_SMOKE_'
+    'SIMULATION_ONLY_NON_CLOSED_LOOP')
+CLAIM_FULL = (
+    'AXIS_B_FIXED_INPUT_FORCED_ROTATION_RELOCALIZATION_PROFILE_MATRIX_'
+    'SIMULATION_ONLY_NON_CLOSED_LOOP')
+EVALUATION_DESIGN = 'FIXED_INPUT_ESTIMATOR_REPLAY'
+CLOSED_LOOP_RECOVERY_BEHAVIOR_EVALUATED = False
+OBSERVATION_SCHEDULE_SOURCE = 'PRERECORDED_FORCED_ROTATION'
+SEED_SEMANTICS = 'ESTIMATOR_STOCHASTICITY_ONLY'
+INPUT_DIVERSITY_ACROSS_ESTIMATOR_SEEDS = False
+GT_USAGE = 'EVALUATION_ONLY_NOT_ESTIMATOR_INPUT'
 TRANSLATION_THRESHOLD_M = 0.15
 YAW_THRESHOLD_RAD = 0.25
 CONSECUTIVE_REQUIRED = 3
-FULL_CLOUD_COUNT = 30
 FULL_PREFIX_S = 220.0
-SMOKE_CLOUD_COUNT = 3
 SMOKE_PREFIX_S = 30.0
 PLAYBACK_RATE = 2.0
 AMCL_UPDATE_MIN_A_RAD = 0.2
-# The observer stays alive through every commanded angular update, including
-# the complete post-zero motion. This is derived from the event schedule, not
-# from raw LaserScan count.
-KIDNAPPED_TARGET_ACCEPTED_CLOUDS = (
-    int(INITIAL_OBSERVATION_RAD / AMCL_UPDATE_MIN_A_RAD) +
-    int(ROTATION_TARGET_RAD / AMCL_UPDATE_MIN_A_RAD) +
-    int(round(POST_ZERO_OBSERVATION_RAD / AMCL_UPDATE_MIN_A_RAD)))
+AMCL_UPDATE_MIN_D_M = 0.25
+# The observer target is reproduced from scan-time odometry with the exact
+# strict motion thresholds used by the frozen production AMCL parameters.
+
+
+def _odom_pose_at(stamp_ns: int, odom_tf_poses: list[dict]) -> list[float]:
+    stamps = [sample['stamp_ns'] for sample in odom_tf_poses]
+    upper_index = bisect.bisect_left(stamps, stamp_ns)
+    if upper_index == len(stamps):
+        raise ValueError('scan is newer than bracketed odom')
+    if stamps[upper_index] == stamp_ns:
+        return list(odom_tf_poses[upper_index]['pose'])
+    if upper_index == 0:
+        raise ValueError('scan is older than bracketed odom')
+    lower = odom_tf_poses[upper_index - 1]
+    upper = odom_tf_poses[upper_index]
+    span_ns = upper['stamp_ns'] - lower['stamp_ns']
+    fraction = (stamp_ns - lower['stamp_ns']) / span_ns
+    yaw = lower['pose'][2] + fraction * math.remainder(
+        upper['pose'][2] - lower['pose'][2], 2.0 * math.pi)
+    return [lower['pose'][index] + fraction *
+            (upper['pose'][index] - lower['pose'][index])
+            for index in range(2)] + [yaw]
+
+
+def _accepted_scan_indices(scan_stamps_ns: list[int],
+                           odom_tf_poses: list[dict]) -> list[int]:
+    """Reproduce AMCL's first-force-update and strict motion gate."""
+    if not scan_stamps_ns or not odom_tf_poses:
+        raise ValueError('Axis B scan or odom TF schedule is absent')
+    last_pose = _odom_pose_at(scan_stamps_ns[0], odom_tf_poses)
+    accepted = [0]
+    for index, stamp_ns in enumerate(scan_stamps_ns[1:], 1):
+        pose = _odom_pose_at(stamp_ns, odom_tf_poses)
+        dx_m = pose[0] - last_pose[0]
+        dy_m = pose[1] - last_pose[1]
+        dyaw_rad = math.remainder(
+            pose[2] - last_pose[2], 2.0 * math.pi)
+        if (abs(dx_m) > AMCL_UPDATE_MIN_D_M or
+                abs(dy_m) > AMCL_UPDATE_MIN_D_M or
+                abs(dyaw_rad) > AMCL_UPDATE_MIN_A_RAD):
+            accepted.append(index)
+            last_pose = pose
+    if len(accepted) < CONSECUTIVE_REQUIRED:
+        raise ValueError('Axis B input cannot produce three AMCL updates')
+    return accepted
+
+
+def _amcl_motion_gate_contract(params_path: Path) -> dict:
+    """Bind strict motion replay to the frozen AMCL parameter snapshot."""
+    params = yaml.safe_load(params_path.read_text(encoding='utf-8'))[
+        'amcl']['ros__parameters']
+    update_min_a_rad = _finite(
+        params['update_min_a'], 'update_min_a', 0.0)
+    update_min_d_m = _finite(
+        params['update_min_d'], 'update_min_d', 0.0)
+    if (update_min_a_rad != AMCL_UPDATE_MIN_A_RAD or
+            update_min_d_m != AMCL_UPDATE_MIN_D_M):
+        raise ValueError('frozen AMCL motion threshold drift')
+    return {
+        'params_file': preflight._identity(params_path),
+        'comparison': 'STRICT_GREATER_THAN',
+        'update_min_a_rad': update_min_a_rad,
+        'update_min_d_m': update_min_d_m,
+        'pose_source': 'SCAN_TIME_ODOM_TO_BASE_FOOTPRINT_TF',
+    }
+
+
 FULL_PLAN = tuple((scenario, profile, seed)
                   for scenario in SCENARIOS
                   for profile in PROFILES for seed in SEEDS)
@@ -304,16 +373,6 @@ def promotion_decision(full_results: list[dict], ratios: dict | None) -> dict:
     }
 
 
-def authority_limited_promotion(decision: dict) -> dict:
-    """Retain P0 because rclpy MessageInfo cannot prove the TF publisher GID."""
-    if decision['status'] != 'EVALUATED':
-        return decision
-    return {**decision,
-            'status': 'NOT_EVALUATED_AUTHORITY_NOT_PROVEN',
-            'parameter_rule_passed_without_authority': decision['promote_p2'],
-            'promote_p2': False, 'selected_profile': 'P0'}
-
-
 def _tree_records(root: Path) -> list[dict]:
     return sorted((preflight._relative_identity(path, root)
                    for path in root.rglob('*')
@@ -326,7 +385,9 @@ def _tree_digest(records: list[dict]) -> str:
     return hashlib.sha256(canonical_json_bytes(records)).hexdigest()
 
 
-def validate_input_roots(records: list[dict]) -> dict[str, Path]:
+def validate_input_roots(
+        records: list[dict], source_snapshots: dict | None = None
+        ) -> dict[str, Path]:
     """Reopen exactly one current canonical input per Axis B scenario."""
     if type(records) is not list or not records:
         raise ValueError('Axis B canonical inputs are absent')
@@ -337,7 +398,7 @@ def validate_input_roots(records: list[dict]) -> dict[str, Path]:
         root = Path(record['root'])
         if scenario in result or scenario not in SCENARIOS:
             raise ValueError('Axis B input scenario drift')
-        manifest = validate_input(root)
+        manifest = validate_input(root, source_snapshots)
         identity = preflight._identity(root / 'axis_b_input_manifest.json')
         if manifest['scenario'] != scenario or record['manifest'] != identity:
             raise ValueError('Axis B canonical input identity drift')
@@ -358,11 +419,24 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
         'input_roots', 'axis_a_artifact', 'prepared_contract',
         'runtime_attestation', 'harness_sources', 'run_contract', 'runs',
         'promotion', 'tree_records', 'tree_sha256', 'tree_bytes',
-        'production_unchanged'}, 'Axis B manifest')
+        'production_unchanged', 'evaluation_design',
+        'closed_loop_recovery_behavior_evaluated',
+        'observation_schedule_source', 'seed_semantics',
+        'input_diversity_across_estimator_seeds', 'gt_usage'},
+        'Axis B manifest')
     claim = CLAIM_FULL if expected_mode == 'full' else CLAIM_SMOKE
     if (value['schema_version'] != SCHEMA_VERSION or
             value['mode'] != expected_mode or value['claim_scope'] != claim or
-            value['production_unchanged'] is not True):
+            value['production_unchanged'] is not True or
+            value['evaluation_design'] != EVALUATION_DESIGN or
+            value['closed_loop_recovery_behavior_evaluated'] is not
+            CLOSED_LOOP_RECOVERY_BEHAVIOR_EVALUATED or
+            value['observation_schedule_source'] !=
+            OBSERVATION_SCHEDULE_SOURCE or
+            value['seed_semantics'] != SEED_SEMANTICS or
+            value['input_diversity_across_estimator_seeds'] is not
+            INPUT_DIVERSITY_ACROSS_ESTIMATOR_SEEDS or
+            value['gt_usage'] != GT_USAGE):
         raise ValueError('Axis B manifest scalar drift')
     expected_full = [{'scenario': scenario, 'profile': profile, 'seed': seed}
                      for scenario, profile, seed in FULL_PLAN]
@@ -370,11 +444,32 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
         {'scenario': 'correct_init', 'profile': 'P0', 'seed': 11}]
     if value['full_plan'] != expected_full or value['executed_plan'] != expected:
         raise ValueError('Axis B execution plan drift')
-    inputs = validate_input_roots(value['input_roots'])
+    for key, filename in (('prepared_contract', 'contract_snapshot.json'),
+                          ('runtime_attestation',
+                           'runtime_attestation_snapshot.json')):
+        if value[key] != preflight._relative_identity(root / filename, root):
+            raise ValueError(f'Axis B {key} drift')
+    expected_source_names = {
+        source.name for source in (
+            Path(__file__).resolve(),
+            Path(__file__).with_name('run_amcl_axis_b.py').resolve(),
+            Path(__file__).with_name('generate_amcl_axis_b_input.py').resolve(),
+            Path(__file__).with_name('axis_b_kidnapped_driver.py').resolve(),
+            Path(__file__).with_name('amcl_particle_observer.py').resolve(),
+            Path(__file__).with_name(
+                'run_amcl_determinism_preflight.py').resolve())}
+    preflight._validate_harness_source_snapshots(
+        root, value['harness_sources'], expected_source_names)
+    inputs = validate_input_roots(
+        value['input_roots'], value['harness_sources'])
     expected_inputs = set(SCENARIOS) if expected_mode == 'full' else {
         'correct_init'}
     if set(inputs) != expected_inputs:
         raise ValueError('Axis B canonical input set drift')
+    contract = strict_json_load(root / 'contract_snapshot.json')
+    preflight._validate_source_records(contract['production_inputs'])
+    motion_gate = _amcl_motion_gate_contract(Path(
+        contract['production_inputs']['production_params']['path']))
     cloud_counts = {
         scenario: _expected_cloud_count(
             scenario, inputs[scenario], expected_mode)
@@ -383,28 +478,11 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
         'cloud_counts': cloud_counts,
         'prefix_s': FULL_PREFIX_S if expected_mode == 'full' else SMOKE_PREFIX_S,
         'playback_rate': PLAYBACK_RATE, 'output_mcap_count': 0,
+        'amcl_motion_gate': motion_gate,
     }
     if value['run_contract'] != expected_contract:
         raise ValueError('Axis B run contract drift')
-    for key, filename in (('prepared_contract', 'contract_snapshot.json'),
-                          ('runtime_attestation',
-                           'runtime_attestation_snapshot.json')):
-        if value[key] != preflight._relative_identity(root / filename, root):
-            raise ValueError(f'Axis B {key} drift')
-    contract = strict_json_load(root / 'contract_snapshot.json')
-    preflight._validate_source_records(contract['production_inputs'])
     attestation = strict_json_load(root / 'runtime_attestation_snapshot.json')
-    expected_sources = {
-        source.name: preflight._identity(source) for source in (
-            Path(__file__).resolve(),
-            Path(__file__).with_name('run_amcl_axis_b.py').resolve(),
-            Path(__file__).with_name('generate_amcl_axis_b_input.py').resolve(),
-            Path(__file__).with_name('axis_b_kidnapped_driver.py').resolve(),
-            Path(__file__).with_name('amcl_particle_observer.py').resolve(),
-            Path(__file__).with_name(
-                'run_amcl_determinism_preflight.py').resolve())}
-    if value['harness_sources'] != expected_sources:
-        raise ValueError('Axis B harness source identity drift')
     records = _tree_records(root)
     if (value['tree_records'] != records or
             value['tree_sha256'] != _tree_digest(records) or
@@ -415,6 +493,7 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
         raise ValueError('Axis B run cardinality drift')
     promotion_rows = []
     parity = {}
+    input_manifest_parity = {}
     for index, (record, plan) in enumerate(zip(value['runs'], expected)):
         evidence_path = root / record['relative_path']
         if record != preflight._relative_identity(evidence_path, root):
@@ -440,10 +519,21 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
         if evidence['input_manifest'] != preflight._identity(
                 input_root / 'axis_b_input_manifest.json'):
             raise ValueError('Axis B run input identity drift')
+        input_manifest_parity.setdefault(
+            plan['scenario'], evidence['input_manifest'])
+        if input_manifest_parity[plan['scenario']] != \
+                evidence['input_manifest']:
+            raise ValueError(
+                'Axis B input differs across estimator seeds or profiles')
         base_path = root / evidence['base_evidence']['relative_path']
         if evidence['base_evidence'] != preflight._relative_identity(base_path, root):
             raise ValueError('Axis B base evidence identity drift')
         bootstrap = _bootstrap_view(input_root)
+        base_record = strict_json_load(base_path)
+        expected_observer_source = preflight._validate_source_against_snapshot(
+            base_record['observer_source'],
+            value['harness_sources']['amcl_particle_observer.py'],
+            'amcl_particle_observer.py')
         base = preflight.validate_replay_run_evidence(
             base_path, expected_run_id=run_id,
             expected_profile=plan['profile'], expected_seed=plan['seed'],
@@ -451,8 +541,7 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
             expected_prefix_s=expected_contract['prefix_s'],
             expected_playback_rate=PLAYBACK_RATE,
             expected_max_clouds=cloud_counts[plan['scenario']],
-            expected_observer_source=preflight._identity(
-                Path(__file__).with_name('amcl_particle_observer.py')),
+            expected_observer_source=expected_observer_source,
             expected_amcl_executable=attestation['loaded_runtime'][
                 'amcl_executable'],
             expected_map_yaml=contract['axis_b']['map_profile']['yaml'],
@@ -547,13 +636,8 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
             raise ValueError('Axis B metric recomputation drift')
         expected_gates = {
             'input_parity': True, 'profile_parity': True,
-            'map_odom_authority': {
-                'input_transform_count': 0,
-                'isolated_expected_runtime_sources': ['amcl'],
-                'proof_status':
-                    'ISOLATED_EXPECTED_RUNTIME_SOURCE_NO_GID_PROOF',
-                'observed_transform_count':
-                    base['observer']['readiness']['map_odom_tf_count']},
+            'map_odom_authority': preflight._map_odom_authority(
+                base['observer'], base['teardown'], 'FINAL'),
             'lifecycle_active': all(
                 operation['returncode'] == 0 for operation in base['operations']),
             'finite_metrics': True,
@@ -566,6 +650,7 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
                 recomputed['post_zero_hold_observed']
                 if plan['scenario'] == 'kidnapped' else 'NOT_APPLICABLE'),
             'contact_zero': truth['contact_count'] == 0,
+            'contact_source_connected': truth['contact_source_connected'],
             'final_zero': all(abs(value) <= 1e-9
                               for value in truth['final_twist']),
             'survivor_zero': base['survivor_count'] == 0,
@@ -574,8 +659,8 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
         scalar_gates = [gate for gate in expected_gates.values()
                         if type(gate) is not dict]
         if (evidence['gates'] != expected_gates or
-                expected_gates['map_odom_authority'][
-                    'observed_transform_count'] <= 0 or
+                not expected_gates['map_odom_authority'][
+                    'sole_runtime_authority'] or
                 not all(gate is True or gate in ('PASS', 'NOT_APPLICABLE')
                         for gate in scalar_gates)):
             raise ValueError('Axis B common gate drift')
@@ -600,8 +685,8 @@ def validate_manifest(path: Path, expected_mode: str) -> dict:
         if value['axis_a_artifact']['manifest'] != preflight._identity(
                 axis_a_root / 'axis_a_manifest.json'):
             raise ValueError('Axis A artifact identity drift')
-        expected_promotion = authority_limited_promotion(promotion_decision(
-            promotion_rows, axis_a_ratios(axis_a_root)))
+        expected_promotion = promotion_decision(
+            promotion_rows, axis_a_ratios(axis_a_root))
     if value['promotion'] != expected_promotion:
         raise ValueError('Axis B promotion recomputation drift')
     preflight._validate_source_records(contract['production_inputs'])
@@ -637,16 +722,24 @@ def _t0_scan_index(scenario: str, truth: dict, root: Path) -> int:
 
 def _expected_cloud_count(scenario: str, root: Path,
                           mode: str = 'full') -> int:
+    truth = _input_truth_view(root)
+    first_main_stamp_ns = _bootstrap_view(root)['first_main_scan_header_ns']
+    replay_scans = [stamp for stamp in truth['scan_stamps_ns']
+                    if stamp >= first_main_stamp_ns]
+    accepted_indices = _accepted_scan_indices(
+        replay_scans, truth['odom_tf_poses'])
+    target = len(accepted_indices)
     if scenario != 'kidnapped':
-        return SMOKE_CLOUD_COUNT if mode == 'smoke' else FULL_CLOUD_COUNT
+        return target
     manifest = strict_json_load(root / 'axis_b_input_manifest.json')
     trace = strict_json_load(Path(manifest['trace_evidence']['path']))
     zero_ros_ns = next(item['ros_ns'] for item in trace['events']
                        if item['name'] == 'zero_hold_complete')
     final_ros_ns = next(item['ros_ns'] for item in trace['events']
                         if item['name'] == 'final_zero_hold_complete')
-    scans = _input_truth_view(root)['scan_stamps_ns']
+    accepted_stamps = [replay_scans[index] for index in accepted_indices]
     if (POST_ZERO_OBSERVATION_RAD < AMCL_UPDATE_MIN_A_RAD or
-            not any(zero_ros_ns <= stamp <= final_ros_ns for stamp in scans)):
+            not any(zero_ros_ns <= stamp <= final_ros_ns
+                    for stamp in accepted_stamps)):
         raise ValueError('kidnapped input lacks post-zero scan schedule')
-    return KIDNAPPED_TARGET_ACCEPTED_CLOUDS
+    return target

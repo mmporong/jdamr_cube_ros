@@ -18,15 +18,16 @@
 - 입력: 동일 실차 완주 bag
 - 비교: P0·P1·P2 × AMCL seed 5개, 총 15회
 - 결과: 15/15 실행 유효성 통과
-- 산출물: `/home/lim/jdamr_artifacts/amcl_axis_a_20260907_v05_full15`
+- 산출물: `/home/lim/jdamr_artifacts/amcl_axis_a_20260907_v06_full15`
 - manifest SHA-256:
-  `03051aeb98f3c416ec98c72452e7da8a16ec41a82c28ac9c3efc222084d05dc6`
+  `84e40fba68a716c9191cd7c5d1c5847ee2e96ce474d554bc7b4f80acef305e73`
 - tree SHA-256:
-  `f63a530fa17305b3400d3d8374a90c794d1959c1783496c1f3c66d23dc43319d`
-- P2/P0 CPU 비율: 중앙값 1.0053, 개별 최대 1.1522
-- P2/P0 p95 지연 비율: 중앙값 0.9987, 개별 최대 1.0724
+  `846bddfed4ba5f2199ffb1101fbaccada3d80414a99046ef645cc64ec49d3221`
+- P2/P0 CPU 비율: 중앙값 1.0860, 개별 최대 1.1543
+- P2/P0 p95 지연 비율: 중앙값 1.0065, 개별 최대 1.0716
+- 15/15 `map -> odom` 권한: `STRICT_ENDPOINT_PROCESS_BINDING`
 
-P2는 seed 23에서 CPU 개별 상한 1.10을 넘었다. Axis A 기준 후보는 P0 유지다.
+P2는 seed 23·89에서 CPU 개별 상한 1.10을 넘었다. Axis A 기준 후보는 P0 유지다.
 이 결과는 위치 정확도 우열이 아니라 동일 관측을 처리한 추정기의 자원·지연·일관성
 비교다. 실차 GT가 없으므로 ATE/RPE와 절대 정확도는 주장하지 않는다.
 
@@ -60,6 +61,39 @@ Axis B는 동일한 Gazebo 입력 bag을 P0·P1·P2와 AMCL seed 5개에 반복 
 
 Axis B 45회는 후보별 입력을 동일하게 유지해 AMCL profile의 효과를 분리한다. 이 결과로
 후보를 정한 뒤, 선택된 후보만 별도의 폐루프 복구 시험과 실기체 통합 검증에 사용한다.
+
+## 완료된 G002 Axis B
+
+- 입력: Gazebo에서 한 번씩 수집한 정상 초기화·0.5m/15도 초기 오프셋·8m 납치 bag
+- 입력 산출물: `/home/lim/jdamr_artifacts/amcl_axis_b_inputs_20260907_v13`
+- 비교: 시나리오 3개 × P0·P1·P2 × AMCL seed 5개, 총 45회
+- 결과 산출물: `/home/lim/jdamr_artifacts/amcl_axis_b_20260907_v02_full45`
+- manifest SHA-256:
+  `1626b78a68a186ced212fa8fb2d517f9838c0752d66807b666c4d378fcd84121`
+- tree SHA-256:
+  `6257d68a6fa3a6d70c137e8125e3d7c12563057f25df845439d46accb903cc36`
+- 실행 유효성: 45/45 PASS
+- 정상 초기화: 세 프로필 모두 5/5 복구, 복구 판정 30 scan
+- 초기 오프셋: 세 프로필 모두 5/5 복구
+- kidnapped: 세 프로필 모두 0/5 복구
+- false convergence: 45회 전체 0건
+- 접촉 센서 발행 경로 확인·접촉 메시지 0건·최종 속도 0·생존 프로세스 0: 45/45
+- `map -> odom` 권한: 입력 bag의 해당 변환 0건과 `/amcl`·`/rosbag2_player`
+  `/tf` endpoint를 결합한 `STRICT_ENDPOINT_PROCESS_BINDING`, 45/45
+- 최종 판정: `selected_profile=P0`, `promote_p2=false`
+
+`map -> odom` 권한은 지도 좌표와 odometry 좌표를 연결하는 변환을 누가 만드는지에 대한
+계약이다. 입력 bag에서 이 변환을 제거하고, 격리된 ROS domain의 `/tf` 발행 endpoint를
+AMCL과 bag player 두 프로세스에 묶었다. PRELUDE와 FINAL 스냅샷에서 endpoint 수·FQN·
+GID가 정확히 일치하지 않으면 실행을 무효로 처리한다. 이는 실행 경계의 단일 권한
+증거이며, Jazzy `rclpy`가 제공하지 않는 메시지별 publisher GID나 두 스냅샷 사이의 연속
+graph 감사를 주장하지 않는다.
+
+`contact0`은 충돌이 없었다는 추정이 아니다. Gazebo Contact sensor를 별도
+`ros_gz_bridge`로 연결하고 발행자 1개를 확인한 뒤, 기록된 contact 메시지가 0개인지
+검증한 결과다. 평가 runner·evaluator·observer와 Axis B 입력 generator·driver 소스는
+각 artifact의 `harness_sources/`에 복사했다. observer·generator·driver 실행 기록은 이
+스냅샷과 직접 결합해 현재 worktree가 바뀌어도 당시 바이트를 재검증한다.
 
 ## G002 이후 알고리즘 개발
 
@@ -149,6 +183,8 @@ clearance 비율 0.95 이상, unreachable·failure regression 0이어야 한다.
 이 작업은 OMX `G010-frontier-held-out`으로 추가했다.
 
 ## 실행 순서
+
+현재 1~4단계는 완료됐다.
 
 1. G002 Axis B의 GT 불연속·관측 schedule·claim 경계를 보완한다.
 2. 정상 초기화·초기 오프셋·kidnapped 입력을 Gazebo에서 한 번씩 생성한다.

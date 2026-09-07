@@ -104,6 +104,51 @@ def _relative_identity(path: Path, root: Path) -> dict:
             'size_bytes': record['size_bytes'], 'sha256': record['sha256']}
 
 
+def _snapshot_harness_sources(root: Path,
+                              sources: tuple[Path, ...]) -> dict:
+    """Copy executed harness bytes into an immutable artifact subtree."""
+    snapshot_root = root / 'harness_sources'
+    snapshot_root.mkdir()
+    records = {}
+    for source in sources:
+        target = snapshot_root / source.name
+        shutil.copyfile(source, target)
+        records[source.name] = _relative_identity(target, root)
+    return records
+
+
+def _validate_harness_source_snapshots(
+        root: Path, records: dict, filenames: set[str]) -> None:
+    """Validate exact harness snapshot files and relative identities."""
+    snapshot_root = root / 'harness_sources'
+    if (type(records) is not dict or set(records) != filenames or
+            not snapshot_root.is_dir() or snapshot_root.is_symlink() or
+            {path.name for path in snapshot_root.iterdir()} != filenames):
+        raise ValueError('harness source snapshot inventory drift')
+    for filename, record in records.items():
+        path = snapshot_root / filename
+        _identity_schema(record, f'harness source snapshot {filename}',
+                         relative=True)
+        if (record != _relative_identity(path, root) or
+                record['relative_path'] != f'harness_sources/{filename}' or
+                path.is_symlink() or not path.is_file()):
+            raise ValueError('harness source snapshot identity drift')
+
+
+def _validate_source_against_snapshot(
+        source: dict, snapshot: dict, filename: str) -> dict:
+    """Bind an executed source record to frozen artifact bytes."""
+    _identity_schema(source, f'executed source {filename}')
+    _identity_schema(snapshot, f'harness source snapshot {filename}',
+                     relative=True)
+    if (Path(source['path']).name != filename or
+            snapshot['relative_path'] != f'harness_sources/{filename}' or
+            source['size_bytes'] != snapshot['size_bytes'] or
+            source['sha256'] != snapshot['sha256']):
+        raise ValueError('executed source snapshot binding drift')
+    return source
+
+
 def _validate_source_records(records: dict) -> None:
     for record in records.values():
         _identity_schema(record, 'prepared source identity')
@@ -454,10 +499,16 @@ def _validate_bootstrap_plan(plan: dict) -> None:
     if any(type(plan[key]) is not int for key in integer_keys):
         raise ValueError('TF bootstrap integer drift')
     _finite_number(plan['start_offset_s'], 'TF bootstrap offset', 0.0)
+    split_storage_ns = (
+        plan['source_start_storage_ns'] + plan['start_offset_ns'])
     if (plan['start_offset_ns'] <= 0 or
             plan['start_offset_s'] != plan['start_offset_ns'] / 1_000_000_000 or
             not plan['previous_scan_storage_ns'] <
             plan['first_main_scan_storage_ns'] or
+            split_storage_ns <= max(
+                plan['previous_scan_storage_ns'],
+                plan['upper_tf_storage_ns']) or
+            split_storage_ns >= plan['first_main_scan_storage_ns'] or
             not plan['lower_tf_header_ns'] <=
             plan['first_main_scan_header_ns'] <= plan['upper_tf_header_ns']):
         raise ValueError('TF bootstrap consistency drift')
@@ -483,11 +534,80 @@ def _validate_replay_summary(summary: dict, allowed_topics: list[str],
             raise ValueError(f'{label} non-TF semantic digest drift')
 
 
+def _validate_tf_publisher_endpoints(endpoints: list[dict]) -> None:
+    """Validate deterministic ROS graph endpoint evidence for `/tf`."""
+    if type(endpoints) is not list:
+        raise ValueError('TF publisher endpoint inventory drift')
+    seen = set()
+    for endpoint in endpoints:
+        _exact_keys(endpoint, {
+            'node_name', 'node_namespace', 'topic_type',
+            'endpoint_gid_bytes', 'endpoint_gid_hex', 'qos'},
+            'TF publisher endpoint')
+        _exact_keys(endpoint['qos'], {
+            'reliability', 'durability', 'history', 'depth'},
+            'TF publisher endpoint QoS')
+        gid = endpoint['endpoint_gid_bytes']
+        if (type(endpoint['node_name']) is not str or
+                not endpoint['node_name'] or
+                type(endpoint['node_namespace']) is not str or
+                not endpoint['node_namespace'].startswith('/') or
+                endpoint['topic_type'] != 'tf2_msgs/msg/TFMessage' or
+                type(gid) is not list or len(gid) != 16 or
+                any(type(value) is not int or not 0 <= value <= 255
+                    for value in gid) or
+                endpoint['endpoint_gid_hex'] != bytes(gid).hex() or
+                any(type(value) is not int or value < 0
+                    for value in endpoint['qos'].values()) or
+                endpoint['endpoint_gid_hex'] in seen):
+            raise ValueError('TF publisher endpoint inventory drift')
+        seen.add(endpoint['endpoint_gid_hex'])
+    if endpoints != sorted(
+            endpoints, key=lambda item: (
+                item['node_namespace'], item['node_name'],
+                item['endpoint_gid_hex'])):
+        raise ValueError('TF publisher endpoint ordering drift')
+
+
+def _map_odom_authority(observer: dict, teardown: list[dict],
+                        phase: str) -> dict:
+    """Prove map-to-odom authority through endpoint and process binding."""
+    if phase not in ('PRELUDE', 'FINAL'):
+        raise ValueError('map-to-odom authority phase drift')
+    endpoints = observer['tf_publisher_endpoints']
+    _validate_tf_publisher_endpoints(endpoints)
+    expected_nodes = {'/amcl'} if phase == 'PRELUDE' else {
+        '/amcl', '/rosbag2_player'}
+    names = {item['name'] for item in teardown}
+    actual_nodes = {
+        (endpoint['node_namespace'].rstrip('/') + '/' +
+         endpoint['node_name']).replace('//', '/')
+        for endpoint in endpoints}
+    required_processes = {'amcl'} if phase == 'PRELUDE' else {
+        'amcl', 'player'}
+    observed = observer['readiness']['map_odom_tf_count']
+    if (len(endpoints) != len(expected_nodes) or
+            actual_nodes != expected_nodes or
+            not required_processes.issubset(names) or
+            (phase == 'FINAL' and observed <= 0)):
+        raise ValueError('map-to-odom authority endpoint binding drift')
+    return {
+        'phase': phase,
+        'sanitized_input_transform_count': 0,
+        'observed_map_odom_transform_count':
+            observed,
+        'tf_publisher_endpoints': endpoints,
+        'bound_process_names': sorted(required_processes),
+        'proof_status': 'STRICT_ENDPOINT_PROCESS_BINDING',
+        'sole_runtime_authority': True,
+    }
+
+
 def _validate_observer_snapshot(observer: dict, label: str) -> None:
     _exact_keys(observer, {
         'schema_version', 'run_id', 'seed', 'max_clouds',
         'publisher_matched_count', 'pose_publisher_matched_count',
-        'events', 'readiness',
+        'events', 'readiness', 'tf_publisher_endpoints',
         'initialpose_count', 'pre_initial_scan_count',
         'pre_initial_cloud_count', 'raw_cloud_received_count',
         'amcl_pose_received_count', 'pending_cloud_count',
@@ -522,6 +642,7 @@ def _validate_observer_snapshot(observer: dict, label: str) -> None:
     if any(type(value) is not int or value < 0
            for value in observer['readiness'].values()):
         raise ValueError(f'{label} readiness count drift')
+    _validate_tf_publisher_endpoints(observer['tf_publisher_endpoints'])
     if type(observer['events']) is not list:
         raise ValueError(f'{label} events drift')
     for event in observer['events']:
@@ -682,20 +803,67 @@ def _members(pgid: int) -> list[int]:
     return sorted(result)
 
 
+PROCESS_WRAPPER_SIGINT_GRACE_S = 8.0
+PROCESS_GROUP_DRAIN_GRACE_S = 1.0
+PROCESS_GROUP_ESCALATION_STAGES_S = (
+    (signal.SIGTERM, 3.0), (signal.SIGKILL, 2.0))
+
+
+def _wait_wrapper_exit(process, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return True
+        time.sleep(0.02)
+    return process.poll() is not None
+
+
+def _wait_group_drain(pgid: int, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _members(pgid):
+            return True
+        time.sleep(0.02)
+    return not _members(pgid)
+
+
+def _wait_process_group_exit(record: dict, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if (record['process'].poll() is not None and
+                not _members(record['pgid'])):
+            return True
+        time.sleep(0.02)
+    return (record['process'].poll() is not None and
+            not _members(record['pgid']))
+
+
 def _stop(record: dict, run_dir: Path) -> dict:
     process = record['process']
     stages = []
     if process.poll() is None:
-        for sig, wait_s in ((signal.SIGINT, 5.0), (signal.SIGTERM, 3.0),
-                            (signal.SIGKILL, 2.0)):
-            if process.poll() is not None:
+        process.send_signal(signal.SIGINT)
+        stages.append({
+            'signal': signal.SIGINT.name,
+            'steady_ns': time.monotonic_ns()})
+        _wait_wrapper_exit(process, PROCESS_WRAPPER_SIGINT_GRACE_S)
+    if process.poll() is not None and _members(record['pgid']):
+        _wait_group_drain(record['pgid'], PROCESS_GROUP_DRAIN_GRACE_S)
+    if process.poll() is None or _members(record['pgid']):
+        for sig, wait_s in PROCESS_GROUP_ESCALATION_STAGES_S:
+            if (process.poll() is not None and
+                    not _members(record['pgid'])):
                 break
-            os.killpg(record['pgid'], sig)
-            stages.append({'signal': sig.name, 'steady_ns': time.monotonic_ns()})
             try:
-                _wait_process(record, run_dir, wait_s, enforce_guard=False)
-            except subprocess.TimeoutExpired:
-                pass
+                os.killpg(record['pgid'], sig)
+            except ProcessLookupError:
+                if (process.poll() is not None and
+                        not _members(record['pgid'])):
+                    break
+                raise
+            stages.append({'signal': sig.name, 'steady_ns': time.monotonic_ns()})
+            if _wait_process_group_exit(record, wait_s):
+                break
     record['stream'].close()
     return {'name': record['name'], 'pid': record['pid'],
             'pgid': record['pgid'], 'command': record['command'],
@@ -865,10 +1033,10 @@ def _select_tf_bootstrap_plan(scans: list[tuple[int, int]],
         if upper[0] >= scan_storage_ns:
             continue
         previous_storage_ns = scans[index - 1][0]
-        start_offset_ns = (
-            previous_storage_ns + scan_storage_ns) // 2 - source_start_ns
-        if start_offset_ns <= upper[0] - source_start_ns:
+        split_storage_ns = max(previous_storage_ns, upper[0]) + 1
+        if split_storage_ns >= scan_storage_ns:
             continue
+        start_offset_ns = split_storage_ns - source_start_ns
         return {
             'source_start_storage_ns': source_start_ns,
             'previous_scan_storage_ns': previous_storage_ns,
@@ -2024,6 +2192,9 @@ def _validate_artifact(root: Path, expected_mode: str) -> dict:
         sampler_stages = teardown_by_name['resource_sampler']['stop_stages']
         if ([stage['signal'] for stage in sampler_stages] != ['SIGINT']):
             raise ValueError('resource sampler termination drift')
+        _map_odom_authority(
+            evidence['prelude_observer'], evidence['teardown'], 'PRELUDE')
+        _map_odom_authority(observer, evidence['teardown'], 'FINAL')
         resource_path = path.parent / evidence['resource']['file']['relative_path']
         _exact_keys(evidence['resource'], {
             'sample_count', 'cpu_total_start_s', 'cpu_total_end_s',
@@ -2274,6 +2445,9 @@ def validate_replay_run_evidence(
     if [item['signal'] for item in
             processes['resource_sampler']['stop_stages']] != ['SIGINT']:
         raise ValueError('resource sampler termination drift')
+    _map_odom_authority(
+        evidence['prelude_observer'], evidence['teardown'], 'PRELUDE')
+    _map_odom_authority(observer, evidence['teardown'], 'FINAL')
     resource_path = run_dir / evidence['resource']['file']['relative_path']
     if evidence['resource'] != _resource_summary(resource_path, run_dir):
         raise ValueError('resource summary drift')

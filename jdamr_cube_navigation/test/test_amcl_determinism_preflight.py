@@ -2,6 +2,7 @@
 """Regression tests for the G002 AMCL determinism preflight."""
 
 from pathlib import Path
+import signal
 import sys
 from types import SimpleNamespace
 
@@ -10,6 +11,237 @@ from amcl_fault_contract import strict_json_loads
 import amcl_particle_observer as observer
 import pytest
 import run_amcl_determinism_preflight as runner
+
+
+def _tf_endpoint(node_name: str, fill: int) -> dict:
+    gid = [fill] * 16
+    return {
+        'node_name': node_name, 'node_namespace': '/',
+        'topic_type': 'tf2_msgs/msg/TFMessage',
+        'endpoint_gid_bytes': gid,
+        'endpoint_gid_hex': bytes(gid).hex(),
+        'qos': {'reliability': 1, 'durability': 2,
+                'history': 1, 'depth': 100},
+    }
+
+
+def test_map_odom_authority_binds_exact_final_publishers_and_processes():
+    observer_value = {
+        'tf_publisher_endpoints': [
+            _tf_endpoint('amcl', 1),
+            _tf_endpoint('rosbag2_player', 2),
+        ],
+        'readiness': {'map_odom_tf_count': 3},
+    }
+    teardown = [{'name': 'amcl'}, {'name': 'player'}]
+    result = runner._map_odom_authority(
+        observer_value, teardown, 'FINAL')
+    assert result['sole_runtime_authority'] is True
+    assert result['bound_process_names'] == ['amcl', 'player']
+    assert result['observed_map_odom_transform_count'] == 3
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda observer_value, teardown:
+        observer_value['tf_publisher_endpoints'][1].update({
+            'endpoint_gid_bytes': [1] * 16,
+            'endpoint_gid_hex': bytes([1] * 16).hex()}),
+    lambda observer_value, teardown:
+        observer_value['tf_publisher_endpoints'][1].update({
+            'node_name': 'unexpected_tf_publisher'}),
+    lambda observer_value, teardown:
+        teardown.pop(),
+    lambda observer_value, teardown:
+        observer_value['readiness'].update({'map_odom_tf_count': 0}),
+    lambda observer_value, teardown:
+        observer_value['tf_publisher_endpoints'].insert(
+            1, _tf_endpoint('amcl', 3)),
+])
+def test_map_odom_authority_rejects_hostile_runtime_evidence(mutation):
+    observer_value = {
+        'tf_publisher_endpoints': [
+            _tf_endpoint('amcl', 1),
+            _tf_endpoint('rosbag2_player', 2),
+        ],
+        'readiness': {'map_odom_tf_count': 3},
+    }
+    teardown = [{'name': 'amcl'}, {'name': 'player'}]
+    mutation(observer_value, teardown)
+    with pytest.raises(ValueError, match='TF publisher|authority endpoint'):
+        runner._map_odom_authority(observer_value, teardown, 'FINAL')
+
+
+def test_harness_source_snapshots_are_self_contained_and_fail_closed(
+        tmp_path):
+    artifact = tmp_path / 'artifact'
+    artifact.mkdir()
+    first = tmp_path / 'first.py'
+    second = tmp_path / 'second.py'
+    first.write_bytes(b'first-v1')
+    second.write_bytes(b'second-v1')
+    records = runner._snapshot_harness_sources(
+        artifact, (first, second))
+    filenames = {'first.py', 'second.py'}
+    runner._validate_harness_source_snapshots(
+        artifact, records, filenames)
+
+    first.write_bytes(b'current-worktree-drift')
+    runner._validate_harness_source_snapshots(
+        artifact, records, filenames)
+
+    snapshot = artifact / 'harness_sources/first.py'
+    snapshot.write_bytes(b'tampered')
+    with pytest.raises(ValueError, match='snapshot identity'):
+        runner._validate_harness_source_snapshots(
+            artifact, records, filenames)
+
+
+def test_harness_source_snapshot_inventory_rejects_missing_and_extra(
+        tmp_path):
+    for attack in ('missing', 'extra', 'manifest'):
+        artifact = tmp_path / attack
+        artifact.mkdir()
+        source = tmp_path / f'{attack}.py'
+        source.write_bytes(attack.encode())
+        records = runner._snapshot_harness_sources(artifact, (source,))
+        filenames = {source.name}
+        if attack == 'missing':
+            (artifact / 'harness_sources' / source.name).unlink()
+        elif attack == 'extra':
+            (artifact / 'harness_sources/unexpected.py').write_bytes(b'extra')
+        else:
+            records[source.name]['relative_path'] = source.name
+        with pytest.raises(ValueError, match='snapshot'):
+            runner._validate_harness_source_snapshots(
+                artifact, records, filenames)
+
+
+def test_executed_source_is_bound_to_snapshot_not_live_worktree(tmp_path):
+    artifact = tmp_path / 'artifact'
+    artifact.mkdir()
+    source = tmp_path / 'observer.py'
+    source.write_bytes(b'executed-v1')
+    executed = runner._identity(source)
+    snapshots = runner._snapshot_harness_sources(artifact, (source,))
+
+    source.write_bytes(b'live-worktree-v2')
+    assert runner._validate_source_against_snapshot(
+        executed, snapshots['observer.py'], 'observer.py') == executed
+
+    changed = dict(executed, sha256='0' * 64)
+    with pytest.raises(ValueError, match='snapshot binding'):
+        runner._validate_source_against_snapshot(
+            changed, snapshots['observer.py'], 'observer.py')
+
+
+class _StopProcess:
+    def __init__(self, state, initial_returncode=None):
+        self.state = state
+        self.initial_returncode = initial_returncode
+
+    def poll(self):
+        return self.state.get('returncode', self.initial_returncode)
+
+    def send_signal(self, sent_signal):
+        self.state['wrapper_signals'].append(sent_signal)
+        if self.poll() is None:
+            self.state['returncode'] = -sent_signal
+
+
+def _stop_record(tmp_path, state, initial_returncode=None):
+    log = tmp_path / 'process.log'
+    stream = log.open('wb')
+    return {
+        'name': 'process', 'pid': 10, 'pgid': 10,
+        'command': ['process'], 'process': _StopProcess(
+            state, initial_returncode),
+        'log_path': log, 'stream': stream,
+        'started': {'steady_ns': 1, 'wall_ns': 1},
+    }
+
+
+def test_stop_waits_for_delayed_child_after_wrapper_sigint(monkeypatch,
+                                                           tmp_path):
+    state = {'wrapper_signals': [], 'member_checks': 0}
+
+    def members(_pgid):
+        state['member_checks'] += 1
+        return [11] if state['member_checks'] < 3 else []
+
+    monkeypatch.setattr(runner, '_members', members)
+    monkeypatch.setattr(runner, 'PROCESS_GROUP_DRAIN_GRACE_S', 0.1)
+    result = runner._stop(_stop_record(tmp_path, state), tmp_path)
+
+    assert state['wrapper_signals'] == [signal.SIGINT]
+    assert [stage['signal'] for stage in result['stop_stages']] == ['SIGINT']
+    assert result['returncode'] == -signal.SIGINT
+    assert result['survivors'] == []
+
+
+def test_process_sigint_grace_exceeds_ros_launch_internal_timeout():
+    assert runner.PROCESS_WRAPPER_SIGINT_GRACE_S == 8.0
+    assert runner.PROCESS_GROUP_DRAIN_GRACE_S == 1.0
+
+
+def test_stop_escalates_ignored_child_only_after_sigint_grace(monkeypatch,
+                                                              tmp_path):
+    state = {'wrapper_signals': [], 'group_signals': []}
+
+    def members(_pgid):
+        return [] if signal.SIGTERM in state['group_signals'] else [11]
+
+    def killpg(_pgid, sent_signal):
+        state['group_signals'].append(sent_signal)
+        state['returncode'] = -sent_signal
+
+    monkeypatch.setattr(runner, '_members', members)
+    monkeypatch.setattr(runner.os, 'killpg', killpg)
+    monkeypatch.setattr(runner, 'PROCESS_GROUP_DRAIN_GRACE_S', 0.03)
+    monkeypatch.setattr(runner, 'PROCESS_GROUP_ESCALATION_STAGES_S', (
+        (signal.SIGTERM, 0.1), (signal.SIGKILL, 0.1)))
+    result = runner._stop(_stop_record(tmp_path, state), tmp_path)
+
+    assert state['wrapper_signals'] == [signal.SIGINT]
+    assert state['group_signals'] == [signal.SIGTERM]
+    assert [stage['signal'] for stage in result['stop_stages']] == [
+        'SIGINT', 'SIGTERM']
+    assert result['survivors'] == []
+
+
+def test_stop_cleans_group_left_by_naturally_exited_wrapper(monkeypatch,
+                                                            tmp_path):
+    state = {'wrapper_signals': [], 'group_signals': [], 'returncode': 0}
+
+    def members(_pgid):
+        return [] if signal.SIGTERM in state['group_signals'] else [11]
+
+    monkeypatch.setattr(runner, '_members', members)
+    monkeypatch.setattr(
+        runner.os, 'killpg',
+        lambda _pgid, sent_signal: state['group_signals'].append(sent_signal))
+    monkeypatch.setattr(runner, 'PROCESS_GROUP_DRAIN_GRACE_S', 0.03)
+    monkeypatch.setattr(runner, 'PROCESS_GROUP_ESCALATION_STAGES_S', (
+        (signal.SIGTERM, 0.1), (signal.SIGKILL, 0.1)))
+    result = runner._stop(
+        _stop_record(tmp_path, state, initial_returncode=0), tmp_path)
+
+    assert state['wrapper_signals'] == []
+    assert state['group_signals'] == [signal.SIGTERM]
+    assert [stage['signal'] for stage in result['stop_stages']] == ['SIGTERM']
+    assert result['survivors'] == []
+
+
+def test_stop_leaves_naturally_exited_driver_without_stop_stages(monkeypatch,
+                                                                 tmp_path):
+    state = {'wrapper_signals': [], 'returncode': 0}
+    monkeypatch.setattr(runner, '_members', lambda _pgid: [])
+    result = runner._stop(
+        _stop_record(tmp_path, state, initial_returncode=0), tmp_path)
+
+    assert state['wrapper_signals'] == []
+    assert result['returncode'] == 0
+    assert result['stop_stages'] == []
+    assert result['survivors'] == []
 
 
 def _cloud(stamp_ns=1, x=1.0):
@@ -196,7 +428,24 @@ def test_tf_bootstrap_selects_first_bracketed_scan_without_magic_offset():
     assert plan['first_main_scan_header_ns'] == 100
     assert plan['lower_tf_header_ns'] == 70
     assert plan['upper_tf_header_ns'] == 130
-    assert plan['start_offset_ns'] == 150
+    assert plan['start_offset_ns'] == 131
+
+
+def test_tf_bootstrap_starts_after_upper_tf_later_than_previous_scan():
+    scans = [(1000, -100), (1100, 0), (1200, 100)]
+    transforms = [(1070, 70), (1175, 130)]
+    plan = runner._select_tf_bootstrap_plan(scans, transforms, 1000)
+    assert plan['previous_scan_storage_ns'] == 1100
+    assert plan['upper_tf_storage_ns'] == 1175
+    assert plan['first_main_scan_storage_ns'] == 1200
+    assert plan['start_offset_ns'] == 176
+
+
+def test_tf_bootstrap_rejects_upper_tf_at_or_after_current_scan():
+    with pytest.raises(ValueError, match='no scan'):
+        runner._select_tf_bootstrap_plan(
+            [(0, -100), (100, 0), (200, 100)],
+            [(70, 70), (200, 130)], 0)
 
 
 def test_tf_bootstrap_rejects_scan_without_transform_bracket():
@@ -228,6 +477,8 @@ def test_runtime_replay_view_emits_only_selected_topics_and_validates_exactly(
         ('/odom', b'odom-main', 110),
         ('/tf', b'tf-main', 120),
         ('/scan', b'scan-first', 140),
+        ('/odom', b'odom-after-scan', 150),
+        ('/tf', b'tf-after-scan', 160),
         ('/scan', b'scan-last', 200),
     ]
 
@@ -282,8 +533,8 @@ def test_runtime_replay_view_emits_only_selected_topics_and_validates_exactly(
         'lower_tf_header_ns': 20,
         'upper_tf_storage_ns': 120,
         'upper_tf_header_ns': 120,
-        'start_offset_ns': 100,
-        'start_offset_s': 1e-7,
+        'start_offset_ns': 121,
+        'start_offset_s': 1.21e-7,
     }
     view = runner._replay_view_manifest(sanitized, bootstrap, 200)
     assert list(view['prelude']) == ['/odom', '/tf', '/tf_static']
@@ -706,6 +957,9 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
                     'map_count': 1, 'clock_count': 2, 'odom_count': 1,
                     'tf_count': 1, 'map_odom_tf_count': 1,
                     'tf_static_count': 1}, 'initialpose_count': 1,
+                'tf_publisher_endpoints': [
+                    _tf_endpoint('amcl', 1),
+                    _tf_endpoint('rosbag2_player', 2)],
                 'pre_initial_scan_count': 0, 'pre_initial_cloud_count': 0,
                 'raw_cloud_received_count': cloud_count,
                 'amcl_pose_received_count': cloud_count,
@@ -745,6 +999,7 @@ def _artifact(tmp_path: Path, seeds=(11,)) -> Path:
                     'map_count': 1, 'clock_count': 1, 'odom_count': 1,
                     'tf_count': 1, 'map_odom_tf_count': 0,
                     'tf_static_count': 1},
+                'tf_publisher_endpoints': [_tf_endpoint('amcl', 1)],
                 'initialpose_count': 0, 'pre_initial_scan_count': 0,
                 'pre_initial_cloud_count': 0, 'raw_cloud_received_count': 0,
                 'amcl_pose_received_count': 0, 'pending_cloud_count': 0,

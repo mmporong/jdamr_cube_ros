@@ -70,3 +70,22 @@ def test_launch_accepts_a_generated_urdf_and_resolves_controller_path(tmp_path):
         variant, '/tmp/controllers.yaml')
 
     assert content == '<robot>/tmp/controllers.yaml</robot>'
+
+
+def test_robot_state_publisher_respawn_bool_is_strict():
+    """Capture runs may disable respawn without weakening the default."""
+    spec = importlib.util.spec_from_file_location('gazebo_launch', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module._strict_bool('true', 'respawn') is True
+    assert module._strict_bool('false', 'respawn') is False
+    for invalid in ('True', 'False', '1', '0', 'yes', ''):
+        try:
+            module._strict_bool(invalid, 'respawn')
+        except ValueError:
+            continue
+        raise AssertionError(f'accepted invalid bool: {invalid!r}')
+
+    source = LAUNCH.read_text(encoding='utf-8')
+    assert "'robot_state_publisher_respawn', default_value='true'" in source

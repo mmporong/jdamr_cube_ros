@@ -3,10 +3,12 @@
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 from amcl_fault_contract import canonical_json_bytes, strict_json_load
 import evaluate_amcl_axis_a as evaluator
 import pytest
+import run_amcl_axis_a as axis_a_runner
 import run_amcl_determinism_preflight as preflight
 
 
@@ -21,6 +23,18 @@ RECORDED_IDENTITY = {
 }
 
 
+def _tf_endpoint(node_name: str, fill: int) -> dict:
+    gid = [fill] * 16
+    return {
+        'node_name': node_name, 'node_namespace': '/',
+        'topic_type': 'tf2_msgs/msg/TFMessage',
+        'endpoint_gid_bytes': gid,
+        'endpoint_gid_hex': bytes(gid).hex(),
+        'qos': {'reliability': 1, 'durability': 2,
+                'history': 1, 'depth': 100},
+    }
+
+
 @pytest.fixture(autouse=True)
 def _isolate_external_sources(monkeypatch):
     monkeypatch.setattr(evaluator, '_validate_source_records', lambda _: None)
@@ -28,6 +42,9 @@ def _isolate_external_sources(monkeypatch):
     monkeypatch.setattr(
         evaluator, 'recorded_reference',
         lambda _root: (RECORDED, RECORDED_IDENTITY))
+    monkeypatch.setattr(
+        preflight, 'validate_sanitized_bag',
+        lambda root: strict_json_load(root / 'sanitizer_manifest.json'))
 
 
 def _base(profile='P0', seed=11, domain_id=180):
@@ -54,6 +71,9 @@ def _base(profile='P0', seed=11, domain_id=180):
                 'map_count': 1, 'clock_count': 1, 'odom_count': 1,
                 'tf_count': 1, 'map_odom_tf_count': 1,
                 'tf_static_count': 1},
+            'tf_publisher_endpoints': [
+                _tf_endpoint('amcl', 1),
+                _tf_endpoint('rosbag2_player', 2)],
             'initialpose_count': 1, 'pre_initial_scan_count': 0,
             'pre_initial_cloud_count': 0, 'raw_cloud_received_count': 1,
             'amcl_pose_received_count': 1, 'pending_cloud_count': 0,
@@ -88,10 +108,11 @@ def _base(profile='P0', seed=11, domain_id=180):
                 'pair_arrival_delta_ns': 1,
             }],
         },
-        'teardown': [{
-            'name': 'amcl',
-            'command': ['amcl', '--ros-args', *overrides],
-        }],
+        'teardown': [
+            {'name': 'player', 'command': ['ros2', 'bag', 'play']},
+            {'name': 'amcl',
+             'command': ['amcl', '--ros-args', *overrides]},
+        ],
         'operations': [
             {'command': ['ros2', 'lifecycle', 'set', '/map_server', 'configure'],
              'returncode': 0},
@@ -105,6 +126,7 @@ def _base(profile='P0', seed=11, domain_id=180):
             {'command': ['ros2', 'service', 'call'], 'returncode': 0},
         ],
         'map_yaml': {'sha256': 'a'}, 'params_file': {'sha256': 'b'},
+        'observer_source': preflight._identity(evaluator.OBSERVER),
         'sanitized_manifest': None,
         'loaded_runtime': {'sha256': 'd'}, 'tf_bootstrap': {'offset': 1},
     }
@@ -133,14 +155,22 @@ def _artifact(root: Path):
         'axis_a': {'map': {'yaml': base['map_yaml']}},
     }
     (root / 'contract_snapshot.json').write_bytes(canonical_json_bytes(contract))
+    sanitizer = {'source': {'path': '/test'}}
     (root / 'sanitizer_manifest_snapshot.json').write_bytes(
-        canonical_json_bytes({'source': {'path': '/test'}}))
+        canonical_json_bytes(sanitizer))
+    sanitized_root = root.parent / 'sanitized_source'
+    sanitized_root.mkdir()
+    (sanitized_root / 'sanitizer_manifest.json').write_bytes(
+        canonical_json_bytes(sanitizer))
     (root / 'runtime_attestation_snapshot.json').write_bytes(
         canonical_json_bytes({'loaded_runtime': base['loaded_runtime']}))
+    harness_sources = preflight._snapshot_harness_sources(
+        root, (evaluator.EVALUATOR, evaluator.RUNNER,
+               evaluator.OBSERVER, evaluator.PREFLIGHT))
     run_dir = root / 'run_1'
     run_dir.mkdir()
     base['sanitized_manifest'] = preflight._identity(
-        root / 'sanitizer_manifest_snapshot.json')
+        sanitized_root / 'sanitizer_manifest.json')
     resource_path = run_dir / 'amcl_resource.jsonl'
     resource_path.write_text(
         '{"monotonic_s":1.0,"cpu_total_s":0.0,'
@@ -165,9 +195,8 @@ def _artifact(root: Path):
         'profile_parameters': evaluator.PROFILES['P0'],
         'recorded_pose_pairs': pairs,
         'metrics': evaluator.derive_metrics(base_view, pairs),
-        'map_odom_authority': {
-            'sanitized_input_count': 0, 'generated_observed_count': 1,
-            'sole_runtime_authority': True},
+        'map_odom_authority': preflight._map_odom_authority(
+            base_view['observer'], base_view['teardown'], 'FINAL'),
     }
     axis_path = run_dir / 'axis_a_evidence.json'
     axis_path.write_bytes(canonical_json_bytes(axis))
@@ -183,10 +212,7 @@ def _artifact(root: Path):
             root / 'sanitizer_manifest_snapshot.json', root),
         'runtime_attestation': preflight._relative_identity(
             root / 'runtime_attestation_snapshot.json', root),
-        'harness_sources': {
-            path.name: evaluator._source_identity(path)
-            for path in (evaluator.EVALUATOR, evaluator.RUNNER,
-                         evaluator.OBSERVER, evaluator.PREFLIGHT)},
+        'harness_sources': harness_sources,
         'runs': [preflight._relative_identity(axis_path, root)],
         'tree_records': records,
         'tree_sha256': evaluator._tree_digest(records),
@@ -251,9 +277,119 @@ def test_observer_waits_for_map_odom_authority_after_cloud_limit():
     assert 'self.map_odom_tf_count > 0' in tick
 
 
+def test_axis_a_runner_rejects_map_identity_before_execution(
+        monkeypatch, tmp_path):
+    contract = {
+        'production_inputs': {'production_params': {'identity': 'params'}},
+        'axis_a': {'map': {'yaml': {'identity': 'expected-map'}}},
+    }
+    monkeypatch.setattr(axis_a_runner, 'current_free_bytes',
+                        lambda _path: 7 * 1024 ** 3)
+    monkeypatch.setattr(axis_a_runner, 'strict_json_load',
+                        lambda _path: contract)
+    monkeypatch.setattr(preflight, '_validate_source_records', lambda _: None)
+    monkeypatch.setattr(preflight, '_identity',
+                        lambda _path: {'identity': 'wrong-map'})
+    args = SimpleNamespace(
+        output_root=tmp_path / 'out', smoke=True,
+        prepared_root=tmp_path, map_yaml=tmp_path / 'map.yaml',
+        params_file=tmp_path / 'params.yaml')
+    with pytest.raises(ValueError, match='map or parameter snapshot'):
+        axis_a_runner.run(args)
+
+
+def test_axis_a_runner_revalidates_sanitized_bag_before_execution(
+        monkeypatch, tmp_path):
+    expected = {'identity': 'expected'}
+    contract = {
+        'production_inputs': {'production_params': expected},
+        'axis_a': {'map': {'yaml': expected}},
+    }
+    monkeypatch.setattr(axis_a_runner, 'current_free_bytes',
+                        lambda _path: 7 * 1024 ** 3)
+    monkeypatch.setattr(axis_a_runner, 'strict_json_load',
+                        lambda _path: contract)
+    monkeypatch.setattr(preflight, '_validate_source_records', lambda _: None)
+    monkeypatch.setattr(preflight, '_identity', lambda _path: expected)
+
+    def reject_sanitized(_root):
+        raise ValueError('sanitized bag byte validation failed')
+
+    monkeypatch.setattr(
+        preflight, 'validate_sanitized_bag', reject_sanitized)
+    args = SimpleNamespace(
+        output_root=tmp_path / 'out', smoke=True,
+        prepared_root=tmp_path, sanitized_root=tmp_path / 'sanitized',
+        map_yaml=tmp_path / 'map.yaml', params_file=tmp_path / 'params.yaml')
+    with pytest.raises(ValueError, match='byte validation'):
+        axis_a_runner.run(args)
+
+
+def test_axis_a_validator_rechecks_sanitized_bag_bytes(
+        monkeypatch, tmp_path):
+    root = _artifact(tmp_path / 'artifact')
+
+    def reject_sanitized(_root):
+        raise ValueError('sanitized bag byte validation failed')
+
+    monkeypatch.setattr(
+        preflight, 'validate_sanitized_bag', reject_sanitized)
+    with pytest.raises(ValueError, match='byte validation'):
+        evaluator.validate_axis_a_smoke(root)
+
+
 def test_smoke_validator_accepts_exact_fixture(tmp_path):
     root = _artifact(tmp_path / 'artifact')
     assert evaluator.validate_axis_a_smoke(root)['mode'] == 'smoke'
+
+
+def test_validator_is_independent_of_current_source_bytes(tmp_path,
+                                                          monkeypatch):
+    root = _artifact(tmp_path / 'artifact')
+    current = tmp_path / evaluator.EVALUATOR.name
+    current.write_text('changed current source', encoding='utf-8')
+    monkeypatch.setattr(evaluator, 'EVALUATOR', current)
+    assert evaluator.validate_axis_a_smoke(root)['mode'] == 'smoke'
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda sources: sources.update({'unknown.py': {
+        'path': '/producer/unknown.py', 'size_bytes': 1,
+        'sha256': '0' * 64}}),
+    lambda sources: sources.pop(evaluator.RUNNER.name),
+    lambda sources: sources[evaluator.EVALUATOR.name].update({'extra': 1}),
+    lambda sources: sources[evaluator.EVALUATOR.name].pop('sha256'),
+    lambda sources: sources[evaluator.EVALUATOR.name].update({
+        'relative_path': 'harness_sources/wrong.py'}),
+    lambda sources: sources[evaluator.EVALUATOR.name].update({
+        'size_bytes': 0}),
+    lambda sources: sources[evaluator.EVALUATOR.name].update({
+        'sha256': 'not-a-64-hex-digest'}),
+])
+def test_harness_source_provenance_malformed_inputs_fail_closed(
+        tmp_path, mutation):
+    root = _artifact(tmp_path / 'artifact')
+    manifest_path = root / 'axis_a_manifest.json'
+    manifest = strict_json_load(manifest_path)
+    mutation(manifest['harness_sources'])
+    manifest_path.write_bytes(canonical_json_bytes(manifest))
+    with pytest.raises(ValueError, match='harness source'):
+        evaluator.validate_axis_a_smoke(root)
+
+
+@pytest.mark.parametrize('attack', ['tamper', 'missing', 'extra'])
+def test_harness_source_snapshot_tree_attacks_fail_closed(tmp_path, attack):
+    root = _artifact(tmp_path / 'artifact')
+    snapshot_root = root / 'harness_sources'
+    target = snapshot_root / evaluator.EVALUATOR.name
+    if attack == 'tamper':
+        target.write_bytes(target.read_bytes() + b'changed')
+    elif attack == 'missing':
+        target.unlink()
+    else:
+        (snapshot_root / 'extra.py').write_text('extra', encoding='utf-8')
+    with pytest.raises((ValueError, FileNotFoundError), match='harness source'):
+        evaluator.validate_axis_a_smoke(root)
 
 
 def test_runtime_shaped_base_view_is_memory_only(tmp_path):

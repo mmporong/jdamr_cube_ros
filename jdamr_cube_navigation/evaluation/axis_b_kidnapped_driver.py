@@ -11,18 +11,13 @@ import tempfile
 import time
 
 from amcl_fault_contract import canonical_json_bytes, sha256_file
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
-
-try:
-    from ros_gz_interfaces.msg import Contacts
-except ImportError:
-    Contacts = None
 
 
 START_POSE = [-8.0, 0.0, 0.0]
@@ -53,6 +48,10 @@ def _angle_delta(left: float, right: float) -> float:
     return math.remainder(left - right, 2.0 * math.pi)
 
 
+def _stamp_ns(stamp) -> int:
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
 def rotation_command_radps(accumulated_yaw_rad: float) -> float:
     """Reduce angular speed near one full observed rotation."""
     remaining_yaw_rad = ROTATION_TARGET_RAD - accumulated_yaw_rad
@@ -78,19 +77,25 @@ def _source_identity() -> dict:
             'sha256': sha256_file(source_path)}
 
 
-def validate_kidnapped_trace(value: dict) -> dict:
+def validate_kidnapped_trace(
+        value: dict, expected_driver_source: dict | None = None) -> dict:
     """Fail closed on every causal and physical trace condition."""
     expected = {
         'schema_version', 'events', 'pre_teleport_gt', 'post_teleport_gt',
         'pre_teleport_odom', 'post_teleport_odom', 't0_scan_stamp_ns',
-        'unwrapped_observation_yaw_rad', 'contact_count', 'final_zero',
+        'teleport_gt_verified_header_stamp_ns',
+        'unwrapped_observation_yaw_rad', 'final_zero',
+        'reverse_observation_yaw_rad',
         'initial_observation_yaw_rad', 'post_zero_observation_yaw_rad',
-        'zero_hold_s', 'stationary_sample_count', 'failure', 'driver_source'}
+        'initial_reverse_yaw_rad', 'post_zero_reverse_yaw_rad',
+        'zero_hold_s', 'stationary_sample_count',
+        'post_teleport_initialpose_count', 'failure', 'driver_source'}
     if type(value) is not dict or set(value) != expected:
         raise ValueError('kidnapped trace schema drift')
     if value['schema_version'] != 1 or value['failure'] is not None:
         raise ValueError('kidnapped trace failed')
-    if value['driver_source'] != _source_identity():
+    expected_source = expected_driver_source or _source_identity()
+    if value['driver_source'] != expected_source:
         raise ValueError('kidnapped driver source identity drift')
     events = value['events']
     if type(events) is not list:
@@ -147,26 +152,39 @@ def validate_kidnapped_trace(value: dict) -> dict:
     t0 = next(event for event in events if event['name'] == 't0_scan')
     verified = next(event for event in events
                     if event['name'] == 'teleport_gt_verified')
-    if (type(value['t0_scan_stamp_ns']) is not int or
+    header_boundary = value['teleport_gt_verified_header_stamp_ns']
+    if (type(header_boundary) is not int or header_boundary <= 0 or
+            type(value['t0_scan_stamp_ns']) is not int or
             value['t0_scan_stamp_ns'] <= 0 or
             t0['scan_header_stamp_ns'] != value['t0_scan_stamp_ns'] or
             t0['steady_ns'] <= verified['steady_ns'] or
+            value['t0_scan_stamp_ns'] < header_boundary or
             not _finite_number(value['unwrapped_observation_yaw_rad']) or
             value['unwrapped_observation_yaw_rad'] < ROTATION_TARGET_RAD or
             value['unwrapped_observation_yaw_rad'] >
             ROTATION_TARGET_RAD + GT_YAW_TOLERANCE_RAD or
+            not _finite_number(value['reverse_observation_yaw_rad']) or
+            value['reverse_observation_yaw_rad'] < 0.0 or
+            value['reverse_observation_yaw_rad'] > GT_YAW_TOLERANCE_RAD or
             not _finite_number(value['initial_observation_yaw_rad']) or
             value['initial_observation_yaw_rad'] < INITIAL_OBSERVATION_RAD or
+            not _finite_number(value['initial_reverse_yaw_rad']) or
+            value['initial_reverse_yaw_rad'] < 0.0 or
+            value['initial_reverse_yaw_rad'] > GT_YAW_TOLERANCE_RAD or
             not _finite_number(value['post_zero_observation_yaw_rad']) or
             value['post_zero_observation_yaw_rad'] <
             POST_ZERO_OBSERVATION_RAD or
-            type(value['contact_count']) is not int or
-            value['contact_count'] != 0 or value['final_zero'] is not True or
+            not _finite_number(value['post_zero_reverse_yaw_rad']) or
+            value['post_zero_reverse_yaw_rad'] < 0.0 or
+            value['post_zero_reverse_yaw_rad'] > GT_YAW_TOLERANCE_RAD or
+            value['final_zero'] is not True or
             not _finite_number(value['zero_hold_s']) or
             value['zero_hold_s'] < ZERO_HOLD_S or
             type(value['stationary_sample_count']) is not int or
-            value['stationary_sample_count'] < 10):
-        raise ValueError('kidnapped rotation, contact, or stop gate failed')
+            value['stationary_sample_count'] < 10 or
+            type(value['post_teleport_initialpose_count']) is not int or
+            value['post_teleport_initialpose_count'] != 0):
+        raise ValueError('kidnapped rotation or stop gate failed')
     return value
 
 
@@ -188,10 +206,14 @@ class KidnappedDriver(Node):
         self.post_odom = None
         self.stationary_count = 0
         self.t0_scan_stamp_ns = None
-        self.contact_count = 0
+        self.teleport_gt_verified_header_stamp_ns = None
+        self.post_teleport_initialpose_count = 0
         self.accumulated_yaw_rad = 0.0
+        self.reverse_observation_yaw_rad = 0.0
         self.initial_observation_yaw_rad = 0.0
+        self.initial_reverse_yaw_rad = 0.0
         self.post_zero_observation_yaw_rad = 0.0
+        self.post_zero_reverse_yaw_rad = 0.0
         self.last_yaw = None
         self.phase = 'INITIAL_ROTATE'
         self.zero_started = None
@@ -201,13 +223,9 @@ class KidnappedDriver(Node):
         self.create_subscription(PoseStamped, '/ground_truth_pose', self._gt, 10)
         self.create_subscription(Odometry, '/odom', self._odom, 10)
         self.create_subscription(
+            PoseWithCovarianceStamped, '/initialpose', self._initialpose, 10)
+        self.create_subscription(
             LaserScan, '/sim_raw/scan', self._scan, qos_profile_sensor_data)
-        if Contacts is None:
-            self.failure = 'ros_gz_interfaces/Contacts unavailable'
-            self.done = True
-        else:
-            self.create_subscription(Contacts, args.contact_topic,
-                                     self._contact, 10)
         self.create_timer(0.02, self._tick)
 
     def _event(self, name, scan_header_stamp_ns=None):
@@ -229,17 +247,25 @@ class KidnappedDriver(Node):
                 current[:2], TELEPORT_POSE[:2]) <= GT_TRANSLATION_TOLERANCE_M:
             self.post_gt = list(current)
             self.post_odom = list(self.odom)
+            self.teleport_gt_verified_header_stamp_ns = _stamp_ns(
+                message.header.stamp)
             self._event('teleport_gt_verified')
             self.phase = 'WAIT_T0'
         elif self.phase in ('INITIAL_ROTATE', 'ROTATE', 'POST_ZERO_ROTATE'):
             if self.last_yaw is not None:
-                delta = abs(_angle_delta(current[2], self.last_yaw))
+                delta = _angle_delta(current[2], self.last_yaw)
                 if self.phase == 'INITIAL_ROTATE':
                     self.initial_observation_yaw_rad += delta
+                    if delta < 0.0:
+                        self.initial_reverse_yaw_rad += abs(delta)
                 elif self.phase == 'ROTATE':
                     self.accumulated_yaw_rad += delta
+                    if delta < 0.0:
+                        self.reverse_observation_yaw_rad += abs(delta)
                 else:
                     self.post_zero_observation_yaw_rad += delta
+                    if delta < 0.0:
+                        self.post_zero_reverse_yaw_rad += abs(delta)
             self.last_yaw = current[2]
 
     def _odom(self, message):
@@ -261,8 +287,11 @@ class KidnappedDriver(Node):
             self.last_yaw = self.gt[2]
             self.phase = 'ROTATE'
 
-    def _contact(self, message):
-        self.contact_count += len(message.contacts)
+    def _initialpose(self, _message):
+        if self.phase in (
+                'WAIT_GT_TELEPORT', 'WAIT_T0', 'ROTATE', 'ZERO_HOLD',
+                'POST_ZERO_ROTATE', 'FINAL_ZERO_HOLD'):
+            self.post_teleport_initialpose_count += 1
 
     def _teleport(self):
         self._event('teleport_requested')
@@ -344,16 +373,23 @@ class KidnappedDriver(Node):
                 'pre_teleport_odom': self.pre_odom,
                 'post_teleport_odom': self.post_odom,
                 't0_scan_stamp_ns': self.t0_scan_stamp_ns,
+                'teleport_gt_verified_header_stamp_ns':
+                    self.teleport_gt_verified_header_stamp_ns,
                 'unwrapped_observation_yaw_rad': self.accumulated_yaw_rad,
+                'reverse_observation_yaw_rad':
+                    self.reverse_observation_yaw_rad,
                 'initial_observation_yaw_rad':
                     self.initial_observation_yaw_rad,
+                'initial_reverse_yaw_rad': self.initial_reverse_yaw_rad,
                 'post_zero_observation_yaw_rad':
                     self.post_zero_observation_yaw_rad,
-                'contact_count': self.contact_count,
+                'post_zero_reverse_yaw_rad': self.post_zero_reverse_yaw_rad,
                 'final_zero': self.phase == 'FINAL_ZERO_HOLD' or self.done,
                 'zero_hold_s': (time.monotonic() - self.zero_started
                                 if self.zero_started else 0.0),
                 'stationary_sample_count': self.stationary_count,
+                'post_teleport_initialpose_count':
+                    self.post_teleport_initialpose_count,
                 'failure': self.failure}
 
 
@@ -361,7 +397,6 @@ def main() -> int:
     """Run until the exact kidnapped trace is captured or rejected."""
     parser = argparse.ArgumentParser()
     parser.add_argument('--evidence', required=True, type=Path)
-    parser.add_argument('--contact-topic', required=True)
     args = parser.parse_args()
     rclpy.init()
     node = KidnappedDriver(args)

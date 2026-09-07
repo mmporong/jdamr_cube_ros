@@ -38,7 +38,12 @@ def run(args) -> dict:
         raise RuntimeError('less than 6 GiB free before Axis A evaluation')
     contract = strict_json_load(args.prepared_root / 'contract.json')
     preflight._validate_source_records(contract['production_inputs'])
-    sanitized = strict_json_load(args.sanitized_root / 'sanitizer_manifest.json')
+    if (preflight._identity(args.map_yaml) !=
+            contract['axis_a']['map']['yaml'] or
+            preflight._identity(args.params_file) !=
+            contract['production_inputs']['production_params']):
+        raise ValueError('Axis A map or parameter snapshot identity drift')
+    sanitized = preflight.validate_sanitized_bag(args.sanitized_root)
     attestation = strict_json_load(
         args.attestation_root / 'build_attestation.json')
     if (contract['axis_a']['source_bag']['sha256'] !=
@@ -61,6 +66,8 @@ def run(args) -> dict:
                 (args.attestation_root / 'build_attestation.json',
                  'runtime_attestation_snapshot.json')):
             shutil.copyfile(source, stage / target)
+        harness_sources = preflight._snapshot_harness_sources(
+            stage, (EVALUATOR, RUNNER, OBSERVER, PREFLIGHT))
         runs = []
         plan_records = []
         bootstrap = preflight._tf_bootstrap_plan(args.sanitized_root)
@@ -89,12 +96,8 @@ def run(args) -> dict:
                 'profile_parameters': PROFILES[profile],
                 'recorded_pose_pairs': pairs,
                 'metrics': derive_metrics(base, pairs),
-                'map_odom_authority': {
-                    'sanitized_input_count': 0,
-                    'generated_observed_count':
-                        base['observer']['readiness']['map_odom_tf_count'],
-                    'sole_runtime_authority': True,
-                },
+                'map_odom_authority': preflight._map_odom_authority(
+                    base['observer'], base['teardown'], 'FINAL'),
             }
             axis_path = stage / f'run_{index + 1}/axis_a_evidence.json'
             axis_path.write_bytes(canonical_json_bytes(axis))
@@ -111,9 +114,7 @@ def run(args) -> dict:
                 stage / 'sanitizer_manifest_snapshot.json', stage),
             'runtime_attestation': preflight._relative_identity(
                 stage / 'runtime_attestation_snapshot.json', stage),
-            'harness_sources': {
-                path.name: preflight._identity(path)
-                for path in (EVALUATOR, RUNNER, OBSERVER, PREFLIGHT)},
+            'harness_sources': harness_sources,
             'runs': runs, 'tree_records': records,
             'run_contract': {
                 'max_clouds': args.max_clouds, 'prefix_s': args.prefix_s,

@@ -14,10 +14,12 @@ from amcl_fault_contract import strict_json_load
 from rclpy.serialization import deserialize_message
 import rosbag2_py
 from rosidl_runtime_py.utilities import get_message
+import run_amcl_determinism_preflight as preflight
 from run_amcl_determinism_preflight import _canonical_json_load
 from run_amcl_determinism_preflight import _load_observer_state
 from run_amcl_determinism_preflight import _relative_identity
 from run_amcl_determinism_preflight import _resource_summary
+from run_amcl_determinism_preflight import _validate_harness_source_snapshots
 from run_amcl_determinism_preflight import _validate_sanitizer_snapshot
 from run_amcl_determinism_preflight import _validate_source_records
 
@@ -359,11 +361,9 @@ def validate_axis_a_artifact(root: Path, expected_mode: str) -> dict:
             ('runtime_attestation', 'runtime_attestation_snapshot.json')):
         if manifest[key] != _relative_identity(root / filename, root):
             raise ValueError(f'{key} identity drift')
-    expected_sources = {
-        path.name: _source_identity(path)
-        for path in (EVALUATOR, RUNNER, OBSERVER, PREFLIGHT)}
-    if manifest['harness_sources'] != expected_sources:
-        raise ValueError('Axis A harness source identity drift')
+    _validate_harness_source_snapshots(
+        root, manifest['harness_sources'],
+        {path.name for path in (EVALUATOR, RUNNER, OBSERVER, PREFLIGHT)})
     contract = strict_json_load(root / 'contract_snapshot.json')
     _validate_source_records(contract['production_inputs'])
     sanitizer = strict_json_load(root / 'sanitizer_manifest_snapshot.json')
@@ -381,6 +381,7 @@ def validate_axis_a_artifact(root: Path, expected_mode: str) -> dict:
         raise ValueError('artifact tree identity or cap drift')
     if len(manifest['runs']) != len(expected_plan):
         raise ValueError('run count drift')
+    validated_sanitized_root = None
     for index, record in enumerate(manifest['runs']):
         path = root / record['relative_path']
         if record != _relative_identity(path, root):
@@ -405,6 +406,21 @@ def validate_axis_a_artifact(root: Path, expected_mode: str) -> dict:
         if evidence['base_evidence'] != _relative_identity(base_path, root):
             raise ValueError('base evidence identity drift')
         base = _load_base_view(base_path)
+        preflight._validate_source_against_snapshot(
+            base['observer_source'],
+            manifest['harness_sources']['amcl_particle_observer.py'],
+            'amcl_particle_observer.py')
+        sanitized_root = Path(base['sanitized_manifest']['path']).parent
+        if validated_sanitized_root is None:
+            validated = preflight.validate_sanitized_bag(sanitized_root)
+            if validated != sanitizer:
+                raise ValueError('sanitized bag differs from frozen manifest')
+            validated_sanitized_root = sanitized_root
+        elif sanitized_root != validated_sanitized_root:
+            raise ValueError('sanitized bag root differs across runs')
+        if base['sanitized_manifest'] != preflight._identity(
+                sanitized_root / 'sanitizer_manifest.json'):
+            raise ValueError('sanitized bag manifest identity drift')
         if (base['profile'] != evidence['profile'] or
                 base['seed'] != evidence['seed'] or
                 base['domain_id'] != evidence['domain_id'] or
@@ -437,13 +453,8 @@ def validate_axis_a_artifact(root: Path, expected_mode: str) -> dict:
                 any(operation['returncode'] != 0 for operation in operations)):
             raise ValueError('lifecycle active contract drift')
         authority = evidence['map_odom_authority']
-        _exact_keys(authority, {
-            'sanitized_input_count', 'generated_observed_count',
-            'sole_runtime_authority'}, 'map odom authority')
-        if (authority['sanitized_input_count'] != 0 or
-                type(authority['generated_observed_count']) is not int or
-                authority['generated_observed_count'] <= 0 or
-                authority['sole_runtime_authority'] is not True):
+        if authority != preflight._map_odom_authority(
+                base['observer'], base['teardown'], 'FINAL'):
             raise ValueError('map to odom authority drift')
         _validate_metric_group(evidence['metrics'])
         _validate_recorded_pairs(base, evidence['recorded_pose_pairs'])
