@@ -47,30 +47,33 @@ def generate_launch_description():
     controller = Node(
         package='nav2_controller', executable='controller_server',
         name='controller_server', output='screen',
-        parameters=[configured_params],
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
         remappings=tf_remaps + [('cmd_vel', 'cmd_vel_nav')])
     planner = Node(
         package='nav2_planner', executable='planner_server',
         name='planner_server', output='screen',
-        parameters=[configured_params], remappings=tf_remaps)
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
+        remappings=tf_remaps)
     behaviors = Node(
         package='nav2_behaviors', executable='behavior_server',
         name='behavior_server', output='screen',
-        parameters=[configured_params],
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
         remappings=tf_remaps + [('cmd_vel', 'cmd_vel_nav')])
     velocity_smoother = Node(
         package='nav2_velocity_smoother', executable='velocity_smoother',
         name='velocity_smoother', output='screen',
-        parameters=[configured_params],
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
         remappings=tf_remaps + [('cmd_vel', 'cmd_vel_nav')])
     collision_monitor = Node(
         package='nav2_collision_monitor', executable='collision_monitor',
         name='collision_monitor', output='screen',
-        parameters=[configured_params], remappings=tf_remaps)
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
+        remappings=tf_remaps)
     navigator = Node(
         package='nav2_bt_navigator', executable='bt_navigator',
         name='bt_navigator', output='screen',
-        parameters=[configured_params], remappings=tf_remaps)
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
+        remappings=tf_remaps)
     lifecycle = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
         name='lifecycle_manager_navigation', output='screen',
@@ -90,7 +93,8 @@ def generate_launch_description():
             'map_frame': 'map',
             'odom_frame': 'odom',
             'base_frame': 'base_footprint',
-        }])
+        }],
+        remappings=[('/tf', '/g005/map_to_odom_tf')])
 
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),

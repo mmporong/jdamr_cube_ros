@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 from pathlib import Path
+import re
 import statistics
 
 from frontier_policy_contract import (
     ARTIFACT_LIMIT_BYTES,
+    canonical_json_bytes,
     decision_token,
     file_identity,
     FULL_PLAN,
@@ -19,6 +22,7 @@ from frontier_policy_contract import (
     strict_json_load,
     validate_planner_batch,
 )
+
 from generate_frontier_policy_assets import validate_assets
 
 
@@ -49,21 +53,58 @@ PROMOTION_RULES = {
     'survivor_count_each_max': 0,
 }
 FULL_RUN_KEYS = {'schema_version', 'run_id', 'mode', 'policy', 'layout_seed',
-                 'status', 'first_goal_cell_index', *FULL_METRIC_FIELDS}
+                 'validity', 'outcome', 'invalid_reasons',
+                 'first_goal_cell_index', *FULL_METRIC_FIELDS}
 
 
 def _finite_number(value) -> bool:
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def _lower_sha256(value) -> bool:
+    return (type(value) is str and
+            re.fullmatch(r'[0-9a-f]{64}', value) is not None)
+
+
+def _identity_matches_disk(value: object) -> bool:
+    if type(value) is not dict or set(value) != {
+            'path', 'size_bytes', 'sha256'}:
+        return False
+    path = Path(value['path']) if type(value['path']) is str else Path('')
+    if not path.is_absolute():
+        return False
+    try:
+        return value == file_identity(path)
+    except (OSError, ValueError):
+        return False
+
+
+def _validate_execution_request(value: object) -> None:
+    if type(value) is not dict or not _lower_sha256(
+            value.get('request_sha256')):
+        raise ValueError('G005 execution request schema drift')
+    payload = dict(value)
+    request_sha256 = payload.pop('request_sha256')
+    if hashlib.sha256(canonical_json_bytes(
+            payload)).hexdigest() != request_sha256:
+        raise ValueError('G005 execution request hash drift')
+    components = value.get('runtime_components')
+    if (type(components) is not dict or not components or
+            any(not _identity_matches_disk(item)
+                for item in components.values())):
+        raise ValueError('G005 runtime component disk drift')
+
+
 def _ratio(numerator: float, denominator: float) -> float:
     if (not _finite_number(numerator) or not _finite_number(denominator) or
             denominator <= 0.0):
-        raise ValueError('paired ratio denominator must be finite and positive')
+        raise ValueError(
+            'paired ratio denominator must be finite and positive')
     return numerator / denominator
 
 
-def coverage_metrics(samples: list[dict], denominator_cells: int) -> dict:
+def coverage_metrics(samples: list[dict], denominator_cells: int,
+                     horizon_s: float | None = None) -> dict:
     """Compute monotonic reachable coverage thresholds and normalized AUC."""
     if (type(denominator_cells) is not int or denominator_cells <= 0 or
             type(samples) is not list or len(samples) < 2):
@@ -84,13 +125,19 @@ def coverage_metrics(samples: list[dict], denominator_cells: int) -> dict:
         previous_time_s = item['elapsed_s']
         previous_count = item['revealed_reachable_cells']
         ratios.append(item['revealed_reachable_cells'] / denominator_cells)
+    if (horizon_s is not None and
+            (not _finite_number(horizon_s) or horizon_s <= 0.0 or
+             samples[0]['elapsed_s'] != 0.0 or
+             samples[-1]['elapsed_s'] != horizon_s)):
+        raise ValueError('coverage samples do not span the exact horizon')
     thresholds = {}
     for target in (0.50, 0.70, 0.85):
         matches = [item['elapsed_s'] for item, ratio in zip(samples, ratios)
                    if ratio >= target]
-        if not matches:
+        if not matches and horizon_s is None:
             raise ValueError('coverage threshold was not reached')
-        thresholds[f'coverage_t{round(target * 100)}_s'] = matches[0]
+        thresholds[f'coverage_t{round(target * 100)}_s'] = (
+            matches[0] if matches else None)
     elapsed_s = samples[-1]['elapsed_s']
     if elapsed_s <= 0.0:
         raise ValueError('coverage elapsed time must be positive')
@@ -110,7 +157,8 @@ def promotion_decision(runs: list[dict]) -> dict:
             expected or len(runs) != 15):
         return {'status': 'NOT_EVALUATED', 'promote_gain_nav': False,
                 'rules': PROMOTION_RULES}
-    if any(item.get('status') != 'PASS' for item in runs):
+    if any(item.get('validity') != 'VALID' or
+           item.get('outcome') != 'PASS' for item in runs):
         return {'status': 'FAIL', 'promote_gain_nav': False,
                 'rules': PROMOTION_RULES}
     by_key = {(item['policy'], item['layout_seed']): item for item in runs}
@@ -150,6 +198,8 @@ def promotion_decision(runs: list[dict]) -> dict:
 
 def _full_hard_gates(value: dict) -> bool:
     return (
+        value['validity'] == 'VALID' and value['outcome'] == 'PASS' and
+        value['invalid_reasons'] == [] and
         value['final_coverage_ratio'] >= 0.85 and
         value['first_decision_reachable_count'] >= 2 and
         value['contact_count'] == 0 and
@@ -250,13 +300,21 @@ def _validate_full_evidence(value: dict, policy: str, seed: int) -> None:
             value['schema_version'] != 1 or value['mode'] != 'full' or
             value['policy'] != policy or value['layout_seed'] != seed or
             value['run_id'] != f'{policy}__seed_{seed}' or
-            value['status'] not in ('PASS', 'FAIL') or
+            value['validity'] not in ('VALID', 'INVALID') or
+            value['outcome'] not in ('PASS', 'FAIL') or
+            type(value['invalid_reasons']) is not list or
+            any(type(item) is not str or not item
+                for item in value['invalid_reasons']) or
+            ((value['validity'] == 'VALID') !=
+             (value['invalid_reasons'] == [])) or
+            (value['validity'] == 'INVALID' and
+             value['outcome'] != 'FAIL') or
             type(value['first_goal_cell_index']) is not int):
         raise ValueError('G005 full run schema drift')
-    numeric = ('final_coverage_ratio', 'coverage_t50_s', 'coverage_t70_s',
-               'coverage_t85_s', 'elapsed_s', 'coverage_auc',
-               'gt_path_length_to_85_m', 'minimum_clearance_m',
-               'cpu_seconds')
+    numeric = ('final_coverage_ratio', 'elapsed_s', 'coverage_auc',
+               'minimum_clearance_m', 'cpu_seconds')
+    threshold_fields = ('coverage_t50_s', 'coverage_t70_s',
+                        'coverage_t85_s', 'gt_path_length_to_85_m')
     count_fields = ('planning_reject_count', 'recovery_count',
                     'failure_count', 'contact_count', 'peak_rss_bytes',
                     'map_to_odom_authority_count',
@@ -265,48 +323,74 @@ def _validate_full_evidence(value: dict, policy: str, seed: int) -> None:
     bool_fields = ('final_zero', 'lifecycle_active', 'initial_parity',
                    'input_parity', 'hash_parity',
                    'production_hashes_unchanged')
+    reached = [value[field] for field in threshold_fields[:3]]
     if (any(not _finite_number(value[field]) or value[field] < 0.0
             for field in numeric) or
-            not (value['coverage_t50_s'] <= value['coverage_t70_s'] <=
-                 value['coverage_t85_s'] <= value['elapsed_s']) or
+            any(item is not None and (
+                not _finite_number(item) or item < 0.0)
+                for item in reached) or
+            reached != sorted(reached, key=lambda item: (
+                item is None, item if item is not None else 0.0)) or
+            any(item is not None and item > value['elapsed_s']
+                for item in reached) or
+            value['elapsed_s'] != 900.0 or
+            ((value['coverage_t85_s'] is None) !=
+             (value['gt_path_length_to_85_m'] is None)) or
+            (value['gt_path_length_to_85_m'] is not None and (
+                not _finite_number(value['gt_path_length_to_85_m']) or
+                value['gt_path_length_to_85_m'] < 0.0)) or
             not 0.0 <= value['final_coverage_ratio'] <= 1.0 or
             not 0.0 <= value['coverage_auc'] <= 1.0 or
             any(type(value[field]) is not int or value[field] < 0
                 for field in count_fields) or
             any(type(value[field]) is not bool for field in bool_fields) or
+            not (value['outcome'] == 'FAIL' and
+                 value['score_decompositions'] == []) and
             not _score_decompositions_valid(
                 value['score_decompositions'], policy)):
         raise ValueError('G005 full metric type or range drift')
 
 
-def _score_decompositions_valid(records: object, policy: str) -> bool:
-    if type(records) is not list or len(records) < 2:
+def _score_decompositions_valid(batches: object, policy: str) -> bool:
+    if type(batches) is not list or not batches:
+        return False
+    if [item.get('decision_index') for item in batches
+            if type(item) is dict] != list(range(1, len(batches) + 1)):
+        return False
+    if any(type(batch) is not dict or set(batch) != {
+            'decision_index', 'decision_token', 'records'} or
+            type(batch['decision_index']) is not int or
+            not _lower_sha256(batch['decision_token']) or
+            type(batch['records']) is not list or len(batch['records']) < 1
+            for batch in batches):
         return False
     expected = {'cell_index', 'gain_cells', 'bfs_distance_m', 'heading_rad',
                 'nav_length_m', 'gain_norm', 'length_norm', 'utility'}
-    if any(type(item) is not dict or set(item) != expected or
-           type(item['cell_index']) is not int or any(
-               not _finite_number(item[name]) for name in expected
-               if name != 'cell_index') for item in records):
-        return False
-    if len({item['cell_index'] for item in records}) != len(records):
-        return False
-    for item in records:
-        if policy == 'current':
-            expected_utility = (item['gain_cells'] -
-                                0.20 * item['bfs_distance_m'] -
-                                0.10 * item['heading_rad'])
-        elif policy == 'nearest':
-            expected_utility = -item['nav_length_m']
-        else:
-            if not (0.0 <= item['gain_norm'] <= 1.0 and
-                    0.0 <= item['length_norm'] <= 1.0):
-                return False
-            expected_utility = (0.5 * item['gain_norm'] -
-                                0.5 * item['length_norm'])
-        if not math.isclose(item['utility'], expected_utility,
-                            rel_tol=0.0, abs_tol=1e-12):
+    for batch in batches:
+        records = batch['records']
+        if any(type(item) is not dict or set(item) != expected or
+               type(item['cell_index']) is not int or any(
+                   not _finite_number(item[name]) for name in expected
+                   if name != 'cell_index') for item in records):
             return False
+        if len({item['cell_index'] for item in records}) != len(records):
+            return False
+        for item in records:
+            if policy == 'current':
+                expected_utility = (item['gain_cells'] -
+                                    0.20 * item['bfs_distance_m'] -
+                                    0.10 * item['heading_rad'])
+            elif policy == 'nearest':
+                expected_utility = -item['nav_length_m']
+            else:
+                if not (0.0 <= item['gain_norm'] <= 1.0 and
+                        0.0 <= item['length_norm'] <= 1.0):
+                    return False
+                expected_utility = (0.5 * item['gain_norm'] -
+                                    0.5 * item['length_norm'])
+            if not math.isclose(item['utility'], expected_utility,
+                                rel_tol=0.0, abs_tol=1e-12):
+                return False
     return True
 
 
@@ -329,7 +413,8 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
                      'contract_identity', 'execution_plan_sha256',
                      'frontier_policy_handoff'}
     if (type(manifest) is not dict or set(manifest) != manifest_keys or
-            manifest['schema_version'] != 1 or manifest['mode'] != expected_mode or
+            manifest['schema_version'] != 1 or
+            manifest['mode'] != expected_mode or
             manifest['claim_scope'] !=
             ('OFFLINE_FRONTIER_POLICY_CONTRACT_SMOKE_NO_NAV2_NO_MOTION'
              if expected_mode == 'smoke' else
@@ -339,7 +424,8 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
             manifest['storage_limit_bytes'] != ARTIFACT_LIMIT_BYTES):
         raise ValueError('G005 artifact manifest schema drift')
     asset_root = Path(manifest['asset_root'])
-    validate_assets(asset_root, 'smoke' if expected_mode == 'smoke' else 'full')
+    asset_manifest = validate_assets(
+        asset_root, 'smoke' if expected_mode == 'smoke' else 'full')
     if manifest['asset_manifest'] != file_identity(
             asset_root / 'asset_manifest.json'):
         raise ValueError('G005 asset identity drift')
@@ -406,6 +492,8 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
                 execution_plan.get('mode') != 'full' or
                 execution_plan.get('claim_scope') !=
                 'G005_EXECUTION_PLAN_NO_RUNTIME_CLAIM' or
+                execution_plan.get('asset_manifest') !=
+                manifest['asset_manifest'] or
                 type(execution_plan.get('requests')) is not list or
                 len(execution_plan['requests']) != 15):
             raise ValueError('G005 execution plan schema drift')
@@ -418,27 +506,35 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
                 raise ValueError('G005 runtime proof path or cap drift')
             proof = strict_json_load(proof_path)
             validate_runtime_proof(
-                proof, plan['policy'], plan['layout_seed'])
+                proof, plan['policy'], plan['layout_seed'], asset_manifest)
             if proof['asset_identity'] != file_identity(
                     asset_root / f"layout_{plan['layout_seed']}_gt.json"):
                 raise ValueError('G005 runtime proof asset binding drift')
             runtime_proofs.append(proof)
         validate_paired_first_decisions(runtime_proofs)
         for request, proof in zip(execution_plan['requests'], runtime_proofs):
+            _validate_execution_request(request)
+            if (request.get('asset_root') != str(asset_root.resolve()) or
+                    request.get('asset_manifest_identity') !=
+                    manifest['asset_manifest']):
+                raise ValueError('G005 execution request asset drift')
             for key in ('run_id', 'policy', 'layout_seed', 'request_sha256',
-                        'asset_identity', 'shared_initial_sha256',
+                        'asset_identity', 'asset_manifest_identity',
+                        'production_inputs_sha256', 'shared_initial_sha256',
                         'shared_reveal_sha256', 'shared_runtime_sha256',
                         'simulation_horizon_s'):
                 if request.get(key) != proof[key]:
                     raise ValueError('G005 execution plan proof binding drift')
+            if request.get('runtime_components') != proof[
+                    'runtime_identity']['components']:
+                raise ValueError('G005 runtime component binding drift')
         for seed in sorted({seed for _, seed in FULL_PLAN}):
             paired = [item for item in runtime_proofs
                       if item['layout_seed'] == seed]
             for key in ('asset_identity', 'shared_initial_sha256',
                         'shared_reveal_sha256', 'shared_runtime_sha256'):
-                from frontier_policy_contract import canonical_json_bytes
-                import hashlib
-                if len({hashlib.sha256(canonical_json_bytes(item[key])).hexdigest()
+                if len({hashlib.sha256(
+                        canonical_json_bytes(item[key])).hexdigest()
                         for item in paired}) != 1:
                     raise ValueError('G005 paired runtime parity drift')
     runs = []
@@ -456,10 +552,11 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
             proof = strict_json_load(
                 root / f"{plan['policy']}__seed_{plan['layout_seed']}"
                 '.runtime.json')
-            if value != compact_runtime_proof(proof):
+            if value != compact_runtime_proof(proof, asset_manifest):
                 raise ValueError('G005 compact metrics are not proof-derived')
         runs.append(value)
-    expected_promotion = promotion_decision(runs if expected_mode == 'full' else [])
+    expected_promotion = promotion_decision(
+        runs if expected_mode == 'full' else [])
     if manifest['promotion'] != expected_promotion:
         raise ValueError('G005 promotion result drift')
     from frontier_policy_contract import __file__ as contract_file
@@ -482,9 +579,8 @@ def validate_artifact(root: Path, expected_mode: str) -> dict:
                         if path.name != 'manifest.json')
     if any(path.is_symlink() or not path.is_file() for path in root.iterdir()):
         raise ValueError('G005 artifact contains non-regular file')
-    records = [file_identity(root / name, relative_to=root) for name in file_names]
-    import hashlib
-    from frontier_policy_contract import canonical_json_bytes
+    records = [file_identity(root / name, relative_to=root)
+               for name in file_names]
     if (manifest['tree_files'] != records or
             manifest['tree_sha256'] != hashlib.sha256(
                 canonical_json_bytes(records)).hexdigest() or

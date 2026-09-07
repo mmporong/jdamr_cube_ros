@@ -23,6 +23,7 @@ from frontier_policy_contract import (
     LIDAR_BEAMS,
     LIDAR_MAX_ANGLE_RAD,
     LIDAR_MIN_ANGLE_RAD,
+    LIDAR_MIN_RANGE_M,
     LIDAR_RANGE_M,
     LIDAR_RATE_HZ,
     POLICIES,
@@ -162,15 +163,17 @@ def _evaluation_robot_urdf() -> bytes:
         None if horizontal is None else horizontal.find('min_angle'))
     maximum_angle = (
         None if horizontal is None else horizontal.find('max_angle'))
+    minimum = sensor.find('lidar/range/min')
     maximum = sensor.find('lidar/range/max')
     if (laser_origin is None or
             laser_origin.attrib.get('xyz') != '0 0 0.1' or
             laser_origin.attrib.get('rpy') != '0 0 3.141592653589793' or
             update_rate is None or samples is None or minimum_angle is None or
-            maximum_angle is None or maximum is None or
+            maximum_angle is None or minimum is None or maximum is None or
             samples.text != str(LIDAR_BEAMS) or
             float(minimum_angle.text) != LIDAR_MIN_ANGLE_RAD or
             float(maximum_angle.text) != LIDAR_MAX_ANGLE_RAD or
+            float(minimum.text) != LIDAR_MIN_RANGE_M or
             float(maximum.text) != LIDAR_RANGE_M):
         raise ValueError('G005 source LiDAR profile drift')
     update_rate.text = f'{LIDAR_RATE_HZ:.1f}'
@@ -185,13 +188,13 @@ def _evaluation_nav2_params() -> bytes:
         raise ValueError('G005 source global costmap identity drift')
     prefix, global_section = source.split(marker, 1)
     plugins = b'plugins: ["static_layer", "obstacle_layer", "inflation_layer"]'
-    filters = b'filters: ["keepout_filter"]'
+    filters = b'      filters: ["keepout_filter"]\n'
     if (global_section.count(plugins) != 1 or
             global_section.count(filters) != 1):
         raise ValueError('G005 source global costmap plugin drift')
     global_section = global_section.replace(
         plugins, b'plugins: ["static_layer", "inflation_layer"]', 1)
-    global_section = global_section.replace(filters, b'filters: []', 1)
+    global_section = global_section.replace(filters, b'', 1)
     return prefix + marker + global_section
 
 
@@ -231,6 +234,7 @@ def validate_assets(root: Path, expected_mode: str) -> dict:
         'frames': {'gazebo_world': 'g005_frontier', 'map': 'map',
                    'relationship': 'IDENTITY'},
         'lidar': {'rate_hz': LIDAR_RATE_HZ, 'beam_count': LIDAR_BEAMS,
+                  'min_range_m': LIDAR_MIN_RANGE_M,
                   'range_m': LIDAR_RANGE_M,
                   'min_angle_rad': LIDAR_MIN_ANGLE_RAD,
                   'max_angle_rad': LIDAR_MAX_ANGLE_RAD,
@@ -340,6 +344,7 @@ def generate(output_root: Path, mode: str) -> dict:
                 'lidar': {
                     'rate_hz': LIDAR_RATE_HZ,
                     'beam_count': LIDAR_BEAMS,
+                    'min_range_m': LIDAR_MIN_RANGE_M,
                     'range_m': LIDAR_RANGE_M,
                     'min_angle_rad': LIDAR_MIN_ANGLE_RAD,
                     'max_angle_rad': LIDAR_MAX_ANGLE_RAD,

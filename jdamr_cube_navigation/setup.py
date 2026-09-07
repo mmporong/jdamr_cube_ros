@@ -13,7 +13,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'launch'),
+            glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml') + glob('config/*.xml')),
         (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
@@ -59,6 +60,10 @@ setup(
             'jdamr_cube_navigation.sim_collision_monitor_scenario:main',
             'g005_ground_truth_localization = '
             'jdamr_cube_navigation.g005_ground_truth_localization:main',
+            'g005_frontier_observer = '
+            'jdamr_cube_navigation.g005_frontier_observer:main',
+            'g005_frontier_coordinator = '
+            'jdamr_cube_navigation.g005_frontier_coordinator:main',
         ],
     },
 )

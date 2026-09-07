@@ -76,17 +76,19 @@ def _full_run(policy, seed):
     return {
         'schema_version': 1, 'run_id': f'{policy}__seed_{seed}',
         'mode': 'full', 'policy': policy, 'layout_seed': seed,
-        'status': 'PASS',
+        'validity': 'VALID', 'outcome': 'PASS', 'invalid_reasons': [],
         'first_goal_cell_index': {'current': 1, 'nearest': 2,
                                   'gain_nav': 3}[policy],
         'final_coverage_ratio': 0.9,
         'coverage_t50_s': 40.0 * ratio,
         'coverage_t70_s': 70.0 * ratio,
         'coverage_t85_s': 90.0 * ratio,
-        'elapsed_s': 100.0 * ratio, 'coverage_auc': auc,
+        'elapsed_s': 900.0, 'coverage_auc': auc,
         'gt_path_length_to_85_m': path_m,
         'planning_reject_count': 0, 'recovery_count': 0,
-        'failure_count': 0, 'score_decompositions': score_records,
+        'failure_count': 0, 'score_decompositions': [{
+            'decision_index': 1, 'decision_token': 'a' * 64,
+            'records': score_records}],
         'contact_count': 0, 'minimum_clearance_m': clearance_m,
         'cpu_seconds': 10.0 * ratio,
         'peak_rss_bytes': 1000 if policy != 'gain_nav' else 1050,
@@ -240,6 +242,7 @@ def test_evaluation_robot_variant_binds_preregistered_lidar_profile():
     assert sensor.findtext('lidar/scan/horizontal/samples') == '360'
     assert sensor.findtext('lidar/scan/horizontal/min_angle') == '-2.862'
     assert sensor.findtext('lidar/scan/horizontal/max_angle') == '2.862'
+    assert sensor.findtext('lidar/range/min') == '0.05'
     assert sensor.findtext('lidar/range/max') == '8.0'
 
 
@@ -276,7 +279,7 @@ def test_evaluation_nav2_profile_freezes_only_global_static_and_inflation():
     local_params = params['local_costmap']['local_costmap'][
         'ros__parameters']
     assert global_params['plugins'] == ['static_layer', 'inflation_layer']
-    assert global_params['filters'] == []
+    assert 'filters' not in global_params
     assert local_params['plugins'] == ['obstacle_layer', 'inflation_layer']
     assert local_params['filters'] == ['keepout_filter']
 
@@ -452,7 +455,7 @@ def test_promotion_exact_paired_boundary_passes_and_regression_fails():
 
 @pytest.mark.parametrize('field,value', [
     ('gt_path_length_to_85_m', 9.000001),
-    ('elapsed_s', 105.000001),
+    ('elapsed_s', 945.000001),
     ('coverage_auc', 0.759999),
     ('minimum_clearance_m', 0.094999),
 ])
@@ -470,17 +473,35 @@ def test_promotion_failure_and_recovery_must_not_regress(field):
     assert evaluator.promotion_decision(rows)['promote_gain_nav'] is False
 
 
+def test_promotion_rejects_invalid_run_even_when_metrics_pass():
+    rows = [_full_run(policy, seed) for policy, seed in FULL_PLAN]
+    rows[0]['validity'] = 'INVALID'
+    rows[0]['outcome'] = 'FAIL'
+    rows[0]['invalid_reasons'] = ['OBSERVER_SCAN_RATE_DRIFT']
+    assert evaluator.promotion_decision(rows)['promote_gain_nav'] is False
+
+
 def test_full_schema_and_score_decomposition_fail_closed():
     value = _full_run('current', 11)
     evaluator._validate_full_evidence(value, 'current', 11)
     changed = deepcopy(value)
-    changed['score_decompositions'][0]['utility'] += 0.01
+    changed['score_decompositions'][0]['records'][0]['utility'] += 0.01
     with pytest.raises(ValueError, match='metric'):
         evaluator._validate_full_evidence(changed, 'current', 11)
     changed = deepcopy(value)
     changed['unknown'] = 1
     with pytest.raises(ValueError, match='schema'):
         evaluator._validate_full_evidence(changed, 'current', 11)
+
+
+def test_later_score_batch_may_have_one_reachable_candidate():
+    value = _full_run('current', 11)
+    second = deepcopy(value['score_decompositions'][0])
+    second['decision_index'] = 2
+    second['decision_token'] = 'f' * 64
+    second['records'] = second['records'][:1]
+    value['score_decompositions'].append(second)
+    evaluator._validate_full_evidence(value, 'current', 11)
 
 
 @pytest.mark.parametrize('field,value', [

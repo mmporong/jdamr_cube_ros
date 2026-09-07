@@ -17,7 +17,8 @@ def test_g005_launch_keeps_localization_and_navigation_evaluation_only():
             "executable='collision_monitor'",
             "executable='bt_navigator'",
             "'navigate_to_pose_safe_mapping.xml'",
-            "('cmd_vel', 'cmd_vel_nav')"):
+            "('cmd_vel', 'cmd_vel_nav')",
+            "('/tf', '/g005/map_to_odom_tf')"):
         assert required in source
     forbidden_nodes = (
         'nav2_amcl', 'cartographer_ros', "executable='map_server'")
