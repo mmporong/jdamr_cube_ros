@@ -151,6 +151,31 @@ simulation-only 폐루프 6회를 수행한다. 위치 추정 이상 판정 뒤 
 
 이 작업은 OMX `G009-amcl`로 추가했다.
 
+### G009 완료 결과 — 2026-09-07
+
+`/home/lim/jdamr_artifacts/amcl_axis_b_20260907_v02_full45`를 코드·임계 변경 없이 다시
+검증하고 `/home/lim/jdamr_artifacts/amcl_failure_taxonomy_20260907_v01`에 결과를
+동결했다. 45개 run 전체, 비복구 15개, false convergence 0개, 기존 G002의 1.10 자원
+상한을 넘은 P2/P0 CPU 비율 2개를 빠짐없이 기록했다.
+
+비복구 15개는 모두 kidnapped(초기 위치 정보 없이 로봇 위치를 순간 이동시킨 상황)이며
+profile별로 P0·P1·P2 각 5개다. 15개 모두 false-confidence(실제 위치는 틀렸는데 추정
+공분산만 낮은 상태) 연속 길이가 0이고, post-t0에서 기존 복구 기준 안에 들어온 연속
+길이도 0이다. translation 오차/0.15m와 yaw 오차/0.25rad 중 큰 값인 최소 정규화 오차도
+47.8274~53.5150으로 임계 경계와 멀었다. 따라서 오위치 확신 수렴은 배제했고 판정 기준
+과보수는 이번 frozen 데이터에서 원인으로 뒷받침되지 않았다. 반면 기존 cloud evidence에는
+입자별 좌표·가중치와
+재표본화 전후 후보 질량이 없어 정답 주변 입자 부재와 정답 후보 소멸을 구분할 수 없다.
+CPU 비율 1.1129(seed 23), 1.1543(seed 89)은 자원 비용 outlier지만 처리 지연이
+비복구의 원인이라는 인과 증거는 아니다.
+
+알고리즘 변경 gate는 열리지 않았다. `failure_selection.json`, development 15회,
+held-out 30회, 폐루프 6회는 생성하지 않았고 결정은
+`NO_FALSE_CONFIDENCE_OBSERVED_NO_CHANGE_JUSTIFIED`다. production Nav2/AMCL은 stock
+P0 그대로다. G009 manifest SHA-256은
+`3b373c56b66b537d938e05d4fe9e1f0bdf6647d1053c4d2d17309e2b7df096ce`, tree SHA-256은
+`db4e9970c3b4148f0962de486b4d2f2c262f8af973ca99b2eed06e5369571b07`다.
+
 ## Frontier 정책의 추가 검증
 
 G005의 current·nearest·gain-nav 15회 비교를 먼저 완료한다. G005가

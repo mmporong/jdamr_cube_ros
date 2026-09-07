@@ -32,6 +32,7 @@ G002는 실차 bag의 처리 비용을 비교하는 Axis A와, Gazebo ground tru
 - Axis A 15회: `/home/lim/jdamr_artifacts/amcl_axis_a_20260907_v06_full15`
 - Axis B 입력 3개: `/home/lim/jdamr_artifacts/amcl_axis_b_inputs_20260907_v13`
 - Axis B 45회: `/home/lim/jdamr_artifacts/amcl_axis_b_20260907_v02_full45`
+- G009 실패 taxonomy: `/home/lim/jdamr_artifacts/amcl_failure_taxonomy_20260907_v01`
 
 재검증은 용량을 중복하지 않기 위해 원본·정제 실차 bag, Axis B canonical 입력 3개와
 production map·parameter 파일을 위 절대경로에서 다시 연다. 따라서 이 외부 입력을 경로와
@@ -42,6 +43,32 @@ Axis B는 정상 초기화와 0.5m/15도 초기 오프셋을 세 프로필 모�
 이동 후 정답 초기 위치를 다시 주지 않는 kidnapped 상황은 모두 복구하지 못했다. 전체
 45회에서 false convergence는 없었고 P2의 Axis A CPU 개별 최대 비율이 1.1543으로
 1.10 상한을 넘었으므로 P0를 유지한다.
+
+G009는 위 full45를 다시 검증한 뒤 15개 비복구, false convergence(실제 위치는
+틀렸는데 추정 공분산만 낮아 맞다고 확신한 상태) 0개, 기존 1.10 자원 상한을 넘은 CPU
+사례 2개를 taxonomy(원인 분류표)로 전수 분류했다. 비복구는 모두 kidnapped(초기 위치
+정보를 다시 주지 않고 로봇 위치를 순간 이동시킨 상황)이다. 오위치 확신 수렴은 기록으로
+배제됐고, 판정 기준 과보수는 이번 frozen 데이터에서 원인으로 뒷받침되지 않았다. 다만
+frozen cloud에는 입자별
+좌표·가중치와 재표본화 전후 후보 질량이 없으므로, 정답 주변 입자 부재와 정답 후보
+소멸 중 하나를 원인으로 단정하지 않았다. CPU 비용 초과도 처리 지연의 인과 증거와
+구분했다. 따라서 알고리즘 변경 gate를 열지 않고
+`NO_FALSE_CONFIDENCE_OBSERVED_NO_CHANGE_JUSTIFIED`와 production P0(현재 운영 설정)를
+동결했다.
+
+G009 manifest SHA-256은
+`3b373c56b66b537d938e05d4fe9e1f0bdf6647d1053c4d2d17309e2b7df096ce`, artifact tree
+SHA-256은 `db4e9970c3b4148f0962de486b4d2f2c262f8af973ca99b2eed06e5369571b07`다.
+다음 명령은 실차나 ROS graph를 기동하지 않고 기존 증거를 다시 검증한다.
+
+```bash
+cd $HOME/jdamr_cube_ws/src/jdamr_cube_ros
+source /opt/ros/jazzy/setup.bash
+PYTHONPATH="jdamr_cube_navigation/evaluation:$PYTHONPATH" \
+  python3 jdamr_cube_navigation/evaluation/classify_amcl_axis_b_failures.py \
+  --validate-manifest \
+  $HOME/jdamr_artifacts/amcl_failure_taxonomy_20260907_v01/g009_manifest.json
+```
 
 각 실행은 다음을 hard gate로 검증한다.
 
