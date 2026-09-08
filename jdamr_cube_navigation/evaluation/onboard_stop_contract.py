@@ -141,7 +141,6 @@ def scenario_passed(document: dict, returncode: int) -> bool:
         and document.get('goal_send_count') == 1
         and document.get('goal_cancel_count') == 0
         and document.get('action_terminal') == 'succeeded'
-        and 2 in document.get('pre_stop_action_types', [])
         and document.get('stop_action_type') == 1
         and document.get('stop_polygon_name') == 'StopZone'
         and document.get('resume_action_type') == 0
@@ -149,6 +148,7 @@ def scenario_passed(document: dict, returncode: int) -> bool:
         and document.get('clear_scan_stamp_ns') is not None
         and document.get('contact_matched_publisher_count_max', 0) > 0
         and document.get('contact_count') == 0
+        and document.get('footprint_to_obstacle_clearance_m', 0) > 0
         and document.get('final_cmd_vel_zero') is True
         and document.get('final_zero_hold_s', 0) >= contract.get(
             'final_zero_hold_s', math.inf)

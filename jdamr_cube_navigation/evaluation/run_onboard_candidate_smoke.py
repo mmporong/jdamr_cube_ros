@@ -566,6 +566,10 @@ def run_case(case: str, output_root: Path, domain_id: int,
                         in scenario_document['direct_scan_capture'])
                     else None),
                 'contact_count': scenario_document.get('contact_count'),
+                'raw_contact_count': scenario_document.get(
+                    'raw_contact_count'),
+                'robot_contact_pairs': scenario_document.get(
+                    'robot_contact_pairs'),
                 'contact_matched_publisher_count_max': scenario_document.get(
                     'contact_matched_publisher_count_max'),
                 'minimum_clearance_m': scenario_document.get(

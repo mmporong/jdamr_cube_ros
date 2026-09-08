@@ -4,6 +4,11 @@ import importlib.util
 import json
 from pathlib import Path
 import sys  # noqa: I100
+from types import SimpleNamespace
+
+from jdamr_cube_navigation.sim_collision_monitor_scenario import (
+    robot_entity_contact_pair,
+)
 
 import pytest
 
@@ -226,6 +231,7 @@ def _valid_sudden_stop_resume():
         'clear_scan_stamp_ns': 3,
         'contact_matched_publisher_count_max': 1,
         'contact_count': 0,
+        'footprint_to_obstacle_clearance_m': 0.05,
         'final_cmd_vel_zero': True,
         'final_zero_hold_s': 2.0,
         'final_world_pose_m': [6.0, 0.0],
@@ -257,3 +263,22 @@ def test_sudden_case_requires_physical_and_recorded_same_goal_evidence():
     same_goal['evidence']['verdict'] = 'NOT_CONFIRMED'
     assert not SMOKE._case_passed(
         document, 'sudden_stop_resume', 0, same_goal)
+    same_goal['evidence']['verdict'] = 'CONFIRMED'
+    document['footprint_to_obstacle_clearance_m'] = 0.0
+    assert not SMOKE._case_passed(
+        document, 'sudden_stop_resume', 0, same_goal)
+
+
+def test_contact_filter_excludes_ground_and_keeps_robot_pair():
+    """Count probe-to-robot contacts without treating ground support as crash."""
+    entity = 'g003_preloaded_front_observation_probe'
+
+    def contact(other):
+        return SimpleNamespace(
+            collision1=SimpleNamespace(name=f'{entity}::body::collision'),
+            collision2=SimpleNamespace(name=other))
+
+    assert robot_entity_contact_pair(
+        contact('default::ground_plane::link::collision'), entity) is None
+    assert robot_entity_contact_pair(
+        contact('jdamr_cube::base_link::collision'), entity) is not None

@@ -189,6 +189,19 @@ def retained_size_bytes(paths: list[Path]) -> int:
     return sum(path.stat().st_size for path in paths if path.is_file())
 
 
+def robot_entity_contact_pair(
+        contact: Any, entity_name: str) -> tuple[str, str] | None:
+    """Return a stable pair only for contact between the probe and robot."""
+    try:
+        names = (str(contact.collision1.name), str(contact.collision2.name))
+    except AttributeError:
+        return None
+    if (any(entity_name in name for name in names)
+            and any('jdamr_cube' in name for name in names)):
+        return tuple(sorted(names))
+    return None
+
+
 def write_quarantine_manifest(
         path: Path, incomplete_bags: list[Path]) -> None:
     """Record incomplete bags for explicit later cleanup; delete nothing."""
@@ -271,6 +284,8 @@ class CollisionMonitorScenario(Node):
         self.zero_ros_ns: int | None = None
         self.zero_started_ns: int | None = None
         self.contact_count = 0
+        self.raw_contact_count = 0
+        self.robot_contact_pairs: set[tuple[str, str]] = set()
         self.contact_matched_publisher_count_max = 0
         self.minimum_clearance_m = math.inf
         self.clearance_sample_count = 0
@@ -507,7 +522,13 @@ class CollisionMonitorScenario(Node):
             self.zero_started_ns = None
 
     def _contacts(self, message: Any) -> None:
-        self.contact_count += len(message.contacts)
+        contacts = list(getattr(message, 'contacts', []))
+        self.raw_contact_count += len(contacts)
+        for contact in contacts:
+            pair = robot_entity_contact_pair(contact, self.args.entity_name)
+            if pair is not None:
+                self.contact_count += 1
+                self.robot_contact_pairs.add(pair)
 
     def _set_entity_pose(
             self, pose_m: tuple[float, float, float],
@@ -1088,6 +1109,9 @@ class CollisionMonitorScenario(Node):
             'physical_stop_steady_ns': self.physical_stop_steady_ns,
             'stop_world_pose_m': self.stop_pose,
             'contact_count': self.contact_count,
+            'raw_contact_count': self.raw_contact_count,
+            'robot_contact_pairs': [
+                list(pair) for pair in sorted(self.robot_contact_pairs)],
             'contact_matched_publisher_count_max': (
                 self.contact_matched_publisher_count_max),
             'contact_subscription_created': (
