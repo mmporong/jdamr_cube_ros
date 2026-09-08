@@ -215,6 +215,25 @@ effort: []
     assert sample['missing_joints'] == []
 
 
+def test_travel_pose_sample_ignores_ros_cli_loss_report():
+    """Ignore ros2 topic echo diagnostics surrounding the YAML document."""
+    output = """A message was lost!!!
+\ttotal count change:1
+header: {}
+name: [arm_shoulder_pan]
+position: [0.0]
+velocity: []
+effort: []
+---
+\ttotal count change:2
+"""
+
+    sample = SMOKE._travel_pose_sample(
+        output, {'arm_shoulder_pan': 0.0}, 0.03)
+
+    assert sample['status'] == 'PASS'
+
+
 def test_output_cap_fails_without_rewriting_raw_logs(monkeypatch, tmp_path):
     """Preserve original evidence when the hard size cap is exceeded."""
     raw = b'original recorder evidence'

@@ -203,12 +203,17 @@ def _travel_pose_sample(
         tolerance_rad: float,
 ) -> dict[str, Any]:
     """Validate one JointState YAML sample against the contracted stow pose."""
-    documents = [document for document in yaml.safe_load_all(output)
-                 if isinstance(document, dict)]
-    if len(documents) != 1:
-        raise ValueError('expected exactly one JointState document')
-    names = documents[0].get('name')
-    positions = documents[0].get('position')
+    start = output.find('header:')
+    if start < 0:
+        start = output.find('name:')
+    if start < 0:
+        raise ValueError('JointState document start not found')
+    end = output.find('\n---', start)
+    document = yaml.safe_load(output[start:end if end >= 0 else None])
+    if not isinstance(document, dict):
+        raise ValueError('expected one JointState document')
+    names = document.get('name')
+    positions = document.get('position')
     if (not isinstance(names, list) or not isinstance(positions, list)
             or len(names) != len(positions)):
         raise ValueError('invalid JointState name/position arrays')
@@ -239,7 +244,8 @@ def _read_travel_pose(
         environment: dict[str, str], contract: dict[str, Any],
 ) -> dict[str, Any]:
     result = _run(
-        ['ros2', 'topic', 'echo', '--once', '/joint_states'],
+        ['ros2', 'topic', 'echo', '--no-lost-messages', '--once',
+         '/joint_states'],
         environment, timeout_s=12.0)
     if result.returncode != 0:
         raise RuntimeError(
