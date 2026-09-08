@@ -16,6 +16,7 @@ import tempfile
 import time
 
 from action_msgs.msg import GoalStatus
+from action_msgs.srv import CancelGoal
 
 from ament_index_python.packages import (
     get_package_share_directory,
@@ -561,6 +562,7 @@ class FrontierCoordinator(Node):
         self._first_sim_s = None
         self._latest_sim_s = None
         self._steady_start = time.monotonic()
+        self._startup_ready = False
         self._last_resource_sample = 0.0
         self._last_cmd = (0.0, 0.0)
         self._zero_since = None
@@ -884,14 +886,19 @@ class FrontierCoordinator(Node):
             SIMULATION_HORIZON_S)
         if horizon_reached:
             self._enter_terminal('HORIZON')
-        if (not self._ready() and self._terminal_reason is None
+        ready = self._terminal_reason is None and self._ready()
+        if ready:
+            self._startup_ready = True
+        # Map stability gates the next decision, not an active navigation.
+        # Lifecycle, sensor and authority callbacks still invalidate failures.
+        if (not self._startup_ready and self._terminal_reason is None
                 and now - self._steady_start >= READY_TIMEOUT_S):
             self._invalidate('runtime_readiness_timeout')
         if self._terminal_reason is not None:
-            if horizon_reached:
+            if horizon_reached or self._terminal_reason == 'INVALID':
                 self._finish_when_stopped(now)
             return
-        if not self._busy and self._ready():
+        if not self._busy and ready:
             self._begin_decision()
 
     def _begin_decision(self) -> None:
@@ -1029,9 +1036,7 @@ class FrontierCoordinator(Node):
     def _planner_timeout(self, serial: int) -> None:
         if serial != self._planner_serial:
             return
-        if self._planner_goal_handle is not None:
-            self._cancel_goal_handle(self._planner_goal_handle)
-        self._record_planner_result(None, 255)
+        self._invalidate('planner_action_timeout')
 
     def _complete_planner_batch(self) -> None:
         after = _sha256_json(self._costmap_payload)
@@ -1166,15 +1171,35 @@ class FrontierCoordinator(Node):
 
     def _cancel_goal_handle(self, handle) -> None:
         self._cancel_futures_pending += 1
-        future = handle.cancel_goal_async()
-        future.add_done_callback(self._cancel_complete)
-
-    def _cancel_complete(self, future) -> None:
         try:
-            future.result()
+            expected_goal_id = bytes(handle.goal_id.uuid)
+            future = handle.cancel_goal_async()
+            future.add_done_callback(
+                lambda completed: self._cancel_complete(
+                    completed, expected_goal_id))
         except Exception:
-            self._state.invalidate('action_cancel_failed')
-        self._cancel_futures_pending -= 1
+            self._invalidate('action_cancel_failed')
+            self._cancel_futures_pending -= 1
+
+    def _cancel_complete(self, future, expected_goal_id: bytes) -> None:
+        try:
+            response = future.result()
+            return_code = getattr(response, 'return_code', None)
+            goals_canceling = getattr(response, 'goals_canceling', None)
+            accepted = (
+                return_code == CancelGoal.Response.ERROR_NONE
+                and goals_canceling is not None
+                and any(
+                    bytes(item.goal_id.uuid) == expected_goal_id
+                    for item in goals_canceling))
+            already_terminated = (
+                return_code == CancelGoal.Response.ERROR_GOAL_TERMINATED)
+            if not accepted and not already_terminated:
+                self._invalidate('action_cancel_failed')
+        except Exception:
+            self._invalidate('action_cancel_failed')
+        self._cancel_futures_pending = max(
+            0, self._cancel_futures_pending - 1)
 
     def _cancel_active_actions(self) -> None:
         self._planner_serial += 1
@@ -1192,16 +1217,32 @@ class FrontierCoordinator(Node):
     def _finish_when_stopped(self, now: float) -> None:
         if (self._planner_send_pending or self._navigation_send_pending
                 or self._cancel_futures_pending):
+            if (self._terminal_since is None or
+                    now - self._terminal_since <
+                    ACTION_CANCELLATION_TIMEOUT_S):
+                return
+            if self._planner_send_pending or self._navigation_send_pending:
+                self._state.invalidate('action_goal_response_timeout')
+            if self._cancel_futures_pending:
+                self._state.invalidate('action_cancel_response_timeout')
+            self._planner_send_pending = False
+            self._navigation_send_pending = False
+            self._cancel_futures_pending = 0
+            if not self._cmd_received:
+                self._state.invalidate('cmd_vel_evidence_unavailable')
+            hold = (0.0 if self._zero_since is None
+                    else max(0.0, now - self._zero_since))
+            self._state.command_authority.update({
+                'final_zero_hold_s': hold,
+                'final_linear_x': self._last_cmd[0],
+                'final_angular_z': self._last_cmd[1],
+            })
+            self._commit_measurement()
             return
         if (not self._cmd_received and self._terminal_since is not None
                 and now - self._terminal_since >= FINAL_ZERO_HOLD_S):
             self._state.invalidate('cmd_vel_evidence_unavailable')
-            self._capture_graph_identity()
-            self._append_terminal_samples()
-            self._refresh_production_inputs()
-            _atomic_json_write(self._measurement_path, self._state.payload())
-            self._written = True
-            rclpy.shutdown()
+            self._commit_measurement()
             return
         if self._last_cmd != (0.0, 0.0) or self._zero_since is None:
             return
@@ -1213,6 +1254,10 @@ class FrontierCoordinator(Node):
             'final_linear_x': self._last_cmd[0],
             'final_angular_z': self._last_cmd[1],
         })
+
+        self._commit_measurement()
+
+    def _commit_measurement(self) -> None:
         self._capture_graph_identity()
         self._append_terminal_samples()
         self._refresh_production_inputs()
@@ -1241,10 +1286,15 @@ class FrontierCoordinator(Node):
     def _append_terminal_samples(self) -> None:
         coverage = self._state.coverage_samples['samples']
         revealed = coverage[-1]['revealed_reachable_cells'] if coverage else 0
+        horizon_reached = (
+            self._latest_sim_s is not None and self._first_sim_s is not None
+            and self._latest_sim_s - self._first_sim_s >=
+            SIMULATION_HORIZON_S)
         if not coverage:
             coverage.append({
                 'elapsed_s': 0.0, 'revealed_reachable_cells': revealed})
-        if coverage[-1]['elapsed_s'] != SIMULATION_HORIZON_S:
+        if (horizon_reached
+                and coverage[-1]['elapsed_s'] != SIMULATION_HORIZON_S):
             coverage.append({
                 'elapsed_s': SIMULATION_HORIZON_S,
                 'revealed_reachable_cells': revealed,

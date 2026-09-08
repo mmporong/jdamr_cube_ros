@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import math
 import os
@@ -12,6 +13,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -50,6 +52,12 @@ FINAL_ZERO_HOLD_S = 1.0
 RUNTIME_LOG_TAIL_BYTES = 128 * 1024
 LAUNCH_ALIVE_PROBE_DELAY_S = 1.0
 PROCESS_GROUP_PROBE_DELAY_S = 0.1
+
+
+class RuntimeDeadlineExceeded(RuntimeError):
+    """The wall-clock budget ended before a complete runtime measurement."""
+
+
 RUNTIME_PROOF_KEYS = {
     'schema_version', 'claim_scope', 'run_id', 'policy', 'layout_seed',
     'validity', 'outcome', 'invalid_reasons', 'request_sha256',
@@ -768,16 +776,21 @@ def _write_atomic_json(path: Path, value: object) -> None:
 
 
 def _keep_log_tail(path: Path) -> None:
+    """Bound retained logs while keeping both startup and shutdown evidence."""
     if path.stat().st_size <= RUNTIME_LOG_TAIL_BYTES:
         return
     with path.open('rb') as stream:
-        stream.seek(-RUNTIME_LOG_TAIL_BYTES, os.SEEK_END)
+        head_bytes = RUNTIME_LOG_TAIL_BYTES // 2
+        head = stream.read(head_bytes)
+        stream.seek(-(RUNTIME_LOG_TAIL_BYTES - head_bytes), os.SEEK_END)
         tail = stream.read()
-    marker = b'G005_RUNTIME_LOG_TRUNCATED_TO_TAIL\n'
+    marker = b'G005_RUNTIME_LOG_TRUNCATED_TO_HEAD_AND_TAIL\n'
     with tempfile.NamedTemporaryFile(
             prefix=f'.{path.name}.', dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
         stream.write(marker)
+        stream.write(head)
+        stream.write(b'\n... omitted ...\n')
         stream.write(tail)
         stream.flush()
         os.fsync(stream.fileno())
@@ -976,14 +989,27 @@ def _execute_one_request(request: dict, stage: Path, timeout_s: float,
                 key: resources[key] for key in (
                     'cpu_seconds', 'peak_rss_bytes', 'samples')}
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError('G005 runtime wall timeout') from error
+            raise RuntimeDeadlineExceeded('G005 runtime wall timeout') from error
         finally:
             if coordinator_process is not None:
                 survivor_count += _stop_process_group(coordinator_process)
             if launch_process is not None:
                 survivor_count += _stop_process_group(launch_process)
-    _keep_log_tail(runtime_log_path)
-    production_after = _rehash_production_inputs(production_inputs)
+            runtime_log.flush()
+            _keep_log_tail(runtime_log_path)
+            production_after = _rehash_production_inputs(production_inputs)
+            _write_atomic_json(stage / f"{request['run_id']}.execution.json", {
+                'wall_elapsed_s': time.monotonic() - started,
+                'survivor_count': survivor_count,
+                'launch_exit_code': (None if launch_process is None
+                                     else launch_process.poll()),
+                'coordinator_exit_code': (
+                    None if coordinator_process is None
+                    else coordinator_process.poll()),
+                'resources': {key: resources[key] for key in (
+                    'cpu_seconds', 'peak_rss_bytes', 'samples')},
+                'production_inputs_unchanged': production_before == production_after,
+            })
     proof = _assemble_runtime_proof(
         request, measurement, production_before, production_after,
         survivor_count)
@@ -991,6 +1017,91 @@ def _execute_one_request(request: dict, stage: Path, timeout_s: float,
         proof, request['policy'], request['layout_seed'],
         {'production_inputs': production_inputs})
     return proof
+
+
+@contextmanager
+def _preserved_result_stage(output_root: Path, prefix: str):
+    """Publish complete results atomically; retain failed runs for diagnosis."""
+    with tempfile.TemporaryDirectory(
+            prefix=prefix, dir=output_root.parent) as temp:
+        stage = Path(temp) / 'result'
+        stage.mkdir()
+        try:
+            yield stage
+        except BaseException as error:
+            evidence = stage if stage.exists() else output_root
+            if evidence.exists():
+                for path in evidence.glob('*.log'):
+                    if path.is_file() and not path.is_symlink():
+                        _keep_log_tail(path)
+                # An unvalidated manifest must never look like a sealed result.
+                manifest_path = evidence / 'manifest.json'
+                if manifest_path.exists():
+                    manifest_path.rename(evidence / 'manifest.unvalidated.json')
+                _write_atomic_json(evidence / 'failure.json', {
+                    'status': 'INCOMPLETE',
+                    'intended_output_root': str(output_root),
+                    'error_type': type(error).__name__,
+                    'error': str(error)[:4096],
+                    'production_change_authorized': False,
+                })
+                failed = Path(temp).with_name(Path(temp).name[1:] + '.failed')
+                evidence.rename(failed)
+                print(f'G005 failure evidence: {failed}', file=sys.stderr)
+            raise
+
+
+def run_diagnostic(asset_root: Path, output_root: Path, base_domain_id: int,
+                   timeout_s: float, policy: str, layout_seed: int) -> dict:
+    """Run one bounded actual-runtime probe without a policy promotion claim."""
+    if not math.isfinite(timeout_s) or not 0.0 < timeout_s <= SIMULATION_HORIZON_S:
+        raise ValueError('G005 diagnostic budget must be within the horizon')
+    if (not output_root.is_absolute() or output_root.exists() or
+            output_root.is_symlink()):
+        raise ValueError('G005 diagnostic output must be absent and absolute')
+    assets = validate_assets(asset_root, 'full')
+    plan = build_execution_plan(asset_root, base_domain_id)
+    request = next((item for item in plan['requests']
+                    if item['policy'] == policy and
+                    item['layout_seed'] == layout_seed), None)
+    if request is None:
+        raise ValueError('G005 diagnostic case is not preregistered')
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    with _preserved_result_stage(output_root, '.g005-diagnostic-') as stage:
+        report = {
+            'schema_version': 1, 'mode': 'diagnostic',
+            'claim_scope': 'BOUNDED_RUNTIME_DIAGNOSTIC_NO_POLICY_COMPARISON',
+            'run_id': request['run_id'], 'wall_budget_s': timeout_s,
+            'status': 'MEASUREMENT_COMPLETED',
+            'full_matrix_complete': False,
+            'production_change_authorized': False,
+        }
+        try:
+            proof = _execute_one_request(
+                request, stage, timeout_s, assets['production_inputs'])
+            _write_atomic_json(stage / f"{request['run_id']}.runtime.json", proof)
+            report['measurement_outcome'] = proof['outcome']
+            report['measurement_validity'] = proof['validity']
+        except RuntimeDeadlineExceeded:
+            report['status'] = 'TIME_BUDGET_REACHED'
+        execution = strict_json_load(
+            stage / f"{request['run_id']}.execution.json")
+        if execution['survivor_count'] != 0:
+            raise RuntimeError('G005 diagnostic teardown left live processes')
+        if not execution['production_inputs_unchanged']:
+            raise RuntimeError('G005 diagnostic production inputs changed')
+        report['execution'] = execution
+        log_path = stage / f"{request['run_id']}.runtime.log"
+        log = log_path.read_text(encoding='utf-8', errors='replace')
+        report['runtime_invalid_reasons'] = sorted(set(re.findall(
+            r'G005 runtime invalid: ([^\n]+)', log)))
+        if report['runtime_invalid_reasons']:
+            report['status'] = 'RUNTIME_INVALID'
+        report['files'] = [file_identity(path, relative_to=stage)
+                           for path in sorted(stage.iterdir())]
+        _write_atomic_json(stage / 'diagnostic.json', report)
+        stage.rename(output_root)
+    return report
 
 
 def run_full(asset_root: Path, output_root: Path, command: list[str],
@@ -1006,10 +1117,7 @@ def run_full(asset_root: Path, output_root: Path, command: list[str],
         raise ValueError('G005 wall timeout must exceed the simulation horizon')
     plan = build_execution_plan(asset_root, base_domain_id)
     output_root.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-            prefix='.g005-frontier-full-', dir=output_root.parent) as temp:
-        stage = Path(temp) / 'result'
-        stage.mkdir()
+    with _preserved_result_stage(output_root, '.g005-frontier-full-') as stage:
         execution_plan_path = stage / 'execution_plan.json'
         _write_atomic_json(execution_plan_path, plan)
         proofs = []
@@ -1074,12 +1182,7 @@ def run_full(asset_root: Path, output_root: Path, command: list[str],
         _write_atomic_json(stage / 'manifest.json', manifest)
         validate_artifact(stage, 'full')
         stage.rename(output_root)
-    try:
         return validate_artifact(output_root, 'full')
-    except Exception:
-        if output_root.is_dir() and not output_root.is_symlink():
-            shutil.rmtree(output_root)
-        raise
 
 
 def main() -> int:
@@ -1090,8 +1193,25 @@ def main() -> int:
     parser.add_argument('--base-domain-id', type=int, default=100)
     parser.add_argument('--timeout-s', type=float, default=1200.0)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--diagnostic', action='store_true')
+    parser.add_argument('--diagnostic-seconds', type=float)
+    parser.add_argument('--policy', choices=sorted({p for p, _ in FULL_PLAN}))
+    parser.add_argument('--layout-seed', type=int)
     parser.add_argument('runtime_command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.diagnostic:
+        if args.dry_run or args.runtime_command:
+            parser.error('G005 diagnostic cannot use dry-run or runtime adapters')
+        report = run_diagnostic(
+            args.asset_root, args.output_root, args.base_domain_id,
+            (60.0 if args.diagnostic_seconds is None
+             else args.diagnostic_seconds), args.policy or 'current',
+            11 if args.layout_seed is None else args.layout_seed)
+        print(canonical_json_bytes(report).decode(), end='')
+        return 1 if report['status'] == 'RUNTIME_INVALID' else 0
+    if any(value is not None for value in (
+            args.diagnostic_seconds, args.policy, args.layout_seed)):
+        parser.error('G005 case selection requires --diagnostic')
     if args.timeout_s <= SIMULATION_HORIZON_S:
         raise ValueError(
             'G005 wall timeout must exceed the simulation horizon')

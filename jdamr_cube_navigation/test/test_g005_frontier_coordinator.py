@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 
+from action_msgs.srv import CancelGoal
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import TransformStamped, Twist
 from jdamr_cube_navigation.g005_frontier_coordinator import (
@@ -24,6 +25,46 @@ from jdamr_cube_navigation.g005_frontier_coordinator import (
 from nav_msgs.msg import OccupancyGrid
 
 import pytest
+
+
+def _ticking_coordinator(monkeypatch):
+    node = object.__new__(FrontierCoordinator)
+    node._startup_ready = False
+    node._steady_start = 0.0
+    node._first_sim_s = 0.0
+    node._latest_sim_s = 10.0
+    node._written = False
+    node._terminal_reason = None
+    node._busy = True
+    node._sample_resources = lambda now: None
+    node._query_lifecycle = lambda now: None
+    node.invalid = []
+    node._invalidate = node.invalid.append
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.g005_frontier_coordinator.time.monotonic',
+        lambda: 46.0)
+    return node
+
+
+def test_startup_timeout_still_rejects_a_runtime_that_never_became_ready(
+        monkeypatch):
+    node = _ticking_coordinator(monkeypatch)
+    node._ready = lambda: False
+    node._tick()
+    assert node.invalid == ['runtime_readiness_timeout']
+
+
+def test_revealing_new_map_during_navigation_does_not_restart_startup_timeout(
+        monkeypatch):
+    node = _ticking_coordinator(monkeypatch)
+    node._ready = lambda: True
+    node._tick()
+    assert node._startup_ready is True
+    # The next map update temporarily unbinds map/status and resets stability.
+    node._ready = lambda: False
+    node._tick()
+    assert node.invalid == []
+    assert node._busy is True
 
 
 def _request(contract, asset_root):
@@ -264,22 +305,25 @@ def test_actual_planner_path_frame_is_preserved_and_fail_closed():
 def test_terminal_cancels_both_active_actions_once():
     class CompletedFuture:
         def result(self):
-            return object()
+            return SimpleNamespace(
+                return_code=CancelGoal.Response.ERROR_GOAL_TERMINATED,
+                goals_canceling=[])
 
         def add_done_callback(self, callback):
             callback(self)
 
     class GoalHandle:
-        def __init__(self):
+        def __init__(self, goal_id):
             self.cancel_count = 0
+            self.goal_id = SimpleNamespace(uuid=bytearray([goal_id] * 16))
 
         def cancel_goal_async(self):
             self.cancel_count += 1
             return CompletedFuture()
 
     node = object.__new__(FrontierCoordinator)
-    planner = GoalHandle()
-    navigator = GoalHandle()
+    planner = GoalHandle(1)
+    navigator = GoalHandle(2)
     node._terminal_reason = None
     node._terminal_since = None
     node._planner_serial = 2
@@ -296,6 +340,161 @@ def test_terminal_cancels_both_active_actions_once():
     assert node._cancel_futures_pending == 0
     assert node._planner_goal_handle is None
     assert node._navigation_goal_handle is None
+
+
+@pytest.mark.parametrize(
+    ('response', 'invalid'), [
+        (SimpleNamespace(
+            return_code=CancelGoal.Response.ERROR_NONE,
+            goals_canceling=[SimpleNamespace(
+                goal_id=SimpleNamespace(uuid=bytearray([1] * 16)))]), False),
+        (SimpleNamespace(
+            return_code=CancelGoal.Response.ERROR_GOAL_TERMINATED,
+            goals_canceling=[]), False),
+        (SimpleNamespace(
+            return_code=CancelGoal.Response.ERROR_REJECTED,
+            goals_canceling=[]), True),
+        (SimpleNamespace(
+            return_code=CancelGoal.Response.ERROR_NONE,
+            goals_canceling=[]), True),
+        (SimpleNamespace(
+            return_code=CancelGoal.Response.ERROR_NONE,
+            goals_canceling=[SimpleNamespace(
+                goal_id=SimpleNamespace(uuid=bytearray([2] * 16)))]), True),
+        (None, True),
+    ])
+def test_cancel_response_must_confirm_cancellation_or_terminal_goal(
+        response, invalid):
+    reasons = []
+    node = object.__new__(FrontierCoordinator)
+    node._cancel_futures_pending = 1
+    node._invalidate = reasons.append
+    future = SimpleNamespace(result=lambda: response)
+    node._cancel_complete(future, bytes([1] * 16))
+    assert reasons == (['action_cancel_failed'] if invalid else [])
+    assert node._cancel_futures_pending == 0
+
+
+def test_planner_timeout_fails_closed_instead_of_starting_next_goal():
+    reasons = []
+    node = object.__new__(FrontierCoordinator)
+    node._planner_serial = 4
+    node._invalidate = reasons.append
+    node._record_planner_result = lambda *args: pytest.fail(
+        'planner timeout advanced to another goal')
+    node._planner_timeout(4)
+    assert reasons == ['planner_action_timeout']
+
+
+def test_late_cancel_callback_after_timeout_cannot_make_pending_negative():
+    reasons = []
+    node = object.__new__(FrontierCoordinator)
+    node._cancel_futures_pending = 0
+    node._invalidate = reasons.append
+    response = SimpleNamespace(
+        return_code=CancelGoal.Response.ERROR_GOAL_TERMINATED,
+        goals_canceling=[])
+    node._cancel_complete(
+        SimpleNamespace(result=lambda: response), bytes([1] * 16))
+    assert reasons == []
+    assert node._cancel_futures_pending == 0
+
+
+def test_action_shutdown_timeout_records_invalid_and_finishes(monkeypatch):
+    reasons = []
+    appended = []
+    node = object.__new__(FrontierCoordinator)
+    node._planner_send_pending = True
+    node._navigation_send_pending = False
+    node._cancel_futures_pending = 1
+    node._terminal_since = 10.0
+    node._cmd_received = True
+    node._last_cmd = (0.2, -0.1)
+    node._zero_since = None
+    node._state = SimpleNamespace(
+        invalidate=reasons.append, payload=lambda: {'validity': 'INVALID'},
+        command_authority={})
+    node._capture_graph_identity = lambda: None
+    node._append_terminal_samples = lambda: appended.append(True)
+    node._refresh_production_inputs = lambda: None
+    node._measurement_path = object()
+    node._written = False
+    writes = []
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.g005_frontier_coordinator._atomic_json_write',
+        lambda path, payload: writes.append((path, payload)))
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.g005_frontier_coordinator.rclpy.shutdown',
+        lambda: None)
+    node._finish_when_stopped(11.9)
+    assert writes == []
+    node._finish_when_stopped(12.0)
+    assert reasons == [
+        'action_goal_response_timeout', 'action_cancel_response_timeout']
+    assert node._planner_send_pending is False
+    assert node._cancel_futures_pending == 0
+    assert appended == [True]
+    assert writes == [(node._measurement_path, {'validity': 'INVALID'})]
+    assert node._written is True
+    assert node._state.command_authority == {
+        'final_zero_hold_s': 0.0,
+        'final_linear_x': 0.2,
+        'final_angular_z': -0.1,
+    }
+
+
+def test_initial_invalid_finishes_without_waiting_for_horizon(monkeypatch):
+    node = _ticking_coordinator(monkeypatch)
+    node._ready = lambda: pytest.fail('terminal runtime queried readiness')
+    node._terminal_reason = 'INVALID'
+    finished = []
+    node._finish_when_stopped = finished.append
+    node._tick()
+    assert finished == [46.0]
+
+
+def test_invalid_terminal_samples_do_not_fabricate_horizon_coverage():
+    node = object.__new__(FrontierCoordinator)
+    node._terminal_reason = 'INVALID'
+    node._first_sim_s = 1.0
+    node._latest_sim_s = 1.4
+    node._state = SimpleNamespace(
+        coverage_samples={
+            'samples': [{
+                'elapsed_s': 0.4, 'revealed_reachable_cells': 1}],
+            'reachable_denominator_cells': 2,
+        },
+        gt_pose_samples=[], resources={'samples': 0},
+        lifecycle={}, validity='INVALID', observer_health={}, decisions=[],
+        contact_count=0, invalid_reasons=[], outcome=None,
+        invalidate=lambda reason: node._state.invalid_reasons.append(reason),
+    )
+    node._append_terminal_samples()
+    assert node._state.coverage_samples['samples'] == [{
+        'elapsed_s': 0.4, 'revealed_reachable_cells': 1}]
+    assert node._state.outcome == 'FAIL'
+
+
+def test_reached_horizon_still_gets_an_exact_terminal_coverage_sample():
+    node = object.__new__(FrontierCoordinator)
+    node._terminal_reason = 'NO_FRONTIERS'
+    node._first_sim_s = 2.0
+    node._latest_sim_s = 902.0
+    node._state = SimpleNamespace(
+        coverage_samples={
+            'samples': [{
+                'elapsed_s': 899.8, 'revealed_reachable_cells': 2}],
+            'reachable_denominator_cells': 2,
+        },
+        gt_pose_samples=[{'clearance_m': 1.0}, {'clearance_m': 1.0}],
+        resources={'samples': 2}, lifecycle={'planner_server': 'active'},
+        validity='VALID', observer_health={'health': 'VALID'},
+        decisions=[object()], contact_count=0, invalid_reasons=[],
+        outcome=None, invalidate=lambda reason: pytest.fail(reason),
+    )
+    node._append_terminal_samples()
+    assert node._state.coverage_samples['samples'][-1] == {
+        'elapsed_s': 900.0, 'revealed_reachable_cells': 2}
 
 
 def test_tf_authority_and_lifecycle_departure_are_sticky_invalid():

@@ -386,7 +386,7 @@ def test_runtime_log_is_bounded_to_diagnostic_tail(tmp_path):
     path.write_bytes(b'x' * (RUNTIME_LOG_TAIL_BYTES + 100))
     _keep_log_tail(path)
     content = path.read_bytes()
-    assert content.startswith(b'G005_RUNTIME_LOG_TRUNCATED_TO_TAIL\n')
+    assert content.startswith(b'G005_RUNTIME_LOG_TRUNCATED_TO_HEAD_AND_TAIL\n')
     assert len(content) <= RUNTIME_LOG_TAIL_BYTES + 64
 
 
