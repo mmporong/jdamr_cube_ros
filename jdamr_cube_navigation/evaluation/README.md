@@ -4,6 +4,9 @@
 
 ## 구성
 
+- [20260908_PURPOSE_AND_RUNTIME_AUDIT.md](20260908_PURPOSE_AND_RUNTIME_AUDIT.md):
+  현재 목적·완료 증거, 온보드 장애물 후보·goal UUID 기록·경량 후처리 구현,
+  G005 오정지 수정과 제한시간 진단
 - `experiment_manifest.schema.json`: 실험마다 남겨야 할 환경·버전·센서·TF·결과·산출물 계약
 - `datasets.yaml`: rosbag의 해시, 토픽 수, 무결성, 사용 가능 범위
 - `map_registry.yaml`: 지도 후보·게시·폐기 상태와 승격 조건
@@ -16,7 +19,8 @@
 - `20260907_G005_VERTICAL_READINESS.md`: 실제 Gazebo·Nav2 기반 G005 실행 경로의
   검증 결과, 주장 범위와 full15 실행 절차
 - `inspect_mcap.py`: ROS 노드와 재생 없이 MCAP 전체 메시지와 CRC를 읽는 검사 도구
-- `corridor_run_media.py`: 주행 구간 지표와 CSV·PNG·GIF·MP4를 MCAP에서 재생성하는 도구
+- `corridor_run_media.py`: 주행 이벤트·지표와 CSV·PNG·GIF·MP4를 MCAP에서 추출하는 도구.
+  `--metrics-only`로 영상 재생성 없이 지표와 CSV만 저장 가능
 - `make_sim_sensor_variant.py`: URDF 센서율·노이즈를 허용 목록 안에서 바꾸고 해시 manifest를 만드는 도구
 - `run_sim_slam_experiment.py`: 격리 Gazebo, backend, MCAP, 왕복 경로와 ATE/RPE를 한 번에 실행하는 도구
 - `compare_sim_slam_experiments.py`: 동일 조건의 backend·센서 stress 행렬을 검증하고 비교 자료를 만드는 도구
@@ -95,7 +99,9 @@ run 전체에서 검증한 뒤 결과를 봉인한다. 짧은 수직 스모크�
 
 정책 3개 × layout seed 5개의 full15 본평가는 아직 실행하지 않았다. 따라서 현재 결론은
 `평가 실행 준비 완료`이며 정책 우승이나 production 승격이 아니다. 구현·검증·용어·실행
-명령과 주장 경계는 `20260907_G005_VERTICAL_READINESS.md`에 정리했다.
+명령과 주장 경계는 `20260907_G005_VERTICAL_READINESS.md`에 정리했다. 2026-09-08에는
+첫 목표 도착 뒤 45초에 발생하는 startup timeout 오적용을 실제 실행으로 재현·수정했다.
+현재 기본 진단은 `--diagnostic --diagnostic-seconds 60` 한 조건이며 실패 로그도 보존한다.
 
 `inspect_mcap.py`와 미디어 생성기는 `requirements.txt`에 고정한 MCAP reader, ROS 2
 decoder, 수치·그림 라이브러리를 사용한다. 로봇 런타임의 전역 Python 환경이나 OS

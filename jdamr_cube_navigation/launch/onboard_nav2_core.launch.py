@@ -1,4 +1,4 @@
-"""Launch only the Nav2 components required by the onboard corridor run."""
+"""Launch the selected onboard navigation profile in a composed container."""
 
 # Run the corridor Nav2 subset in a composed container and keep graph-loss
 # detection separate.  Composition correlated with lower load in earlier
@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.keepout_mask import validate_mask
+from jdamr_cube_navigation.nav2_liveness_guard import DEFAULT_REQUIRED
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.actions import RegisterEventHandler, SetEnvironmentVariable
@@ -46,24 +47,27 @@ def _shutdown_unless_already_stopping(reason):
     return handler
 
 
-def generate_launch_description():
-    """Build the headless saved-map corridor navigation process set."""
+def _launch_navigation(context):
+    """Resolve the profile before selecting its BT and required components."""
     package_share = get_package_share_directory('jdamr_cube_navigation')
+    profile = LaunchConfiguration('navigation_profile').perform(context)
+    behavior_tree = {
+        'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
+        'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
+    }[profile]
     map_yaml = LaunchConfiguration('map')
     keepout_mask = LaunchConfiguration('keepout_mask')
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
-    corridor_bt = os.path.join(
-        package_share, 'behavior_trees',
-        'navigate_to_pose_corridor_fail_fast.xml')
+    selected_bt = os.path.join(package_share, 'behavior_trees', behavior_tree)
 
     configured_params = ParameterFile(
         RewrittenYaml(
             source_file=params_file,
             root_key='',
             param_rewrites={
-                'default_nav_to_pose_bt_xml': corridor_bt,
+                'default_nav_to_pose_bt_xml': selected_bt,
                 'yaml_filename': map_yaml,
                 ('local_costmap.local_costmap.ros__parameters.'
                  'keepout_filter.enabled'): 'true',
@@ -139,6 +143,23 @@ def generate_launch_description():
         composable('nav2_bt_navigator', 'nav2_bt_navigator::BtNavigator',
                    'bt_navigator', [configured_params]),
     ]
+    navigation_nodes = [
+        'controller_server', 'planner_server', 'velocity_smoother',
+        'collision_monitor', 'bt_navigator',
+    ]
+    required_nodes = list(DEFAULT_REQUIRED)
+    if profile == 'obstacle_candidate':
+        # The candidate BT calls Wait during bounded recovery.  Load only
+        # that plugin; selecting this profile must not enable spin or backup.
+        nav2_components.insert(-1, ComposableNode(
+            package='nav2_behaviors',
+            plugin='behavior_server::BehaviorServer',
+            name='behavior_server',
+            parameters=[configured_params, {'behavior_plugins': ['wait']}],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ))
+        navigation_nodes.insert(-1, 'behavior_server')
+        required_nodes.append('behavior_server')
 
     container = ComposableNodeContainer(
         package='rclcpp_components',
@@ -184,13 +205,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'autostart': autostart,
-            'node_names': [
-                'controller_server',
-                'planner_server',
-                'velocity_smoother',
-                'collision_monitor',
-                'bt_navigator',
-            ],
+            'node_names': navigation_nodes,
             **lifecycle_bond,
         }],
     )
@@ -204,6 +219,7 @@ def generate_launch_description():
         name='nav2_liveness_guard',
         output='screen',
         parameters=[{'use_sim_time': use_sim_time}],
+        arguments=['--required', ','.join(required_nodes)],
     )
 
     required_processes = [
@@ -221,6 +237,12 @@ def generate_launch_description():
         for process in required_processes
     ]
 
+    return [*required_exit_handlers, *required_processes]
+
+
+def generate_launch_description():
+    """Keep the proven corridor profile as the default onboard launch."""
+    package_share = get_package_share_directory('jdamr_cube_navigation')
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
@@ -240,7 +262,10 @@ def generate_launch_description():
                 package_share, 'config', 'nav2_params.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument(
+            'navigation_profile', default_value='corridor',
+            choices=['corridor', 'obstacle_candidate'],
+            description='Candidate enables online replanning and Wait recovery'),
         OpaqueFunction(function=_validate_keepout),
-        *required_exit_handlers,
-        *required_processes,
+        OpaqueFunction(function=_launch_navigation),
     ])

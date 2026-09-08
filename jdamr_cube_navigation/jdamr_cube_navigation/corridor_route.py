@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -30,6 +31,19 @@ AMCL_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
+NAVIGATION_BEHAVIOR_TREES = {
+    'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
+    'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
+}
+GOAL_STATUS_NAMES = {
+    GoalStatus.STATUS_UNKNOWN: 'STATUS_UNKNOWN',
+    GoalStatus.STATUS_ACCEPTED: 'STATUS_ACCEPTED',
+    GoalStatus.STATUS_EXECUTING: 'STATUS_EXECUTING',
+    GoalStatus.STATUS_CANCELING: 'STATUS_CANCELING',
+    GoalStatus.STATUS_SUCCEEDED: 'STATUS_SUCCEEDED',
+    GoalStatus.STATUS_CANCELED: 'STATUS_CANCELED',
+    GoalStatus.STATUS_ABORTED: 'STATUS_ABORTED',
+}
 
 
 def _expanded_path(value, parent=None):
@@ -104,12 +118,18 @@ def load_route(route_yaml):
     return config
 
 
+def _goal_uuid(handle):
+    """Render the action goal identifier without changing its byte order."""
+    return bytes(handle.goal_id.uuid).hex()
+
+
 class CorridorRoute(Node):
     """Validate every leg, then send one explicit-BT goal at a time."""
 
-    def __init__(self, config, start_index=0):
+    def __init__(self, config, start_index=0, navigation_profile='corridor'):
         super().__init__('jdamr_corridor_route')
         self.config = config
+        self.start_index = start_index
         self.waypoints = config['waypoints'][start_index:]
         if not self.waypoints:
             raise ValueError('start_index is past the final waypoint')
@@ -160,8 +180,30 @@ class CorridorRoute(Node):
         package_share = get_package_share_directory('jdamr_cube_navigation')
         self.behavior_tree = os.path.join(
             package_share, 'behavior_trees',
-            'navigate_to_pose_corridor_fail_fast.xml')
+            NAVIGATION_BEHAVIOR_TREES[navigation_profile])
+        self.navigation_profile = navigation_profile
+        self.get_logger().info(
+            'navigation behavior tree selected: '
+            f'profile={navigation_profile} source=navigation_profile '
+            f'path={self.behavior_tree}')
         self._last_feedback = 0.0
+
+    def _route_event(self, event, route_index, handle, **fields):
+        """Emit one stable JSON line for goal lifecycle correlation."""
+        record = {
+            'event': event,
+            'goal_uuid': _goal_uuid(handle),
+            'waypoint_index': self.start_index + route_index + 1,
+            'waypoint_total': len(self.config['waypoints']),
+            'waypoint_id': self.waypoints[route_index]['id'],
+            'navigation_profile': self.navigation_profile,
+            'terminal_status': None,
+            'terminal_status_code': None,
+        }
+        record.update(fields)
+        self.get_logger().info(
+            'route_event ' + json.dumps(
+                record, sort_keys=True, separators=(',', ':')))
 
     def request_stop(self):
         """Ask the current action to cancel without invalidating ROS context."""
@@ -337,8 +379,11 @@ class CorridorRoute(Node):
             f'recoveries={feedback.number_of_recoveries} '
             f'battery={self.battery_voltage:.2f}V')
 
-    def _cancel(self, handle, reason):
+    def _cancel(self, handle, reason, route_index=None):
         self.get_logger().warning(f'cancel requested: {reason}')
+        if route_index is not None:
+            self._route_event(
+                'cancel_requested', route_index, handle, reason=reason)
         future = handle.cancel_goal_async()
         deadline = time.monotonic() + 5.0
         while not future.done() and time.monotonic() < deadline:
@@ -381,19 +426,27 @@ class CorridorRoute(Node):
             if handle is None or not handle.accepted:
                 self.get_logger().error('navigate goal rejected')
                 return False
+            self._route_event('accepted', index, handle)
             result_future = handle.get_result_async()
             while not result_future.done():
                 rclpy.spin_once(self, timeout_sec=0.1)
                 if self.stop_requested:
-                    self._cancel(handle, 'operator interrupt')
+                    self._cancel(handle, 'operator interrupt', index)
                     return False
                 if not self._navigation_ready(require_fresh_amcl=False):
                     self._cancel(
                         handle,
                         self._guard_failure(False) or
-                        'navigation guard failure')
+                        'navigation guard failure',
+                        index)
                     return False
             wrapped = result_future.result()
+            self._route_event(
+                'result', index, handle,
+                terminal_status=GOAL_STATUS_NAMES.get(
+                    wrapped.status, 'STATUS_UNKNOWN'),
+                terminal_status_code=int(wrapped.status),
+                nav2_error_code=int(wrapped.result.error_code))
             if (
                     wrapped.status != GoalStatus.STATUS_SUCCEEDED or
                     wrapped.result.error_code != 0):
@@ -411,6 +464,10 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--route', required=True, type=Path)
     parser.add_argument('--start-index', type=int, default=0)
+    parser.add_argument(
+        '--navigation-profile',
+        choices=tuple(NAVIGATION_BEHAVIOR_TREES),
+        default='corridor')
     parser.add_argument(
         '--execute', action='store_true',
         help='move after preflight; omitted means planning-only')
@@ -433,7 +490,8 @@ def main(args=None):
         args=argv,
         signal_handler_options=SignalHandlerOptions.NO,
     )
-    node = CorridorRoute(config, parsed.start_index)
+    node = CorridorRoute(
+        config, parsed.start_index, parsed.navigation_profile)
 
     def request_stop(_signal_number, _frame):
         node.request_stop()

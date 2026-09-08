@@ -277,9 +277,12 @@ def test_onboard_core_loads_only_corridor_required_nav2_processes():
     for omitted in (
             'nav2_route::RouteServer', 'opennav_docking::DockingServer',
             'nav2_smoother::SmootherServer',
-            'nav2_waypoint_follower::WaypointFollower',
-            'behavior_server::BehaviorServer'):
+            'nav2_waypoint_follower::WaypointFollower'):
         assert omitted not in source
+    # Wait is an explicit candidate-only dependency, not a baseline server.
+    assert "'navigation_profile', default_value='corridor'" in source
+    assert "if profile == 'obstacle_candidate':" in source
+    assert "'behavior_plugins': ['wait']" in source
     assert "'navigate_to_pose_corridor_fail_fast.xml'" in source
     assert "'yaml_filename': map_yaml" in source
     assert source.count("'keepout_filter.enabled'): 'true'") == 2

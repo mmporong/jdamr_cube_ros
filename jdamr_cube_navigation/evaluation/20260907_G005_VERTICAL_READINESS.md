@@ -1,5 +1,10 @@
 # G005 프런티어 정책 평가 준비 상태 — 2026-09-07
 
+> 2026-09-08 후속 점검: 짧은 첫 이동 확인으로는 드러나지 않았던 45초 startup timeout의
+> 주행 중 오적용을 재현·수정했다. 현재 실행·목적 점검은
+> [20260908_PURPOSE_AND_RUNTIME_AUDIT.md](20260908_PURPOSE_AND_RUNTIME_AUDIT.md)를
+> 함께 읽는다. 아래 최초 수직 스모크는 그 당시 확인 범위다.
+
 ## 결론
 
 G005는 실제 Gazebo·Nav2를 사용하는 15회 평가를 실행할 수 있는 코드 경로와 실패 차단
@@ -55,7 +60,9 @@ Gazebo 정답 변환과 다른 노드의 변환이 섞인 상태를 정상 실�
 1. asset, production 입력, 실행 코드와 15회 순서를 SHA-256으로 고정한다.
 2. `ComputePathToPose`와 `NavigateToPose`의 실제 Nav2 action만 허용한다. 외부 runtime
    adapter는 받지 않는다.
-3. 지도 sequence와 지도 payload hash를 함께 묶고, 실행 중 지도가 바뀌면 무효 처리한다.
+3. 지도 sequence와 지도 payload hash를 함께 묶고, 후보 경로 계산 중 지도가 바뀌면
+   해당 batch를 버리고 다시 계산한다. 탐사 중 정상적인 지도 확장은 허용한다. 이는 토픽
+   전후 관측값의 일치 검사이며 planner 내부 snapshot의 원자성까지 증명하지는 않는다.
 4. planner의 실제 path frame을 보존하며 `map`이 아닌 경로는 실패로 닫는다.
 5. 점이 아닌 로봇 footprint polygon 전체를 occupancy cell에 투영해 clearance를 계산한다.
 6. recovery 횟수는 목표 전체에서 합산하며, 늦게 도착한 action callback이 종료 판정을
@@ -92,9 +99,9 @@ Gazebo 정답 변환과 다른 노드의 변환이 섞인 상태를 정상 실�
 
 ## 다음 실행 순서
 
-full15의 run별 최대 simulation horizon 합계는 `15 × 900초 = 225분`이다. terminal
-조건에 일찍 도달하면 짧아질 수 있고 각 run의 기동·정리 시간은 별도로 추가된다. 반복
-횟수를 임의로 늘리지 않고 아래 한 번의 고정 matrix만 실행한다.
+기본 확인은 한 조건의 제한시간 진단이다. full15는 정책 우열을 평가할 때 선택하는 연구
+실행이며, 고정 simulation horizon 합계는 `15 × 900초 = 225분`이다. 무효 실행은 조기
+종료할 수 있고 실제 wall time에는 시뮬레이션 속도와 기동·정리가 영향을 준다.
 
 ```bash
 cd $HOME/jdamr_cube_ws/src/jdamr_cube_ros
@@ -104,6 +111,7 @@ source $HOME/jdamr_cube_ws/install/setup.bash
 G005_ASSETS="$HOME/jdamr_artifacts/g005_frontier_assets_20260907_full"
 G005_PLAN="$HOME/jdamr_artifacts/g005_frontier_plan_20260907.json"
 G005_RUNS="$HOME/jdamr_artifacts/g005_frontier_full15_20260907"
+G005_DIAGNOSTIC="$HOME/jdamr_artifacts/g005_frontier_diagnostic_20260908"
 
 python3 jdamr_cube_navigation/evaluation/generate_frontier_policy_assets.py \
   --output-root "$G005_ASSETS" --mode full
@@ -113,6 +121,15 @@ python3 jdamr_cube_navigation/evaluation/run_frontier_policy_full.py \
   --base-domain-id 100 --timeout-s 1200 --dry-run
 
 python3 jdamr_cube_navigation/evaluation/run_frontier_policy_full.py \
+  --asset-root "$G005_ASSETS" --output-root "$G005_DIAGNOSTIC" \
+  --base-domain-id 170 --diagnostic --diagnostic-seconds 60 \
+  --policy current --layout-seed 11
+```
+
+정책 비교 full15를 실행할 때만 아래 명령을 사용한다.
+
+```bash
+python3 jdamr_cube_navigation/evaluation/run_frontier_policy_full.py \
   --asset-root "$G005_ASSETS" --output-root "$G005_RUNS" \
   --base-domain-id 100 --timeout-s 1200
 
@@ -120,6 +137,7 @@ python3 jdamr_cube_navigation/evaluation/evaluate_frontier_policy.py \
   --root "$G005_RUNS" --mode full
 ```
 
-세 출력 경로는 실행 전에 존재하지 않아야 한다. runner는 일부 정책·seed만 골라 실행하는
-명령을 제공하지 않는다. full15 완료 뒤 `evaluate_frontier_policy.py`의 유효성·승격
-판정을 통과한 경우에만 G010 held-out 평가 또는 실기체 후보 단계로 넘어간다.
+각 출력 경로는 실행 전에 존재하지 않아야 한다. 진단은 `diagnostic.json`, 실패 실행은
+별도의 `*.failed/failure.json`과 로그를 남긴다. 진단은 정책 승격 판정에 사용하지 않는다.
+full15 완료 뒤 `evaluate_frontier_policy.py`의 유효성·승격 판정에 따라 G010 held-out
+평가를 결정한다. 저장지도 실차 장애물 준비는 별도 순서로 진행한다.

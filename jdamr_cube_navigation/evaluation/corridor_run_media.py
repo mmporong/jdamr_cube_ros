@@ -6,14 +6,14 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
-from datetime import datetime
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
 import shutil
 import subprocess
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import matplotlib
@@ -33,6 +33,7 @@ from render_route_map import extent_of, load_map  # noqa: E402,I100,I201
 TOPICS = (
     '/amcl_pose',
     '/battery_state',
+    '/collision_monitor_state',
     '/cmd_vel',
     '/cmd_vel_nav',
     '/imu/data_raw',
@@ -55,6 +56,14 @@ STATUS_RE = re.compile(
     r'recoveries=(\d+) battery=([-0-9.]+)V')
 PREFLIGHT_RE = re.compile(
     r'route preflight passed: poses=(\d+) length=([-0-9.]+)m')
+ROUTE_EVENT_RE = re.compile(r'route_event (\{.*\})\s*$')
+COLLISION_ACTION_NAMES = {
+    0: 'DO_NOTHING',
+    1: 'STOP',
+    2: 'SLOWDOWN',
+    3: 'APPROACH',
+    4: 'LIMIT',
+}
 
 
 def home_relative(path: Path) -> str:
@@ -69,6 +78,7 @@ def parse_route_log(text: str) -> dict[str, Any]:
     """Return route events and the evidence-backed outcome from a log."""
     sends = []
     statuses = []
+    goal_events = []
     preflight = None
     success_stamp_ns = None
     last_stamp_ns = None
@@ -102,6 +112,14 @@ def parse_route_log(text: str) -> dict[str, Any]:
                 'recoveries': int(match.group(4)),
                 'battery_v': float(match.group(5)),
             })
+        if match := ROUTE_EVENT_RE.search(line):
+            try:
+                event = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                event['stamp_ns'] = stamp_ns
+                goal_events.append(event)
         if 'corridor roundtrip succeeded' in line:
             success_stamp_ns = stamp_ns
 
@@ -119,6 +137,7 @@ def parse_route_log(text: str) -> dict[str, Any]:
         'preflight': preflight,
         'sends': sends,
         'statuses': statuses,
+        'goal_events': goal_events,
         'sent_waypoints': len(sends),
         'declared_waypoints': sends[0]['total'],
         'max_recoveries': max(
@@ -160,6 +179,184 @@ def gap_statistics(stamps_ns: list[int], *, window_start_ns: int | None = None,
         'rate_hz': round(len(ordered_ns) / duration_s, 3),
         'max_gap_s': round(float(np.max(gaps_s)), 6),
         'p99_gap_s': round(float(np.percentile(gaps_s, 99)), 6),
+    }
+
+
+def _vector_components(vector: Any) -> tuple[float, float, float]:
+    """Return the three ROS vector components as plain floats."""
+    return (float(vector.x), float(vector.y), float(vector.z))
+
+
+def _command_state(command: Any) -> str:
+    """Classify a command without treating non-finite values as motion."""
+    components = (
+        *_vector_components(command.linear),
+        *_vector_components(command.angular),
+    )
+    if not all(math.isfinite(value) for value in components):
+        return 'UNKNOWN_NONFINITE'
+    return 'ZERO' if all(value == 0.0 for value in components) else 'NONZERO'
+
+
+def _plan_observation(stamp_ns: int, path_message: Any) -> dict[str, Any]:
+    """Create a deterministic recorder-time summary of one Path message."""
+    frame_id = str(path_message.header.frame_id)
+    geometry = []
+    positions = []
+    explicit_pose_frame_ids = set()
+    for stamped_pose in path_message.poses:
+        pose_frame_id = str(getattr(
+            getattr(stamped_pose, 'header', None), 'frame_id', ''))
+        if pose_frame_id:
+            explicit_pose_frame_ids.add(pose_frame_id)
+        pose = stamped_pose.pose
+        position = _vector_components(pose.position)
+        orientation = (
+            float(pose.orientation.x),
+            float(pose.orientation.y),
+            float(pose.orientation.z),
+            float(pose.orientation.w),
+        )
+        positions.append(position)
+        geometry.append((*position, *orientation))
+    geometry_bytes = json.dumps({
+        'frame_id': frame_id,
+        'poses': geometry,
+    }, allow_nan=False, sort_keys=True, separators=(',', ':')).encode('ascii')
+    length_m = sum(
+        math.dist(previous, current)
+        for previous, current in zip(positions, positions[1:])
+    )
+    data_gap_reasons = []
+    if any(pose_frame_id != frame_id
+           for pose_frame_id in explicit_pose_frame_ids):
+        data_gap_reasons.append('POSE_FRAME_ID_MISMATCH')
+    return {
+        'stamp_ns': stamp_ns,
+        'frame_id': frame_id,
+        'explicit_pose_frame_ids': sorted(explicit_pose_frame_ids),
+        'pose_count': len(geometry),
+        'frame_and_geometry_sha256': hashlib.sha256(
+            geometry_bytes).hexdigest(),
+        'path_length_m': round(length_m, 6),
+        'data_gap_reasons': data_gap_reasons,
+    }
+
+
+def summarize_navigation_events(
+        collision_states: list[tuple[int, int, str]],
+        command_states: list[tuple[int, str]],
+        plans: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize navigation event evidence using recorder timestamps."""
+    collision_transitions = []
+    previous_collision = None
+    for stamp_ns, action_type, polygon_name in collision_states:
+        current = (action_type, polygon_name)
+        if previous_collision is not None and current != previous_collision:
+            collision_transitions.append({
+                'stamp_ns': stamp_ns,
+                'from': {
+                    'action_type': previous_collision[0],
+                    'action_name': COLLISION_ACTION_NAMES.get(
+                        previous_collision[0], 'UNKNOWN'),
+                    'polygon_name': previous_collision[1],
+                },
+                'to': {
+                    'action_type': action_type,
+                    'action_name': COLLISION_ACTION_NAMES.get(
+                        action_type, 'UNKNOWN'),
+                    'polygon_name': polygon_name,
+                },
+            })
+        previous_collision = current
+
+    command_transitions_ns = []
+    previous_command_state = None
+    for stamp_ns, command_state in command_states:
+        if (previous_command_state == 'ZERO'
+                and command_state == 'NONZERO'):
+            command_transitions_ns.append(stamp_ns)
+        previous_command_state = (
+            None if command_state == 'UNKNOWN_NONFINITE' else command_state)
+
+    plan_reasons = []
+    if not plans:
+        plan_reasons.append('NO_OBSERVATIONS_IN_DRIVE_WINDOW')
+    if any(plan['pose_count'] == 0 for plan in plans):
+        plan_reasons.append('EMPTY_PATH')
+    frame_ids = sorted({plan['frame_id'] for plan in plans})
+    if any(not frame_id for frame_id in frame_ids):
+        plan_reasons.append('MISSING_FRAME_ID')
+    if len(frame_ids) > 1:
+        plan_reasons.append('FRAME_ID_MISMATCH')
+    for plan in plans:
+        plan_reasons.extend(plan.get('data_gap_reasons', []))
+    plan_reasons = list(dict.fromkeys(plan_reasons))
+    comparable_plans = [plan for plan in plans if plan['pose_count'] > 0]
+    plan_change_count = None
+    if not plan_reasons:
+        plan_change_count = sum(
+            previous['frame_and_geometry_sha256']
+            != current['frame_and_geometry_sha256']
+            for previous, current in zip(plans, plans[1:])
+        )
+    lengths_m = [plan['path_length_m'] for plan in comparable_plans]
+    collision_reasons = (
+        [] if collision_states else ['NO_OBSERVATIONS_IN_DRIVE_WINDOW'])
+    if any(action_type not in COLLISION_ACTION_NAMES
+           for _stamp_ns, action_type, _polygon_name in collision_states):
+        collision_reasons.append('UNKNOWN_ACTION_TYPE')
+    command_reasons = (
+        [] if command_states else ['NO_OBSERVATIONS_IN_DRIVE_WINDOW'])
+    if any(state == 'UNKNOWN_NONFINITE'
+           for _stamp_ns, state in command_states):
+        command_reasons.append('NONFINITE_COMMAND')
+
+    return {
+        'time_basis': 'recorder_log_time_ns',
+        'collision_monitor_state': {
+            'evidence_status': (
+                'MEASURED' if not collision_reasons else 'INSUFFICIENT_DATA'),
+            'messages': len(collision_states),
+            'observations': [{
+                'stamp_ns': stamp_ns,
+                'action_type': action_type,
+                'action_name': COLLISION_ACTION_NAMES.get(
+                    action_type, 'UNKNOWN'),
+                'polygon_name': polygon_name,
+            } for stamp_ns, action_type, polygon_name in collision_states],
+            'transitions': collision_transitions,
+            'data_gap_reasons': collision_reasons,
+        },
+        'cmd_vel_zero_to_nonzero': {
+            'evidence_status': (
+                'MEASURED' if not command_reasons else 'INSUFFICIENT_DATA'),
+            'messages': len(command_states),
+            'transition_stamps_ns': command_transitions_ns,
+            'data_gap_reasons': command_reasons,
+            'interpretation': (
+                'Command-space transitions only; physical standstill and '
+                'motion were not measured.'),
+        },
+        'plan_geometry': {
+            'evidence_status': (
+                'MEASURED' if not plan_reasons else 'INSUFFICIENT_DATA'),
+            'messages': len(plans),
+            'frame_ids': frame_ids,
+            'geometry_change_count': plan_change_count,
+            'path_length_m': {
+                'samples': len(lengths_m),
+                'min': min(lengths_m, default=None),
+                'max': max(lengths_m, default=None),
+                'latest': lengths_m[-1] if lengths_m else None,
+            },
+            'observations': plans,
+            'data_gap_reasons': plan_reasons,
+            'interpretation': (
+                'Path geometry changes do not by themselves prove obstacle '
+                'avoidance.'),
+        },
+        'same_goal_resumed': 'NOT_MEASURED',
     }
 
 
@@ -241,6 +438,9 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     odom = []
     batteries_v = []
     post_stop_commands = []
+    collision_states = []
+    command_states = []
+    plans = []
     for message in read_ros2_messages(str(bag), topics=list(TOPICS)):
         topic = message.channel.topic
         stamp_ns = message.log_time_ns
@@ -268,6 +468,15 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                          pose.position.y, 0.0))
         elif topic == '/battery_state':
             batteries_v.append(message.ros_msg.voltage)
+        elif topic == '/collision_monitor_state':
+            state = message.ros_msg
+            collision_states.append((
+                stamp_ns, int(state.action_type), str(state.polygon_name)))
+        elif topic == '/cmd_vel':
+            command_states.append(
+                (stamp_ns, _command_state(message.ros_msg)))
+        elif topic == '/plan':
+            plans.append(_plan_observation(stamp_ns, message.ros_msg))
         elif topic == '/tf':
             for transform in message.ros_msg.transforms:
                 child = transform.child_frame_id.lstrip('/')
@@ -342,6 +551,12 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                     bool(post_stop_commands)
                     and post_stop_commands[-1] == (0.0, 0.0)),
             },
+        },
+        'navigation_events': {
+            **summarize_navigation_events(
+                collision_states, command_states, plans),
+            'goal_events': route['goal_events'],
+            'goal_events_time_basis': 'ros_logger_time_ns',
         },
         'continuity': continuity,
         'resources': _read_process_metrics(
@@ -813,13 +1028,22 @@ def main(argv=None) -> int:
         package_root / 'config' /
         'corridor_roundtrip.autonomous_20260826.yaml'))
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument(
+        '--metrics-only', action='store_true',
+        help='Write metrics and CSV only, without rendering images or videos')
     parser.add_argument('--frames', type=int, default=96)
     parser.add_argument('--fps', type=int, default=12)
     args = parser.parse_args(argv)
     if args.frames < 2 or args.fps < 1:
         parser.error('--frames must be >= 2 and --fps must be >= 1')
 
-    _configure_plot_font()
+    if args.metrics_only and args.compare_run_dir:
+        parser.error('--metrics-only cannot be combined with --compare-run-dir')
+    if args.metrics_only and args.output_dir.exists() and any(
+            args.output_dir.iterdir()):
+        parser.error('--metrics-only requires a new or empty output directory')
+    if not args.metrics_only:
+        _configure_plot_font()
     metrics, series = analyse_run(args.run_dir)
     comparison_metrics = [analyse_run(path)[0]
                           for path in args.compare_run_dir]
@@ -831,6 +1055,17 @@ def main(argv=None) -> int:
     (args.output_dir / 'metrics.json').write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')
     write_csv(series, metrics, args.output_dir)
+    if args.metrics_only:
+        write_media_manifest(args.output_dir, metrics)
+        print(json.dumps({
+            'run_id': metrics['run_id'],
+            'outcome': metrics['outcome'],
+            'output_dir': str(args.output_dir.resolve()),
+            'outputs': sorted(path.name for path in args.output_dir.iterdir()),
+            'mp4_created': False,
+            'metrics_only': True,
+        }, ensure_ascii=False, indent=2))
+        return 0
     render_route(args.route, metrics, series,
                  args.output_dir / 'route_evidence.png')
     render_telemetry(metrics, series,

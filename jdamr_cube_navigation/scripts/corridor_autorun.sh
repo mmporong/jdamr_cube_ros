@@ -22,6 +22,7 @@ RESOURCE_SOAK_S=75
 PREFLIGHT_TIMEOUT_S=180
 ROUTE_TIMEOUT_S=1800
 EXECUTE=1
+NAVIGATION_PROFILE=corridor
 RUN_ID="corridor_autorun_$(date +%Y%m%dT%H%M%S)"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +35,12 @@ while [ $# -gt 0 ]; do
       case "$2" in --*) echo "--run-id 값이 필요하다" >&2; exit 2 ;; esac
       RUN_ID="$2"; shift 2 ;;
     --no-execute) EXECUTE=0; shift ;;
+    --navigation-profile)
+      [ "$#" -ge 2 ] || { echo "--navigation-profile 값이 필요하다" >&2; exit 2; }
+      case "$2" in
+        corridor|obstacle_candidate) NAVIGATION_PROFILE="$2"; shift 2 ;;
+        *) echo "주행 프로필은 corridor 또는 obstacle_candidate여야 한다" >&2; exit 2 ;;
+      esac ;;
     *) echo "알 수 없는 인자: $1" >&2; exit 2 ;;
   esac
 done
@@ -123,7 +130,7 @@ stop_stack() {
 trap stop_stack EXIT
 trap 'exit 130' INT TERM
 
-say "run_id=$RUN_ID delay=${DELAY_S}s execute=$EXECUTE"
+say "run_id=$RUN_ID delay=${DELAY_S}s execute=$EXECUTE profile=$NAVIGATION_PROFILE"
 say "${DELAY_S}초 안에 로봇을 출발 지점에 놓고 물러설 것. 이후에는 옮기지 말 것."
 say "취소하려면 $ABORT_FILE 을 만들거나 전원을 차단할 것."
 remaining_s="$DELAY_S"
@@ -160,6 +167,7 @@ METRICS_PID=$!
 
 say "Nav2 와 기록 기동"
 setsid nohup ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
+  navigation_profile:="$NAVIGATION_PROFILE" \
   bag_output:="$A/$RUN_ID" > "$A/$RUN_ID.launch.log" 2>&1 &
 NAV_PID=$!
 
@@ -185,7 +193,8 @@ fi
 
 say "전체 경로 계획 확인 (이동 없음)"
 if timeout "$PREFLIGHT_TIMEOUT_S" ros2 run jdamr_cube_navigation \
-  corridor_route --route "$ROUTE" >> "$LOG" 2>&1; then
+  corridor_route --route "$ROUTE" \
+  --navigation-profile "$NAVIGATION_PROFILE" >> "$LOG" 2>&1; then
   say "계획 PASS"
 else
   say "실패: 전체 경로 계획 실패. 주행하지 않는다."
@@ -214,7 +223,8 @@ fi
 say "출발"
 setsid timeout --kill-after="${ROUTE_STOP_GRACE_S}s" "$ROUTE_TIMEOUT_S" \
   ros2 run jdamr_cube_navigation corridor_route \
-  --route "$ROUTE" --execute >> "$A/$RUN_ID.route.log" 2>&1 &
+  --route "$ROUTE" --navigation-profile "$NAVIGATION_PROFILE" \
+  --execute >> "$A/$RUN_ID.route.log" 2>&1 &
 ROUTE_PID=$!
 while group_alive "$ROUTE_PID"; do
   if [ -e "$ABORT_FILE" ]; then

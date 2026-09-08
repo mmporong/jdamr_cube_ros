@@ -1,20 +1,46 @@
 """Regression tests for corridor evidence extraction and media helpers."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
-import yaml
+import yaml  # noqa: I201
 
 
 EVALUATION_ROOT = Path(__file__).resolve().parents[1] / 'evaluation'
 sys.path.insert(0, str(EVALUATION_ROOT))
 
 from corridor_run_media import (  # noqa: E402,I100,I201
+    _plan_observation,
+    analyse_run,
     gap_statistics,
     parse_route_log,
+    summarize_navigation_events,
     write_media_manifest,
 )
+
+
+def _vector(x=0.0, y=0.0, z=0.0):
+    return SimpleNamespace(x=x, y=y, z=z)
+
+
+def _path(stamp_ns, frame_id, points):
+    poses = [SimpleNamespace(pose=SimpleNamespace(
+        position=_vector(*point),
+        orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+    )) for point in points]
+    return _plan_observation(
+        stamp_ns, SimpleNamespace(
+            header=SimpleNamespace(frame_id=frame_id), poses=poses))
+
+
+def _message(topic, stamp_ns, ros_msg):
+    return SimpleNamespace(
+        channel=SimpleNamespace(topic=topic),
+        log_time_ns=stamp_ns,
+        ros_msg=ros_msg,
+    )
 
 
 def test_parse_route_log_preserves_success_evidence():
@@ -104,6 +130,159 @@ def test_gap_statistics_handles_empty_and_singleton_streams():
         'max_gap_s': None,
         'p99_gap_s': None,
     }
+
+
+def test_navigation_events_summarize_recorded_transitions_and_plans():
+    """Keep transitions tied to recorder time and geometry evidence."""
+    first_plan = _path(30, 'map', [(0.0, 0.0, 0.0), (3.0, 4.0, 0.0)])
+    repeated_plan = _path(
+        31, 'map', [(0.0, 0.0, 0.0), (3.0, 4.0, 0.0)])
+    changed_plan = _path(
+        32, 'map', [(0.0, 0.0, 0.0), (0.0, 2.0, 0.0)])
+
+    result = summarize_navigation_events(
+        [(10, 0, ''), (11, 1, 'StopZone'), (12, 0, '')],
+        [(20, 'ZERO'), (21, 'NONZERO'), (22, 'NONZERO'),
+         (23, 'ZERO'), (24, 'NONZERO')],
+        [first_plan, repeated_plan, changed_plan],
+    )
+
+    assert [event['stamp_ns'] for event in
+            result['collision_monitor_state']['transitions']] == [11, 12]
+    assert result['collision_monitor_state']['transitions'][0][
+        'to']['action_name'] == 'STOP'
+    assert result['cmd_vel_zero_to_nonzero'][
+        'transition_stamps_ns'] == [21, 24]
+    assert result['plan_geometry']['geometry_change_count'] == 1
+    assert result['plan_geometry']['path_length_m'] == {
+        'samples': 3, 'min': 2.0, 'max': 5.0, 'latest': 2.0}
+    assert result['same_goal_resumed'] == 'NOT_MEASURED'
+    assert 'do not by themselves prove obstacle avoidance' in (
+        result['plan_geometry']['interpretation'])
+
+
+@pytest.mark.parametrize(
+    ('plans', 'reason'),
+    [
+        ([], 'NO_OBSERVATIONS_IN_DRIVE_WINDOW'),
+        ([_path(1, 'map', [])], 'EMPTY_PATH'),
+        ([_path(1, 'map', [(0.0, 0.0, 0.0)]),
+          _path(2, 'odom', [(0.0, 0.0, 0.0)])],
+         'FRAME_ID_MISMATCH'),
+    ],
+)
+def test_navigation_events_marks_incomparable_plan_data_insufficient(
+        plans, reason):
+    """Do not calculate a change count from missing or incomparable paths."""
+    result = summarize_navigation_events([], [], plans)
+
+    plan = result['plan_geometry']
+    assert plan['evidence_status'] == 'INSUFFICIENT_DATA'
+    assert plan['geometry_change_count'] is None
+    assert reason in plan['data_gap_reasons']
+
+
+def test_navigation_events_rejects_pose_frame_mismatch_and_nonfinite_cmd():
+    """Do not infer comparable paths or resumed motion from invalid values."""
+    path_message = SimpleNamespace(
+        header=SimpleNamespace(frame_id='map'),
+        poses=[SimpleNamespace(
+            header=SimpleNamespace(frame_id='odom'),
+            pose=SimpleNamespace(
+                position=_vector(),
+                orientation=SimpleNamespace(
+                    x=0.0, y=0.0, z=0.0, w=1.0)))])
+    plan = _plan_observation(30, path_message)
+    result = summarize_navigation_events(
+        [], [(20, 'ZERO'), (21, 'UNKNOWN_NONFINITE'),
+             (22, 'NONZERO')], [plan])
+
+    assert result['cmd_vel_zero_to_nonzero'][
+        'transition_stamps_ns'] == []
+    assert result['cmd_vel_zero_to_nonzero'][
+        'evidence_status'] == 'INSUFFICIENT_DATA'
+    assert 'NONFINITE_COMMAND' in result['cmd_vel_zero_to_nonzero'][
+        'data_gap_reasons']
+    assert 'POSE_FRAME_ID_MISMATCH' in result['plan_geometry'][
+        'data_gap_reasons']
+
+
+def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
+        tmp_path, monkeypatch):
+    """Integrate event extraction without a second bag read or ROS runtime."""
+    run_dir = tmp_path / 'run_01'
+    run_dir.mkdir()
+    (run_dir / 'run.mcap').write_bytes(b'fake-mcap')
+    (tmp_path / 'run_01.route.log').write_text('\n'.join((
+        '[INFO] [101.000000000] [route]: send 1/1 home=(1.00,0.00)',
+        '[INFO] [109.000000000] [route]: corridor roundtrip succeeded',
+    )), encoding='utf-8')
+    covariance = [0.0] * 36
+
+    def amcl_pose(x):
+        return SimpleNamespace(pose=SimpleNamespace(
+            pose=SimpleNamespace(position=_vector(x=x)),
+            covariance=covariance))
+
+    def twist(x):
+        return SimpleNamespace(linear=_vector(x=x), angular=_vector())
+
+    def path_message(x):
+        return SimpleNamespace(
+            header=SimpleNamespace(frame_id='map'),
+            poses=[SimpleNamespace(pose=SimpleNamespace(
+                position=_vector(),
+                orientation=SimpleNamespace(
+                    x=0.0, y=0.0, z=0.0, w=1.0))),
+                   SimpleNamespace(pose=SimpleNamespace(
+                       position=_vector(x=x),
+                       orientation=SimpleNamespace(
+                           x=0.0, y=0.0, z=0.0, w=1.0)))])
+    messages = [
+        _message('/amcl_pose', 101_000_000_000, amcl_pose(0.0)),
+        _message('/battery_state', 102_000_000_000,
+                 SimpleNamespace(voltage=12.0)),
+        _message('/cmd_vel', 103_000_000_000, twist(0.0)),
+        _message('/cmd_vel', 104_000_000_000, twist(0.2)),
+        _message('/collision_monitor_state', 105_000_000_000,
+                 SimpleNamespace(action_type=0, polygon_name='')),
+        _message('/collision_monitor_state', 106_000_000_000,
+                 SimpleNamespace(action_type=1, polygon_name='StopZone')),
+        _message('/plan', 107_000_000_000, path_message(1.0)),
+        _message('/plan', 108_000_000_000, path_message(2.0)),
+        _message('/amcl_pose', 109_000_000_000, amcl_pose(1.0)),
+        _message('/cmd_vel', 110_000_000_000, twist(0.0)),
+    ]
+    reads = []
+
+    def fake_read(_bag, topics):
+        reads.append(topics)
+        return iter(messages)
+
+    package = ModuleType('mcap_ros2')
+    reader = ModuleType('mcap_ros2.reader')
+    reader.read_ros2_messages = fake_read
+    monkeypatch.setitem(sys.modules, 'mcap_ros2', package)
+    monkeypatch.setitem(sys.modules, 'mcap_ros2.reader', reader)
+    monkeypatch.setattr(
+        'corridor_run_media.inspect',
+        lambda _bag: {
+            'sha256': 'fake',
+            'integrity': 'PASS',
+            'message_count': len(messages),
+            'duration_ns': 9_000_000_000,
+        })
+
+    metrics, _series = analyse_run(run_dir)
+
+    events = metrics['navigation_events']
+    assert len(reads) == 1
+    assert '/collision_monitor_state' in reads[0]
+    assert events['cmd_vel_zero_to_nonzero'][
+        'transition_stamps_ns'] == [104_000_000_000]
+    assert events['collision_monitor_state']['transitions'][0][
+        'stamp_ns'] == 106_000_000_000
+    assert events['plan_geometry']['geometry_change_count'] == 1
 
 
 def test_media_manifest_hashes_generated_artifacts(tmp_path):

@@ -66,6 +66,7 @@ def generate_launch_description():
     map_yaml = LaunchConfiguration('map')
     keepout_mask = LaunchConfiguration('keepout_mask')
     params_file = LaunchConfiguration('params_file')
+    navigation_profile = LaunchConfiguration('navigation_profile')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     record_bag = LaunchConfiguration('record_bag')
@@ -77,6 +78,7 @@ def generate_launch_description():
             'map': map_yaml,
             'keepout_mask': keepout_mask,
             'params_file': params_file,
+            'navigation_profile': navigation_profile,
             'use_sim_time': use_sim_time,
             'autostart': autostart,
         }.items(),
@@ -127,6 +129,10 @@ def generate_launch_description():
                 package_share, 'config', 'nav2_params.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument(
+            'navigation_profile', default_value='corridor',
+            choices=['corridor', 'obstacle_candidate'],
+            description='Select the same navigation profile for the route runner'),
         DeclareLaunchArgument(
             'record_bag', default_value='true',
             description='Record essential full-rate evidence on the robot'),
