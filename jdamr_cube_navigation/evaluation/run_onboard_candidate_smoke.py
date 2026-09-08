@@ -57,7 +57,7 @@ BAG_LIVE_CAP_BYTES = 56 * 1024 * 1024
 RECORDED_TOPICS = (
     '/cmd_vel', '/collision_monitor_state',
     '/navigate_to_pose/_action/status', '/odom', '/ground_truth_pose',
-    '/joint_states', '/plan', '/amcl_pose', '/tf', '/tf_static')
+    '/plan', '/amcl_pose', '/tf', '/tf_static')
 NAV_SCENARIO_SOURCE = (
     ROOT / 'jdamr_cube_navigation/jdamr_cube_navigation/'
     'sim_nav_obstacle_scenario.py')

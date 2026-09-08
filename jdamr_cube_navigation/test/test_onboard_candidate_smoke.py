@@ -185,7 +185,7 @@ def test_compact_recorder_uses_wall_log_time_and_hidden_status_qos(
     assert '--include-hidden-topics' in command
     assert '--use-sim-time' not in command
     assert '/scan' not in command
-    assert '/joint_states' in command
+    assert '/joint_states' not in command
     assert set(SMOKE.RECORDED_TOPICS) <= set(command)
     qos = yaml.safe_load(
         (tmp_path / 'recording_qos.yaml').read_text(encoding='utf-8'))
