@@ -77,7 +77,7 @@
     .panel-head b { color: var(--ink); font-size: 13px; font-weight: 650; }
     .scene { display: flex; flex-direction: column; background: #020609; }
     .video-wrap { position: relative; flex: 1; overflow: hidden; }
-    video { width: 100%; height: 100%; object-fit: cover; background: #020609; }
+    video { width: 100%; height: 100%; object-fit: contain; background: #020609; }
     .video-empty {
       position: absolute; inset: 0; display: grid; place-items: center;
       color: var(--muted); background: #071018;
@@ -108,16 +108,17 @@
     .scan-strip div:last-child { border: 0; }
     .scan-strip small { color: var(--muted); display: block; font-size: 10px; }
     .scan-strip strong { font: 600 14px "IBM Plex Mono", monospace; }
-    aside { background: rgba(7,16,24,.96); border-right: 0; }
-    .rail-row { padding: 10px 16px; border-bottom: 1px solid var(--grid); }
-    .rail-row small { display: block; color: var(--muted); font-size: 10px; margin-bottom: 5px; }
-    .rail-row strong { font-size: 14px; }
-    .rail-row .metric-value { color: var(--nav); font-size: 18px; }
+    aside { background: rgba(7,16,24,.96); border-right: 0; overflow-y: auto; }
+    .rail-row { padding: 6px 16px; border-bottom: 1px solid var(--grid); }
+    .rail-row small { display: block; color: var(--muted); font-size: 10px; margin-bottom: 2px; }
+    .rail-row strong { display: block; font-size: 13px; line-height: 1.25; }
+    .rail-row .metric-value { color: var(--nav); font-size: 17px; line-height: 1.1; }
     .rail-row.danger .metric-value { color: var(--stop); }
     .rail-row.warning .metric-value { color: var(--warn); }
     .readonly {
-      margin: 10px 16px; padding: 8px 10px; border-left: 3px solid var(--lidar);
-      background: rgba(82,209,197,.08); color: var(--muted); font-size: 11px;
+      margin: 7px 16px; padding: 6px 9px; border-left: 3px solid var(--lidar);
+      background: rgba(82,209,197,.08); color: var(--muted); font-size: 10px;
+      line-height: 1.35;
     }
     .timeline {
       grid-column: 1 / 4;
@@ -166,7 +167,7 @@
   <header>
     <div class="identity">
       <strong>JDAMR Navigation Control</strong>
-      <span>Gazebo · Nav2 · Collision Monitor · 2D LiDAR</span>
+      <span>Nav2 · Collision Monitor · 2D LiDAR · 3D Evidence</span>
     </div>
     <div class="status-line">
       <span class="status-code" id="run-id">RUN —</span>
@@ -175,11 +176,11 @@
   </header>
   <main>
     <section class="scene">
-      <div class="panel-head"><b>3D 주행 장면</b><span id="scene-source">Gazebo sensor</span></div>
+      <div class="panel-head"><b>3D 주행 장면</b><span id="scene-source">기록 기반 증거 재생</span></div>
       <div class="video-wrap">
-        <video id="gazebo-video" src="/media/gazebo.mp4" muted loop controls playsinline></video>
-        <div class="video-empty" id="video-empty">Gazebo 3D 영상 대기</div>
-        <div class="scene-readout">
+        <video id="evidence-video" src="/media/replay.mp4" muted loop controls playsinline></video>
+        <div class="video-empty" id="video-empty">3D 증거 영상 대기</div>
+        <div class="scene-readout" id="scene-readout">
           <div><small>차체 위치</small><strong id="pose">—</strong></div>
           <div><small>선속도</small><strong id="speed">—</strong></div>
           <div><small>목표 상태</small><strong id="goal">—</strong></div>
@@ -204,8 +205,9 @@
       <div class="rail-row"><small>Nav2 action</small><div class="metric-value" id="nav">NO GOAL</div><strong id="goal-count">목표 —</strong></div>
       <div class="rail-row"><small>최종 cmd_vel</small><div class="metric-value" id="cmd">0.00 m/s</div><strong id="turn">0.00 rad/s</strong></div>
       <div class="rail-row"><small>직전 검증 결과</small><div class="metric-value" id="verdict">—</div><strong id="contact">접촉 —</strong></div>
+      <div class="rail-row"><small>고정 장애물 우회</small><div class="metric-value" id="detour">—</div><strong id="static-clearance">최소 이격 —</strong></div>
       <div class="rail-row"><small>보호영역 최소 이격</small><div class="metric-value" id="clearance">—</div><strong id="latency">정지명령 —</strong></div>
-      <div class="readonly">이 화면은 관측 전용입니다. 목표 전송과 속도 명령 권한을 갖지 않아 기존 Nav2·Collision Monitor 제어 체인을 바꾸지 않습니다.</div>
+      <div class="readonly" id="readonly-note">이 화면은 관측 전용입니다. 목표 전송과 속도 명령 권한을 갖지 않아 기존 Nav2·Collision Monitor 제어 체인을 바꾸지 않습니다.</div>
     </aside>
     <section class="timeline">
       <div class="timeline-head"><b>동적 장애물 대응 흐름</b><span id="scope">검증 범위 —</span></div>
@@ -266,7 +268,9 @@
       $('mode').className = `status-pill ${live ? 'live' : 'offline'}`;
       const run = data.verified_run || {};
       $('run-id').textContent = run.run_id ? `RUN ${run.run_id}` : 'RUN —';
-      $('scene-source').textContent = live ? 'Gazebo / ROS live' : '검증 완료 영상';
+      $('scene-source').textContent = live ? 'ROS 2 live telemetry' : 'MuJoCo evidence replay';
+      $('scene-readout').hidden = !live;
+      $('readonly-note').hidden = !live;
       const pose = data.pose || {};
       $('pose').textContent = Number.isFinite(pose.x_m) ? `${pose.x_m.toFixed(2)}, ${pose.y_m.toFixed(2)} m` : '—';
       $('speed').textContent = fmt(pose.linear_mps,'m/s');
@@ -288,6 +292,8 @@
       $('scan-angle').textContent = fmt(data.scan?.closest_angle_deg,'°',0);
       $('verdict').textContent = run.available ? run.status : '—';
       $('contact').textContent = run.available ? `${coverage}물리 접촉 ${run.contact_count ?? '—'}회` : '접촉 —';
+      $('detour').textContent = run.straight_centerline_blocked === true ? fmt(run.maximum_lateral_offset_m,'m',3) : '—';
+      $('static-clearance').textContent = Number.isFinite(run.static_obstacle_clearance_m) ? `최소 이격 ${fmt(run.static_obstacle_clearance_m,'m',3)}` : '최소 이격 —';
       $('clearance').textContent = fmt(run.protected_clearance_m,'m',3);
       $('latency').textContent = run.available ? `scan→정지명령 ${fmt(run.observer_scan_to_zero_command_s,'s',3)}` : '정지명령 —';
       $('scope').textContent = run.claim_scope ? `검증 범위 ${run.claim_scope}` : '검증 범위 —';
@@ -307,7 +313,7 @@
 
     async function boot() {
       const config = await fetch('/api/config', {cache:'no-store'}).then(r=>r.json());
-      const video = $('gazebo-video');
+      const video = $('evidence-video');
       $('video-empty').hidden = config.video_available;
       video.hidden = !config.video_available;
       if (config.video_available) video.play().catch(()=>{});

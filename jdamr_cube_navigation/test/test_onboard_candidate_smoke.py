@@ -329,6 +329,59 @@ def test_sudden_case_uses_direct_scan_on_the_operational_monitor_input(
     assert '--behavior-tree' not in command
 
 
+def test_combined_case_delays_pedestrian_until_after_static_detour(tmp_path):
+    prepared = {
+        'contract': tmp_path / 'navigation.json',
+        'stop_contract': tmp_path / 'stop.json',
+    }
+
+    command = SMOKE._scenario_command(
+        'detour_sudden_stop_resume', prepared,
+        tmp_path / 'evidence.json', 'probe', '/contact')
+
+    assert command[command.index('--trigger-after-x-m') + 1] == '1.0'
+    assert '--direct-scan' in command
+
+
+def test_detour_evidence_requires_real_lateral_motion_and_clearance(
+        monkeypatch, tmp_path):
+    def sample(x_m, y_m, stamp_ns):
+        stamp = SimpleNamespace(
+            sec=stamp_ns // 1_000_000_000,
+            nanosec=stamp_ns % 1_000_000_000)
+        pose = SimpleNamespace(
+            position=SimpleNamespace(x=x_m, y=y_m),
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))
+        return SimpleNamespace(
+            ros_msg=SimpleNamespace(
+                header=SimpleNamespace(stamp=stamp), pose=pose))
+
+    samples = [
+        sample(-2.0, 0.0, 1), sample(-1.4, 0.48, 2),
+        sample(-1.0, 0.55, 3), sample(-0.6, 0.48, 4),
+        sample(0.0, 0.0, 5),
+    ]
+    monkeypatch.setattr(
+        SMOKE, 'read_navigation_messages',
+        lambda *_args, **_kwargs: samples)
+    route = {
+        'name': 'route', 'active_pose_m': [-1.0, 0.0, 0.5],
+        'length_m': 0.5, 'width_m': 0.4,
+    }
+    contract = {'stop_zone': {'inputs': {
+        'footprint_front_m': 0.23, 'footprint_rear_m': -0.23,
+        'footprint_half_width_m': 0.2,
+    }}}
+
+    evidence = SMOKE._detour_evidence(
+        tmp_path / 'run.mcap', route, contract)
+
+    assert evidence['status'] == 'PASS'
+    assert evidence['straight_centerline_blocked'] is True
+    assert evidence['maximum_abs_lateral_offset_m'] == pytest.approx(0.55)
+    assert evidence['minimum_clearance_m'] > 0.0
+
+
 def _valid_sudden_stop_resume():
     return {
         'goal_uuid': '01' * 16,
@@ -385,6 +438,19 @@ def test_sudden_case_requires_physical_and_recorded_same_goal_evidence():
     document['protected_envelope_to_obstacle_clearance_m'] = 0.0
     assert not SMOKE._case_passed(
         document, 'sudden_stop_resume', 0, same_goal)
+
+
+def test_combined_case_requires_static_detour_evidence():
+    same_goal = {
+        'evidence': {'verdict': 'CONFIRMED', 'terminal_succeeded': True}}
+    document = _valid_sudden_stop_resume()
+
+    assert SMOKE._case_passed(
+        document, 'detour_sudden_stop_resume', 0, same_goal,
+        {'status': 'PASS'})
+    assert not SMOKE._case_passed(
+        document, 'detour_sudden_stop_resume', 0, same_goal,
+        {'status': 'FAIL'})
 
 
 def test_contact_filter_excludes_ground_and_keeps_robot_pair():

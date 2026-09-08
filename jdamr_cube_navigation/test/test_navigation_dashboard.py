@@ -3,8 +3,8 @@
 import importlib.util
 import json
 import math
-import sys
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -43,6 +43,11 @@ def test_verified_run_extracts_only_evidence_fields(tmp_path):
         'results': [{
             'status': 'PASS', 'run_id': 'run-1',
             'case': 'sudden_stop_resume',
+            'detour_evidence': {
+                'straight_centerline_blocked': True,
+                'maximum_abs_lateral_offset_m': 0.57,
+                'minimum_clearance_m': 0.148,
+            },
             'scenario': {
                 'goal_send_count': 1, 'goal_cancel_count': 0,
                 'contact_count': 0,
@@ -58,6 +63,9 @@ def test_verified_run_extracts_only_evidence_fields(tmp_path):
     assert run['claim_scope'] == 'SIM_INTEGRATION'
     assert run['goal_send_count'] == 1
     assert run['contact_count'] == 0
+    assert run['straight_centerline_blocked'] is True
+    assert run['maximum_lateral_offset_m'] == pytest.approx(0.57)
+    assert run['static_obstacle_clearance_m'] == pytest.approx(0.148)
 
 
 def test_verified_bundle_aggregates_two_directional_runs(tmp_path):

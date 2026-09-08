@@ -10,14 +10,14 @@ authority.
 from __future__ import annotations
 
 import argparse
-import json
-import math
-import threading
-import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import math
 from pathlib import Path
+import threading
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -41,8 +41,11 @@ def _scenario_summary(document: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(results, list) or len(results) != 1:
         return {'available': False}
     result = results[0]
+    if not isinstance(result, dict):
+        return {'available': False}
     scenario = result.get('scenario', {})
-    if not isinstance(result, dict) or not isinstance(scenario, dict):
+    detour = result.get('detour_evidence', {})
+    if not isinstance(scenario, dict) or not isinstance(detour, dict):
         return {'available': False}
     final_pose = scenario.get('final_world_pose_m')
     return {
@@ -65,6 +68,11 @@ def _scenario_summary(document: dict[str, Any]) -> dict[str, Any]:
         'same_goal_resume': (
             scenario.get('same_goal_command_verdict') == 'CONFIRMED'),
         'action_terminal': scenario.get('action_terminal'),
+        'straight_centerline_blocked': detour.get(
+            'straight_centerline_blocked'),
+        'maximum_lateral_offset_m': detour.get(
+            'maximum_abs_lateral_offset_m'),
+        'static_obstacle_clearance_m': detour.get('minimum_clearance_m'),
     }
 
 
@@ -469,7 +477,7 @@ def make_handler(html: Path, video: Path | None, state: LiveState,
                     'command_surface': 'read_only',
                 }, separators=(',', ':')).encode('utf-8')
                 self._send(body, 'application/json; charset=utf-8')
-            elif path == '/media/gazebo.mp4':
+            elif path in {'/media/replay.mp4', '/media/gazebo.mp4'}:
                 self._serve_video()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)

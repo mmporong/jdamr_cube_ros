@@ -1,4 +1,4 @@
-# 이동형 로봇팔 장애물 대응 — 시뮬레이션 통합 검증 완료
+# 이동형 로봇팔 장애물 대응: 시뮬레이션 통합 검증 완료
 
 ## 결론
 
@@ -13,9 +13,21 @@ Nav2 구성에 연결했다. 2026-09-08 좌·우 진입 Gazebo 실행은 다음 
 - Collision Monitor의 StopZone 정지와 장애물 제거 뒤 명령 재개 확인
 - 양방향 실행 모두 로봇 접촉 0회, 보호 외곽 최소 여유 0.03960~0.04503 m
 - 양방향 실행 모두 최종 목표 도착, 종료 뒤 잔존 프로세스 0
+- 중앙 통로를 막은 고정 박스 우회와 보행자 돌발 횡단을 한 목표 안에서 연속 통과
 
 이는 `SIM_INTEGRATION` 범위의 결과다. 실차 제동거리, 사람 인식, 동적 팔 자세 전체,
 기능 안전 인증을 뜻하지 않는다.
+
+## 용어와 증거 범위
+
+- **Nav2 plan**: Nav2가 현재 지도와 costmap을 보고 만든 목표까지의 계획 경로다.
+- **Collision Monitor**: Nav2 계획과 별도로 LiDAR 관측을 확인해, 보호영역 안의 장애물에
+  대해 최종 속도 명령을 감속하거나 0으로 만드는 실행 계층이다.
+- **MCAP**: ROS 2 토픽을 시간 순서와 메타데이터와 함께 보존하는 기록 파일이다.
+- **ground truth**: Gazebo 월드가 직접 제공한 로봇의 기준 위치다. SLAM이나 AMCL 추정값과
+  구분해 실제 우회 거리와 장애물 간격을 계산할 때 썼다.
+- **동일 목표 재개**: 장애물 정지 전후 goal UUID가 같고 새 목표 전송이나 기존 목표 취소가
+  없었다는 뜻이다. 이것만으로 물리 안전을 주장하지 않고 접촉·정지 증거를 따로 확인한다.
 
 ## 지도·장애물·정지 계층의 역할
 
@@ -66,7 +78,7 @@ costmap에 넣고, 새 장애물은 LiDAR 관측으로 costmap과 Collision Moni
   프로필을 그대로 띄운다. 출발 전에 Collision Monitor의 실제 파라미터를 다시 읽어
   계약과 비교한다. `/joint_states` 토픽이 먼저 나타나도 팔 관절 전체가 담긴 표본을
   받을 때까지 제한 시간 안에서 기다린 뒤 자세를 판정한다.
-- 사람형 장애물은 ROS–Gazebo `SetEntityPose` 서비스 연결 하나를 재사용해 0.8초 동안
+- 사람형 장애물은 ROS와 Gazebo의 `SetEntityPose` 서비스 연결 하나를 재사용해 0.8초 동안
   복도 옆에서 경로 안으로 이동한다. 프레임마다 별도 CLI 프로세스를 만들지 않는다.
 - 온보드 MCAP에는 고주기 `/joint_states` 전체를 넣지 않는다. 출발 전 자세 표본과 판정만
   summary JSON에 보존해 제어 경로의 기록 부하를 늘리지 않는다.
@@ -99,6 +111,65 @@ costmap에 넣고, 새 장애물은 LiDAR 관측으로 costmap과 Collision Moni
 observer가 scan을 받은 시점부터 0 속도 명령을 받은 시점까지의 0.04537초와
 0.06863초도 기록했지만, 센서 취득·전송과 물리 제동을 포함하지 않으므로 실차
 반응시간으로 사용하지 않는다.
+
+## 고정 장애물 우회와 돌발 보행자 연속 시나리오
+
+`detour_sudden_stop_resume`는 서로 다른 기능을 따로 보여주는 대신 한 번의 목표에서
+연결했다. 출발 전에 0.50×0.40 m 박스를 `(x=-1.0, y=0.0) m`에 고정해 복도 중앙의
+직선 경로를 막고, 로봇이 이를 우회한 뒤 `x=1.0 m`를 통과하면 보행자가 옆에서
+경로 안으로 들어오게 했다. 최종 실행은
+`$HOME/jdamr_artifacts/onboard_candidate_combined_20260908_v04`에 있다.
+
+| 확인 항목 | 결과 |
+|---|---:|
+| 전체 판정 | PASS |
+| 직선 중심선 차단 | 확인 |
+| 실제 최대 횡방향 이동 | 0.56953 m |
+| 고정 박스 최소 이격 | 0.14786 m |
+| 보행자 기준 차체 최소 이격 | 0.11786 m |
+| 보행자 기준 팔 포함 보호 외곽 최소 이격 | 0.04536 m |
+| scan 관측→0 속도 명령 관측 | 0.14240초 |
+| 목표 전송 / 취소 | 1회 / 0회 |
+| 동일 목표 재개·최종 도착 | `CONFIRMED` / `succeeded` |
+| 접촉 | 0회 |
+| 최종 위치 | `(6.04746, 0.09813) m` |
+| MCAP | 1,570,906 B |
+
+고정 박스 이격은 299개의 ground-truth 표본과 박스의 방향을 포함한 직사각형 경계로
+계산했다. 보행자 대응은 Collision Monitor 상태, 0 속도 명령, 물리 정지, 접촉 센서,
+goal UUID를 함께 대조했다. 따라서 단순 경로 그림만 보고 우회·정지를 판정하지 않는다.
+
+## MuJoCo 3D 증거 재생
+
+Gazebo 카메라보다 장애물·경로·상태를 한 화면에서 읽기 쉽도록, 위 PASS 실행의
+ground truth·Nav2 plan·시나리오 이벤트를 MuJoCo 3D 장면으로 재생한다. 상체의 SO-101은
+시각 모델에서 제외하고 모바일 베이스, 실제 크기의 고정 박스, 횡단 보행자만 남겼다.
+추종 시점, 계획 경로, 실제 이동 궤적, 미니맵과 상태 대시보드를 함께 표시한다.
+
+이 영상은 MuJoCo에서 Nav2를 다시 실행한 독립 물리 실험이 아니다. 주행·접촉·목표 상태의
+원본은 Gazebo/ROS 2 MCAP이며, 화면의 LiDAR 광선만 MuJoCo 장면에 raycast해 가시화한다.
+manifest는 이 구분과 원본·출력 SHA-256을 보존한다. 렌더러는 프레임을 한 장씩 ffmpeg로
+전달하고, 사용 가능 메모리 2 GiB 또는 디스크 1 GiB 아래에서는 중단한다.
+
+- 원본 재생: `$HOME/jdamr_artifacts/mujoco_nav2_combined_20260908_v04`
+- 저장소 미디어: `evaluation/media/mujoco_nav2_combined_20260908`
+- 대표 영상: `mujoco_nav2_obstacle_challenge.mp4` (1280×720, 24fps, 24초)
+- 웹 미리보기: `mujoco_nav2_obstacle_challenge.gif`
+- 정지 이미지: `mujoco_nav2_obstacle_challenge.jpg`
+- 추적 정보: `mujoco_portfolio_manifest.json`
+
+### Isaac Sim을 현재 로컬 경로에 넣지 않은 이유
+
+Isaac Sim 6.0은 ROS 2 Jazzy·Nav2 연동을 지원하지만, 공식 최소 요구사항이
+GeForce RTX 4080, VRAM 16 GB, RAM 32 GB, 저장공간 50 GB다. 현재 호스트의
+RTX 5050 Laptop VRAM 8 GB·여유 저장공간 약 3.4 GB에서는 설치·실행을
+강행하지 않는다. Isaac Sim은 16 GB 이상 VRAM과 50 GB 이상 여유 공간을
+갖춘 별도 워크스테이션이나 클라우드 GPU에서 사람 센서·인지 확장을 시작할
+때 재검토한다.
+
+- [Isaac Sim 요구사항](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/requirements.html)
+- [Isaac Sim 설치 안내](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/quick-install.html)
+- [Isaac Sim ROS 2 Nav2 튜토리얼](https://docs.isaacsim.omniverse.nvidia.com/latest/ros2_tutorials/tutorial_ros2_navigation.html)
 
 ## 미디어와 재현
 
@@ -144,6 +215,17 @@ python3 jdamr_cube_navigation/evaluation/navigation_dashboard.py \
   --port 8765 \
   --media-manifest jdamr_cube_navigation/evaluation/media/onboard_dynamic_obstacle_20260908/portfolio_media_manifest.json \
   --video jdamr_cube_navigation/evaluation/media/onboard_dynamic_obstacle_20260908/gazebo_pedestrian_bidirectional_reel.mp4
+
+jdamr_cube_navigation/evaluation/setup_mujoco_renderer.sh
+jdamr_cube_navigation/evaluation/run_mujoco_portfolio_render.sh \
+  --run-root "$HOME/jdamr_artifacts/onboard_candidate_combined_20260908_v04" \
+  --output-dir "$HOME/jdamr_artifacts/<new_mujoco_media_id>"
+
+python3 jdamr_cube_navigation/evaluation/navigation_dashboard.py \
+  --port 8765 --no-ros \
+  --summary "$HOME/jdamr_artifacts/onboard_candidate_combined_20260908_v04/summary.json" \
+  --video \
+  jdamr_cube_navigation/evaluation/media/mujoco_nav2_combined_20260908/mujoco_nav2_obstacle_challenge.mp4
 ```
 
 우측 진입 자료는 `--pedestrian-entry right`와 서로 다른 run·media 출력 디렉터리로

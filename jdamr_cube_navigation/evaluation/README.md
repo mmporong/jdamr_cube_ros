@@ -31,6 +31,10 @@
 - `record_simulator_camera.py`: Gazebo 카메라 센서 프레임을 메타데이터와 함께 MP4로 기록하는 도구
 - `render_simulator_portfolio_media.py`: 검증 이벤트와 3D 영상을 결합해 방향별 하이라이트를 만드는 도구
 - `render_bidirectional_reel.py`: 해시가 확인된 좌·우 하이라이트만 하나의 대표 영상으로 연결하는 도구
+- `render_mujoco_nav2_evidence.py`: PASS MCAP의 Nav2 경로·실제 이동·장애물 이벤트를
+  3D 추종 시점과 관제 HUD로 재생하는 자원 제한형 MuJoCo 렌더러
+- `setup_mujoco_renderer.sh`, `run_mujoco_portfolio_render.sh`: 격리된 MuJoCo 환경 설치와
+  재현 실행 진입점
 - `navigation_dashboard.py`: LiDAR·Nav2·Collision Monitor·검증 영상을 localhost에서 보여주는 관측 전용 대시보드
 - `../launch/offline_replay_guard.launch.py`: 저장 지도와 이동 명령을 재생하지 않고 AMCL `map -> odom`을 제거하는 launch
 
@@ -429,12 +433,12 @@ G004는 Gazebo 시뮬레이션에서 Nav2 주행 명령과 Collision Monitor의 
 11·23·42·67·89에서 각각 실행한 15회(3개 시나리오 × 5개 seed)로 구성했다. 15회 모두
 각 실행에서 한 번 전송한 목표와 동일한 UUID의 상태가 `SUCCEEDED`로 끝났고 접촉·목표
 취소·예상 밖 종료·잔류 프로세스는 각각 0건이었다. 표의 범위는 다섯 seed의
-최소–중앙–최대값이다.
+최소~중앙~최대값이다.
 
 | 시나리오 | 핵심 결과 |
 |---|---|
-| 갑작스러운 장애물 | scan-gate 입력 발행부터 최종 속도 0 수신까지 0.0112–0.0337–0.0519 s, 정지 거리 0.0540–0.0540–0.0627 m, 로봇 footprint와 장애물 사이 최소 여유 0.0828–0.0882–0.0886 m |
-| monitor scan timeout | 동결 승인부터 최종 속도 0 관측까지 0.2215–0.2453–0.2521 s, 정지 시 센서 나이 0.302–0.327–0.330 s, 정지 거리 0.0172–0.0194–0.0213 m |
+| 갑작스러운 장애물 | scan-gate 입력 발행부터 최종 속도 0 수신까지 0.0112~0.0337~0.0519 s, 정지 거리 0.0540~0.0540~0.0627 m, 로봇 footprint와 장애물 사이 최소 여유 0.0828~0.0882~0.0886 m |
+| monitor scan timeout | 동결 승인부터 최종 속도 0 관측까지 0.2215~0.2453~0.2521 s, 정지 시 센서 나이 0.302~0.327~0.330 s, 정지 거리 0.0172~0.0194~0.0213 m |
 
 scan-gate는 평가용 Collision Monitor scan 전달 노드다. 갑작스러운 장애물 반응 시간은
 이 노드의 동일 프로세스 monotonic clock으로 잰 장애물 포함 scan 발행부터 최종 속도 0
@@ -524,3 +528,15 @@ Gazebo 3D 카메라 센서의 좌·우 진입 하이라이트, 이를 연결한 
 Collision Monitor 동작, `/cmd_vel`, LiDAR 최소 거리·방향과 최근 검증 결과를 함께
 표시한다. 이 화면은 관측 전용이며 주행 명령을 발행하지 않는다. ROS 그래프가 없을
 때도 `--no-ros`로 마지막 PASS 영상과 수치를 재생할 수 있다.
+
+`detour_sudden_stop_resume`는 출발 전부터 직선 경로를 막은 0.50×0.40 m
+고정 박스 우회와, 이후 보행자가 횡단할 때의 정지·동일 목표 재개·최종 도착을
+한 번의 Nav2 목표에서 검증한다. 대표 PASS는
+`$HOME/jdamr_artifacts/onboard_candidate_combined_20260908_v04`이며, 최대 횡방향 우회
+0.56953 m, 고정 박스 최소 이격 0.14786 m, 접촉 0회, 목표 전송 1회·취소
+0회를 기록했다.
+
+MuJoCo 미디어는 이 PASS 기록을 모바일 베이스 중심의 3D 추종 시점으로
+재생한다. 주행 데이터의 원본은 Gazebo/ROS 2 MCAP이고, MuJoCo는 장면·LiDAR
+raycast·HUD 표현 계층이다. 자세한 증거 범위와 명령은
+[20260908_DYNAMIC_OBSTACLE_READINESS.md](20260908_DYNAMIC_OBSTACLE_READINESS.md)에 있다.

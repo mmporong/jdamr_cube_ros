@@ -664,6 +664,44 @@ class CollisionMonitorScenario(Node):
             actual_duration_s=time.monotonic() - started_s)
         return True
 
+    def _clear_crossing_obstacle(self) -> bool:
+        """Move the pedestrian through the lane before parking the proxy."""
+        duration_s = getattr(self.args, 'obstacle_crossing_s', 0.0)
+        if (duration_s <= 0.0 or self.obstacle_center_m is None):
+            return self._set_entity_pose(
+                tuple(self.contract['sudden_obstacle']['removal_pose_m']),
+                transition='clear')
+        center_x_m, start_y_m = self.obstacle_center_m
+        side = getattr(self.args, 'obstacle_entry_side', 'left')
+        side_sign = 1.0 if side == 'left' else -1.0
+        exit_y_m = start_y_m - side_sign * 0.85
+        steps = max(3, round(duration_s * 10.0))
+        started_s = time.monotonic()
+        self._event(
+            'obstacle_crossing_exit_started', exit_side=(
+                'right' if side == 'left' else 'left'),
+            start_pose_m=[center_x_m, start_y_m, 0.5],
+            exit_pose_m=[center_x_m, exit_y_m, 0.5],
+            planned_duration_s=duration_s, step_count=steps)
+        for index in range(steps + 1):
+            ratio = index / steps
+            smooth_ratio = ratio * ratio * (3.0 - 2.0 * ratio)
+            y_m = start_y_m + (exit_y_m - start_y_m) * smooth_ratio
+            self.obstacle_center_m = (center_x_m, y_m)
+            if not self._set_entity_pose(
+                    (center_x_m, y_m, 0.5), verify=index == steps):
+                return False
+            deadline_s = started_s + duration_s * (index + 1) / steps
+            remaining_s = deadline_s - time.monotonic()
+            if remaining_s > 0.0:
+                time.sleep(remaining_s)
+        self._event(
+            'obstacle_crossing_exit_completed',
+            actual_duration_s=time.monotonic() - started_s)
+        return self._set_entity_pose(
+            tuple(self.contract['sudden_obstacle']['removal_pose_m']),
+            transition='clear')
+
     def _freeze(self, frozen: bool) -> bool:
         if not self.freeze_client.wait_for_service(timeout_sec=5.0):
             self.activation_error = 'freeze service unavailable'
@@ -954,9 +992,7 @@ class CollisionMonitorScenario(Node):
         event = self._event('clear_set_pose_requested')
         self.clear_request_ros_ns = event['ros_ns']
         self.clear_request_steady_ns = event['steady_ns']
-        cleared = self._set_entity_pose(
-            tuple(self.contract['sudden_obstacle']['removal_pose_m']),
-            transition='clear')
+        cleared = self._clear_crossing_obstacle()
         if cleared:
             self.obstacle_active = False
             self._event('obstacle_deactivated')
@@ -979,6 +1015,12 @@ class CollisionMonitorScenario(Node):
         elif (self.phase == 'RUNNING'
               and self.args.scenario != 'clear_baseline'
               and self.moving_observed and self.last_pose is not None):
+            trigger_after_x_m = getattr(
+                self.args, 'trigger_after_x_m', None)
+            if (trigger_after_x_m is not None
+                    and (self.world_pose is None
+                         or self.world_pose[0] < trigger_after_x_m)):
+                return
             if (self.direct_scan and self.last_linear_speed_mps
                     < self.contract['sudden_obstacle']['trigger_min_speed_mps']):
                 return
@@ -1199,6 +1241,8 @@ class CollisionMonitorScenario(Node):
                 self.args, 'obstacle_crossing_s', 0.0),
             'obstacle_entry_side': getattr(
                 self.args, 'obstacle_entry_side', 'left'),
+            'trigger_after_x_m': getattr(
+                self.args, 'trigger_after_x_m', None),
             'stop_world_pose_m': self.stop_pose,
             'contact_count': self.contact_count,
             'raw_contact_count': self.raw_contact_count,
@@ -1236,11 +1280,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--obstacle-crossing-s', type=float, default=0.0)
     parser.add_argument(
         '--obstacle-entry-side', choices=('left', 'right'), default='left')
+    parser.add_argument('--trigger-after-x-m', type=float)
     args = parser.parse_args(remove_ros_args()[1:])
     if args.obstacle_hold_s < 0.0:
         parser.error('--obstacle-hold-s must be nonnegative')
     if not 0.0 <= args.obstacle_crossing_s <= 5.0:
         parser.error('--obstacle-crossing-s must be between 0 and 5 seconds')
+    if (args.trigger_after_x_m is not None
+            and not math.isfinite(args.trigger_after_x_m)):
+        parser.error('--trigger-after-x-m must be finite')
     if args.direct_scan and (
             args.scenario != 'sudden_obstacle_stop_resume'
             or os.environ.get('ROS_DOMAIN_ID') not in {'186', '187'}):

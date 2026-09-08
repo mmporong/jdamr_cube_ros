@@ -18,6 +18,9 @@ from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
 from jdamr_cube_navigation.mobile_manipulator_protection import (
     load_mobile_manipulator_protection,
 )
+from jdamr_cube_navigation.sim_collision_monitor_scenario import (
+    rectangle_clearance,
+)
 
 from navigation_mcap_reader import read_navigation_messages
 
@@ -27,16 +30,17 @@ from onboard_stop_contract import (
 )
 
 from portfolio_capture_world import (
-    CAMERA_RATE_HZ,
-    CAMERA_TOPIC as SIM_CAMERA_TOPIC,
     build_capture_urdf,
     build_capture_world,
+    CAMERA_RATE_HZ,
+    CAMERA_TOPIC as SIM_CAMERA_TOPIC,
 )
 from prepare_sim_nav_obstacle_run import prepare
 
 from run_sim_nav_obstacle_eval import (  # noqa: I101
-    _cleanup_identity, _environment, _group_members, _sha256, _start, _stop,
-    _wait_lifecycle_active, _wait_tf_available, _wait_topics, ASSETS, BT,
+    _cleanup_identity, _environment, _group_members, _set_pose, _sha256,
+    _start, _stop, _wait_entity_pose, _wait_lifecycle_active,
+    _wait_tf_available, _wait_topics, ASSETS, BT,
 )
 
 import yaml
@@ -47,7 +51,9 @@ PRODUCTION_PARAMS = ROOT / 'jdamr_cube_navigation/config/nav2_params.yaml'
 PROCESS_MARKER = 'JDAMR_NAV_EVAL_RUN_ID'
 DOMAIN_IDS = {186, 187}
 SEED = 11
-CASES = ('detour', 'event_driven_removal', 'sudden_stop_resume')
+CASES = (
+    'detour', 'event_driven_removal', 'sudden_stop_resume',
+    'detour_sudden_stop_resume')
 DEFAULT_CASES = ('detour', 'event_driven_removal')
 ALLOWED_PARAM_DELTAS = {
     ('amcl', 'ros__parameters', 'initial_pose', 'x'),
@@ -426,6 +432,80 @@ def _cap_output(root: Path) -> int:
     return total
 
 
+def _pose_yaw(message: Any) -> float:
+    orientation = message.pose.orientation
+    return math.atan2(
+        2.0 * (orientation.w * orientation.z
+               + orientation.x * orientation.y),
+        1.0 - 2.0 * (
+            orientation.y * orientation.y
+            + orientation.z * orientation.z))
+
+
+def _detour_evidence(
+        mcap: Path, route_spec: dict[str, Any],
+        stop_contract: dict[str, Any]) -> dict[str, Any]:
+    """Measure the physical route around the persistent centerline box."""
+    center_x_m, center_y_m, _ = route_spec['active_pose_m']
+    dimensions_m = [route_spec['length_m'], route_spec['width_m']]
+    inputs = stop_contract['stop_zone']['inputs']
+    footprint = {
+        'front_m': inputs['footprint_front_m'],
+        'rear_m': inputs['footprint_rear_m'],
+        'half_width_m': inputs['footprint_half_width_m'],
+    }
+    approach_margin_m = 1.0
+    window_min_x_m = center_x_m - route_spec['length_m'] / 2.0 - approach_margin_m
+    window_max_x_m = center_x_m + route_spec['length_m'] / 2.0 + approach_margin_m
+    samples = []
+    for item in read_navigation_messages(mcap, topics=['/ground_truth_pose']):
+        message = item.ros_msg
+        x_m = float(message.pose.position.x)
+        y_m = float(message.pose.position.y)
+        if not window_min_x_m <= x_m <= window_max_x_m:
+            continue
+        stamp = message.header.stamp
+        samples.append({
+            'ros_ns': int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+            'pose_xy_yaw': [x_m, y_m, _pose_yaw(message)],
+        })
+    required_center_offset_m = (
+        route_spec['width_m'] / 2.0 + footprint['half_width_m'])
+    if not samples:
+        return {
+            'status': 'FAIL', 'reason': 'no_ground_truth_near_route_obstacle',
+            'straight_centerline_blocked': True,
+            'required_center_offset_m': required_center_offset_m,
+        }
+    for sample in samples:
+        sample['clearance_m'] = rectangle_clearance(
+            sample['pose_xy_yaw'], footprint,
+            (center_x_m, center_y_m), dimensions_m)
+    peak = max(samples, key=lambda item: abs(item['pose_xy_yaw'][1]))
+    minimum = min(samples, key=lambda item: item['clearance_m'])
+    maximum_abs_lateral_offset_m = abs(peak['pose_xy_yaw'][1])
+    passed = (
+        maximum_abs_lateral_offset_m >= required_center_offset_m
+        and minimum['clearance_m'] > 0.0)
+    return {
+        'status': 'PASS' if passed else 'FAIL',
+        'straight_centerline_blocked': True,
+        'obstacle': {
+            'name': route_spec['name'],
+            'center_xy_m': [center_x_m, center_y_m],
+            'dimensions_m': dimensions_m,
+        },
+        'observation_window_x_m': [window_min_x_m, window_max_x_m],
+        'sample_count': len(samples),
+        'required_center_offset_m': required_center_offset_m,
+        'maximum_abs_lateral_offset_m': maximum_abs_lateral_offset_m,
+        'detour_peak_ros_ns': peak['ros_ns'],
+        'detour_peak_pose_xy_yaw': peak['pose_xy_yaw'],
+        'minimum_clearance_m': minimum['clearance_m'],
+        'minimum_clearance_pose_xy_yaw': minimum['pose_xy_yaw'],
+    }
+
+
 def scenario_passed(document: dict[str, Any], case: str,
                     returncode: int) -> bool:
     """Reject action success unless ground truth proves the intended route."""
@@ -455,8 +535,8 @@ def _scenario_command(
         entity: str, contact_topic: str,
         obstacle_hold_s: float = 0.0, obstacle_crossing_s: float = 0.0,
         obstacle_entry_side: str = 'left') -> list[str]:
-    if case == 'sudden_stop_resume':
-        return [
+    if case in {'sudden_stop_resume', 'detour_sudden_stop_resume'}:
+        command = [
             'ros2', 'run', 'jdamr_cube_navigation',
             'sim_collision_monitor_scenario',
             '--scenario', 'sudden_obstacle_stop_resume',
@@ -469,6 +549,10 @@ def _scenario_command(
             '--obstacle-entry-side', obstacle_entry_side,
             '--direct-scan', '--ros-args', '-p', 'use_sim_time:=true',
         ]
+        if case == 'detour_sudden_stop_resume':
+            command[command.index('--direct-scan'):command.index(
+                '--direct-scan')] = ['--trigger-after-x-m', '1.0']
+        return command
     return [
         'ros2', 'run', 'jdamr_cube_navigation',
         'sim_nav_obstacle_scenario', '--scenario', case,
@@ -482,14 +566,17 @@ def _scenario_command(
 
 def _case_passed(
         document: dict[str, Any], case: str, returncode: int,
-        same_goal_command_evidence: dict[str, Any]) -> bool:
-    if case != 'sudden_stop_resume':
+        same_goal_command_evidence: dict[str, Any],
+        detour_evidence: dict[str, Any] | None = None) -> bool:
+    if case not in {'sudden_stop_resume', 'detour_sudden_stop_resume'}:
         return scenario_passed(document, case, returncode)
     command_evidence = same_goal_command_evidence.get('evidence', {})
     return (
         stop_scenario_passed(document, returncode)
         and command_evidence.get('verdict') == 'CONFIRMED'
-        and command_evidence.get('terminal_succeeded') is True)
+        and command_evidence.get('terminal_succeeded') is True
+        and (case != 'detour_sudden_stop_resume'
+             or (detour_evidence or {}).get('status') == 'PASS'))
 
 
 def run_case(case: str, output_root: Path, domain_id: int,
@@ -497,7 +584,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
              gui: bool = False, record_video: bool = False,
              pedestrian_entry: str = 'left') -> dict:
     """Launch isolated Gazebo plus the real onboard core and run one case."""
-    direct_stop = case == 'sudden_stop_resume'
+    direct_stop = case in {
+        'sudden_stop_resume', 'detour_sudden_stop_resume'}
+    combined_detour = case == 'detour_sudden_stop_resume'
     runtime_params = prepared['params']
     scenario_contract = (
         prepared['stop_contract'] if direct_stop else prepared['contract'])
@@ -524,6 +613,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
     capture_urdf_report = None
     capture_world_manifest = case_dir / 'gazebo_capture_world.json'
     capture_urdf_manifest = case_dir / 'gazebo_capture_urdf.json'
+    asset_contract = json.loads(
+        prepared['contract'].read_text(encoding='utf-8'))
+    route_spec = asset_contract['preloaded_obstacles']['models']['route']
     if record_video:
         world_path = case_dir / 'gazebo_capture.world'
         urdf_path = case_dir / 'jdamr_cube_capture.urdf'
@@ -547,6 +639,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
                 'obstacle_removal_and_replan_not_sudden_stop_resume'),
             'sudden_stop_resume': (
                 'synthetic_sudden_obstacle_stop_same_goal_resume'),
+            'detour_sudden_stop_resume': (
+                'persistent_centerline_obstacle_detour_then_'
+                'pedestrian_stop_same_goal_resume'),
         }[case],
         'runtime_profile': {
             'name': 'obstacle_candidate',
@@ -585,6 +680,24 @@ def run_case(case: str, output_root: Path, domain_id: int,
         ], case_dir / 'gazebo.log', environment))
         _wait_topics({'/scan', '/odom', '/ground_truth_pose', '/joint_states'},
                      environment, 60.0)
+        if combined_detour:
+            active_pose_m = route_spec['active_pose_m']
+            if not _set_pose(
+                    route_spec['name'], *active_pose_m, environment):
+                raise RuntimeError('persistent route obstacle activation failed')
+            route_state = _wait_entity_pose(
+                route_spec['name'], active_pose_m, environment,
+                timeout_s=15.0)
+            result['static_route_obstacle'] = {
+                'activation': 'verified_before_nav2_start',
+                'entity_id': route_state['entity_id'],
+                'expected_pose_m': active_pose_m,
+                'observed_pose_m': route_state['pose_m'],
+                'dimensions_m': [
+                    route_spec['length_m'], route_spec['width_m'],
+                    route_spec['height_m']],
+                'straight_centerline_blocked': True,
+            }
         launched.append(_start([
             'ros2', 'launch', 'jdamr_cube_navigation',
             'onboard_nav2_core.launch.py',
@@ -656,8 +769,6 @@ def run_case(case: str, output_root: Path, domain_id: int,
             result['status'] = 'PASS'
             return result
 
-        asset_contract = json.loads(
-            prepared['contract'].read_text(encoding='utf-8'))
         role = 'front_observation_probe' if direct_stop else 'route'
         entity = asset_contract[
             'preloaded_obstacles']['models'][role]['name']
@@ -687,10 +798,11 @@ def run_case(case: str, output_root: Path, domain_id: int,
         launched.append(recorder)
         _wait_bag_ready(recorder[0], bag_dir)
         evidence = case_dir / 'scenario.json'
+        pedestrian_motion_enabled = record_video or combined_detour
         scenario = _start(_scenario_command(
             case, prepared, evidence, entity, contact_topic,
-            obstacle_hold_s=2.0 if record_video else 0.0,
-            obstacle_crossing_s=0.8 if record_video else 0.0,
+            obstacle_hold_s=2.0 if pedestrian_motion_enabled else 0.0,
+            obstacle_crossing_s=0.8 if pedestrian_motion_enabled else 0.0,
             obstacle_entry_side=pedestrian_entry),
             case_dir / 'scenario.log', environment)
         launched.append(scenario)
@@ -753,19 +865,45 @@ def run_case(case: str, output_root: Path, domain_id: int,
         result['raw_action_status'] = _status_summary(mcap)
         same_goal_evidence = evaluate_same_goal_bag(mcap)
         result['same_goal_command_evidence'] = same_goal_evidence
+        measured_detour = None
+        if combined_detour:
+            stop_contract = json.loads(
+                prepared['stop_contract'].read_text(encoding='utf-8'))
+            measured_detour = _detour_evidence(
+                mcap, route_spec, stop_contract)
+            result['detour_evidence'] = measured_detour
         if not evidence.is_file():
             raise RuntimeError('scenario produced no evidence')
         scenario_document = json.loads(evidence.read_text(encoding='utf-8'))
-        bt_parameter = _parameter(
-            '/bt_navigator', 'default_nav_to_pose_bt_xml', environment)
-        keepout_parameters = {
-            name: _parameter(
-                f'/{name}/{name}', 'keepout_filter.enabled', environment)
-            for name in ('local_costmap', 'global_costmap')}
-        clock_parameters = {
-            node: _parameter(node, 'use_sim_time', environment)
-            for node in ('/amcl', '/controller_server',
-                         '/collision_monitor', '/bt_navigator')}
+        bt_parameter = None
+        keepout_parameters = None
+        clock_parameters = None
+        postrun_diagnostics: dict[str, Any]
+        try:
+            bt_parameter = _parameter(
+                '/bt_navigator', 'default_nav_to_pose_bt_xml', environment)
+            keepout_parameters = {
+                name: _parameter(
+                    f'/{name}/{name}', 'keepout_filter.enabled', environment)
+                for name in ('local_costmap', 'global_costmap')}
+            clock_parameters = {
+                node: _parameter(node, 'use_sim_time', environment)
+                for node in ('/amcl', '/controller_server',
+                             '/collision_monitor', '/bt_navigator')}
+            if BT.name not in bt_parameter or not all(
+                    value.lower().endswith('true')
+                    for value in (*keepout_parameters.values(),
+                                  *clock_parameters.values())):
+                raise RuntimeError('post-run candidate configuration drift')
+            postrun_diagnostics = {'status': 'PASS'}
+        except RuntimeError as error:
+            if 'configuration drift' in str(error):
+                raise
+            postrun_diagnostics = {
+                'status': 'INCONCLUSIVE',
+                'reason': str(error),
+                'effect_on_behavior_verdict': 'none',
+            }
         result['startup'] = {
             'status': 'PASS', 'candidate_bt': bt_parameter,
             'keepout_enabled': keepout_parameters,
@@ -780,12 +918,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'mask_keepout_cells': prepared['mask_report']['keepout_cells'],
             'gz_partition': environment['GZ_PARTITION'],
             'ros_localhost_only': environment['ROS_LOCALHOST_ONLY'],
+            'postrun_diagnostics': postrun_diagnostics,
         }
-        if BT.name not in bt_parameter or not all(
-                value.lower().endswith('true')
-                for value in (*keepout_parameters.values(),
-                              *clock_parameters.values())):
-            raise RuntimeError('post-run candidate configuration drift')
         if direct_stop:
             result['scenario'] = {
                 'returncode': returncode,
@@ -870,7 +1004,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
                 'activation_error': scenario_document.get('activation_error'),
             }
         passed = _case_passed(
-            scenario_document, case, returncode, same_goal_evidence)
+            scenario_document, case, returncode, same_goal_evidence,
+            measured_detour)
         result['status'] = 'PASS' if passed else 'FAIL'
     except Exception as error:
         result['harness_error'] = f'{type(error).__name__}: {error}'

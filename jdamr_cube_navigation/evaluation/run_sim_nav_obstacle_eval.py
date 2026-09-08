@@ -396,13 +396,20 @@ def _wait_entity_pose(
         ) -> dict[str, Any]:
     deadline_s = time.monotonic() + timeout_s
     last_state = None
+    last_error = None
     while time.monotonic() < deadline_s:
-        last_state = read_entity_pose(
-            name, timeout_s=min(2.0, timeout_s), environment=environment)
+        try:
+            last_state = read_entity_pose(
+                name, timeout_s=min(2.0, timeout_s), environment=environment)
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+            last_error = error
+            time.sleep(0.05)
+            continue
         if math.dist(last_state['pose_m'], expected_pose_m) <= 0.02:
             return last_state
     raise RuntimeError(
-        f'entity pose did not reach target: {name}: {last_state}')
+        f'entity pose did not reach target: {name}: '
+        f'state={last_state}, error={last_error}')
 
 
 def _echo_once(topic: str, message_type: str,
