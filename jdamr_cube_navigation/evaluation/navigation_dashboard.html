@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23071018'/%3E%3Cpath d='M12 42V22h8v20m8 0V18h8v24m8 0V26h8v16' stroke='%2352d1c5' stroke-width='4'/%3E%3C/svg%3E">
+  <title>JDAMR Navigation Control</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --deck: #071018;
+      --plot: #0b1721;
+      --grid: #203443;
+      --ink: #e7f0f2;
+      --muted: #8ca0aa;
+      --lidar: #52d1c5;
+      --nav: #5dade2;
+      --warn: #ffc857;
+      --stop: #ff5a5f;
+      --pass: #76d39b;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { margin: 0; min-height: 100%; background: var(--deck); color: var(--ink); }
+    body {
+      font-family: "IBM Plex Sans KR", "Noto Sans KR", sans-serif;
+      letter-spacing: -.01em;
+      background-image:
+        linear-gradient(rgba(32,52,67,.22) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(32,52,67,.18) 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+    button, code, .mono, .metric-value, .status-code {
+      font-family: "IBM Plex Mono", "Noto Sans Mono CJK KR", monospace;
+    }
+    header {
+      min-height: 78px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 24px;
+      padding: 15px 24px;
+      border-bottom: 1px solid var(--grid);
+      background: rgba(7,16,24,.96);
+    }
+    .identity { display: flex; align-items: baseline; gap: 14px; }
+    .identity strong { font-size: 24px; letter-spacing: -.04em; }
+    .identity span { color: var(--muted); font-size: 13px; }
+    .status-line { display: flex; align-items: center; gap: 20px; }
+    .status-code { font-size: 13px; color: var(--muted); }
+    .status-pill {
+      border: 1px solid currentColor;
+      padding: 7px 12px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .status-pill.live { color: var(--pass); }
+    .status-pill.offline { color: var(--warn); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(560px, 1.65fr) minmax(320px, .85fr) 260px;
+      grid-template-rows: minmax(430px, calc(100vh - 238px)) 158px;
+      min-height: calc(100vh - 78px);
+    }
+    section, aside { min-width: 0; border-right: 1px solid var(--grid); }
+    .panel-head {
+      height: 45px;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--grid);
+      background: rgba(11,23,33,.92);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .panel-head b { color: var(--ink); font-size: 13px; font-weight: 650; }
+    .scene { display: flex; flex-direction: column; background: #020609; }
+    .video-wrap { position: relative; flex: 1; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: cover; background: #020609; }
+    .video-empty {
+      position: absolute; inset: 0; display: grid; place-items: center;
+      color: var(--muted); background: #071018;
+    }
+    .scene-readout {
+      position: absolute; left: 16px; bottom: 16px;
+      display: grid; grid-template-columns: repeat(3, auto);
+      border: 1px solid rgba(231,240,242,.24);
+      background: rgba(7,16,24,.86);
+      backdrop-filter: blur(6px);
+    }
+    .scene-readout div { padding: 9px 13px; border-right: 1px solid rgba(231,240,242,.16); }
+    .scene-readout div:last-child { border: 0; }
+    .scene-readout small { display: block; color: var(--muted); font-size: 10px; }
+    .scene-readout strong { font: 600 13px/1.6 "IBM Plex Mono", monospace; }
+    .lidar { display: flex; flex-direction: column; background: rgba(11,23,33,.88); }
+    .radar-wrap { position: relative; flex: 1; min-height: 300px; }
+    #radar { width: 100%; height: 100%; display: block; }
+    .radar-center {
+      position: absolute; inset: 50% auto auto 50%; transform: translate(-50%,-50%);
+      width: 22px; height: 30px; border: 2px solid var(--nav); background: #10283a;
+    }
+    .scan-strip {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--grid);
+    }
+    .scan-strip div { padding: 11px 12px; border-right: 1px solid var(--grid); }
+    .scan-strip div:last-child { border: 0; }
+    .scan-strip small { color: var(--muted); display: block; font-size: 10px; }
+    .scan-strip strong { font: 600 14px "IBM Plex Mono", monospace; }
+    aside { background: rgba(7,16,24,.96); border-right: 0; }
+    .rail-row { padding: 10px 16px; border-bottom: 1px solid var(--grid); }
+    .rail-row small { display: block; color: var(--muted); font-size: 10px; margin-bottom: 5px; }
+    .rail-row strong { font-size: 14px; }
+    .rail-row .metric-value { color: var(--nav); font-size: 18px; }
+    .rail-row.danger .metric-value { color: var(--stop); }
+    .rail-row.warning .metric-value { color: var(--warn); }
+    .readonly {
+      margin: 10px 16px; padding: 8px 10px; border-left: 3px solid var(--lidar);
+      background: rgba(82,209,197,.08); color: var(--muted); font-size: 11px;
+    }
+    .timeline {
+      grid-column: 1 / 4;
+      border-top: 1px solid var(--grid);
+      background: rgba(7,16,24,.98);
+      padding: 16px 24px 20px;
+    }
+    .timeline-head { display: flex; justify-content: space-between; margin-bottom: 18px; }
+    .timeline-head b { font-size: 13px; }
+    .timeline-head span { color: var(--muted); font-size: 11px; }
+    .event-line { display: grid; grid-template-columns: repeat(5, 1fr); position: relative; }
+    .event-line::before {
+      content: ""; position: absolute; top: 8px; left: 5%; right: 5%; height: 2px;
+      background: linear-gradient(90deg, var(--nav), var(--warn), var(--stop), var(--lidar), var(--pass));
+    }
+    .event { position: relative; text-align: center; }
+    .event i {
+      display: block; position: relative; z-index: 1; margin: 0 auto 9px;
+      width: 17px; height: 17px; background: var(--deck); border: 3px solid var(--nav);
+    }
+    .event:nth-child(2) i { border-color: var(--warn); }
+    .event:nth-child(3) i { border-color: var(--stop); }
+    .event:nth-child(4) i { border-color: var(--lidar); }
+    .event:nth-child(5) i { border-color: var(--pass); }
+    .event b { display: block; font-size: 11px; }
+    .event span { color: var(--muted); font: 10px/1.5 "IBM Plex Mono", monospace; }
+    @media (max-width: 1050px) {
+      main { grid-template-columns: 1.2fr .8fr; grid-template-rows: 500px 430px auto; }
+      aside { grid-column: 1 / 3; display: grid; grid-template-columns: repeat(4,1fr); }
+      .timeline { grid-column: 1 / 3; }
+      .readonly { grid-column: span 2; }
+    }
+    @media (max-width: 720px) {
+      header { grid-template-columns: 1fr; gap: 7px; }
+      main { display: block; }
+      .scene { height: 430px; }
+      .lidar { height: 430px; }
+      aside { display: grid; grid-template-columns: repeat(2,1fr); }
+      .timeline { overflow-x: auto; }
+      .event-line { min-width: 620px; }
+    }
+    @media (prefers-reduced-motion: reduce) { video { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="identity">
+      <strong>JDAMR Navigation Control</strong>
+      <span>Gazebo · Nav2 · Collision Monitor · 2D LiDAR</span>
+    </div>
+    <div class="status-line">
+      <span class="status-code" id="run-id">RUN —</span>
+      <span class="status-pill offline" id="mode">연결 확인 중</span>
+    </div>
+  </header>
+  <main>
+    <section class="scene">
+      <div class="panel-head"><b>3D 주행 장면</b><span id="scene-source">Gazebo sensor</span></div>
+      <div class="video-wrap">
+        <video id="gazebo-video" src="/media/gazebo.mp4" muted loop controls playsinline></video>
+        <div class="video-empty" id="video-empty">Gazebo 3D 영상 대기</div>
+        <div class="scene-readout">
+          <div><small>차체 위치</small><strong id="pose">—</strong></div>
+          <div><small>선속도</small><strong id="speed">—</strong></div>
+          <div><small>목표 상태</small><strong id="goal">—</strong></div>
+        </div>
+      </div>
+    </section>
+    <section class="lidar">
+      <div class="panel-head"><b>LiDAR 감지</b><span id="scan-fresh">/scan —</span></div>
+      <div class="radar-wrap">
+        <canvas id="radar"></canvas>
+        <div class="radar-center" aria-label="JDAMR 차체"></div>
+      </div>
+      <div class="scan-strip">
+        <div><small>전방 최소</small><strong id="front-min">—</strong></div>
+        <div><small>전체 최소</small><strong id="scan-min">—</strong></div>
+        <div><small>최근접 각도</small><strong id="scan-angle">—</strong></div>
+      </div>
+    </section>
+    <aside>
+      <div class="panel-head"><b>주행 판단</b><span>read only</span></div>
+      <div class="rail-row" id="monitor-row"><small>Collision Monitor</small><div class="metric-value" id="monitor">NO DATA</div><strong id="polygon">polygon —</strong></div>
+      <div class="rail-row"><small>Nav2 action</small><div class="metric-value" id="nav">NO GOAL</div><strong id="goal-count">목표 —</strong></div>
+      <div class="rail-row"><small>최종 cmd_vel</small><div class="metric-value" id="cmd">0.00 m/s</div><strong id="turn">0.00 rad/s</strong></div>
+      <div class="rail-row"><small>직전 검증 결과</small><div class="metric-value" id="verdict">—</div><strong id="contact">접촉 —</strong></div>
+      <div class="rail-row"><small>보호영역 최소 이격</small><div class="metric-value" id="clearance">—</div><strong id="latency">정지명령 —</strong></div>
+      <div class="readonly">이 화면은 관측 전용입니다. 목표 전송과 속도 명령 권한을 갖지 않아 기존 Nav2·Collision Monitor 제어 체인을 바꾸지 않습니다.</div>
+    </aside>
+    <section class="timeline">
+      <div class="timeline-head"><b>동적 장애물 대응 흐름</b><span id="scope">검증 범위 —</span></div>
+      <div class="event-line">
+        <div class="event"><i></i><b>목표 유지</b><span>NavigateToPose</span></div>
+        <div class="event"><i></i><b>LiDAR 감지</b><span>front zone</span></div>
+        <div class="event"><i></i><b>안전 정지</b><span>STOP polygon</span></div>
+        <div class="event"><i></i><b>경로 재개</b><span>same goal UUID</span></div>
+        <div class="event"><i></i><b>목표 도착</b><span>terminal success</span></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id);
+    const fmt = (value, unit, digits=2) => Number.isFinite(value) ? `${value.toFixed(digits)} ${unit}` : '—';
+    const age = value => Number.isFinite(value) ? `${value.toFixed(2)} s` : '—';
+    let latestScan = [];
+
+    function drawRadar() {
+      const canvas = $('radar');
+      const rect = canvas.getBoundingClientRect();
+      const scale = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(rect.width * scale));
+      const height = Math.max(1, Math.round(rect.height * scale));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width; canvas.height = height;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(scale,0,0,scale,0,0);
+      const w = rect.width, h = rect.height, cx = w/2, cy = h/2;
+      const radius = Math.min(w,h) * .41;
+      ctx.clearRect(0,0,w,h);
+      ctx.strokeStyle = '#203443'; ctx.lineWidth = 1;
+      for (let ring=1; ring<=4; ring++) {
+        ctx.beginPath(); ctx.arc(cx,cy,radius*ring/4,0,Math.PI*2); ctx.stroke();
+      }
+      for (let deg=0; deg<360; deg+=30) {
+        const a=(deg-90)*Math.PI/180;
+        ctx.beginPath(); ctx.moveTo(cx,cy);
+        ctx.lineTo(cx+Math.cos(a)*radius,cy+Math.sin(a)*radius); ctx.stroke();
+      }
+      ctx.fillStyle='#8ca0aa'; ctx.font='10px IBM Plex Mono, monospace';
+      ctx.fillText('0°',cx-7,cy-radius-8); ctx.fillText('±180°',cx-16,cy+radius+16);
+      if (!latestScan.length) return;
+      const maxRange = 4.0;
+      for (const [deg, distance] of latestScan) {
+        const clamped=Math.min(maxRange,Math.max(0,distance));
+        const a=(deg-90)*Math.PI/180;
+        const r=radius*clamped/maxRange;
+        ctx.fillStyle = distance < .45 ? '#ff5a5f' : distance < .8 ? '#ffc857' : '#52d1c5';
+        ctx.fillRect(cx+Math.cos(a)*r-1.5,cy+Math.sin(a)*r-1.5,3,3);
+      }
+    }
+
+    function render(data) {
+      const live = data.live === true;
+      $('mode').textContent = live ? 'LIVE ROS' : 'SIM REPLAY READY';
+      $('mode').className = `status-pill ${live ? 'live' : 'offline'}`;
+      const run = data.verified_run || {};
+      $('run-id').textContent = run.run_id ? `RUN ${run.run_id}` : 'RUN —';
+      $('scene-source').textContent = live ? 'Gazebo / ROS live' : '검증 완료 영상';
+      const pose = data.pose || {};
+      $('pose').textContent = Number.isFinite(pose.x_m) ? `${pose.x_m.toFixed(2)}, ${pose.y_m.toFixed(2)} m` : '—';
+      $('speed').textContent = fmt(pose.linear_mps,'m/s');
+      $('goal').textContent = data.navigation?.status || 'NO GOAL';
+      $('nav').textContent = data.navigation?.status || 'NO GOAL';
+      const coverage = Number.isFinite(run.directional_run_count) ? `${run.directional_run_count}방향 · ` : '';
+      $('goal-count').textContent = run.available ? `${coverage}전송 ${run.goal_send_count ?? '—'} · 취소 ${run.goal_cancel_count ?? '—'}` : '목표 —';
+      const monitor = data.collision_monitor || {};
+      $('monitor').textContent = monitor.action || 'NO DATA';
+      $('polygon').textContent = monitor.polygon ? `polygon ${monitor.polygon}` : 'polygon —';
+      const danger = monitor.action === 'STOP';
+      $('monitor-row').className = `rail-row ${danger ? 'danger' : monitor.action === 'SLOWDOWN' ? 'warning' : ''}`;
+      $('cmd').textContent = fmt(data.command?.linear_mps,'m/s');
+      $('turn').textContent = fmt(data.command?.angular_rps,'rad/s');
+      latestScan = data.scan?.points || [];
+      $('scan-fresh').textContent = `/scan ${age(data.freshness?.scan_age_s)}`;
+      $('front-min').textContent = fmt(data.scan?.front_minimum_m,'m');
+      $('scan-min').textContent = fmt(data.scan?.minimum_m,'m');
+      $('scan-angle').textContent = fmt(data.scan?.closest_angle_deg,'°',0);
+      $('verdict').textContent = run.available ? run.status : '—';
+      $('contact').textContent = run.available ? `${coverage}물리 접촉 ${run.contact_count ?? '—'}회` : '접촉 —';
+      $('clearance').textContent = fmt(run.protected_clearance_m,'m',3);
+      $('latency').textContent = run.available ? `scan→정지명령 ${fmt(run.observer_scan_to_zero_command_s,'s',3)}` : '정지명령 —';
+      $('scope').textContent = run.claim_scope ? `검증 범위 ${run.claim_scope}` : '검증 범위 —';
+      drawRadar();
+    }
+
+    async function poll() {
+      try {
+        const response = await fetch('/api/state', {cache:'no-store'});
+        if (!response.ok) throw new Error(String(response.status));
+        render(await response.json());
+      } catch (_) {
+        $('mode').textContent='관제 서버 응답 없음';
+        $('mode').className='status-pill offline';
+      }
+    }
+
+    async function boot() {
+      const config = await fetch('/api/config', {cache:'no-store'}).then(r=>r.json());
+      const video = $('gazebo-video');
+      $('video-empty').hidden = config.video_available;
+      video.hidden = !config.video_available;
+      if (config.video_available) video.play().catch(()=>{});
+      await poll();
+      setInterval(poll, config.poll_interval_ms || 200);
+    }
+    addEventListener('resize', drawRadar);
+    boot().catch(()=>{ $('mode').textContent='초기화 실패'; });
+  </script>
+</body>
+</html>

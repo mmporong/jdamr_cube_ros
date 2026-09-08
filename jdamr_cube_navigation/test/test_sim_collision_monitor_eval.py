@@ -1641,6 +1641,29 @@ def test_sudden_trigger_uses_one_post_arm_pose_snapshot():
     assert captured == [(1.1 + offset, 2.1, 0.5)]
 
 
+def test_crossing_obstacle_uses_fast_unverified_steps(monkeypatch):
+    """Only the final pedestrian pose needs the expensive truth readback."""
+    module = _load(
+        '../jdamr_cube_navigation/sim_collision_monitor_scenario.py')
+    node = module.CollisionMonitorScenario.__new__(
+        module.CollisionMonitorScenario)
+    node.args = SimpleNamespace(
+        obstacle_crossing_s=0.3, obstacle_entry_side='right')
+    node.events = []
+    node.obstacle_active = False
+    calls = []
+    node._event = lambda name, **details: {
+        'name': name, **details}
+    node._set_entity_pose = lambda pose, transition=None, verify=True: (
+        calls.append((pose, transition, verify)) or True)
+    monkeypatch.setattr(module.time, 'sleep', lambda duration: None)
+
+    assert node._activate_crossing_obstacle(2.0, 0.0) is True
+    assert len(calls) == 4
+    assert calls[0] == ((2.0, -0.85, 0.5), None, False)
+    assert calls[-1] == ((2.0, 0.0, 0.5), 'obstacle', True)
+
+
 @pytest.mark.parametrize('scenario,request_name', [
     ('sudden_obstacle_stop_resume', 'clear_set_pose_requested'),
     ('scan_timeout_stop_resume', 'monitor_scan_unfreeze_requested'),

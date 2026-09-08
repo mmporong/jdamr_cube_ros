@@ -89,3 +89,11 @@ def test_robot_state_publisher_respawn_bool_is_strict():
 
     source = LAUNCH.read_text(encoding='utf-8')
     assert "'robot_state_publisher_respawn', default_value='true'" in source
+
+
+def test_launch_exposes_gazebo_set_pose_as_a_ros_service():
+    """Dynamic actors must not spawn one shell process per animation frame."""
+    source = LAUNCH.read_text(encoding='utf-8')
+
+    assert '/world/slam_corridor/set_pose@' in source
+    assert 'ros_gz_interfaces/srv/SetEntityPose' in source

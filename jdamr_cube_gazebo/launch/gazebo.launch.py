@@ -208,7 +208,10 @@ def generate_launch_description():
     bridge_node = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
-        arguments=['--ros-args', '-p', ['config_file:=', bridge_config]],
+        arguments=[
+            '/world/slam_corridor/set_pose@'
+            'ros_gz_interfaces/srv/SetEntityPose',
+            '--ros-args', '-p', ['config_file:=', bridge_config]],
         output='screen')
 
     wrist_camera_bridge_node = Node(

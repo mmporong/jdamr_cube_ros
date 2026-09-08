@@ -26,6 +26,12 @@ from onboard_stop_contract import (
     scenario_passed as stop_scenario_passed,
 )
 
+from portfolio_capture_world import (
+    CAMERA_RATE_HZ,
+    CAMERA_TOPIC as SIM_CAMERA_TOPIC,
+    build_capture_urdf,
+    build_capture_world,
+)
 from prepare_sim_nav_obstacle_run import prepare
 
 from run_sim_nav_obstacle_eval import (  # noqa: I101
@@ -62,6 +68,10 @@ NAV_SCENARIO_SOURCE = (
 STOP_SCENARIO_SOURCE = (
     ROOT / 'jdamr_cube_navigation/jdamr_cube_navigation/'
     'sim_collision_monitor_scenario.py')
+SIM_CAMERA_RECORDER = (
+    ROOT / 'jdamr_cube_navigation/evaluation/record_simulator_camera.py')
+CAPTURE_WORLD_BUILDER = (
+    ROOT / 'jdamr_cube_navigation/evaluation/portfolio_capture_world.py')
 MOBILE_MANIPULATOR_PROTECTION = (
     ROOT / 'jdamr_cube_navigation/config/mobile_manipulator_protection.yaml')
 
@@ -252,18 +262,38 @@ def _travel_pose_sample(
 
 def _read_travel_pose(
         environment: dict[str, str], contract: dict[str, Any],
+        timeout_s: float = 15.0,
 ) -> dict[str, Any]:
-    result = _run(
-        ['ros2', 'topic', 'echo', '--no-lost-messages', '--once',
-         '/joint_states'],
-        environment, timeout_s=12.0)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f'JointState sample unavailable: {result.stderr.strip()}')
-    return _travel_pose_sample(
-        result.stdout,
-        contract['travel_pose_envelope']['joint_positions_rad'],
-        float(contract['travel_pose_gate']['position_tolerance_rad']))
+    """Wait for a complete arm JointState sample, then validate its pose."""
+    deadline_s = time.monotonic() + timeout_s
+    last_sample = None
+    last_error = ''
+    while time.monotonic() < deadline_s:
+        remaining_s = max(0.1, deadline_s - time.monotonic())
+        try:
+            result = _run(
+                ['ros2', 'topic', 'echo', '--no-lost-messages', '--once',
+                 '/joint_states'],
+                environment, timeout_s=min(3.0, remaining_s))
+        except subprocess.TimeoutExpired as exc:
+            last_error = str(exc)
+            continue
+        if result.returncode != 0:
+            last_error = result.stderr.strip()
+            continue
+        try:
+            last_sample = _travel_pose_sample(
+                result.stdout,
+                contract['travel_pose_envelope']['joint_positions_rad'],
+                float(contract['travel_pose_gate']['position_tolerance_rad']))
+        except (TypeError, ValueError, yaml.YAMLError) as exc:
+            last_error = str(exc)
+            continue
+        if not last_sample['missing_joints']:
+            return last_sample
+    if last_sample is not None:
+        return last_sample
+    raise RuntimeError(f'JointState sample unavailable: {last_error}')
 
 
 def _lifecycle(node: str, environment: dict[str, str]) -> str:
@@ -328,6 +358,19 @@ def _wait_bag_ready(process: subprocess.Popen, bag_dir: Path,
             return
         time.sleep(0.1)
     raise RuntimeError('compact recorder readiness timeout')
+
+
+def _wait_file_ready(process: subprocess.Popen, path: Path,
+                     timeout_s: float = 20.0) -> None:
+    """Wait for a sidecar to prove that its first source frame arrived."""
+    deadline_s = time.monotonic() + timeout_s
+    while time.monotonic() < deadline_s:
+        if process.poll() is not None:
+            raise RuntimeError('simulator camera recorder exited before ready')
+        if path.is_file() and path.stat().st_size > 0:
+            return
+        time.sleep(0.1)
+    raise RuntimeError('simulator camera first-frame timeout')
 
 
 def _tree_size(root: Path) -> int:
@@ -409,7 +452,9 @@ def scenario_passed(document: dict[str, Any], case: str,
 
 def _scenario_command(
         case: str, prepared: dict[str, Any], evidence: Path,
-        entity: str, contact_topic: str) -> list[str]:
+        entity: str, contact_topic: str,
+        obstacle_hold_s: float = 0.0, obstacle_crossing_s: float = 0.0,
+        obstacle_entry_side: str = 'left') -> list[str]:
     if case == 'sudden_stop_resume':
         return [
             'ros2', 'run', 'jdamr_cube_navigation',
@@ -419,6 +464,9 @@ def _scenario_command(
             '--contract', str(prepared['stop_contract']),
             '--entity-name', entity, '--contact-topic', contact_topic,
             '--goal-x-m', '6.0', '--run-timeout-s', '180',
+            '--obstacle-hold-s', str(obstacle_hold_s),
+            '--obstacle-crossing-s', str(obstacle_crossing_s),
+            '--obstacle-entry-side', obstacle_entry_side,
             '--direct-scan', '--ros-args', '-p', 'use_sim_time:=true',
         ]
     return [
@@ -445,7 +493,9 @@ def _case_passed(
 
 
 def run_case(case: str, output_root: Path, domain_id: int,
-             prepared: dict[str, Any], startup_only: bool = False) -> dict:
+             prepared: dict[str, Any], startup_only: bool = False,
+             gui: bool = False, record_video: bool = False,
+             pedestrian_entry: str = 'left') -> dict:
     """Launch isolated Gazebo plus the real onboard core and run one case."""
     direct_stop = case == 'sudden_stop_resume'
     runtime_params = prepared['params']
@@ -464,6 +514,29 @@ def run_case(case: str, output_root: Path, domain_id: int,
     launched = []
     bag_dir: Path | None = None
     mcap: Path | None = None
+    video_recorder = None
+    video_path = case_dir / 'gazebo_sensor_raw.mp4'
+    video_metadata = case_dir / 'gazebo_sensor_capture.json'
+    video_ready = case_dir / '.gazebo_sensor_ready'
+    world_path = ASSETS / 'slam_corridor_contact.world'
+    urdf_path = ASSETS / 'jdamr_cube_nav_eval.urdf'
+    capture_world_report = None
+    capture_urdf_report = None
+    capture_world_manifest = case_dir / 'gazebo_capture_world.json'
+    capture_urdf_manifest = case_dir / 'gazebo_capture_urdf.json'
+    if record_video:
+        world_path = case_dir / 'gazebo_capture.world'
+        urdf_path = case_dir / 'jdamr_cube_capture.urdf'
+        capture_world_report = build_capture_world(
+            ASSETS / 'slam_corridor_contact.world', world_path)
+        capture_urdf_report = build_capture_urdf(
+            ASSETS / 'jdamr_cube_nav_eval.urdf', urdf_path)
+        capture_world_manifest.write_text(json.dumps(
+            capture_world_report, indent=2, sort_keys=True) + '\n',
+            encoding='utf-8')
+        capture_urdf_manifest.write_text(json.dumps(
+            capture_urdf_report, indent=2, sort_keys=True) + '\n',
+            encoding='utf-8')
     result: dict[str, Any] = {
         'case': case, 'seed': SEED, 'domain_id': domain_id,
         'run_id': run_id, 'status': 'FAIL', 'scenario_started': False,
@@ -479,6 +552,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'name': 'obstacle_candidate',
             'launch': 'onboard_nav2_core.launch.py',
             'mobile_manipulator_stop_field': direct_stop,
+            'simulator_gui': gui,
+            'simulator_capture': (
+                'gazebo_camera_sensor' if record_video else 'disabled'),
         },
         'source_identity': {
             'runner': _source_identity(Path(__file__)),
@@ -492,14 +568,19 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'scenario_source': _source_identity(scenario_source),
             'mobile_manipulator_protection': _source_identity(
                 MOBILE_MANIPULATOR_PROTECTION),
+            'capture_world_builder': _source_identity(
+                CAPTURE_WORLD_BUILDER),
+            'canonical_evaluation_world': _source_identity(
+                ASSETS / 'slam_corridor_contact.world'),
         },
     }
     try:
         launched.append(_start([
             'ros2', 'launch', 'jdamr_cube_gazebo', 'gazebo.launch.py',
-            f'world:={ASSETS / "slam_corridor_contact.world"}',
-            f'urdf_file:={ASSETS / "jdamr_cube_nav_eval.urdf"}',
-            'gui:=false', 'enable_image_bridges:=false', f'seed:={SEED}',
+            f'world:={world_path}',
+            f'urdf_file:={urdf_path}',
+            f'gui:={str(gui).lower()}', 'enable_image_bridges:=false',
+            f'seed:={SEED}',
             'x_pose:=-8.0', 'y_pose:=0.0', 'z_pose:=0.01',
         ], case_dir / 'gazebo.log', environment))
         _wait_topics({'/scan', '/odom', '/ground_truth_pose', '/joint_states'},
@@ -586,12 +667,31 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
             f'{contact_topic}@ros_gz_interfaces/msg/Contacts[gz.msgs.Contacts',
         ], case_dir / 'contact_bridge.log', environment))
+        if record_video:
+            launched.append(_start([
+                'ros2', 'run', 'ros_gz_image', 'image_bridge',
+                SIM_CAMERA_TOPIC.lstrip('/'),
+            ], case_dir / 'simulator_camera_bridge.log', environment))
+            _wait_topics({SIM_CAMERA_TOPIC}, environment, 20.0)
+            video_recorder = _start([
+                'python3', str(SIM_CAMERA_RECORDER),
+                '--topic', SIM_CAMERA_TOPIC,
+                '--output', str(video_path),
+                '--metadata', str(video_metadata),
+                '--ready-file', str(video_ready),
+                '--fps', f'{CAMERA_RATE_HZ:g}',
+            ], case_dir / 'simulator_camera_recorder.log', environment)
+            launched.append(video_recorder)
+            _wait_file_ready(video_recorder[0], video_ready)
         recorder, bag_dir = _start_compact_recorder(case_dir, environment)
         launched.append(recorder)
         _wait_bag_ready(recorder[0], bag_dir)
         evidence = case_dir / 'scenario.json'
         scenario = _start(_scenario_command(
-            case, prepared, evidence, entity, contact_topic),
+            case, prepared, evidence, entity, contact_topic,
+            obstacle_hold_s=2.0 if record_video else 0.0,
+            obstacle_crossing_s=0.8 if record_video else 0.0,
+            obstacle_entry_side=pedestrian_entry),
             case_dir / 'scenario.log', environment)
         launched.append(scenario)
         result['scenario_started'] = True
@@ -599,6 +699,10 @@ def run_case(case: str, output_root: Path, domain_id: int,
         while scenario[0].poll() is None:
             if recorder[0].poll() is not None:
                 raise RuntimeError('compact recorder exited during scenario')
+            if (video_recorder is not None
+                    and video_recorder[0].poll() is not None):
+                raise RuntimeError(
+                    'simulator camera recorder exited during scenario')
             if _tree_size(output_root) > BAG_LIVE_CAP_BYTES:
                 raise RuntimeError('smoke evidence exceeded 56 MiB live cap')
             if time.monotonic() >= deadline_s:
@@ -609,6 +713,35 @@ def run_case(case: str, output_root: Path, domain_id: int,
             raise RuntimeError('compact recorder exited before scenario end')
         _stop(recorder[0])
         mcap = _one_finalized_mcap(bag_dir)
+        if video_recorder is not None:
+            _stop(video_recorder[0])
+            if (video_recorder[0].returncode != 0
+                    or not video_path.is_file()
+                    or not video_metadata.is_file()):
+                raise RuntimeError('simulator camera recording did not finalize')
+            capture = json.loads(video_metadata.read_text(encoding='utf-8'))
+            if (capture.get('frames', 0) < 10
+                    or capture.get('source') != 'gazebo_camera_sensor'):
+                raise RuntimeError('simulator camera recording is incomplete')
+            result['simulator_video'] = {
+                'raw_video': _source_identity(video_path),
+                'capture_metadata': _source_identity(video_metadata),
+                'source': capture['source'],
+                'topic': capture['topic'],
+                'width': capture['width'],
+                'height': capture['height'],
+                'frames': capture['frames'],
+                'capture_duration_s': capture['capture_duration_s'],
+                'first_frame_steady_ns': capture[
+                    'first_frame_steady_ns'],
+                'overlays_applied': False,
+                'capture_world': capture_world_report,
+                'capture_urdf': capture_urdf_report,
+                'capture_world_manifest': _source_identity(
+                    capture_world_manifest),
+                'capture_urdf_manifest': _source_identity(
+                    capture_urdf_manifest),
+            }
         result['recording'] = {
             'mcap': _source_identity(mcap),
             'size_bytes': mcap.stat().st_size,
@@ -783,9 +916,18 @@ def main() -> int:
     parser.add_argument('--domain-id', type=int, default=186)
     parser.add_argument('--case', choices=CASES, action='append')
     parser.add_argument('--startup-only', action='store_true')
+    parser.add_argument('--gui', action='store_true')
+    parser.add_argument('--record-simulator-video', action='store_true')
+    parser.add_argument(
+        '--pedestrian-entry', choices=('left', 'right'), default='left')
     args = parser.parse_args()
     if args.domain_id == 12 or args.domain_id not in DOMAIN_IDS:
         parser.error('only isolated ROS domain 186 or 187 is allowed')
+    if args.gui and not os.environ.get('DISPLAY'):
+        parser.error('--gui requires an available DISPLAY')
+    if args.gui and args.record_simulator_video:
+        parser.error(
+            '--gui and --record-simulator-video are mutually exclusive')
     selected = args.case or list(DEFAULT_CASES)
     assigned_domains = [args.domain_id + index
                         for index in range(len(selected))]
@@ -799,7 +941,9 @@ def main() -> int:
     for index, case in enumerate(selected):
         results.append(run_case(
             case, args.output_root, assigned_domains[index], prepared,
-            startup_only=args.startup_only))
+            startup_only=args.startup_only, gui=args.gui,
+            record_video=args.record_simulator_video,
+            pedestrian_entry=args.pedestrian_entry))
     summary = {
         'schema_version': 1, 'seed': SEED, 'cases_requested': selected,
         'claim_scope': 'SIM_INTEGRATION', 'results': results,

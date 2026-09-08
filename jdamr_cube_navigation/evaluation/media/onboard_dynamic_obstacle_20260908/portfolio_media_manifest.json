@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "status": "PASS",
+  "claim_scope": "TWO_INDEPENDENT_SIM_INTEGRATION_RUNS",
+  "interpretation": "좌·우에서 각각 진입한 단일 보행자 실행 2회를 독립 검증했다. 동시 다중 보행자나 실차 사람 안전을 입증하지 않는다.",
+  "runs": [
+    {
+      "entry_side": "left",
+      "artifact_root": "$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v13_followcam",
+      "summary_sha256": "74e0501972dc4e71b242af84b6d4a7a7bc0350d20f42c0f5c37bb90e1c9612b9",
+      "raw_video_sha256": "782ea97b1087b439956023b9c4c9e9cd6fa817f4a030cff01a6cc9d38ff36889",
+      "metrics": {
+        "goal_send_count": 1,
+        "goal_cancel_count": 0,
+        "contact_count": 0,
+        "protected_clearance_m": 0.03959918810886709,
+        "observer_scan_to_zero_command_s": 0.045367997,
+        "same_goal_resume": true,
+        "action_terminal": "succeeded"
+      }
+    },
+    {
+      "entry_side": "right",
+      "artifact_root": "$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v15_followcam_right",
+      "summary_sha256": "5ab4ece659a4d1c44d35a618e8fab966c5b936dcd745cdf5976f8fad3c554ff5",
+      "raw_video_sha256": "0882d60691db3ad7f08f1ba8d431a1e77c3c90b41a89416249f645467b6e3610",
+      "metrics": {
+        "goal_send_count": 1,
+        "goal_cancel_count": 0,
+        "contact_count": 0,
+        "protected_clearance_m": 0.04503420344002507,
+        "observer_scan_to_zero_command_s": 0.068634657,
+        "same_goal_resume": true,
+        "action_terminal": "succeeded"
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "file": "gazebo_pedestrian_bidirectional_reel.mp4",
+      "sha256": "65146fed8a3a67dfafc5cd544bab0c40482a5abe14fa11794b054f5b529f9632",
+      "size_bytes": 1064115,
+      "duration_s": 34.366667,
+      "width": 1280,
+      "height": 720,
+      "fps": 30
+    },
+    {
+      "file": "gazebo_dynamic_obstacle_highlight.mp4",
+      "entry_side": "left",
+      "sha256": "235d10fd450fadedb2bf2769506201cbc1cece6f03aa68264feb6bbd0ed76330",
+      "size_bytes": 554052
+    },
+    {
+      "file": "gazebo_dynamic_obstacle_right.mp4",
+      "entry_side": "right",
+      "sha256": "09864c31cb37a2f979bc634da2b77faf7c46dd1ac36e70199126a039cb4965fb",
+      "size_bytes": 572801
+    },
+    {
+      "file": "gazebo_dynamic_obstacle_highlight.gif",
+      "entry_side": "left",
+      "sha256": "0723f4a65a7cea83ab8c41291b85e82c8b346ad6a89d2c34109c1e35ae7867d9",
+      "size_bytes": 1920658
+    },
+    {
+      "file": "gazebo_obstacle_stop.png",
+      "entry_side": "left",
+      "sha256": "c4156114841122f42de5543220a359807c3ddb76adac5071c4241fcd84f10364",
+      "size_bytes": 197282
+    },
+    {
+      "file": "gazebo_obstacle_stop_right.png",
+      "entry_side": "right",
+      "sha256": "18b7d4710773d9be4a6f1fa5250cb2a1005ac16023be9da1ac32df7cf4ca022a",
+      "size_bytes": 192855
+    },
+    {
+      "file": "gazebo_goal_arrival.png",
+      "entry_side": "left",
+      "sha256": "3479976c1bf9b829f8ff6010f2b9092f5332c2d147c79e49a35069edb6f66ac3",
+      "size_bytes": 160118
+    }
+  ]
+}

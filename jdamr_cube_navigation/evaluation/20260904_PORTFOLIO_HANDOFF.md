@@ -18,6 +18,7 @@ JD-AMR은 저장 지도와 Keepout을 사용해 복도 왕복 경로의 20개 �
 5. 동일한 정규화 MCAP으로 Cartographer와 튜닝한 SLAM Toolbox 비교
 6. 독립 Gazebo ground truth에서 두 백엔드의 ATE/RPE 비교
 7. LiDAR 노이즈 stress에서 단기 상대 오차가 변하는 정도 확인
+8. 저장 지도를 유지한 채 횡단 보행자에 정지하고 같은 목표로 주행 재개
 
 ## 공개에 쓸 수치
 
@@ -40,6 +41,10 @@ JD-AMR은 저장 지도와 Keepout을 사용해 복도 왕복 경로의 20개 �
 | 시뮬레이션 기준 SLAM Toolbox ATE | 4.355m | 같은 world·경로·LiDAR |
 | 시뮬레이션 노이즈 Cartographer ATE | 0.752m | LiDAR σ 0.01→0.05m 합성 stress |
 | 시뮬레이션 노이즈 SLAM Toolbox ATE | 3.990m | 같은 stress 조건 |
+| 돌발 장애물 목표 전송 / 취소 | 방향별 1회 / 0회 | Gazebo 온보드 통합 2회 |
+| 돌발 장애물 접촉 | 양방향 모두 0회 | Gazebo Contact sensor |
+| 팔 포함 보호 외곽 최소 여유 | 0.03960~0.04503m | 고정 수납 자세 시뮬레이션 |
+| 보행자 횡단 / 물리 접촉 | 좌·우 0.93~0.94초 / 0회 | 독립된 3D Gazebo 실행 2회 |
 
 입력 정규화와 복도 설정 후 SLAM Toolbox의 시작–종료 불일치는 9.139m에서 1.032m로
 줄었다. 같은 정규화 입력에서 Cartographer의 시작–종료 1.026m는 수치상 유사했고,
@@ -63,6 +68,12 @@ ATE는 Cartographer의 6.75배, 1초 이동 RPE는 8.41배였다. 5배 LiDAR 노
 - `media/corridor_localdds_armed_20260904T152036/sensor_profile.png`
 - `media/corridor_localdds_armed_20260904T152036/timing_profile.png`
 - `media/sim_slam_corridor_gt_20260904/sim_slam_robustness.png`
+- `media/onboard_dynamic_obstacle_20260908/gazebo_dynamic_obstacle_highlight.mp4`
+- `media/onboard_dynamic_obstacle_20260908/gazebo_dynamic_obstacle_right.mp4`
+- `media/onboard_dynamic_obstacle_20260908/gazebo_pedestrian_bidirectional_reel.mp4`
+- `media/onboard_dynamic_obstacle_20260908/gazebo_dynamic_obstacle_highlight.gif`
+- `media/onboard_dynamic_obstacle_20260908/gazebo_obstacle_stop.png`
+- `media/onboard_dynamic_obstacle_20260908/gazebo_goal_arrival.png`
 
 ## 공개 문구에서 제외할 내용
 
@@ -75,6 +86,8 @@ ATE는 Cartographer의 6.75배, 1초 이동 RPE는 8.41배였다. 5배 LiDAR 노
 정확도를 주장하지 않는다. 한 번의 완주로 반복 성공률을 만들지 않으며, 카메라 데이터가
 없는 현재 결과를 Visual SLAM으로 부르지 않는다. 시뮬레이션 ATE/RPE는 실제 평면도의
 축척 복원이 아니라 긴 반복 복도의 정성적 구조를 단순화한 한 seed 결과라고 밝힌다.
+돌발 장애물 영상도 실제 Gazebo 카메라 센서 프레임이지만 실차 제동거리나 사람 안전의
+증거는 아니다.
 
 ## 근거 파일
 
@@ -87,6 +100,8 @@ ATE는 Cartographer의 6.75배, 1초 이동 RPE는 8.41배였다. 5배 LiDAR 노
 - `media/corridor_localdds_armed_20260904T152036/media_manifest.yaml`
 - `media/sim_slam_corridor_gt_20260904/sim_slam_robustness.md`
 - `media/sim_slam_corridor_gt_20260904/media_manifest.json`
+- `20260908_DYNAMIC_OBSTACLE_READINESS.md`
+- `media/onboard_dynamic_obstacle_20260908/portfolio_media_manifest.json`
 
 포트폴리오 세션은 이 문서의 공개 수치와 미디어만 먼저 사용한다. 자세한 디버깅 기록은
 면접에서 원인 분석 과정을 질문받았을 때 근거로 연다.

@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys  # noqa: I100
 from types import SimpleNamespace
 
@@ -115,6 +116,19 @@ def test_main_rejects_nonempty_output_root(monkeypatch, tmp_path):
         '--domain-id', '186', '--case', 'detour', '--startup-only'])
     with pytest.raises(SystemExit) as error:
         SMOKE.main()
+    assert error.value.code == 2
+
+
+def test_main_rejects_gui_without_a_display(monkeypatch, tmp_path):
+    """Do not label a headless run as a simulator GUI recording."""
+    monkeypatch.delenv('DISPLAY', raising=False)
+    monkeypatch.setattr(sys, 'argv', [
+        'run_onboard_candidate_smoke.py', '--output-root', str(tmp_path),
+        '--domain-id', '186', '--case', 'sudden_stop_resume', '--gui'])
+
+    with pytest.raises(SystemExit) as error:
+        SMOKE.main()
+
     assert error.value.code == 2
 
 
@@ -256,6 +270,31 @@ effort: []
     assert sample['status'] == 'PASS'
 
 
+def test_read_travel_pose_retries_until_all_arm_joints_arrive(monkeypatch):
+    """Do not reject startup while the broadcaster is still adding joints."""
+    partial = subprocess.CompletedProcess(
+        args=[], returncode=0,
+        stdout='name: [left_wheel_joint]\nposition: [0.0]\n', stderr='')
+    complete = subprocess.CompletedProcess(
+        args=[], returncode=0,
+        stdout=('name: [arm_shoulder_pan, arm_shoulder_lift]\n'
+                'position: [0.0, -1.0]\n'), stderr='')
+    responses = iter((partial, complete))
+    monkeypatch.setattr(SMOKE, '_run', lambda *args, **kwargs: next(responses))
+    contract = {
+        'travel_pose_envelope': {
+            'joint_positions_rad': {
+                'arm_shoulder_pan': 0.0,
+                'arm_shoulder_lift': -1.0}},
+        'travel_pose_gate': {'position_tolerance_rad': 0.03},
+    }
+
+    sample = SMOKE._read_travel_pose({}, contract, timeout_s=1.0)
+
+    assert sample['status'] == 'PASS'
+    assert sample['missing_joints'] == []
+
+
 def test_output_cap_fails_without_rewriting_raw_logs(monkeypatch, tmp_path):
     """Preserve original evidence when the hard size cap is exceeded."""
     raw = b'original recorder evidence'
@@ -283,6 +322,9 @@ def test_sudden_case_uses_direct_scan_on_the_operational_monitor_input(
     assert 'sim_collision_monitor_scenario' in command
     assert 'sudden_obstacle_stop_resume' in command
     assert '--direct-scan' in command
+    assert command[command.index('--obstacle-hold-s') + 1] == '0.0'
+    assert command[command.index('--obstacle-crossing-s') + 1] == '0.0'
+    assert command[command.index('--obstacle-entry-side') + 1] == 'left'
     assert str(prepared['stop_contract']) in command
     assert '--behavior-tree' not in command
 

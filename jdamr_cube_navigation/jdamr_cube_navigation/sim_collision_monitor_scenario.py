@@ -26,7 +26,8 @@ from nav_msgs.msg import Odometry
 
 import rclpy
 from rclpy.action import ActionClient
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import (
+    MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup)
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, qos_profile_sensor_data, QoSProfile
@@ -40,9 +41,12 @@ from tf2_msgs.msg import TFMessage
 import tf2_py
 
 try:
-    from ros_gz_interfaces.msg import Contacts
+    from ros_gz_interfaces.msg import Contacts, Entity
+    from ros_gz_interfaces.srv import SetEntityPose
 except ImportError:
     Contacts = None
+    Entity = None
+    SetEntityPose = None
 
 
 SET_POSE_SERVICE = '/world/slam_corridor/set_pose'
@@ -331,6 +335,7 @@ class CollisionMonitorScenario(Node):
         self.unfreeze_ack_ros_ns: int | None = None
         self.unfreeze_ack_steady_ns: int | None = None
         self.observation_group = MutuallyExclusiveCallbackGroup()
+        self.pose_service_group = ReentrantCallbackGroup()
         self.action_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose')
         self.create_subscription(
@@ -340,6 +345,10 @@ class CollisionMonitorScenario(Node):
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.freeze_client = (None if self.direct_scan else self.create_client(
             SetBool, '/sim_scan_gate/freeze_monitor'))
+        self.pose_client = (None if SetEntityPose is None else
+                            self.create_client(
+                                SetEntityPose, SET_POSE_SERVICE,
+                                callback_group=self.pose_service_group))
         self.create_subscription(
             LaserScan, '/scan' if self.direct_scan else '/sim_raw/scan',
             self._raw_scan,
@@ -546,18 +555,32 @@ class CollisionMonitorScenario(Node):
 
     def _set_entity_pose(
             self, pose_m: tuple[float, float, float],
-            transition: str | None = None) -> bool:
-        request = (
-            f'name: "{self.args.entity_name}", position {{x: {pose_m[0]}, '
-            f'y: {pose_m[1]}, z: {pose_m[2]}}}')
-        result = subprocess.run([
-            'gz', 'service', '-s', SET_POSE_SERVICE,
-            '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
-            '--timeout', '5000', '--req', request,
-        ], capture_output=True, text=True, timeout=10.0, check=False)
-        if result.returncode != 0 or 'data: true' not in result.stdout.lower():
-            self.activation_error = (
-                result.stderr.strip() or result.stdout.strip())
+            transition: str | None = None, verify: bool = True) -> bool:
+        if (self.pose_client is None or Entity is None
+                or not self.pose_client.wait_for_service(timeout_sec=2.0)):
+            self.activation_error = 'Gazebo set_pose ROS service unavailable'
+            return False
+        request = SetEntityPose.Request()
+        request.entity.name = self.args.entity_name
+        request.entity.type = Entity.MODEL
+        request.pose.position.x = pose_m[0]
+        request.pose.position.y = pose_m[1]
+        request.pose.position.z = pose_m[2]
+        request.pose.orientation.w = 1.0
+        future = self.pose_client.call_async(request)
+        deadline_s = time.monotonic() + 2.0
+        while not future.done() and time.monotonic() < deadline_s:
+            time.sleep(0.005)
+        if not future.done():
+            self.activation_error = 'Gazebo set_pose ROS service timeout'
+            return False
+        try:
+            response = future.result()
+        except Exception as error:
+            self.activation_error = f'Gazebo set_pose failed: {error}'
+            return False
+        if response is None or not response.success:
+            self.activation_error = 'Gazebo set_pose ROS service rejected pose'
             return False
         if transition is not None:
             event = self._event(f'{transition}_set_pose_ack')
@@ -567,6 +590,8 @@ class CollisionMonitorScenario(Node):
             else:
                 self.clear_ack_steady_ns = event['steady_ns']
                 self.clear_ack_ros_ns = event['ros_ns']
+        if not verify:
+            return True
         deadline_s = time.monotonic() + 5.0
         while time.monotonic() < deadline_s:
             try:
@@ -596,6 +621,48 @@ class CollisionMonitorScenario(Node):
                 return True
         self.activation_error = 'preloaded entity pose verification timeout'
         return False
+
+    def _activate_crossing_obstacle(
+            self, center_x_m: float, center_y_m: float) -> bool:
+        """Move the verified obstacle from a corridor edge into the path."""
+        duration_s = getattr(self.args, 'obstacle_crossing_s', 0.0)
+        if duration_s <= 0.0:
+            triggered = self._set_entity_pose(
+                (center_x_m, center_y_m, 0.5), transition='obstacle')
+            if triggered:
+                self.obstacle_center_m = (center_x_m, center_y_m)
+                self.obstacle_active = True
+            return triggered
+        side = getattr(self.args, 'obstacle_entry_side', 'left')
+        side_sign = 1.0 if side == 'left' else -1.0
+        start_y_m = center_y_m + side_sign * 0.85
+        steps = max(3, round(duration_s * 10.0))
+        started_s = time.monotonic()
+        self.obstacle_active = True
+        self._event(
+            'obstacle_crossing_started', entry_side=side,
+            start_pose_m=[center_x_m, start_y_m, 0.5],
+            target_pose_m=[center_x_m, center_y_m, 0.5],
+            planned_duration_s=duration_s, step_count=steps)
+        for index in range(steps + 1):
+            ratio = index / steps
+            smooth_ratio = ratio * ratio * (3.0 - 2.0 * ratio)
+            y_m = start_y_m + (center_y_m - start_y_m) * smooth_ratio
+            self.obstacle_center_m = (center_x_m, y_m)
+            transition = 'obstacle' if index == steps else None
+            if not self._set_entity_pose(
+                    (center_x_m, y_m, 0.5), transition=transition,
+                    verify=index == steps):
+                self.obstacle_active = False
+                return False
+            deadline_s = started_s + duration_s * (index + 1) / steps
+            remaining_s = deadline_s - time.monotonic()
+            if remaining_s > 0.0:
+                time.sleep(remaining_s)
+        self._event(
+            'obstacle_crossing_completed', entry_side=side,
+            actual_duration_s=time.monotonic() - started_s)
+        return True
 
     def _freeze(self, frozen: bool) -> bool:
         if not self.freeze_client.wait_for_service(timeout_sec=5.0):
@@ -873,12 +940,8 @@ class CollisionMonitorScenario(Node):
             request_event = self._event('obstacle_set_pose_requested')
             self.obstacle_request_steady_ns = request_event['steady_ns']
             self.obstacle_request_ros_ns = request_event['ros_ns']
-            triggered = self._set_entity_pose(
-                (center_x_m, center_y_m, 0.5), transition='obstacle')
-            if triggered:
-                self.obstacle_center_m = (center_x_m, center_y_m)
-                self.obstacle_active = True
-            return triggered
+            return self._activate_crossing_obstacle(
+                center_x_m, center_y_m)
         return True
 
     def _clear_trigger(self) -> bool:
@@ -928,7 +991,10 @@ class CollisionMonitorScenario(Node):
                 self.phase = 'FAILED'
         elif (self.phase == 'WAITING_FOR_STOP'
               and self.physical_stop_observed
-              and self.zero_steady_ns is not None):
+              and self.zero_steady_ns is not None
+              and self.physical_stop_steady_ns is not None
+              and (time.monotonic_ns() - self.physical_stop_steady_ns) / 1e9
+              >= getattr(self.args, 'obstacle_hold_s', 0.0)):
             if self._clear_trigger():
                 self.phase = (
                     'UNFREEZE_PENDING'
@@ -1128,6 +1194,11 @@ class CollisionMonitorScenario(Node):
                 if math.isfinite(self.minimum_scan_range_m) else None),
             'physical_stop_observed': self.physical_stop_observed,
             'physical_stop_steady_ns': self.physical_stop_steady_ns,
+            'obstacle_hold_s': getattr(self.args, 'obstacle_hold_s', 0.0),
+            'obstacle_crossing_s': getattr(
+                self.args, 'obstacle_crossing_s', 0.0),
+            'obstacle_entry_side': getattr(
+                self.args, 'obstacle_entry_side', 'left'),
             'stop_world_pose_m': self.stop_pose,
             'contact_count': self.contact_count,
             'raw_contact_count': self.raw_contact_count,
@@ -1161,7 +1232,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--goal-x-m', type=float, default=6.0)
     parser.add_argument('--run-timeout-s', type=float, default=180.0)
     parser.add_argument('--direct-scan', action='store_true')
+    parser.add_argument('--obstacle-hold-s', type=float, default=0.0)
+    parser.add_argument('--obstacle-crossing-s', type=float, default=0.0)
+    parser.add_argument(
+        '--obstacle-entry-side', choices=('left', 'right'), default='left')
     args = parser.parse_args(remove_ros_args()[1:])
+    if args.obstacle_hold_s < 0.0:
+        parser.error('--obstacle-hold-s must be nonnegative')
+    if not 0.0 <= args.obstacle_crossing_s <= 5.0:
+        parser.error('--obstacle-crossing-s must be between 0 and 5 seconds')
     if args.direct_scan and (
             args.scenario != 'sudden_obstacle_stop_resume'
             or os.environ.get('ROS_DOMAIN_ID') not in {'186', '187'}):

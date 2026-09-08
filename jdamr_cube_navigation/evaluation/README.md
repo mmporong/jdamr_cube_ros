@@ -27,6 +27,11 @@
 - `make_sim_sensor_variant.py`: URDF 센서율·노이즈를 허용 목록 안에서 바꾸고 해시 manifest를 만드는 도구
 - `run_sim_slam_experiment.py`: 격리 Gazebo, backend, MCAP, 왕복 경로와 ATE/RPE를 한 번에 실행하는 도구
 - `compare_sim_slam_experiments.py`: 동일 조건의 backend·센서 stress 행렬을 검증하고 비교 자료를 만드는 도구
+- `portfolio_capture_world.py`: 물리 모델을 유지한 채 3인칭 카메라와 촬영용 시각 요소를 더하는 도구
+- `record_simulator_camera.py`: Gazebo 카메라 센서 프레임을 메타데이터와 함께 MP4로 기록하는 도구
+- `render_simulator_portfolio_media.py`: 검증 이벤트와 3D 영상을 결합해 방향별 하이라이트를 만드는 도구
+- `render_bidirectional_reel.py`: 해시가 확인된 좌·우 하이라이트만 하나의 대표 영상으로 연결하는 도구
+- `navigation_dashboard.py`: LiDAR·Nav2·Collision Monitor·검증 영상을 localhost에서 보여주는 관측 전용 대시보드
 - `../launch/offline_replay_guard.launch.py`: 저장 지도와 이동 명령을 재생하지 않고 AMCL `map -> odom`을 제거하는 launch
 
 ## AMCL 재지역화 평가
@@ -500,15 +505,22 @@ G004 평가에서 확인한 정지·재개 동작을 실차용 `onboard_nav2_cor
 0.50 m를 적용한다. `/joint_states`가 계약 자세에서 0.03 rad 이상 벗어나거나 stale이면
 route가 fail-closed로 목표를 차단한다.
 
-대표 실행은
-`$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v08`에 있다. 설치된
-Collision Monitor의 실제 파라미터를 다시 읽고, 접촉 0, 팔 포함 외곽 최소 여유
-0.01864 m, 목표 전송 1회·취소 0회, 동일 UUID 재개와 최종 도착, 잔존 프로세스 0을
-확인했다. compact MCAP은 약 1.35 MB이고 전체 실행 산출물은 약 1.59 MB다.
+좌·우 진입 대표 실행은
+`$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v13_followcam`과
+`$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v15_followcam_right`에 있다.
+두 실행 모두 설치된 Collision Monitor의 파라미터를 다시 읽었고 접촉 0회, 목표 전송
+1회·취소 0회, 동일 UUID 재개와 최종 도착, 잔존 프로세스 0을 확인했다. 팔 포함 외곽
+최소 여유는 각각 0.03960 m와 0.04503 m였고 compact MCAP은 약 1.39 MB와 1.37 MB다.
 
-미디어는
-`$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v08_media_v02`에 있다.
-H.264 MP4·GIF·PNG에 실제 복도 경로와 차체·수납 팔·보호영역·장애물의 공간 관계를
-함께 표시하며, `manifest.json`이 입력과 출력의 SHA-256을 보존한다. 자세한 주장 범위와
-재현 명령은
+`evaluation/media/onboard_dynamic_obstacle_20260908`에는 모바일 베이스를 따라가는
+Gazebo 3D 카메라 센서의 좌·우 진입 하이라이트, 이를 연결한 34초 대표 영상, GIF와
+정지·도착 포스터가 있다. 하이라이트의 긴 순항 구간만 8배속이고 장애물 정지와 도착은
+원래 프레임 속도다. 편집 전 원본과 전체 영상은 artifact에만 보존해 저장소 용량을
+줄였다. `portfolio_media_manifest.json`은 두 원본과 공개 출력의 SHA-256을 보존한다.
+자세한 주장 범위와 재현 명령은
 [이동형 로봇팔 장애물 대응](20260908_DYNAMIC_OBSTACLE_READINESS.md)을 따른다.
+
+`navigation_dashboard.py`는 `http://127.0.0.1:8765/`에서 현재 Nav2 목표 상태,
+Collision Monitor 동작, `/cmd_vel`, LiDAR 최소 거리·방향과 최근 검증 결과를 함께
+표시한다. 이 화면은 관측 전용이며 주행 명령을 발행하지 않는다. ROS 그래프가 없을
+때도 `--no-ros`로 마지막 PASS 영상과 수치를 재생할 수 있다.
