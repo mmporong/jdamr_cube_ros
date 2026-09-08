@@ -107,17 +107,29 @@ MCAP에서 `/scan` 11.687초, `/odom` 6.707초, `/imu/data_raw` 6.725초의 최�
 
 파이에는 하드웨어 bringup이 먼저 실행돼 있어야 한다. 그 위에는 저장 지도·AMCL,
 controller, planner, velocity smoother, Collision Monitor, BT navigator, Keepout,
-경로 실행기, 필수 토픽 MCAP recorder만 둔다. 파이 전용 launch는 쓰지 않는 smoother
+경로 실행기, 필수 토픽 MCAP recorder만 둔다. 기본 `corridor` 프로필은 쓰지 않는 smoother
 server, route server, behavior server, waypoint follower, docking server를 실행하지
-않는다. RViz, Cartographer·SLAM Toolbox, 그래프·통계 계산, bag 재생은 주행 중 파이에
+않는다. `obstacle_candidate` 프로필은 같은 합성 컨테이너에 Wait 전용 behavior server만
+추가한다. RViz, Cartographer·SLAM Toolbox, 그래프·통계 계산, bag 재생은 주행 중 파이에
 띄우지 않는다. 필수 Nav2 서버는 `component_container_isolated` 하나에 합성하고,
 lifecycle manager와 graph liveness guard는 별도 프로세스로 둔다. 컨테이너가 살아 있어도
 내부 노드가 graph에서 사라지는 장애를 별도 guard가 감지해 전체 navigation을 종료한다.
 recorder는 CPU nice 10과 I/O best-effort 최저 우선순위 7로 실행해 제어 루프가 먼저
 스케줄되게 한다. 기본 기록도 `/scan`, `/odom`, TF, IMU, 제어 전·후 속도, AMCL,
-배터리, 계획, Collision Monitor 상태로 제한하며 RViz용 `/joint_states`는 제외한다.
+배터리, 계획, Collision Monitor 상태, 목표 UUID와 실행 상태로 제한하며
+RViz용 `/joint_states`는 제외한다. 숨겨진 action status 토픽도 명시적으로 기록한다.
 고주기 토픽은 best-effort로 구독해 기록기가 reliable 전달을 요구하지 않게 한다.
 recorder가 예상치 않게 끝나면 navigation도 종료한다.
+
+온보드 장애물 후보·파이 반영 상태·동일 목표 재개 판정은
+[2026-09-08 실행 점검](evaluation/20260908_PURPOSE_AND_RUNTIME_AUDIT.md)에 정리했다.
+후보를 고를 때는 자동 실행기의 `--navigation-profile obstacle_candidate`가 launch와
+route에 같은 값을 전달한다. 따로 실행하면 launch의 `navigation_profile`과 route의
+`--navigation-profile`을 모두 맞춰야 한다. 옵션을 생략하면 `corridor`다.
+
+합성 컨테이너에는 자식 costmap용 ParameterFile도 전달한다. Keepout 서버의 ACTIVE만으로
+적용 완료라고 판단하지 않고, 양쪽 costmap의 필터 활성과 mask 수신도 확인한다.
+현재 후보의 검증 범위는 위 점검 문서가 기준이며, 파일 배포를 실차 검증으로 해석하지 않는다.
 
 ```bash
 cd "$HOME/jdamr_ws"

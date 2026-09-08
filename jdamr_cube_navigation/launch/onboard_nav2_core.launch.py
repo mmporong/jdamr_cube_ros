@@ -92,7 +92,7 @@ def _launch_navigation(context):
             package=package,
             plugin=plugin,
             name=name,
-            parameters=parameters,
+            parameters=[*parameters, {'use_sim_time': use_sim_time}],
             remappings=remappings if remap else [],
         )
 
@@ -125,7 +125,7 @@ def _launch_navigation(context):
             package='nav2_controller',
             plugin='nav2_controller::ControllerServer',
             name='controller_server',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': use_sim_time}],
             remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
         ),
         composable('nav2_planner', 'nav2_planner::PlannerServer',
@@ -134,7 +134,7 @@ def _launch_navigation(context):
             package='nav2_velocity_smoother',
             plugin='nav2_velocity_smoother::VelocitySmoother',
             name='velocity_smoother',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': use_sim_time}],
             remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
         ),
         composable('nav2_collision_monitor',
@@ -155,7 +155,8 @@ def _launch_navigation(context):
             package='nav2_behaviors',
             plugin='behavior_server::BehaviorServer',
             name='behavior_server',
-            parameters=[configured_params, {'behavior_plugins': ['wait']}],
+            parameters=[configured_params, {
+                'behavior_plugins': ['wait'], 'use_sim_time': use_sim_time}],
             remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
         ))
         navigation_nodes.insert(-1, 'behavior_server')
@@ -166,6 +167,13 @@ def _launch_navigation(context):
         executable='component_container_isolated',
         name='nav2_container',
         namespace='',
+        # Costmaps are child nodes created inside planner/controller, not
+        # LoadNode targets.  They inherit process-level ROS arguments, so
+        # component parameters alone silently leave them on Nav2 defaults.
+        # RewrittenYaml only substitutes existing leaf keys.  The production
+        # YAML omits use_sim_time, so pass it explicitly to components and
+        # their child nodes instead of relying on that rewrite alone.
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
         composable_node_descriptions=keepout_components + nav2_components,
         output='screen',
     )

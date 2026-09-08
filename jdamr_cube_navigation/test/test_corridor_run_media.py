@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 import yaml  # noqa: I201
@@ -238,7 +238,14 @@ def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
                        position=_vector(x=x),
                        orientation=SimpleNamespace(
                            x=0.0, y=0.0, z=0.0, w=1.0)))])
+    def action_status(status):
+        return SimpleNamespace(status_list=[SimpleNamespace(
+            goal_info=SimpleNamespace(goal_id=SimpleNamespace(
+                uuid=bytes.fromhex('01' * 16))),
+            status=status)])
     messages = [
+        _message('/navigate_to_pose/_action/status', 100_000_000_000,
+                 action_status(2)),
         _message('/amcl_pose', 101_000_000_000, amcl_pose(0.0)),
         _message('/battery_state', 102_000_000_000,
                  SimpleNamespace(voltage=12.0)),
@@ -250,6 +257,8 @@ def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
                  SimpleNamespace(action_type=1, polygon_name='StopZone')),
         _message('/plan', 107_000_000_000, path_message(1.0)),
         _message('/plan', 108_000_000_000, path_message(2.0)),
+        _message('/navigate_to_pose/_action/status', 108_500_000_000,
+                 action_status(2)),
         _message('/amcl_pose', 109_000_000_000, amcl_pose(1.0)),
         _message('/cmd_vel', 110_000_000_000, twist(0.0)),
     ]
@@ -259,11 +268,7 @@ def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
         reads.append(topics)
         return iter(messages)
 
-    package = ModuleType('mcap_ros2')
-    reader = ModuleType('mcap_ros2.reader')
-    reader.read_ros2_messages = fake_read
-    monkeypatch.setitem(sys.modules, 'mcap_ros2', package)
-    monkeypatch.setitem(sys.modules, 'mcap_ros2.reader', reader)
+    monkeypatch.setattr('corridor_run_media.read_navigation_messages', fake_read)
     monkeypatch.setattr(
         'corridor_run_media.inspect',
         lambda _bag: {
@@ -278,6 +283,9 @@ def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
     events = metrics['navigation_events']
     assert len(reads) == 1
     assert '/collision_monitor_state' in reads[0]
+    assert '/navigate_to_pose/_action/status' in reads[0]
+    assert events['same_goal_resume_evidence'][
+        'action_status_messages'] == 2
     assert events['cmd_vel_zero_to_nonzero'][
         'transition_stamps_ns'] == [104_000_000_000]
     assert events['collision_monitor_state']['transitions'][0][

@@ -95,6 +95,7 @@ def generate_launch_description():
             # No terminal owns the recorder under launch, so the keyboard
             # control thread only adds a polling thread to a loaded Pi.
             '--disable-keyboard-controls',
+            '--include-hidden-topics',
             '--storage', 'mcap',
             '--storage-config-file', writer_options,
             '--qos-profile-overrides-path', qos_overrides,

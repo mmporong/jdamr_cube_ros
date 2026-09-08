@@ -27,7 +27,12 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402,I100,I201
 
 from compare_slam_runs import path_length  # noqa: E402,I100
 from inspect_mcap import inspect  # noqa: E402,I100,I201
+from navigation_mcap_reader import read_navigation_messages  # noqa: E402,I100,I201
 from render_route_map import extent_of, load_map  # noqa: E402,I100,I201
+from same_goal_resume_evidence import (  # noqa: E402,I100,I201
+    goal_status_snapshot,
+    summarize_same_goal_resume,
+)
 
 
 TOPICS = (
@@ -37,6 +42,7 @@ TOPICS = (
     '/cmd_vel',
     '/cmd_vel_nav',
     '/imu/data_raw',
+    '/navigate_to_pose/_action/status',
     '/odom',
     '/plan',
     '/scan',
@@ -246,7 +252,11 @@ def _plan_observation(stamp_ns: int, path_message: Any) -> dict[str, Any]:
 def summarize_navigation_events(
         collision_states: list[tuple[int, int, str]],
         command_states: list[tuple[int, str]],
-        plans: list[dict[str, Any]]) -> dict[str, Any]:
+        plans: list[dict[str, Any]],
+        status_snapshots: list[dict[str, Any]] | None = None,
+        drive_start_ns: int | None = None,
+        drive_end_ns: int | None = None,
+        terminal_end_ns: int | None = None) -> dict[str, Any]:
     """Summarize navigation event evidence using recorder timestamps."""
     collision_transitions = []
     previous_collision = None
@@ -312,6 +322,22 @@ def summarize_navigation_events(
            for _stamp_ns, state in command_states):
         command_reasons.append('NONFINITE_COMMAND')
 
+    if (drive_start_ns is None or drive_end_ns is None
+            or terminal_end_ns is None):
+        same_goal_evidence = {
+            'verdict': 'NOT_MEASURED',
+            'scope': 'COMMAND_SPACE_ONLY',
+            'action_status_messages': 0,
+            'action_status_observations': [],
+            'terminal_succeeded': None,
+            'episodes': [],
+            'data_gap_reasons': ['NO_ACTION_STATUS_OBSERVATIONS'],
+        }
+    else:
+        same_goal_evidence = summarize_same_goal_resume(
+            collision_states, command_states, status_snapshots or [],
+            drive_start_ns, drive_end_ns, terminal_end_ns)
+
     return {
         'time_basis': 'recorder_log_time_ns',
         'collision_monitor_state': {
@@ -356,7 +382,8 @@ def summarize_navigation_events(
                 'Path geometry changes do not by themselves prove obstacle '
                 'avoidance.'),
         },
-        'same_goal_resumed': 'NOT_MEASURED',
+        'same_goal_resumed': same_goal_evidence['verdict'],
+        'same_goal_resume_evidence': same_goal_evidence,
     }
 
 
@@ -415,8 +442,6 @@ def _sha256(path: Path) -> str:
 
 def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read a run once and return aggregate metrics plus plotting samples."""
-    from mcap_ros2.reader import read_ros2_messages
-
     run_dir = run_dir.resolve()
     run_id = run_dir.name
     bag_files = sorted(run_dir.glob('*.mcap'))
@@ -441,9 +466,17 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     collision_states = []
     command_states = []
     plans = []
-    for message in read_ros2_messages(str(bag), topics=list(TOPICS)):
+    status_snapshots = []
+    pre_drive_status_snapshot = None
+    for message in read_navigation_messages(bag, topics=list(TOPICS)):
         topic = message.channel.topic
         stamp_ns = message.log_time_ns
+        if topic == '/navigate_to_pose/_action/status':
+            snapshot = goal_status_snapshot(stamp_ns, message.ros_msg)
+            if stamp_ns < start_ns:
+                pre_drive_status_snapshot = snapshot
+            elif stamp_ns <= end_ns + 5_000_000_000:
+                status_snapshots.append(snapshot)
         if topic == '/cmd_vel' and end_ns <= stamp_ns <= end_ns + 5e9:
             command = message.ros_msg
             post_stop_commands.append(
@@ -503,6 +536,9 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     process_log_path = run_dir.parent / f'{run_id}.per_process.tsv'
     integrity = inspect(bag)
 
+    if pre_drive_status_snapshot is not None:
+        status_snapshots.insert(0, pre_drive_status_snapshot)
+
     metrics = {
         'schema_version': 1,
         'run_id': run_id,
@@ -554,7 +590,8 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         },
         'navigation_events': {
             **summarize_navigation_events(
-                collision_states, command_states, plans),
+                collision_states, command_states, plans, status_snapshots,
+                start_ns, end_ns, end_ns + 5_000_000_000),
             'goal_events': route['goal_events'],
             'goal_events_time_basis': 'ros_logger_time_ns',
         },

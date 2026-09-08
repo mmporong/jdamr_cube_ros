@@ -17,6 +17,7 @@ RECORDED_TOPICS = [
     '/battery_state',
     '/plan',
     '/collision_monitor_state',
+    '/navigate_to_pose/_action/status',
 ]
 
 # Publication rates and the QoS each publisher actually offers, read from
@@ -36,6 +37,8 @@ OFFERED_PROFILES = {
     '/battery_state': ('reliable', 'volatile', 2.0),
     '/plan': ('reliable', 'volatile', 2.0),
     '/collision_monitor_state': ('reliable', 'volatile', 10.0),
+    # ROS action status is event-driven and latched, not a motion heartbeat.
+    '/navigate_to_pose/_action/status': ('reliable', 'transient_local', 0.0),
     '/joint_states': ('reliable', 'volatile', 20.0),
 }
 
@@ -70,7 +73,7 @@ MIN_BUFFER_SECONDS = 2.0
 
 # Latched transforms are replayed once, so depth stays at the transient-local
 # contract rather than the rate-derived buffer.
-LATCHED_TOPICS = {'/tf_static'}
+LATCHED_TOPICS = {'/tf_static', '/navigate_to_pose/_action/status'}
 
 
 def reliability(topic):

@@ -118,6 +118,19 @@ def test_every_recorded_topic_has_a_qos_override():
         assert qos[topic]['depth'] == required_depth(topic), topic
 
 
+def test_hidden_goal_status_is_recorded_with_latched_action_qos():
+    """Preserve goal identity without imposing reliable QoS on sensor streams."""
+    topic = '/navigate_to_pose/_action/status'
+    qos = yaml.safe_load(QOS_PATH.read_text(encoding='utf-8'))
+    assert topic in RECORDED_TOPICS
+    assert qos[topic] == {
+        'reliability': 'reliable', 'durability': 'transient_local',
+        'history': 'keep_last', 'depth': 1,
+    }
+    launch = (PACKAGE_ROOT / 'launch' / 'onboard_keepout_navigation.launch.py')
+    assert '--include-hidden-topics' in launch.read_text(encoding='utf-8')
+
+
 def test_overrides_match_the_qos_each_publisher_offers():
     """Reject an override the publisher's offer would never match."""
     # /imu/data_raw is published best-effort on this robot.  A reliable

@@ -306,6 +306,42 @@ def test_operator_view_never_starts_navigation_or_recording():
         assert forbidden not in source
 
 
+def test_composed_costmaps_inherit_the_rewritten_parameter_file():
+    """Nested costmaps need process arguments beyond LoadNode parameters."""
+    tree = ast.parse(ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8'))
+    containers = [node for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name)
+                  and node.func.id == 'ComposableNodeContainer']
+    assert len(containers) == 1
+    parameters = next(keyword.value for keyword in containers[0].keywords
+                      if keyword.arg == 'parameters')
+    assert isinstance(parameters, ast.List)
+    assert any(isinstance(value, ast.Name) and value.id == 'configured_params'
+               for value in parameters.elts)
+
+
+def test_all_composed_nodes_explicitly_receive_the_selected_clock():
+    """Clock selection must work even when the input YAML omits its leaf key."""
+    tree = ast.parse(ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8'))
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name)
+             and node.func.id in {'ComposableNode', 'ComposableNodeContainer'}]
+    assert len(calls) == 5
+    for call in calls:
+        parameters = next(keyword.value for keyword in call.keywords
+                          if keyword.arg == 'parameters')
+        assert isinstance(parameters, ast.List)
+        explicit = [item for item in parameters.elts
+                    if isinstance(item, ast.Dict)]
+        assert any(
+            isinstance(key, ast.Constant) and key.value == 'use_sim_time'
+            and isinstance(value, ast.Name) and value.id == 'use_sim_time'
+            for item in explicit for key, value in zip(item.keys, item.values)
+        ), ast.unparse(call.func)
+
+
 def test_corridor_route_retries_but_never_turns_around():
     """Retry a transient failure; never hide a fault behind spin or backup."""
     # Rotation and reversing stay out because they make the recorded state

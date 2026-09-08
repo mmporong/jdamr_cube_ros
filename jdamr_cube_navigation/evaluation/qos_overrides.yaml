@@ -74,6 +74,12 @@
   history: keep_last
   depth: 20
 
+/navigate_to_pose/_action/status:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 1
+
 /joint_states:
   reliability: best_effort
   durability: volatile
