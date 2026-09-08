@@ -1,0 +1,10 @@
+<!-- Opt-in final parking: fixed IDs prevent selector topics from weakening
+     the pose contract. No spin/backup recovery or direct velocity publisher. -->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="FinalParking">
+      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+      <FollowPath path="{path}" controller_id="Parking" goal_checker_id="parking_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

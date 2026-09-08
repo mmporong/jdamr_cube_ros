@@ -60,6 +60,12 @@ def _params():
         return yaml.safe_load(stream)
 
 
+def _method_source(source, name):
+    method = next(node for node in ast.walk(ast.parse(source))
+                  if isinstance(node, ast.FunctionDef) and node.name == name)
+    return ast.get_source_segment(source, method)
+
+
 def _costmap(config, name):
     return config[name][name]['ros__parameters']
 
@@ -366,7 +372,7 @@ def test_corridor_route_retries_but_never_turns_around():
     assert root.findall(
         './/ComputePathToPose')[0].attrib['server_timeout'] == '3000'
     assert root.findall('.//FollowPath')[0].attrib['server_timeout'] == '3000'
-    assert source.count(
+    assert _method_source(source, 'execute').count(
         'not self._navigation_ready(require_fresh_amcl=False)') == 2
     assert 'self._guard_failure()' in source
 
@@ -605,7 +611,8 @@ def test_amcl_freshness_is_a_start_gate_not_a_runtime_cancel():
     assert route._guard_failure(require_fresh_amcl=False) is None
 
     source = ROUTE_SOURCE.read_text(encoding='utf-8')
-    assert source.count('_navigation_ready(require_fresh_amcl=False)') == 2
+    assert _method_source(source, 'execute').count(
+        '_navigation_ready(require_fresh_amcl=False)') == 2
 
 
 def test_corridor_route_rejects_resume_after_amcl_resets_to_origin():
