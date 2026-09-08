@@ -129,8 +129,14 @@ python3 jdamr_cube_navigation/evaluation/render_parking_media.py \
 기록기 하나를 사용한다. hidden action status와 wall log-time/sim header-time을
 구분해 기록한다. `evaluation/onboard_stop_contract.py`와
 `sim_collision_monitor_scenario.py`의 `--direct-scan`은 운영 Collision Monitor
-설정을 유지하는 돌발 장애물 평가 준비본이다. 신규 경로의 실제 runner 통합
-실행은 별도 남은 작업이며, 이번 주차 성공으로 대신 입증되지 않는다.
+프로필의 돌발 장애물 평가 경로다. 이후 팔 collision 외곽에서 유도한 StopZone 0.40 m,
+SlowdownZone 0.50 m와 `/joint_states` 수납 자세 게이트를 실제
+`obstacle_candidate` launch에 연결했고, 대표 통합 실행이 접촉 0·동일 목표 재개·최종
+도착으로 통과했다. 상세 근거는
+[이동형 로봇팔 장애물 대응](20260908_DYNAMIC_OBSTACLE_READINESS.md)에 있다.
+
+주차 후보와 장애물 후보는 같은 Nav2 기반이지만 완료 조건이 다르다. 주차 결과가 장애물
+대응을 대신 증명하지 않고, 장애물 통합 PASS도 실차 주차 정확도를 대신하지 않는다.
 
 근거: [Nav2 Jazzy SimpleGoalChecker](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_controller/plugins/simple_goal_checker.cpp),
 [RPP 최종 방향 제어](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_regulated_pure_pursuit_controller/src/regulated_pure_pursuit_controller.cpp).

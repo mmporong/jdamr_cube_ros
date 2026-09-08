@@ -7,6 +7,9 @@
 - [20260908_PURPOSE_AND_RUNTIME_AUDIT.md](20260908_PURPOSE_AND_RUNTIME_AUDIT.md):
   현재 목적·완료 증거, 온보드 장애물 후보·goal UUID 기록·경량 후처리 구현,
   G005 오정지 수정과 제한시간 진단
+- [20260908_DYNAMIC_OBSTACLE_READINESS.md](20260908_DYNAMIC_OBSTACLE_READINESS.md):
+  수납 팔 collision 외곽 기반 보호영역, 실제 온보드 후보의 정지·동일 목표 재개 PASS,
+  compact MCAP과 공간 중심 미디어
 - `experiment_manifest.schema.json`: 실험마다 남겨야 할 환경·버전·센서·TF·결과·산출물 계약
 - `datasets.yaml`: rosbag의 해시, 토픽 수, 무결성, 사용 가능 범위
 - `map_registry.yaml`: 지도 후보·게시·폐기 상태와 승격 조건
@@ -488,3 +491,24 @@ python3 jdamr_cube_navigation/evaluation/render_sim_collision_monitor_media.py \
 이하다. 최종 v08 전체 행렬·대표 기록·미디어는 보존하고, 승인된 후속 결과로 대체된
 v05·v07 대표 기록과 v08 미디어 후보·이전본만 삭제했다. 다른 실험 산출물은 이 정리
 범위에 포함하지 않았다.
+
+## 실제 온보드 프로필의 돌발 장애물 통합
+
+G004 평가에서 확인한 정지·재개 동작을 실차용 `onboard_nav2_core.launch.py`의
+`obstacle_candidate` 프로필에 연결했다. 차체 footprint만 쓰지 않고 production URDF의
+고정 수납 자세에서 SO-101 collision 외곽을 계산해 StopZone 0.40 m와 SlowdownZone
+0.50 m를 적용한다. `/joint_states`가 계약 자세에서 0.03 rad 이상 벗어나거나 stale이면
+route가 fail-closed로 목표를 차단한다.
+
+대표 실행은
+`$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v08`에 있다. 설치된
+Collision Monitor의 실제 파라미터를 다시 읽고, 접촉 0, 팔 포함 외곽 최소 여유
+0.01864 m, 목표 전송 1회·취소 0회, 동일 UUID 재개와 최종 도착, 잔존 프로세스 0을
+확인했다. compact MCAP은 약 1.35 MB이고 전체 실행 산출물은 약 1.59 MB다.
+
+미디어는
+`$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v08_media_v02`에 있다.
+H.264 MP4·GIF·PNG에 실제 복도 경로와 차체·수납 팔·보호영역·장애물의 공간 관계를
+함께 표시하며, `manifest.json`이 입력과 출력의 SHA-256을 보존한다. 자세한 주장 범위와
+재현 명령은
+[이동형 로봇팔 장애물 대응](20260908_DYNAMIC_OBSTACLE_READINESS.md)을 따른다.

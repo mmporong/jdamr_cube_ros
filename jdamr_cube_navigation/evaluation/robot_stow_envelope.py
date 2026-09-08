@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import math
-import struct
-import xml.etree.ElementTree as ET
 from pathlib import Path
+import struct
 from typing import Iterable
+import xml.etree.ElementTree as ET
 
 
 Matrix = tuple[tuple[float, float, float, float], ...]

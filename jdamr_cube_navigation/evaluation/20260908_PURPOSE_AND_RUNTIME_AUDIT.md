@@ -12,7 +12,7 @@
 | SLAM·센서 강건성 G001/G008 | 시뮬레이션 강건성, 실차 bag subdivision 비교 | 다른 실차 환경에 대한 일반화 |
 | 위치 추정 G002/G009 | 정상·초기 오프셋 복구, 납치 비복구 분류, P0 유지 | 납치 원인의 입자 수준 계측은 미완 |
 | 고정 장애물 G003 | 별도 평가 구성 25회 통과, 실제 온보드 후보 detour 1회 통과 | 실차 우회 검증 |
-| 돌발 장애물 G004 | 별도 구성 15회 통과, 기존 대표 bag에서 동일 목표 재개 판정 재현 | 온보드 감시 설정에서 정지·재개 증거 |
+| 돌발 장애물 G004 | 별도 구성 15회와 실제 온보드 후보 시뮬레이션 통과, 동일 목표 재개 확인 | 실차 정지거리·재개 검증 |
 | 탐사 정책 G005 | 실제 Nav2 첫 목표 도착, 짧은 실행 경로 | 정책별 본평가·우열은 미확정 |
 | 통합 후보 G006/G010 | G006 smoke 구현, G010 계획 | G006 READY 경로와 G010 구현 미완 |
 
@@ -100,17 +100,18 @@ G005는 GT(시뮬레이터 정답 위치)와 관측 영역 공개 지도를 사�
 |---|---|
 | `scripts/corridor_autorun.sh` | `--navigation-profile` 하나를 core launch·계획 확인·실제 route 실행에 동일하게 전달 |
 | `launch/onboard_keepout_navigation.launch.py` | 프로필을 core에 전달하고 기존 온보드 MCAP 기록 유지 |
-| `launch/onboard_nav2_core.launch.py` | 후보는 `navigate_to_pose_dynamic_obstacle_eval.xml`, 기본은 기존 fail-fast BT 선택 |
-| 후보의 추가 구성 | 기존 합성 컨테이너에 Wait 전용 behavior server를 넣고 lifecycle·노드 감시에 함께 등록 |
-| `corridor_route.py` | 각 NavigateToPose goal의 명시 BT에도 동일한 프로필 적용 |
+| `launch/onboard_nav2_core.launch.py` | 후보 BT와 팔 포함 StopZone·SlowdownZone 적용, 기본은 기존 fail-fast BT 선택 |
+| 후보의 추가 구성 | Wait 전용 behavior server와 고정 팔 자세 계약을 lifecycle·노드 감시에 연결 |
+| `corridor_route.py` | 동일 BT 적용, `/joint_states` 수납 자세·freshness를 출발 전과 주행 중 확인 |
 
 후보 BT는 경로 추종 중 경로를 다시 계산하고, 복구 시 costmap 초기화와 대기를 사용한다.
-새로운 회전·후진 복구는 켜지 않는다. 지도·Keepout(진입 금지 영역)·AMCL P0·Collision
-Monitor(충돌 감시기)·속도 및 timeout 값은 기존 것을 사용한다. 단, 아래 합성 컨테이너
-수정으로 자식 costmap에 이 설정이 실제로 전달되므로 기존 실행과 유효 설정까지 같다고
-말할 수는 없다. 따라서 정지 감시 영역이나
-정지 지연까지 G004 평가 구성과 동일해진 것은 아니다. 장시간 통로가 막혔을 때 같은 목표로
-무기한 대기하는 기능도 아니다.
+새로운 회전·후진 복구는 켜지 않는다. 지도·Keepout(진입 금지 영역)·AMCL P0·속도와
+timeout은 유지한다. Collision Monitor의 후보 영역만 수납 팔 collision 외곽과 운영
+속도·감속도·scan gap으로 유도한 StopZone 0.40 m·SlowdownZone 0.50 m로 바꾼다.
+이 영역은 고정한 수납 자세에서만 유효하므로 관절 오차 0.03 rad와 `/joint_states`
+freshness를 계속 확인한다. 장시간 통로가 막혔을 때 같은 목표로 무기한 대기하는 기능은
+아니다. 계산과 검증 범위는
+[이동형 로봇팔 장애물 대응](20260908_DYNAMIC_OBSTACLE_READINESS.md)에 있다.
 
 실차 배포 후 자동 실행기의 `--navigation-profile obstacle_candidate` 옵션으로 선택한다.
 launch와 route를 따로 실행한다면 각각 `navigation_profile:=obstacle_candidate`,
@@ -252,6 +253,23 @@ wall time인데 TF는 sim time이었으며 충돌 감시기에도 같은 시간�
 - `detour/scenario.json`: `91b5c82e79daf60febb141fff2c15aa7807b4f53dafea036a9237f0287bf174f`
 - `detour/summary.json`: `141a9e021644ea5433aea7512ce1c764fda3b7217486d85b97a52b6f36fd761a`
 
+### 팔 포함 돌발 장애물 후보의 격리 실행 결과
+
+위 detour 뒤 `$HOME/jdamr_artifacts/onboard_candidate_sudden_20260908_v08`에서 실제
+설치된 `obstacle_candidate` 프로필로 돌발 장애물 정지·재개를 실행했다. 별도 평가용
+Nav2 파라미터 복사본을 사용하지 않고, launch가 적용한 StopZone 0.40 m와 SlowdownZone
+0.50 m를 출발 전에 노드에서 다시 읽어 계약과 대조했다.
+
+목표 UUID 하나가 `EXECUTING → SUCCEEDED`로 끝났고 전송 1회·취소 0회였다. StopZone
+정지, 물리 정지 상태, 장애물 제거 뒤 같은 목표 명령 재개를 모두 확인했다. 접촉은
+filtered/raw 모두 0회, 차체 기준 최소 여유는 0.09120 m, 수납 팔을 포함한 보호 외곽
+기준 최소 여유는 0.01864 m였다. 최종 위치는 `(5.9762, 0.0428) m`, MCAP은
+1,348,408 B, 종료 뒤 잔존 프로세스는 0이다. 결과와 미디어의 원본·파생 SHA-256은
+각 `summary.json`과 `manifest.json`에 있다.
+
+이 결과로 온보드 후보의 시뮬레이션 통합 경로는 닫혔다. 실차 제동거리와 사람 대응
+안전성을 증명한 것은 아니며, 다음 단계는 같은 프로필의 저속 실차 1회다.
+
 ### 파이 배포 상태
 
 SSH 대상은 `lim@jdamr.local`, 실제 workspace는 `$HOME/jdamr_ws`다. PC의
@@ -259,20 +277,30 @@ SSH 대상은 `lim@jdamr.local`, 실제 workspace는 `$HOME/jdamr_ws`다. PC의
 동기화했다. PC와 파이는 Nav2 upstream 버전 `1.3.12`이며 아키텍처별 패키지 빌드 시점은
 다르다. 운영 nav2 YAML·liveness guard·복도 route YAML의 기존 hash가 일치함을 확인했다.
 
-배포 파일은 core/wrapper launch, 자동 실행 shell, corridor route, 온보드 기록 설정,
-기록 QoS YAML, 후보 BT의 7개다. 덮어쓴 파일은 파이의
+기존 배포 파일은 core/wrapper launch, 자동 실행 shell, corridor route, 온보드 기록
+설정, 기록 QoS YAML, 후보 BT의 7개다. 팔 포함 보호영역을 연결하면서
+`mobile_manipulator_protection.yaml`과 로더 모듈, 갱신한 core launch·route를 추가로
+동기화했다. 덮어쓴 launch·route는 파이의
+`$HOME/jdamr_artifacts/onboard_protection_backup_20260908.I7yFqG/navigation_before.tar.gz`에
+백업했다. 이전 배포의 백업은
 `$HOME/jdamr_artifacts/onboard_candidate_backup_20260908.flpNF9/navigation_before.tar.gz`
-에 보관했다. 후보 BT는 새 파일이다. 파이 패키지 빌드는 통과했고 core 최종 수정 파일도
-다시 동기화해 PC와 hash를 맞췄다. launch `--show-args`, route `--help`, recorder의
-숨겨진 topic 옵션 지원을 확인했다. 기존 base 서비스는 그대로 두고 Nav2·주행·새 기록은
-시작하지 않았다. 물리 위치 초기화나 장애물 주행 검증 완료를 뜻하지 않는다.
+에 보관했다.
+
+갱신 뒤 파이 패키지 빌드, launch `--show-args`, 보호 설정 로딩을 확인했다. route 진입점
+검증에서 PC에는 있으나 파이에 없던 `parking.py` import 의존성을 발견해 해당 모듈과
+`parking_contract.yaml`, parking BT를 함께 동기화했다. 세 파일의 PC·파이 SHA-256이
+일치하고 `corridor_route --help`가 최종 통과했다. 기존 base 서비스는 그대로 두고
+Nav2·주행·새 기록은 시작하지 않았다. 물리 위치 초기화나 장애물 주행 검증 완료를
+뜻하지 않는다.
 
 ### 이번 추가 작업의 검증
 
-기록기·Keepout launch·동일 목표 판정·MCAP reader·후보 runner의 집중 테스트
-126개가 1.14초에 통과했다. 기존 MCAP 의존성의 deprecation warning 1개는 남아 있다.
-새 코드와 core launch의 `ament_flake8`, Python 구문 검사, 자동 실행 shell 구문 검사,
-PC 패키지 빌드도 통과했다. 전체 저장소 테스트나 다른 패키지의 lint 통과 주장은 아니다.
+최종 상태에서 `jdamr_cube_navigation` 패키지 전체 테스트는 1236개 통과, 1개 skip이다.
+`ament_flake8`, Python 기능 테스트, launch·설정 정합성, 평가 도구와 기존 회귀 테스트가
+포함된다. 첫 `colcon test` 호출은 evaluation 모듈 경로가 없어 수집 전에 종료됐고,
+저장소가 요구하는 `PYTHONPATH`를 명시한 재실행은 통과했다. 기존 MCAP 의존성의
+deprecation warning과 다중 스레드 프로세스의 fork warning은 남아 있다. 다른 패키지의
+전체 테스트나 lint 통과를 주장하지 않는다.
 
 별도 verifier가 구현과 원본 증거를 검토했다. STOP 이전의 오래된 0 명령이나 중간의
 알 수 없는 감시 상태를 재개 증거로 인정하지 않도록 수정했다. 후보 runner도 양쪽
@@ -280,14 +308,13 @@ costmap blocking과 접촉 관측 publisher 존재를 필수로 확인한다. �
 0건인 상태를 무접촉으로 승격하지 않는다. v3 원본은 이 강화된 조건도 충족했으며,
 원본 scenario·summary 파일을 덮어쓰거나 추가 시뮬레이션을 돌리지 않고 재판정했다.
 
-### 확인 범위 — 이번 추가 작업 이전 기록
+### 과거 검증 기록과 현재 대체 근거
 
 사용자가 반복 평가를 후순위로 정하기 전에 수행한 G005 관련 집중 검증은 96개 통과했다.
-그 이후 추가한 온보드 후보·로그·metrics-only는 Python 구문 검사, 셸 구문 검사,
-launch 인자 로딩과 기존 bag 지표 생성까지만 확인했다. 후보로 Nav2를 실제 기동한 결과나
-전체 회귀 테스트 통과를 주장하지 않는다. 이번 턴에서 full15 추가 실행은 하지 않았다.
-별도 verifier가 프로필 전달·Wait 의존성·기록 경로·렌더 생략 분기를 읽기 전용으로
-확인해 구현 수준 PASS, 구체적 기능 blocker 없음으로 판정했다. 실차 실행 승인은 아니다.
+그 뒤 온보드 후보·로그·metrics-only는 처음에는 구문·launch 인자·기존 bag 재판정까지만
+확인했다. 현재는 detour 실행과 팔 포함 돌발 장애물 v08 실행, 패키지 전체 회귀 테스트가
+그 범위를 대체한다. 이번 작업에서 G005 full15는 추가 실행하지 않았다. 실차 실행 승인을
+뜻하지 않는다.
 
 ## 고도화 우선순위
 
@@ -312,10 +339,9 @@ launch 인자 로딩과 기존 bag 지표 생성까지만 확인했다. 후보�
 
 ## 다음 순서
 
-운영용 BT·목표별 기록·동일 목표 명령 재개 판정·파이 배포와 후보 detour를 확인했다.
-다음 실차 순서는 실제 위치 초기화 후 고정 장애물 우회 1회, 이어서 돌발 장애물
-정지·제거·재개 1회를 감독하에 기록하는 것이다. 운영 감시 설정의 돌발 STOP·재개는
-아직 검증되지 않았으므로 해당 결과를 별도로 확인해야 한다. 이 횟수로
+운영용 BT·목표별 기록·동일 목표 명령 재개 판정과 후보의 고정·돌발 장애물 시뮬레이션을
+확인했다. 다음 실차 순서는 실제 위치 초기화 후 고정 장애물 우회 1회, 이어서 돌발 장애물
+정지·제거·재개 1회를 감독하에 기록하는 것이다. 이 횟수로
 성공률의 통계적 일반화를 주장하지 않는다. 문제를 발견한 항목에만 추가 검증을 한다.
 
 탐사 연구는 짧은 G005 진단 이후 정책 비교가 필요할 때 full15를 사용한다. gain-nav

@@ -7,8 +7,8 @@ from pathlib import Path
 import yaml
 
 from prepare_sim_collision_monitor_run import (  # noqa: I100,I201
-    PRODUCTION_FILES, SCAN_PROFILE, _production_motion_inputs,
-    installed_nav2_versions,
+    _production_motion_inputs, installed_nav2_versions,
+    PRODUCTION_FILES, SCAN_PROFILE,
 )
 from robot_stow_envelope import collision_envelope  # noqa: I201
 from sim_collision_monitor_contract import (  # noqa: I201

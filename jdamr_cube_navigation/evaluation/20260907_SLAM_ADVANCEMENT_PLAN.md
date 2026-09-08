@@ -213,11 +213,13 @@ clearance 비율 0.95 이상, unreachable·failure regression 0이어야 한다.
 
 저장지도 장애물 실차 준비는 아래 연구 순서의 6~8단계와 독립적으로 진행한다.
 `obstacle_candidate`에 주행 중 재계획 BT·Wait 의존성을 연결하고, goal UUID 로그와
-bag 이벤트 후처리를 구현했다. 기존 Collision Monitor 설정은 유지하며 평가 설정과
-동일하다고 간주하지 않는다. 고정 장애물 우회 1회와 돌발 장애물 정지·재개 1회의 실차 증거를
-우선하며, 탐사 정책 비교를 이 주행의 필수 선행조건으로 두지 않는다. G006의 현재 READY
+bag 이벤트 후처리를 구현했다. 이어 수납 팔 collision 외곽과 운영 속도·scan gap에서
+유도한 후보 Collision Monitor 영역, `/joint_states` 자세 게이트를 실제 온보드 프로필에
+연결해 대표 시뮬레이션을 통과했다. 고정 장애물 우회 1회와 돌발 장애물 정지·재개 1회의
+실차 증거를 우선하며, 탐사 정책 비교를 이 주행의 필수 선행조건으로 두지 않는다. G006의 현재 READY
 경로는 미구현이므로 완료라고 판단하지 않는다. 근거와 범위는
-[전체 목적·실행 점검](20260908_PURPOSE_AND_RUNTIME_AUDIT.md)에 기록했다.
+[전체 목적·실행 점검](20260908_PURPOSE_AND_RUNTIME_AUDIT.md)과
+[이동형 로봇팔 장애물 대응](20260908_DYNAMIC_OBSTACLE_READINESS.md)에 기록했다.
 
 아래 6~8단계는 탐사 정책을 신규 후보로 통합할 때의 연구 순서다. full15를 기본 진단처럼
 반복하지 않고, G005는 먼저 `--diagnostic --diagnostic-seconds 60` 한 조건으로 확인한다.

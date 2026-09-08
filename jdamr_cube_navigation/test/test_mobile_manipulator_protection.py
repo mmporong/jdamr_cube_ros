@@ -2,8 +2,8 @@
 
 import ast
 import math
-import time
 from pathlib import Path
+import time
 
 from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.mobile_manipulator_protection import (
