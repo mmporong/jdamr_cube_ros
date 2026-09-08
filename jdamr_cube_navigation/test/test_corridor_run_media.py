@@ -1,7 +1,7 @@
 """Regression tests for corridor evidence extraction and media helpers."""
 
-import sys
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -238,6 +238,7 @@ def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
                        position=_vector(x=x),
                        orientation=SimpleNamespace(
                            x=0.0, y=0.0, z=0.0, w=1.0)))])
+
     def action_status(status):
         return SimpleNamespace(status_list=[SimpleNamespace(
             goal_info=SimpleNamespace(goal_id=SimpleNamespace(

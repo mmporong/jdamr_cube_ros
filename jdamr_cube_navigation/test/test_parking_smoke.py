@@ -12,6 +12,7 @@ EVALUATION_ROOT = Path(__file__).resolve().parents[1] / 'evaluation'
 sys.path.insert(0, str(EVALUATION_ROOT))
 
 from navigation_mcap_reader import TOPIC_TYPES  # noqa: E402,I100
+from render_parking_media import _read_parking_confirmation  # noqa: E402,I100
 from run_parking_smoke import (  # noqa: E402
     _angle_error_rad, _write_route, APPROACH_X_M, GOAL_X_M, GOAL_YAW_RAD,
     START_X_M,
@@ -53,3 +54,19 @@ def test_simulation_route_uses_the_same_clock_as_sensor_headers():
     """Prevent wall time from making every simulated observation stale."""
     source = (EVALUATION_ROOT / 'run_parking_smoke.py').read_text()
     assert "'--ros-args', '-p', 'use_sim_time:=true'" in source
+
+
+def test_media_reads_latest_structured_parking_confirmation(tmp_path):
+    """Keep media metrics bound to the route's composed map-base estimate."""
+    route_log = tmp_path / 'route.log'
+    route_log.write_text(
+        'noise route_event not-json\n'
+        '[INFO] route_event {"event":"parking_estimate_confirmed",'
+        '"position_error_m":0.04,"yaw_error_rad":0.03,"hold_s":1.0}\n',
+        encoding='utf-8')
+
+    confirmation = _read_parking_confirmation(route_log)
+
+    assert confirmation['position_error_m'] == 0.04
+    assert confirmation['yaw_error_rad'] == 0.03
+    assert confirmation['hold_s'] == 1.0

@@ -6,14 +6,14 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
+from datetime import datetime
 import hashlib
 import json
 import math
+from pathlib import Path
 import re
 import shutil
 import subprocess
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import matplotlib
