@@ -25,6 +25,19 @@ POSITIVE_FIELDS = {
     'min_approach_linear_mps', 'rotate_angular_radps',
 }
 COMMAND_ZERO_EPSILON = 1e-9
+# Requirement/candidate bounds, not measured calibration constants. A custom
+# contract may tighten them but must not silently weaken the accepted target.
+MAXIMUM_CONTRACT_VALUES = {
+    'xy_tolerance_m': 0.05,
+    'yaw_tolerance_deg': 3.0,
+    'stopped_linear_mps': 0.01,
+    'stopped_angular_radps': 0.02,
+    'sample_max_age_s': 0.5,
+    'desired_linear_mps': 0.08,
+    'min_approach_linear_mps': 0.02,
+    'rotate_angular_radps': 0.2,
+}
+MINIMUM_HOLD_S = 1.0
 
 
 def _finite_number(value: Any, name: str) -> float:
@@ -63,6 +76,11 @@ def load_parking_contract(path: Path) -> dict:
         document[name] = _finite_number(document[name], name)
         if document[name] <= 0.0:
             raise ValueError(f'{name} must be positive')
+    for name, maximum in MAXIMUM_CONTRACT_VALUES.items():
+        if document[name] > maximum:
+            raise ValueError(f'{name} exceeds the accepted parking bound')
+    if document['hold_s'] < MINIMUM_HOLD_S:
+        raise ValueError('hold_s is below the accepted parking bound')
     if document['min_approach_linear_mps'] > document['desired_linear_mps']:
         raise ValueError('minimum approach speed exceeds desired speed')
     if document['observation_timeout_s'] <= document['hold_s']:
@@ -233,8 +251,8 @@ class ParkingHold:
 
         if self._hold_started_s is None:
             self._hold_started_s = now
-        held = max(0.0, now - self._hold_started_s)
-        confirmed = held >= self.contract['hold_s']
+        held_s = max(0.0, now - self._hold_started_s)
+        confirmed = held_s >= self.contract['hold_s']
         return self._result(
             'confirmed' if confirmed else 'holding', position_error_m,
-            yaw_error_rad, held, confirmed)
+            yaw_error_rad, held_s, confirmed)

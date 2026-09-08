@@ -9,13 +9,14 @@ from unittest.mock import Mock
 import xml.etree.ElementTree as ET
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import PoseStamped, Quaternion, Twist
 from jdamr_cube_navigation.corridor_route import (
-    CorridorRoute, parse_args, _quaternion_yaw, validate_parking_route,
+    _quaternion_yaw, CorridorRoute, parse_args, validate_parking_route,
 )
 from jdamr_cube_navigation.parking import (
     load_parking_contract, parking_controller_overrides,
 )
+from nav_msgs.msg import Odometry
 import pytest
 from rclpy.parameter import Parameter
 import yaml
@@ -23,7 +24,7 @@ import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT / 'evaluation'))
-from prepare_parking_params import prepare  # noqa: E402
+from prepare_parking_params import prepare  # noqa: E402,I100
 
 
 def _contract():
@@ -65,8 +66,9 @@ def test_parking_bt_fixes_controller_and_checker_without_selector():
         assert root.find('.//' + forbidden) is None
 
 
-@pytest.mark.parametrize('final', [{'x': 0.0, 'y': 0.0},
-                                  {'x': 0.0, 'y': 0.0, 'yaw': math.nan}])
+@pytest.mark.parametrize('final', [
+    {'x': 0.0, 'y': 0.0}, {'x': 0.0, 'y': 0.0, 'yaw': math.nan},
+])
 def test_parking_requires_explicit_finite_final_yaw(final):
     """Do not silently park facing the default world x axis."""
     with pytest.raises(ValueError, match='yaw'):
@@ -145,10 +147,11 @@ def test_original_route_never_runs_parking_verification():
                for call in route.navigate.send_goal_async.call_args_list)
 
 
-@pytest.mark.parametrize('mismatch', [None, 'Parking.stateful',
-                                     'parking_goal_checker.xy_goal_tolerance',
-                                     'Parking.use_collision_detection',
-                                     'controller_plugins'])
+@pytest.mark.parametrize('mismatch', [
+    None, 'Parking.stateful', 'parking_goal_checker.xy_goal_tolerance',
+    'Parking.use_collision_detection', 'controller_plugins',
+    'Parking.regulated_linear_scaling_min_speed',
+])
 def test_runtime_parameter_check_rejects_missing_or_relaxed_configuration(
         mismatch):
     """Validate effective runtime parameters before the first route goal."""
@@ -183,3 +186,74 @@ def test_quaternion_conversion_validates_input_and_preserves_yaw():
         _quaternion_yaw(Quaternion(w=0.0))
     with pytest.raises(ValueError):
         _quaternion_yaw(Quaternion(w=math.nan))
+
+
+def test_command_excursion_is_not_erased_by_a_later_zero():
+    """Interrupt the hold even when odometry arrives after a brief command."""
+    route = _route()
+    route.parking_motion_revision = 0
+    command = Twist()
+    command.angular.z = 0.1
+    route._parking_command_callback(command)
+    route._parking_command_callback(Twist())
+    assert route.parking_motion_revision == 1
+    assert route.parking_command[1:] == (0.0, 0.0)
+
+
+def test_odometry_excursion_is_not_erased_by_a_later_stopped_sample():
+    """Preserve observed body motion even when the latest value is zero."""
+    route = _route()
+    route.parking_motion_revision = 0
+    route.samples = {}
+    message = Odometry()
+    message.twist.twist.linear.x = 0.1
+    route._odom_callback(message)
+    route._odom_callback(Odometry())
+    assert route.parking_motion_revision == 1
+    assert route.parking_odom[2:] == (0.0, 0.0)
+
+
+@pytest.mark.parametrize('scenario,confirmed,earliest_s', [
+    ('steady', True, 1.25), ('excursion', True, 1.75),
+    ('regression', True, 2.0), ('stale_tf', False, 5.0),
+    ('duplicate_stamp', False, 5.0),
+])
+def test_real_post_goal_verifier_observation_sequences(
+        monkeypatch, scenario, confirmed, earliest_s):
+    """Drive the actual verifier with fake callbacks, not a mocked verdict."""
+    route = _route()
+    route.parking_motion_revision = 0
+    route.parking_odom = None
+    clock = {'now_s': 0.0, 'tick': 0}
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.corridor_route.time.monotonic',
+        lambda: clock['now_s'])
+
+    def spin_once(_node, timeout_sec):
+        clock['tick'] += 1
+        clock['now_s'] += 0.25
+        tick = clock['tick']
+        stamp = tick
+        if scenario == 'duplicate_stamp' or (scenario == 'regression' and tick == 3):
+            stamp = 1
+        route.parking_odom = (
+            clock['now_s'], SimpleNamespace(sec=stamp, nanosec=0), 0.0, 0.0)
+        if scenario == 'excursion' and tick == 3:
+            route.parking_motion_revision += 1
+
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.corridor_route.rclpy.spin_once', spin_once)
+    target = route.waypoints[-1]
+    route._parking_observation = lambda: {
+        'actual_pose': (target['x'], target['y'], target['yaw']),
+        'linear_mps': 0.0, 'angular_radps': 0.0,
+        'cmd_linear_mps': 0.0, 'cmd_angular_radps': 0.0,
+        'sample_age_s': 1.0 if scenario == 'stale_tf' else 0.01,
+    }
+    assert CorridorRoute._verify_parking_stop(
+        route, 1, target, SimpleNamespace()) is confirmed
+    assert clock['now_s'] >= earliest_s
+    event = route._route_event.call_args
+    assert event.args[0] == (
+        'parking_estimate_confirmed' if confirmed else 'parking_not_confirmed')
+    assert event.kwargs['physical_accuracy'] == 'NOT_MEASURED'

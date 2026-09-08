@@ -214,6 +214,7 @@ class CorridorRoute(Node):
             package_share, 'behavior_trees', 'navigate_to_pose_parking.xml')
         self.parking_odom = None
         self.parking_command = None
+        self.parking_motion_revision = 0
         if parking_contract is not None:
             validate_parking_route(config, parking_contract)
             self.parking_tf = Buffer()
@@ -262,11 +263,25 @@ class CorridorRoute(Node):
                 math.hypot(_message.twist.twist.linear.x,
                            _message.twist.twist.linear.y),
                 float(_message.twist.twist.angular.z))
+            linear_mps, angular_radps = self.parking_odom[2:]
+            if (not math.isfinite(linear_mps) or
+                    not math.isfinite(angular_radps) or
+                    linear_mps > self.parking_contract['stopped_linear_mps'] or
+                    abs(angular_radps) > self.parking_contract[
+                        'stopped_angular_radps']):
+                self.parking_motion_revision += 1
 
     def _parking_command_callback(self, message):
         self.parking_command = (
             time.monotonic(), math.hypot(message.linear.x, message.linear.y),
             float(message.angular.z))
+        if (not math.isfinite(self.parking_command[1]) or
+                not math.isfinite(self.parking_command[2]) or
+                self.parking_command[1] != 0.0 or
+                self.parking_command[2] != 0.0):
+            # Preserve excursions between odometry samples instead of letting
+            # a later zero overwrite evidence that the hold was interrupted.
+            self.parking_motion_revision += 1
 
     def _scan_callback(self, _message):
         self.samples['scan'] = time.monotonic()
@@ -438,6 +453,8 @@ class CorridorRoute(Node):
             'Parking.desired_linear_vel': contract['desired_linear_mps'],
             'Parking.min_approach_linear_velocity': (
                 contract['min_approach_linear_mps']),
+            'Parking.regulated_linear_scaling_min_speed': (
+                contract['min_approach_linear_mps']),
             'Parking.rotate_to_heading_angular_vel': (
                 contract['rotate_angular_radps']),
             'Parking.stateful': False,
@@ -508,10 +525,14 @@ class CorridorRoute(Node):
         gate = ParkingHold(contract)
         deadline_s = time.monotonic() + contract['observation_timeout_s']
         last_stamp = None
+        motion_revision = self.parking_motion_revision
         result = {'confirmed': False, 'reason': 'NO_FRESH_OBSERVATION',
                   'physical_accuracy': 'NOT_MEASURED'}
         while time.monotonic() < deadline_s and not self.stop_requested:
             rclpy.spin_once(self, timeout_sec=0.05)
+            if self.parking_motion_revision != motion_revision:
+                gate = ParkingHold(contract)
+                motion_revision = self.parking_motion_revision
             if not self._navigation_ready(require_fresh_amcl=False):
                 result['reason'] = self._guard_failure(False)
                 break
@@ -520,6 +541,11 @@ class CorridorRoute(Node):
             stamp = self.parking_odom[1]
             stamp_key = (stamp.sec, stamp.nanosec)
             if stamp_key == last_stamp:
+                continue
+            if last_stamp is not None and stamp_key < last_stamp:
+                gate = ParkingHold(contract)
+                result['reason'] = 'ODOMETRY_TIME_REGRESSION'
+                last_stamp = stamp_key
                 continue
             last_stamp = stamp_key
             try:

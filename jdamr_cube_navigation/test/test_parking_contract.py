@@ -69,6 +69,34 @@ def test_contract_requires_timeout_longer_than_hold(tmp_path):
         load_parking_contract(path)
 
 
+@pytest.mark.parametrize('field,value', [
+    ('xy_tolerance_m', 0.051), ('yaw_tolerance_deg', 3.01),
+    ('stopped_linear_mps', 0.011), ('stopped_angular_radps', 0.021),
+    ('hold_s', 0.999), ('sample_max_age_s', 0.501),
+    ('desired_linear_mps', 0.081), ('min_approach_linear_mps', 0.021),
+    ('rotate_angular_radps', 0.201),
+])
+def test_custom_contract_cannot_relax_accepted_parking_bounds(
+        tmp_path, field, value):
+    """Reject weaker acceptance conditions even through an explicit file."""
+    document = yaml.safe_load(CONTRACT_PATH.read_text(encoding='utf-8'))
+    document[field] = value
+    path = tmp_path / 'relaxed.yaml'
+    path.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(ValueError, match='accepted parking bound'):
+        load_parking_contract(path)
+
+
+def test_custom_contract_can_tighten_position_and_angle_targets(tmp_path):
+    """Permit a stricter experiment without overstating achieved accuracy."""
+    document = yaml.safe_load(CONTRACT_PATH.read_text(encoding='utf-8'))
+    document.update(xy_tolerance_m=0.03, yaw_tolerance_deg=2.0)
+    path = tmp_path / 'tighter.yaml'
+    path.write_text(yaml.safe_dump(document), encoding='utf-8')
+    assert load_parking_contract(path)['physical_validation'] == (
+        'NOT_PHYSICALLY_VALIDATED')
+
+
 def test_overrides_only_append_parking_plugins_and_deep_copy_follow_path():
     """Preserve production controller settings while adding parking."""
     nav2 = _nav2()
@@ -120,11 +148,11 @@ def test_override_rejects_non_rpp_or_collision_disabled_source(field, value):
 
 def test_pose_errors_wrap_yaw_and_reject_nonfinite_values():
     """Use shortest wrapped yaw distance and finite poses only."""
-    distance, yaw = pose_errors(
+    distance_m, yaw_error_rad = pose_errors(
         (0.0, 0.0, math.radians(179.0)),
         (0.03, 0.04, math.radians(-179.0)))
-    assert distance == pytest.approx(0.05)
-    assert yaw == pytest.approx(math.radians(2.0))
+    assert distance_m == pytest.approx(0.05)
+    assert yaw_error_rad == pytest.approx(math.radians(2.0))
 
     with pytest.raises(ValueError):
         pose_errors((0.0, 0.0, 0.0), (math.inf, 0.0, 0.0))

@@ -7,8 +7,9 @@
 방향 오차 3도 이내로 설정한다. 차체 앞면과 벽 사이 거리를 직접 측정하는
 기능은 아직 없으며, 지도 기반 추정 오차를 실측 주차 정확도로 주장하지 않는다.
 
-구현 작성 중간본이다. ROS 비의존 계산·파라미터 생성 및 route 연결 테스트를
-진행 중이며, 독립 리뷰와 실제 Nav2 시뮬레이션/실차 주차는 미완료다.
+구현 후보 중간본이다. ROS 비의존 계산·파라미터 생성, route 연결과 실제
+정지 관찰 루프의 fake-clock 회귀, 빌드, 설치본 CLI/파일 생성까지 검증했다.
+실제 Nav2 시뮬레이션/실차 주차는 미완료다.
 원래 진행하던 운영 후보 돌발 장애물 통합 검증도 별도 미완료 작업이다.
 
 ## 구현
@@ -18,7 +19,7 @@
   Parking 제어기와 parking_goal_checker를 추가한다. 원본·기존 파일 덮어쓰기 금지.
 - `behavior_trees/navigate_to_pose_parking.xml`: controller/checker ID를 고정한다.
 - `corridor_route --park-final`: 마지막 waypoint에만 주차 BT를 선택하며,
-  명시적인 yaw가 없거나 런타임 주차 파라미터가 다르면 시작 전에 거부한다.
+  명시적인 yaw가 없거나 계약 대상 런타임 주차 파라미터가 다르면 시작 전에 거부한다.
   기존 주행 프로필과 중간 waypoint 판정은 유지한다.
 - Nav2 성공 뒤 최신 TF 위치·방향, odometry 속도, 최종 cmd_vel의 정지를
   연속 관찰한다. 성공 사건은 `parking_estimate_confirmed`이며
@@ -32,14 +33,46 @@ footprint와 기존 FollowPath 설정을 완화하지 않는다. 주차 실패�
 
 ## 재개 순서
 
-1. parking 관련 focused tests 및 기존 keepout 회귀, lint/build.
-2. 독립 코드/구조 리뷰와 지적사항 수정.
-3. 분리된 시뮬레이션에서 최종 각도 정렬·정지 관찰 한 건 검증.
-4. 실차에서는 주차 기준점을 지정하고 줄자·바닥 기준선으로 실제 위치와
+1. 분리된 시뮬레이션에서 최종 각도 정렬·정지 관찰 한 건 검증.
+   특히 Nav2 성공 후 `/cmd_vel`의 zero 재발행이 정지 확인 기간 동안
+   충분히 유지되는지 확인한다. 단 한 번 zero가 나온 뒤 조용해지면 현재
+   observer는 fresh-command 조건을 충족하지 못해 성공하지 않는다.
+2. 실차에서는 주차 기준점을 지정하고 줄자·바닥 기준선으로 실제 위치와
    각도 오차를 측정한다. 필요 시 벽/모서리 기반 상대 정렬을 추가한다.
 
 파이에서 새 프로세스를 시작하거나 로봇을 움직이지 않았다. 현재 자동 실행
 스크립트에는 주차 옵션을 연결하지 않았으므로 기존 주행이 자동으로 바뀌지 않는다.
+
+## 중간 저장과 리뷰
+
+- 최초 후보: `49bffb6`, `origin/main` 푸시 완료. 해당 시점 focused 88 passed.
+- 후속 주차 focused/기존 keepout 회귀 106 passed, 대상 Python 6파일
+  ament_flake8 PASS. colcon 패키지 빌드와 설치본 `--help`/후보 YAML 생성 PASS.
+- 후속 수정: custom 계약의 오차·속도 상한 및 hold 하한 고정, 수신된 짧은
+  비영 명령/odom 움직임의 누적 기록, odom stamp 역행 시 hold 초기화.
+- 독립 코드 리뷰의 완화된 계약 허용 지적은 실행 경계와 회귀 테스트로 수정.
+  실제 verifier를 fake spin/clock으로 실행해 정상·움직임·시간 역행·stale·동일
+  stamp 반복을 검증한다. 구조 리뷰의 최소 주행 속도 파라미터 검사 누락도 수정.
+- 구조 리뷰 `WATCH`: 실제 post-goal 명령 발행 주기와 BEST_EFFORT 수신 특성은
+  시뮬레이션에서 확인해야 한다. 수신한 관측에 대한 정지 확인이며 모든 발행
+  명령의 무손실 수신을 보장하지 않는다. 전체 승인/실차 준비 완료 주장은 보류한다.
+- 코드 리뷰 최종 `COMMENT`: 남은 CRITICAL/HIGH/MEDIUM/LOW 코드 지적 0건.
+  리뷰어의 focused 53 passed, pyflakes/AST/YAML/XML 검증 PASS. 해당 리뷰
+  환경에 LSP 진단 도구가 없어 형식적 APPROVE는 하지 않았다. 구조 WATCH와
+  합친 전체 판정도 COMMENT이며, 완전한 런타임 검증으로 해석하지 않는다.
+
+### 기존 돌발 장애물 준비 작업의 중간 상태
+
+주차 논의 전 작성된 `evaluation/run_onboard_candidate_smoke.py`는 여러 topic
+echo를 compact MCAP 기록기 하나로 교체했다. hidden action status를 포함하고
+wall log-time과 sim header-time을 구분하며 원본 로그를 자르거나 삭제하지 않는다.
+기록기 관련 회귀/기존 온보드·동일 목표 평가 묶음은 57 passed다.
+
+`evaluation/onboard_stop_contract.py`와 `sim_collision_monitor_scenario.py`의
+`--direct-scan` 경로는 운영 Collision Monitor 설정을 보존하는 돌발 장애물
+평가 준비 중간본이다. 기존 Collision Monitor 회귀는 211 passed지만 신규 경로를
+runner에 연결해 한 번 실제 실행하는 작업은 남았다. 이를 운영 설정 돌발 회피
+성공으로 해석하지 않는다. 기존 성공한 detour 증거와 구분해 이어서 작업한다.
 
 ## ROS를 실행하지 않는 후보 생성
 
