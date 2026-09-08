@@ -31,9 +31,13 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
     production = yaml.safe_load(
         SMOKE.PRODUCTION_PARAMS.read_text(encoding='utf-8'))
     candidate = yaml.safe_load(prepared['params'].read_text(encoding='utf-8'))
+    stop_candidate = yaml.safe_load(
+        prepared['stop_params'].read_text(encoding='utf-8'))
 
     assert SMOKE._leaf_differences(production, candidate) == (
         SMOKE.ALLOWED_PARAM_DELTAS)
+    assert SMOKE._leaf_differences(production, stop_candidate) == (
+        SMOKE.ALLOWED_STOP_PARAM_DELTAS)
     assert prepared['mask_report']['keepout_cells'] > 0
     assert prepared['mask_report']['zones'] == [
         'sim_route_away_northeast_corner']
@@ -44,9 +48,18 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
     assert direct['scan_gate'] == {
         'used': False, 'monitor_input_topic': '/scan'}
     assert direct['sudden_obstacle']['activation_surface_x_m'] == (
-        pytest.approx(0.33))
+        pytest.approx(0.45))
+    assert direct['stop_zone']['front_m'] == pytest.approx(0.40)
+    assert direct['slowdown_zone']['front_m'] == pytest.approx(0.50)
     assert direct['slowdown_zone']['slowdown_ratio'] == pytest.approx(0.60)
     assert direct['non_contact_margin']['remaining_margin_m'] > 0.0
+    envelope = direct['travel_pose_envelope']
+    assert envelope['bounds_m']['front_m'] == pytest.approx(
+        0.30255615917893763)
+    assert envelope['witnesses']['front_m']['link'] == 'arm_moving_jaw_link'
+    assert envelope['production_stop_zone_deficit_m'] > 0.0
+    assert stop_candidate['collision_monitor']['ros__parameters'][
+        'StopZone']['points'] == direct['stop_zone']['points']
 
 
 @pytest.mark.parametrize('domain_id', [12, 185, 188])
@@ -172,6 +185,7 @@ def test_compact_recorder_uses_wall_log_time_and_hidden_status_qos(
     assert '--include-hidden-topics' in command
     assert '--use-sim-time' not in command
     assert '/scan' not in command
+    assert '/joint_states' in command
     assert set(SMOKE.RECORDED_TOPICS) <= set(command)
     qos = yaml.safe_load(
         (tmp_path / 'recording_qos.yaml').read_text(encoding='utf-8'))
@@ -183,6 +197,22 @@ def test_compact_recorder_uses_wall_log_time_and_hidden_status_qos(
         profile['reliability'] == 'best_effort'
         for topic, profile in qos.items()
         if topic != '/navigate_to_pose/_action/status')
+
+
+def test_travel_pose_sample_rejects_a_joint_outside_tolerance():
+    """Bind the expanded field to the exact arm pose used to derive it."""
+    output = """header: {}
+name: [arm_shoulder_pan, arm_shoulder_lift]
+position: [0.0, -0.95]
+velocity: []
+effort: []
+"""
+    sample = SMOKE._travel_pose_sample(
+        output, {'arm_shoulder_pan': 0.0, 'arm_shoulder_lift': -1.0}, 0.03)
+
+    assert sample['status'] == 'FAIL'
+    assert sample['maximum_error_rad'] == pytest.approx(0.05)
+    assert sample['missing_joints'] == []
 
 
 def test_output_cap_fails_without_rewriting_raw_logs(monkeypatch, tmp_path):
@@ -270,7 +300,7 @@ def test_sudden_case_requires_physical_and_recorded_same_goal_evidence():
 
 
 def test_contact_filter_excludes_ground_and_keeps_robot_pair():
-    """Count probe-to-robot contacts without treating ground support as crash."""
+    """Exclude ground support while retaining probe-to-robot contacts."""
     entity = 'g003_preloaded_front_observation_probe'
 
     def contact(other):

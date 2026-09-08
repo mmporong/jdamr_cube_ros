@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -47,12 +48,16 @@ ALLOWED_PARAM_DELTAS = {
     ('global_costmap', 'global_costmap', 'ros__parameters',
      'always_send_full_costmap'),
 }
+ALLOWED_STOP_PARAM_DELTAS = ALLOWED_PARAM_DELTAS | {
+    ('collision_monitor', 'ros__parameters', 'StopZone', 'points'),
+    ('collision_monitor', 'ros__parameters', 'SlowdownZone', 'points'),
+}
 CAP_BYTES = 64 * 1024 * 1024
 BAG_LIVE_CAP_BYTES = 56 * 1024 * 1024
 RECORDED_TOPICS = (
     '/cmd_vel', '/collision_monitor_state',
     '/navigate_to_pose/_action/status', '/odom', '/ground_truth_pose',
-    '/plan', '/amcl_pose', '/tf', '/tf_static')
+    '/joint_states', '/plan', '/amcl_pose', '/tf', '/tf_static')
 NAV_SCENARIO_SOURCE = (
     ROOT / 'jdamr_cube_navigation/jdamr_cube_navigation/'
     'sim_nav_obstacle_scenario.py')
@@ -129,6 +134,25 @@ def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
         'park_pose_m': probe['park_pose_m'],
     }
     direct_contract_path = assets / 'onboard_stop_contract.json'
+    stop_candidate = copy.deepcopy(candidate)
+    stop_monitor = stop_candidate['collision_monitor']['ros__parameters']
+    stop_monitor['StopZone']['points'] = direct_contract[
+        'stop_zone']['points']
+    stop_monitor['SlowdownZone']['points'] = direct_contract[
+        'slowdown_zone']['points']
+    stop_differences = _leaf_differences(production, stop_candidate)
+    if stop_differences != ALLOWED_STOP_PARAM_DELTAS:
+        raise RuntimeError(
+            f'stop candidate parameter delta drift: {stop_differences}')
+    stop_params_path = assets / 'nav2_obstacle_stop_eval.params.yaml'
+    stop_params_path.write_text(
+        yaml.safe_dump(stop_candidate, sort_keys=False), encoding='utf-8')
+    direct_contract['candidate_params'] = {
+        'path': str(stop_params_path.resolve()),
+        'sha256': _sha256(stop_params_path),
+        'delta_paths': sorted('.'.join(path) for path in stop_differences),
+        'production_scan_overrides_added': [],
+    }
     direct_contract_path.write_text(json.dumps(
         direct_contract, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
         encoding='utf-8')
@@ -154,9 +178,10 @@ def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
         assets / 'sim_keepout_mask.yaml', ASSETS / 'slam_corridor_eval.yaml')
     return {
         'params': generated['params'], 'contract': generated['contract'],
-        'stop_contract': direct_contract_path,
+        'stop_contract': direct_contract_path, 'stop_params': stop_params_path,
         'mask': assets / 'sim_keepout_mask.yaml',
         'mask_report': mask_report, 'param_deltas': differences,
+        'stop_param_deltas': stop_differences,
     }
 
 
@@ -171,6 +196,58 @@ def _parameter(node: str, name: str, environment: dict[str, str]) -> str:
         raise RuntimeError(f'parameter unavailable: {node}.{name}: '
                            f'{result.stderr.strip()}')
     return result.stdout.strip()
+
+
+def _travel_pose_sample(
+        output: str, expected_positions: dict[str, float],
+        tolerance_rad: float,
+) -> dict[str, Any]:
+    """Validate one JointState YAML sample against the contracted stow pose."""
+    documents = [document for document in yaml.safe_load_all(output)
+                 if isinstance(document, dict)]
+    if len(documents) != 1:
+        raise ValueError('expected exactly one JointState document')
+    names = documents[0].get('name')
+    positions = documents[0].get('position')
+    if (not isinstance(names, list) or not isinstance(positions, list)
+            or len(names) != len(positions)):
+        raise ValueError('invalid JointState name/position arrays')
+    measured = dict(zip(names, positions))
+    missing = sorted(set(expected_positions) - set(measured))
+    errors = {
+        name: abs(float(measured[name]) - expected)
+        for name, expected in expected_positions.items() if name in measured
+    }
+    if any(not math.isfinite(error) for error in errors.values()):
+        raise ValueError('non-finite JointState position')
+    return {
+        'status': ('PASS' if not missing and errors
+                   and max(errors.values()) <= tolerance_rad else 'FAIL'),
+        'source_topic': '/joint_states',
+        'expected_positions_rad': expected_positions,
+        'measured_positions_rad': {
+            name: float(measured[name]) for name in expected_positions
+            if name in measured},
+        'absolute_errors_rad': errors,
+        'maximum_error_rad': max(errors.values()) if errors else None,
+        'tolerance_rad': tolerance_rad,
+        'missing_joints': missing,
+    }
+
+
+def _read_travel_pose(
+        environment: dict[str, str], contract: dict[str, Any],
+) -> dict[str, Any]:
+    result = _run(
+        ['ros2', 'topic', 'echo', '--once', '/joint_states'],
+        environment, timeout_s=12.0)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f'JointState sample unavailable: {result.stderr.strip()}')
+    return _travel_pose_sample(
+        result.stdout,
+        contract['travel_pose_envelope']['joint_positions_rad'],
+        float(contract['travel_pose_gate']['position_tolerance_rad']))
 
 
 def _lifecycle(node: str, environment: dict[str, str]) -> str:
@@ -355,9 +432,12 @@ def run_case(case: str, output_root: Path, domain_id: int,
              prepared: dict[str, Any], startup_only: bool = False) -> dict:
     """Launch isolated Gazebo plus the real onboard core and run one case."""
     direct_stop = case == 'sudden_stop_resume'
+    runtime_params = (
+        prepared['stop_params'] if direct_stop else prepared['params'])
     scenario_contract = (
         prepared['stop_contract'] if direct_stop else prepared['contract'])
-    scenario_source = STOP_SCENARIO_SOURCE if direct_stop else NAV_SCENARIO_SOURCE
+    scenario_source = (
+        STOP_SCENARIO_SOURCE if direct_stop else NAV_SCENARIO_SOURCE)
     run_id = f'onboard_candidate_{case}_seed_{SEED}'
     case_dir = output_root / case
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -383,6 +463,7 @@ def run_case(case: str, output_root: Path, domain_id: int,
         'runtime_profile': {
             'name': 'obstacle_candidate',
             'launch': 'onboard_nav2_core.launch.py',
+            'mobile_manipulator_stop_field': direct_stop,
         },
         'source_identity': {
             'runner': _source_identity(Path(__file__)),
@@ -390,7 +471,7 @@ def run_case(case: str, output_root: Path, domain_id: int,
                 ROOT / 'jdamr_cube_navigation/launch/'
                 'onboard_nav2_core.launch.py'),
             'production_params': _source_identity(PRODUCTION_PARAMS),
-            'candidate_params': _source_identity(prepared['params']),
+            'candidate_params': _source_identity(runtime_params),
             'candidate_bt': _source_identity(BT),
             'scenario_contract': _source_identity(scenario_contract),
             'scenario_source': _source_identity(scenario_source),
@@ -404,14 +485,14 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'gui:=false', 'enable_image_bridges:=false', f'seed:={SEED}',
             'x_pose:=-8.0', 'y_pose:=0.0', 'z_pose:=0.01',
         ], case_dir / 'gazebo.log', environment))
-        _wait_topics({'/scan', '/odom', '/ground_truth_pose'},
+        _wait_topics({'/scan', '/odom', '/ground_truth_pose', '/joint_states'},
                      environment, 60.0)
         launched.append(_start([
             'ros2', 'launch', 'jdamr_cube_navigation',
             'onboard_nav2_core.launch.py',
             f'map:={ASSETS / "slam_corridor_eval.yaml"}',
             f'keepout_mask:={prepared["mask"]}',
-            f'params_file:={prepared["params"]}',
+            f'params_file:={runtime_params}',
             'use_sim_time:=true', 'autostart:=true',
             'navigation_profile:=obstacle_candidate',
         ], case_dir / 'onboard_nav2_core.log', environment))
@@ -449,9 +530,18 @@ def run_case(case: str, output_root: Path, domain_id: int,
                    for value in pre_goal_clocks.values()):
             raise RuntimeError(
                 f'pre-goal ROS time mismatch: {pre_goal_clocks}')
+        travel_pose = None
+        if direct_stop:
+            stop_contract = json.loads(
+                prepared['stop_contract'].read_text(encoding='utf-8'))
+            travel_pose = _read_travel_pose(environment, stop_contract)
+            result['travel_pose'] = travel_pose
+            if travel_pose['status'] != 'PASS':
+                raise RuntimeError('arm is outside the contracted travel pose')
         if startup_only:
             result['startup'] = {
-                'status': 'PASS', 'pre_goal_use_sim_time': pre_goal_clocks}
+                'status': 'PASS', 'pre_goal_use_sim_time': pre_goal_clocks,
+                'travel_pose': travel_pose}
             result['status'] = 'PASS'
             return result
 

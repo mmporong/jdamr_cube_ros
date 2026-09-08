@@ -1,16 +1,36 @@
-"""Define a direct-scan integration probe without changing the Nav2 controller."""
+"""Define a direct-scan probe for a stowed mobile-manipulator envelope."""
 
 import json
 import math
 from pathlib import Path
 
-from prepare_sim_collision_monitor_run import (
-    _production_motion_inputs, installed_nav2_versions, PRODUCTION_FILES,
-    SCAN_PROFILE,
-)
-from sim_collision_monitor_contract import derive_contract, sha256_file
-
 import yaml
+
+from prepare_sim_collision_monitor_run import (  # noqa: I100,I201
+    PRODUCTION_FILES, SCAN_PROFILE, _production_motion_inputs,
+    installed_nav2_versions,
+)
+from robot_stow_envelope import collision_envelope  # noqa: I201
+from sim_collision_monitor_contract import (  # noqa: I201
+    derive_contract, sha256_file,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+MESH_ROOT = ROOT / 'jdamr_cube_description/meshes'
+
+
+def _ceil_to_resolution(value: float, resolution: float) -> float:
+    return math.ceil((value - 1e-12) / resolution) * resolution
+
+
+def _zone_points(zone: dict) -> str:
+    return json.dumps([
+        [zone['front_m'], zone['half_width_m']],
+        [zone['front_m'], -zone['half_width_m']],
+        [zone['rear_m'], -zone['half_width_m']],
+        [zone['rear_m'], zone['half_width_m']],
+    ])
 
 
 def _rectangle_zone(monitor: dict, name: str, action_type: str) -> dict:
@@ -37,11 +57,15 @@ def _rectangle_zone(monitor: dict, name: str, action_type: str) -> dict:
     }
 
 
-def build_contract(params_path: Path) -> dict:
-    """Derive observation geometry from the unchanged production footprint."""
+def build_contract(params_path: Path, urdf_path: Path | None = None) -> dict:
+    """Derive candidate zones from the fixed travel-pose collision envelope."""
+    urdf_path = urdf_path or PRODUCTION_FILES['production_urdf']
     params = yaml.safe_load(params_path.read_text(encoding='utf-8'))
     motion = _production_motion_inputs(
-        params, PRODUCTION_FILES['production_urdf'])
+        params, urdf_path)
+    arm_envelope = collision_envelope(
+        urdf_path, MESH_ROOT, root_frame='base_footprint',
+        link_prefix='arm_')
     profile = json.loads(SCAN_PROFILE.read_text(encoding='utf-8'))
     gap_s = profile['timing']['scan']['header_interval_s']['max']
     smoother = params['velocity_smoother']['ros__parameters']
@@ -49,59 +73,104 @@ def build_contract(params_path: Path) -> dict:
         float(smoother['smoothing_frequency']), 0.001,
         installed_nav2_versions(), gap_s, **motion)
     monitor = params['collision_monitor']['ros__parameters']
-    stop_zone = _rectangle_zone(monitor, 'StopZone', 'stop')
-    slowdown_zone = _rectangle_zone(monitor, 'SlowdownZone', 'slowdown')
-    front_m = stop_zone['front_m']
-    footprint_front_m = motion['footprint_front_m']
-    if front_m <= footprint_front_m:
-        raise ValueError('no non-contact test region ahead of the footprint')
-    if slowdown_zone['front_m'] <= front_m:
+    production_stop_zone = _rectangle_zone(monitor, 'StopZone', 'stop')
+    production_slowdown_zone = _rectangle_zone(
+        monitor, 'SlowdownZone', 'slowdown')
+    if production_slowdown_zone['front_m'] <= production_stop_zone['front_m']:
         raise ValueError('SlowdownZone must extend beyond StopZone')
     slowdown_ratio = float(monitor['SlowdownZone']['slowdown_ratio'])
-    slowed_speed_mps = motion['max_forward_speed_mps'] * slowdown_ratio
     reaction_time_s = gap_s + 1.0 / float(smoother['smoothing_frequency'])
-    bounded_stop_distance_m = (
-        slowed_speed_mps * reaction_time_s
-        + slowed_speed_mps ** 2 / (2.0 * motion['max_decel_mps2']))
-    available_stop_distance_m = front_m - footprint_front_m
+    speed_mps = motion['max_forward_speed_mps']
+    reaction_distance_m = speed_mps * reaction_time_s
+    braking_distance_m = speed_mps ** 2 / (
+        2.0 * motion['max_decel_mps2'])
+    bounded_stop_distance_m = reaction_distance_m + braking_distance_m
+    cell_half_diagonal_m = motion['costmap_resolution_m'] / math.sqrt(2.0)
+    arm_front_m = arm_envelope['bounds_m']['front_m']
+    required_front_m = (
+        arm_front_m + bounded_stop_distance_m + cell_half_diagonal_m)
+    stop_zone = {
+        **production_stop_zone,
+        'front_m': _ceil_to_resolution(
+            max(production_stop_zone['front_m'], required_front_m),
+            motion['costmap_resolution_m']),
+    }
+    minimum_slowdown_lead_m = 2.0 * motion['costmap_resolution_m']
+    slowdown_zone = {
+        **production_slowdown_zone,
+        'front_m': _ceil_to_resolution(max(
+            production_slowdown_zone['front_m'],
+            stop_zone['front_m'] + minimum_slowdown_lead_m,
+        ), motion['costmap_resolution_m']),
+    }
+    available_stop_distance_m = stop_zone['front_m'] - arm_front_m
     if bounded_stop_distance_m >= available_stop_distance_m:
-        raise ValueError('production slowdown and stop zones lack margin')
-    surface_m = (front_m + slowdown_zone['front_m']) / 2.0
+        raise ValueError(
+            'candidate stop zone lacks stowed-arm stopping margin')
+    surface_m = (stop_zone['front_m'] + slowdown_zone['front_m']) / 2.0
     contract['stop_zone'] = {
         **stop_zone,
         'inputs': contract['stop_zone']['inputs'],
-        'source': 'unchanged_production_StopZone',
+        'points': _zone_points(stop_zone),
+        'source': 'derived_stowed_mobile_manipulator_StopZone_candidate',
     }
     contract['slowdown_zone'] = {
         **slowdown_zone,
         'slowdown_ratio': slowdown_ratio,
-        'source': 'unchanged_production_SlowdownZone',
+        'points': _zone_points(slowdown_zone),
+        'source': 'derived_stowed_mobile_manipulator_SlowdownZone_candidate',
+    }
+    contract['production_zones'] = {
+        'stop_zone': {
+            **production_stop_zone,
+            'points': monitor['StopZone']['points'],
+        },
+        'slowdown_zone': {
+            **production_slowdown_zone,
+            'slowdown_ratio': slowdown_ratio,
+            'points': monitor['SlowdownZone']['points'],
+        },
     }
     contract['non_contact_margin'] = {
-        'expected_slowed_speed_mps': slowed_speed_mps,
+        'protected_front_m': arm_front_m,
+        'maximum_approach_speed_mps': speed_mps,
         'reaction_time_s': reaction_time_s,
+        'reaction_distance_m': reaction_distance_m,
+        'braking_distance_m': braking_distance_m,
         'bounded_stop_distance_m': bounded_stop_distance_m,
+        'cell_half_diagonal_m': cell_half_diagonal_m,
         'available_stop_distance_m': available_stop_distance_m,
         'remaining_margin_m': (
             available_stop_distance_m - bounded_stop_distance_m),
         'scope': (
-            'configuration-derived bound for simulation placement; '
-            'not measured physical stopping distance'),
+            'configuration-derived full-speed bound for a fixed stow pose; '
+            'not measured physical stopping distance or safety certification'),
+    }
+    contract['travel_pose_envelope'] = arm_envelope
+    contract['travel_pose_envelope']['production_stop_zone_deficit_m'] = max(
+        0.0, arm_front_m - production_stop_zone['front_m'])
+    contract['travel_pose_envelope']['valid_only_at_joint_positions'] = True
+    contract['travel_pose_gate'] = {
+        'required_before_navigation': True,
+        'position_tolerance_rad': 0.03,
+        'source_topic': '/joint_states',
+        'failure_action': 'do_not_send_navigation_goal',
     }
     contract['sudden_obstacle'].update({
         'activation_surface_x_m': surface_m,
         'activation_center_offset_x_m': (
             surface_m + contract['sudden_obstacle']['length_m'] / 2.0),
         'placement': (
-            'synthetic_midpoint_between_StopZone_and_SlowdownZone_front'),
+            'synthetic_midpoint_between_candidate_StopZone_and_SlowdownZone'),
         'trigger_min_speed_mps': motion['max_forward_speed_mps'] * 0.9,
         'lead_margin_m': None,
     })
     contract['integration_kind'] = 'onboard_candidate_direct_scan'
     contract['claim_scope'] = (
-        'SIM_INTEGRATION_ONLY: synthetic intrusion into the unchanged STOP '
-        'zone; not human tracking, real-world stopping distance, latency '
-        'qualification, or a G004 full-matrix result')
+        'SIM_INTEGRATION_ONLY: synthetic intrusion into a candidate field '
+        'derived for the configured arm stow pose; not human tracking, '
+        'real-world stopping distance, latency qualification, dynamic arm '
+        'envelope coverage, safety certification, or a G004 full matrix')
     contract['scan_gate'] = {'used': False, 'monitor_input_topic': '/scan'}
     contract['selected_source_timeout_s'] = monitor['source_timeout']
     contract['production_inputs'] = {
