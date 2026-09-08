@@ -26,6 +26,8 @@ import yaml
 
 DOMAIN_IDS = {186, 187}
 SEED = 11
+START_X_M = -6.5
+APPROACH_X_M = -6.0
 GOAL_X_M = -5.5
 GOAL_Y_M = 0.0
 GOAL_YAW_RAD = math.pi / 2.0
@@ -57,10 +59,11 @@ def _write_route(path: Path, prepared: dict[str, Any]) -> None:
         'map_yaml': str((ASSETS / 'slam_corridor_eval.yaml').resolve()),
         'keepout_mask_yaml': str(prepared['mask'].resolve()),
         'expected_mask_sha256': mask_hash,
-        'start_pose': {'x': -8.0, 'y': 0.0},
+        'start_pose': {'x': START_X_M, 'y': 0.0},
         'minimum_battery_v': 10.5,
         'waypoints': [
-            {'id': 'parking_approach', 'x': -7.0, 'y': 0.0, 'yaw': 0.0},
+            {'id': 'parking_approach', 'x': APPROACH_X_M,
+             'y': 0.0, 'yaw': 0.0},
             {'id': 'parking_target', 'x': GOAL_X_M, 'y': GOAL_Y_M,
              'yaw': GOAL_YAW_RAD},
         ],
@@ -129,6 +132,11 @@ def run(output_root: Path, domain_id: int) -> dict[str, Any]:
     """Start isolated simulation, execute the parking route, and tear down."""
     output_root.mkdir(parents=True, exist_ok=False)
     prepared = prepare_candidate_assets(output_root)
+    candidate = yaml.safe_load(
+        prepared['params'].read_text(encoding='utf-8'))
+    candidate['amcl']['ros__parameters']['initial_pose']['x'] = START_X_M
+    prepared['params'].write_text(
+        yaml.safe_dump(candidate, sort_keys=False), encoding='utf-8')
     parking_params = output_root / 'assets' / 'parking_nav2_params.yaml'
     prepare_parking_params(
         prepared['params'],
@@ -167,7 +175,7 @@ def run(output_root: Path, domain_id: int) -> dict[str, Any]:
             f'world:={ASSETS / "slam_corridor_contact.world"}',
             f'urdf_file:={ASSETS / "jdamr_cube_nav_eval.urdf"}',
             'gui:=false', 'enable_image_bridges:=false', f'seed:={SEED}',
-            'x_pose:=-8.0', 'y_pose:=0.0', 'z_pose:=0.01',
+            f'x_pose:={START_X_M}', 'y_pose:=0.0', 'z_pose:=0.01',
         ], output_root / 'gazebo.log', environment))
         _wait_topics({'/scan', '/odom', '/ground_truth_pose'},
                      environment, 60.0)

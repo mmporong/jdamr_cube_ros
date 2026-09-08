@@ -35,6 +35,7 @@ AMCL_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
+ODOM_QOS = QoSProfile(depth=1)
 NAVIGATION_BEHAVIOR_TREES = {
     'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
     'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
@@ -198,7 +199,8 @@ class CorridorRoute(Node):
             self, ComputePathThroughPoses, 'compute_path_through_poses')
         self.create_subscription(
             BatteryState, '/battery_state', self._battery_callback, 10)
-        self.create_subscription(Odometry, '/odom', self._odom_callback, 10)
+        self.create_subscription(
+            Odometry, '/odom', self._odom_callback, ODOM_QOS)
         self.create_subscription(
             LaserScan, '/scan', self._scan_callback, qos_profile_sensor_data)
         self.create_subscription(
@@ -215,6 +217,7 @@ class CorridorRoute(Node):
         self.parking_odom = None
         self.parking_command = None
         self.parking_motion_revision = 0
+        self.parking_observation_diagnostics = None
         if parking_contract is not None:
             validate_parking_route(config, parking_contract)
             self.parking_tf = Buffer()
@@ -508,11 +511,17 @@ class CorridorRoute(Node):
         # periodically republished; any later observed nonzero command or
         # physical motion increments parking_motion_revision and resets hold.
         ages_s = [now_s - odom_seen_s]
+        source_ages_s = {'odom_receive_age_s': ages_s[0]}
         for stamp in (odom_stamp, transform.header.stamp):
             age_s = ros_now_s - (stamp.sec + stamp.nanosec * 1e-9)
             if age_s < 0.0:
                 raise ValueError('parking observation is ahead of ROS time')
             ages_s.append(age_s)
+        source_ages_s.update({
+            'odom_header_age_s': ages_s[1],
+            'tf_header_age_s': ages_s[2],
+        })
+        self.parking_observation_diagnostics = source_ages_s
         translation = transform.transform.translation
         return {
             'actual_pose': (translation.x, translation.y,
@@ -534,6 +543,11 @@ class CorridorRoute(Node):
                   'physical_accuracy': 'NOT_MEASURED'}
         while time.monotonic() < deadline_s and not self.stop_requested:
             rclpy.spin_once(self, timeout_sec=0.05)
+            # The route node also observes scan, TF, battery and AMCL. Drain
+            # their ready callbacks so high-rate TF/odom cannot leave the
+            # post-goal witness evaluating old queue entries.
+            for _ in range(8):
+                rclpy.spin_once(self, timeout_sec=0.0)
             if self.parking_motion_revision != motion_revision:
                 gate = ParkingHold(contract)
                 motion_revision = self.parking_motion_revision
@@ -563,10 +577,15 @@ class CorridorRoute(Node):
                 result = {'confirmed': False, 'reason': str(error),
                           'physical_accuracy': 'NOT_MEASURED'}
             if result['confirmed']:
-                self._route_event('parking_estimate_confirmed', index, handle,
-                                  **result)
+                self._route_event(
+                    'parking_estimate_confirmed', index, handle,
+                    observation_ages_s=self.parking_observation_diagnostics,
+                    **result)
                 return True
-        self._route_event('parking_not_confirmed', index, handle, **result)
+        self._route_event(
+            'parking_not_confirmed', index, handle,
+            observation_ages_s=self.parking_observation_diagnostics,
+            **result)
         return False
 
     def _feedback(self, route_index, message):

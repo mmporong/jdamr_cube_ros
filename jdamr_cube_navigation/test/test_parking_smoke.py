@@ -13,7 +13,8 @@ sys.path.insert(0, str(EVALUATION_ROOT))
 
 from navigation_mcap_reader import TOPIC_TYPES  # noqa: E402,I100
 from run_parking_smoke import (  # noqa: E402
-    _angle_error_rad, _write_route, GOAL_X_M, GOAL_YAW_RAD,
+    _angle_error_rad, _write_route, APPROACH_X_M, GOAL_X_M, GOAL_YAW_RAD,
+    START_X_M,
 )
 
 
@@ -36,6 +37,8 @@ def test_route_has_explicit_final_yaw_and_binds_mask_hash(tmp_path):
         'id': 'parking_target', 'x': GOAL_X_M, 'y': 0.0,
         'yaw': GOAL_YAW_RAD,
     }
+    assert document['start_pose']['x'] == START_X_M
+    assert document['waypoints'][0]['x'] == APPROACH_X_M
     assert len(document['expected_mask_sha256']) == 64
 
 

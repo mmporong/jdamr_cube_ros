@@ -224,12 +224,15 @@ def test_real_post_goal_verifier_observation_sequences(
     route = _route()
     route.parking_motion_revision = 0
     route.parking_odom = None
+    route.parking_observation_diagnostics = None
     clock = {'now_s': 0.0, 'tick': 0}
     monkeypatch.setattr(
         'jdamr_cube_navigation.corridor_route.time.monotonic',
         lambda: clock['now_s'])
 
     def spin_once(_node, timeout_sec):
+        if timeout_sec == 0.0:
+            return
         clock['tick'] += 1
         clock['now_s'] += 0.25
         tick = clock['tick']
