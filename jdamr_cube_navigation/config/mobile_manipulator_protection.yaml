@@ -1,0 +1,27 @@
+schema_version: 1
+claim_scope: fixed_stow_pose_candidate_not_safety_certification
+travel_pose:
+  source_topic: /joint_states
+  position_tolerance_rad: 0.03
+  joints_rad:
+    arm_shoulder_pan: 0.0
+    arm_shoulder_lift: -1.0
+    arm_elbow_flex: 1.5
+    arm_wrist_flex: 0.8
+    arm_wrist_roll: 0.0
+    arm_gripper: 0.0
+collision_monitor_overrides:
+  StopZone.points: '[[0.4, 0.25], [0.4, -0.25], [-0.28, -0.25], [-0.28, 0.25]]'
+  SlowdownZone.points: '[[0.5, 0.35], [0.5, -0.35], [-0.38, -0.35], [-0.38, 0.35]]'
+derivation:
+  root_frame: base_footprint
+  stowed_arm_front_m: 0.30255615917893763
+  production_stop_front_m: 0.28
+  maximum_forward_speed_mps: 0.18
+  maximum_scan_gap_s: 0.107525
+  velocity_smoother_frequency_hz: 20.0
+  maximum_deceleration_mps2: 0.5
+  costmap_resolution_m: 0.05
+  candidate_stop_front_m: 0.4
+  candidate_slowdown_front_m: 0.5
+  method: urdf_collision_envelope_plus_full_speed_stop_bound_and_half_cell_diagonal

@@ -13,6 +13,9 @@ import time
 from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from jdamr_cube_navigation.mobile_manipulator_protection import (
+    evaluate_travel_pose, load_mobile_manipulator_protection,
+)
 from jdamr_cube_navigation.parking import load_parking_contract, ParkingHold
 from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
 from nav_msgs.msg import Odometry
@@ -25,7 +28,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from rclpy.utilities import remove_ros_args
-from sensor_msgs.msg import BatteryState, LaserScan
+from sensor_msgs.msg import BatteryState, JointState, LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
 import yaml
 
@@ -207,6 +210,20 @@ class CorridorRoute(Node):
             PoseWithCovarianceStamped, '/amcl_pose', self._amcl_callback,
             AMCL_QOS)
         package_share = get_package_share_directory('jdamr_cube_navigation')
+        self.mobile_manipulator_protection = None
+        self.travel_pose_status = None
+        if navigation_profile == 'obstacle_candidate':
+            protection_path = (
+                Path(package_share) / 'config'
+                / 'mobile_manipulator_protection.yaml')
+            self.mobile_manipulator_protection = (
+                load_mobile_manipulator_protection(protection_path))
+            self.samples['joint_states'] = None
+            self.create_subscription(
+                JointState,
+                self.mobile_manipulator_protection['travel_pose'][
+                    'source_topic'],
+                self._joint_state_callback, qos_profile_sensor_data)
         self.behavior_tree = os.path.join(
             package_share, 'behavior_trees',
             NAVIGATION_BEHAVIOR_TREES[navigation_profile])
@@ -289,6 +306,16 @@ class CorridorRoute(Node):
     def _scan_callback(self, _message):
         self.samples['scan'] = time.monotonic()
 
+    def _joint_state_callback(self, message):
+        self.samples['joint_states'] = time.monotonic()
+        try:
+            self.travel_pose_status = evaluate_travel_pose(
+                list(message.name), list(message.position),
+                self.mobile_manipulator_protection)
+        except (KeyError, TypeError, ValueError) as error:
+            self.travel_pose_status = {
+                'status': 'FAIL', 'error': f'{type(error).__name__}: {error}'}
+
     def _amcl_callback(self, message):
         self.amcl_seen = time.monotonic()
         covariance = message.pose.covariance
@@ -323,6 +350,13 @@ class CorridorRoute(Node):
             return (
                 f'battery low: voltage={self.battery_voltage:.3f}V '
                 f'limit={self.minimum_battery_v:.3f}V')
+        if getattr(self, 'mobile_manipulator_protection', None) is not None:
+            status = self.travel_pose_status
+            if status is None:
+                return 'travel pose status missing'
+            if status.get('status') != 'PASS':
+                return 'travel pose invalid: ' + json.dumps(
+                    status, sort_keys=True, separators=(',', ':'))
         if self.amcl_seen is None or self.amcl_covariance is None:
             return 'AMCL pose missing'
         amcl_age_s = now - self.amcl_seen
@@ -370,6 +404,12 @@ class CorridorRoute(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
             if self._navigation_ready():
                 self.start_check_pending = False
+                if self.travel_pose_status is not None:
+                    maximum_error_rad = self.travel_pose_status[
+                        'maximum_error_rad']
+                    self.get_logger().info(
+                        'travel pose gate passed: '
+                        f'max_error={maximum_error_rad:.6f}rad')
                 return True
         self.get_logger().error(
             'navigation readiness timeout: '

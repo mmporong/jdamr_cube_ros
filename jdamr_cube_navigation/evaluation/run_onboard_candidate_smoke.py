@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import math
 import os
@@ -16,6 +15,9 @@ from typing import Any
 from evaluate_same_goal_bag import evaluate as evaluate_same_goal_bag
 
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
+from jdamr_cube_navigation.mobile_manipulator_protection import (
+    load_mobile_manipulator_protection,
+)
 
 from navigation_mcap_reader import read_navigation_messages
 
@@ -48,10 +50,6 @@ ALLOWED_PARAM_DELTAS = {
     ('global_costmap', 'global_costmap', 'ros__parameters',
      'always_send_full_costmap'),
 }
-ALLOWED_STOP_PARAM_DELTAS = ALLOWED_PARAM_DELTAS | {
-    ('collision_monitor', 'ros__parameters', 'StopZone', 'points'),
-    ('collision_monitor', 'ros__parameters', 'SlowdownZone', 'points'),
-}
 CAP_BYTES = 64 * 1024 * 1024
 BAG_LIVE_CAP_BYTES = 56 * 1024 * 1024
 RECORDED_TOPICS = (
@@ -64,6 +62,8 @@ NAV_SCENARIO_SOURCE = (
 STOP_SCENARIO_SOURCE = (
     ROOT / 'jdamr_cube_navigation/jdamr_cube_navigation/'
     'sim_collision_monitor_scenario.py')
+MOBILE_MANIPULATOR_PROTECTION = (
+    ROOT / 'jdamr_cube_navigation/config/mobile_manipulator_protection.yaml')
 
 
 def _leaf_differences(
@@ -134,25 +134,28 @@ def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
         'park_pose_m': probe['park_pose_m'],
     }
     direct_contract_path = assets / 'onboard_stop_contract.json'
-    stop_candidate = copy.deepcopy(candidate)
-    stop_monitor = stop_candidate['collision_monitor']['ros__parameters']
-    stop_monitor['StopZone']['points'] = direct_contract[
-        'stop_zone']['points']
-    stop_monitor['SlowdownZone']['points'] = direct_contract[
-        'slowdown_zone']['points']
-    stop_differences = _leaf_differences(production, stop_candidate)
-    if stop_differences != ALLOWED_STOP_PARAM_DELTAS:
-        raise RuntimeError(
-            f'stop candidate parameter delta drift: {stop_differences}')
-    stop_params_path = assets / 'nav2_obstacle_stop_eval.params.yaml'
-    stop_params_path.write_text(
-        yaml.safe_dump(stop_candidate, sort_keys=False), encoding='utf-8')
+    protection = load_mobile_manipulator_protection(
+        MOBILE_MANIPULATOR_PROTECTION)
+    overrides = protection['collision_monitor_overrides']
+    if (overrides['StopZone.points'] != direct_contract['stop_zone']['points']
+            or overrides['SlowdownZone.points']
+            != direct_contract['slowdown_zone']['points']):
+        raise RuntimeError('runtime protective zones drifted from derivation')
+    if (protection['travel_pose']['joints_rad']
+            != direct_contract['travel_pose_envelope']['joint_positions_rad']
+            or protection['travel_pose']['position_tolerance_rad']
+            != direct_contract['travel_pose_gate']['position_tolerance_rad']
+            or protection['travel_pose']['source_topic']
+            != direct_contract['travel_pose_gate']['source_topic']):
+        raise RuntimeError('runtime travel pose drifted from derivation')
     direct_contract['candidate_params'] = {
-        'path': str(stop_params_path.resolve()),
-        'sha256': _sha256(stop_params_path),
-        'delta_paths': sorted('.'.join(path) for path in stop_differences),
+        'path': str(generated['params'].resolve()),
+        'sha256': _sha256(generated['params']),
+        'delta_paths': sorted('.'.join(path) for path in differences),
         'production_scan_overrides_added': [],
     }
+    direct_contract['runtime_protection_config'] = _source_identity(
+        MOBILE_MANIPULATOR_PROTECTION)
     direct_contract_path.write_text(json.dumps(
         direct_contract, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
         encoding='utf-8')
@@ -178,10 +181,9 @@ def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
         assets / 'sim_keepout_mask.yaml', ASSETS / 'slam_corridor_eval.yaml')
     return {
         'params': generated['params'], 'contract': generated['contract'],
-        'stop_contract': direct_contract_path, 'stop_params': stop_params_path,
+        'stop_contract': direct_contract_path,
         'mask': assets / 'sim_keepout_mask.yaml',
         'mask_report': mask_report, 'param_deltas': differences,
-        'stop_param_deltas': stop_differences,
     }
 
 
@@ -196,6 +198,14 @@ def _parameter(node: str, name: str, environment: dict[str, str]) -> str:
         raise RuntimeError(f'parameter unavailable: {node}.{name}: '
                            f'{result.stderr.strip()}')
     return result.stdout.strip()
+
+
+def _json_string_parameter(output: str) -> Any:
+    """Decode one ROS string parameter whose payload is JSON."""
+    prefix = 'String value is:'
+    if not output.startswith(prefix):
+        raise ValueError(f'expected ROS string parameter, got: {output}')
+    return json.loads(output[len(prefix):].strip())
 
 
 def _travel_pose_sample(
@@ -438,8 +448,7 @@ def run_case(case: str, output_root: Path, domain_id: int,
              prepared: dict[str, Any], startup_only: bool = False) -> dict:
     """Launch isolated Gazebo plus the real onboard core and run one case."""
     direct_stop = case == 'sudden_stop_resume'
-    runtime_params = (
-        prepared['stop_params'] if direct_stop else prepared['params'])
+    runtime_params = prepared['params']
     scenario_contract = (
         prepared['stop_contract'] if direct_stop else prepared['contract'])
     scenario_source = (
@@ -481,6 +490,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'candidate_bt': _source_identity(BT),
             'scenario_contract': _source_identity(scenario_contract),
             'scenario_source': _source_identity(scenario_source),
+            'mobile_manipulator_protection': _source_identity(
+                MOBILE_MANIPULATOR_PROTECTION),
         },
     }
     try:
@@ -537,6 +548,7 @@ def run_case(case: str, output_root: Path, domain_id: int,
             raise RuntimeError(
                 f'pre-goal ROS time mismatch: {pre_goal_clocks}')
         travel_pose = None
+        protective_parameters = None
         if direct_stop:
             stop_contract = json.loads(
                 prepared['stop_contract'].read_text(encoding='utf-8'))
@@ -544,10 +556,22 @@ def run_case(case: str, output_root: Path, domain_id: int,
             result['travel_pose'] = travel_pose
             if travel_pose['status'] != 'PASS':
                 raise RuntimeError('arm is outside the contracted travel pose')
+            protective_parameters = {
+                name: _parameter('/collision_monitor', name, environment)
+                for name in ('StopZone.points', 'SlowdownZone.points')}
+            expected_overrides = load_mobile_manipulator_protection(
+                MOBILE_MANIPULATOR_PROTECTION)[
+                    'collision_monitor_overrides']
+            for name, output in protective_parameters.items():
+                if (_json_string_parameter(output)
+                        != json.loads(expected_overrides[name])):
+                    raise RuntimeError(
+                        f'Collision Monitor protective field drift: {name}')
         if startup_only:
             result['startup'] = {
                 'status': 'PASS', 'pre_goal_use_sim_time': pre_goal_clocks,
-                'travel_pose': travel_pose}
+                'travel_pose': travel_pose,
+                'protective_parameters': protective_parameters}
             result['status'] = 'PASS'
             return result
 
@@ -614,6 +638,7 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'keepout_enabled': keepout_parameters,
             'use_sim_time': clock_parameters,
             'pre_goal_use_sim_time': pre_goal_clocks,
+            'protective_parameters': protective_parameters,
             'timing_note': (
                 'moving serial diagnostics after the scenario reduces delay; '
                 'explicit component use_sim_time is the clock-domain fix'),

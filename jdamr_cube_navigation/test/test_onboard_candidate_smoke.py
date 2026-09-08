@@ -31,13 +31,10 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
     production = yaml.safe_load(
         SMOKE.PRODUCTION_PARAMS.read_text(encoding='utf-8'))
     candidate = yaml.safe_load(prepared['params'].read_text(encoding='utf-8'))
-    stop_candidate = yaml.safe_load(
-        prepared['stop_params'].read_text(encoding='utf-8'))
 
     assert SMOKE._leaf_differences(production, candidate) == (
         SMOKE.ALLOWED_PARAM_DELTAS)
-    assert SMOKE._leaf_differences(production, stop_candidate) == (
-        SMOKE.ALLOWED_STOP_PARAM_DELTAS)
+    assert 'stop_params' not in prepared
     assert prepared['mask_report']['keepout_cells'] > 0
     assert prepared['mask_report']['zones'] == [
         'sim_route_away_northeast_corner']
@@ -64,8 +61,27 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
         'half_width_m': 0.2,
         'composition': 'union_AABB_of_base_footprint_and_stowed_arm',
     }
-    assert stop_candidate['collision_monitor']['ros__parameters'][
-        'StopZone']['points'] == direct['stop_zone']['points']
+    protection = SMOKE.load_mobile_manipulator_protection(
+        SMOKE.MOBILE_MANIPULATOR_PROTECTION)
+    assert protection['collision_monitor_overrides'] == {
+        'StopZone.points': direct['stop_zone']['points'],
+        'SlowdownZone.points': direct['slowdown_zone']['points'],
+    }
+    assert direct['candidate_params']['path'] == str(
+        prepared['params'].resolve())
+    assert direct['runtime_protection_config']['sha256'] == SMOKE._sha256(
+        SMOKE.MOBILE_MANIPULATOR_PROTECTION)
+
+
+def test_json_string_parameter_compares_the_runtime_geometry_semantically():
+    """Ignore harmless whitespace while retaining exact numeric geometry."""
+    output = 'String value is: [[0.4, 0.25], [0.4, -0.25]]'
+
+    assert SMOKE._json_string_parameter(output) == [
+        [0.4, 0.25], [0.4, -0.25]]
+
+    with pytest.raises(ValueError, match='expected ROS string parameter'):
+        SMOKE._json_string_parameter('Double value is: 0.4')
 
 
 @pytest.mark.parametrize('domain_id', [12, 185, 188])

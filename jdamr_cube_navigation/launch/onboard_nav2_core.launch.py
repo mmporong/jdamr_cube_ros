@@ -11,6 +11,9 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.keepout_mask import validate_mask
+from jdamr_cube_navigation.mobile_manipulator_protection import (
+    load_mobile_manipulator_protection,
+)
 from jdamr_cube_navigation.nav2_liveness_guard import DEFAULT_REQUIRED
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -61,6 +64,10 @@ def _launch_navigation(context):
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     selected_bt = os.path.join(package_share, 'behavior_trees', behavior_tree)
+    protection = None
+    if profile == 'obstacle_candidate':
+        protection = load_mobile_manipulator_protection(Path(
+            package_share) / 'config' / 'mobile_manipulator_protection.yaml')
 
     configured_params = ParameterFile(
         RewrittenYaml(
@@ -115,6 +122,10 @@ def _launch_navigation(context):
                        'multiplier': 1.0,
                    }], remap=False),
     ]
+    collision_monitor_parameters = [configured_params]
+    if protection is not None:
+        collision_monitor_parameters.append(
+            protection['collision_monitor_overrides'])
     nav2_components = [
         composable('nav2_map_server', 'nav2_map_server::MapServer',
                    'map_server', [configured_params,
@@ -139,7 +150,7 @@ def _launch_navigation(context):
         ),
         composable('nav2_collision_monitor',
                    'nav2_collision_monitor::CollisionMonitor',
-                   'collision_monitor', [configured_params]),
+                   'collision_monitor', collision_monitor_parameters),
         composable('nav2_bt_navigator', 'nav2_bt_navigator::BtNavigator',
                    'bt_navigator', [configured_params]),
     ]
