@@ -144,14 +144,15 @@ goal UUID를 함께 대조했다. 따라서 단순 경로 그림만 보고 우�
 Gazebo 카메라보다 장애물·경로·상태를 한 화면에서 읽기 쉽도록, 위 PASS 실행의
 ground truth·Nav2 plan·시나리오 이벤트를 MuJoCo 3D 장면으로 재생한다. 상체의 SO-101은
 시각 모델에서 제외하고 모바일 베이스, 실제 크기의 고정 박스, 횡단 보행자만 남겼다.
-추종 시점, 계획 경로, 실제 이동 궤적, 미니맵과 상태 대시보드를 함께 표시한다.
+로봇 진행축에서 14° 틀어진 상부 추종 시점에 계획 경로, 실제 이동 궤적,
+미니맵과 상태 대시보드를 함께 표시한다.
 
 이 영상은 MuJoCo에서 Nav2를 다시 실행한 독립 물리 실험이 아니다. 주행·접촉·목표 상태의
 원본은 Gazebo/ROS 2 MCAP이며, 화면의 LiDAR 광선만 MuJoCo 장면에 raycast해 가시화한다.
 manifest는 이 구분과 원본·출력 SHA-256을 보존한다. 렌더러는 프레임을 한 장씩 ffmpeg로
 전달하고, 사용 가능 메모리 2 GiB 또는 디스크 1 GiB 아래에서는 중단한다.
 
-- 원본 재생: `$HOME/jdamr_artifacts/mujoco_nav2_combined_20260908_v04`
+- 원본 재생: `$HOME/jdamr_artifacts/mujoco_nav2_combined_20260908_v06`
 - 저장소 미디어: `evaluation/media/mujoco_nav2_combined_20260908`
 - 대표 영상: `mujoco_nav2_obstacle_challenge.mp4` (1280×720, 24fps, 24초)
 - 웹 미리보기: `mujoco_nav2_obstacle_challenge.gif`

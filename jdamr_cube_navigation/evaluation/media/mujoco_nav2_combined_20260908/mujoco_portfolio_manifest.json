@@ -6,23 +6,23 @@
   },
   "gif": {
     "path": "mujoco_nav2_obstacle_challenge.gif",
-    "sha256": "23227c0de508160441a212f4c3d903f425f5496aaa414b60b580c79173569d1b",
-    "size_bytes": 5036733
+    "sha256": "3a82dd1298a029a48ff3adf506df0f1c4487e7fb6c47ec425ed84cad6571bd3f",
+    "size_bytes": 5575303
   },
   "preview": {
     "path": "mujoco_nav2_obstacle_challenge.jpg",
-    "sha256": "4a08fefa03b9fb0446646f07134ff48d49ef0205af7d12fd467f3047ef8957bd",
-    "size_bytes": 121858
+    "sha256": "bc431f6f69aa0223cd94dac80651c58343b7a30a623b4f6ea6e79d24937a1630",
+    "size_bytes": 129047
   },
   "resource_policy": {
     "abort_below_available_memory_bytes": 2147483648,
     "abort_below_free_disk_bytes": 1073741824,
-    "average_render_fps": 82.12391006357113,
+    "average_render_fps": 81.80105561664963,
     "frames_retained_in_memory": 1,
-    "minimum_available_memory_bytes": 10353827840,
-    "minimum_free_disk_bytes": 3628785664,
-    "peak_rss_kib": 252328,
-    "render_elapsed_s": 7.013791714911349,
+    "minimum_available_memory_bytes": 10172862464,
+    "minimum_free_disk_bytes": 3610746880,
+    "peak_rss_kib": 252312,
+    "render_elapsed_s": 7.041473923018202,
     "streamed_frames": true
   },
   "scenario": "detour_sudden_stop_resume",
@@ -92,8 +92,8 @@
     "frames": 576,
     "height": 720,
     "path": "mujoco_nav2_obstacle_challenge.mp4",
-    "sha256": "a566b79e4cbd681a6a09700b22e3bb1a041a89b03fef86bc9f9b5b0aee3b95f3",
-    "size_bytes": 4786292,
+    "sha256": "782c80f255cac8b78a3c4d038bbff1e75e4566c911be0a1ea99a5953d49867c2",
+    "size_bytes": 4906932,
     "width": 1280
   }
 }

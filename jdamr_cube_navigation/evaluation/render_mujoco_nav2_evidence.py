@@ -602,8 +602,8 @@ def render(run_root: Path, output_dir: Path) -> dict[str, Any]:
     renderer = mujoco.Renderer(model, height=HEIGHT, width=WIDTH)
     camera = mujoco.MjvCamera()
     camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-    camera.distance = 3.35
-    camera.elevation = -15.0
+    camera.distance = 4.1
+    camera.elevation = -25.0
     frames = round(DURATION_S * FPS)
     video_path = output_dir / 'mujoco_nav2_obstacle_challenge.mp4'
     preview_path = output_dir / 'mujoco_nav2_obstacle_challenge.jpg'
@@ -637,9 +637,9 @@ def render(run_root: Path, output_dir: Path) -> dict[str, Any]:
             data.mocap_quat[pedestrian_mocap_id] = (1.0, 0.0, 0.0, 0.0)
             mujoco.mj_forward(model, data)
             camera.lookat[:] = (
-                pose[1] + 0.85 * math.cos(pose[3]),
-                pose[2] + 0.85 * math.sin(pose[3]), 0.25)
-            camera.azimuth = 180.0 - math.degrees(pose[3])
+                pose[1] + 1.25 * math.cos(pose[3]),
+                pose[2] + 1.25 * math.sin(pose[3]), 0.25)
+            camera.azimuth = 194.0 - math.degrees(pose[3])
             renderer.update_scene(data, camera=camera)
             _draw_world_traces(renderer.scene, plan, trail)
             nearest_lidar_m = _lidar_scan(
