@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import time
@@ -16,6 +17,11 @@ from evaluate_same_goal_bag import evaluate as evaluate_same_goal_bag
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
 
 from navigation_mcap_reader import read_navigation_messages
+
+from onboard_stop_contract import (
+    build_contract as build_stop_contract,
+    scenario_passed as stop_scenario_passed,
+)
 
 from prepare_sim_nav_obstacle_run import prepare
 
@@ -32,7 +38,8 @@ PRODUCTION_PARAMS = ROOT / 'jdamr_cube_navigation/config/nav2_params.yaml'
 PROCESS_MARKER = 'JDAMR_NAV_EVAL_RUN_ID'
 DOMAIN_IDS = {186, 187}
 SEED = 11
-CASES = ('detour', 'event_driven_removal')
+CASES = ('detour', 'event_driven_removal', 'sudden_stop_resume')
+DEFAULT_CASES = ('detour', 'event_driven_removal')
 ALLOWED_PARAM_DELTAS = {
     ('amcl', 'ros__parameters', 'initial_pose', 'x'),
     ('local_costmap', 'local_costmap', 'ros__parameters',
@@ -46,6 +53,12 @@ RECORDED_TOPICS = (
     '/cmd_vel', '/collision_monitor_state',
     '/navigate_to_pose/_action/status', '/odom', '/ground_truth_pose',
     '/plan', '/amcl_pose', '/tf', '/tf_static')
+NAV_SCENARIO_SOURCE = (
+    ROOT / 'jdamr_cube_navigation/jdamr_cube_navigation/'
+    'sim_nav_obstacle_scenario.py')
+STOP_SCENARIO_SOURCE = (
+    ROOT / 'jdamr_cube_navigation/jdamr_cube_navigation/'
+    'sim_collision_monitor_scenario.py')
 
 
 def _leaf_differences(
@@ -96,6 +109,30 @@ def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
         contract, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
         encoding='utf-8')
 
+    direct_contract = build_stop_contract(PRODUCTION_PARAMS)
+    probe = contract['preloaded_obstacles']['models'][
+        'front_observation_probe']
+    expected_dimensions_m = (
+        direct_contract['sudden_obstacle']['length_m'],
+        direct_contract['sudden_obstacle']['width_m'])
+    if not all(math.isclose(actual, expected, abs_tol=1e-12)
+               for actual, expected in zip(
+                   (probe['length_m'], probe['width_m']),
+                   expected_dimensions_m)):
+        raise RuntimeError('direct-scan obstacle dimensions drifted')
+    if probe['park_pose_m'] != direct_contract[
+            'sudden_obstacle']['removal_pose_m']:
+        raise RuntimeError('direct-scan obstacle parking pose drifted')
+    direct_contract['preloaded_obstacle'] = {
+        'role': probe['role'], 'name': probe['name'],
+        'length_m': probe['length_m'], 'width_m': probe['width_m'],
+        'park_pose_m': probe['park_pose_m'],
+    }
+    direct_contract_path = assets / 'onboard_stop_contract.json'
+    direct_contract_path.write_text(json.dumps(
+        direct_contract, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8')
+
     zones = assets / 'sim_keepout_zones.yaml'
     zones.write_text(yaml.safe_dump({
         'schema_version': 1,
@@ -117,6 +154,7 @@ def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
         assets / 'sim_keepout_mask.yaml', ASSETS / 'slam_corridor_eval.yaml')
     return {
         'params': generated['params'], 'contract': generated['contract'],
+        'stop_contract': direct_contract_path,
         'mask': assets / 'sim_keepout_mask.yaml',
         'mask_report': mask_report, 'param_deltas': differences,
     }
@@ -276,9 +314,50 @@ def scenario_passed(document: dict[str, Any], case: str,
         and goal_reached and marked and replanned)
 
 
+def _scenario_command(
+        case: str, prepared: dict[str, Any], evidence: Path,
+        entity: str, contact_topic: str) -> list[str]:
+    if case == 'sudden_stop_resume':
+        return [
+            'ros2', 'run', 'jdamr_cube_navigation',
+            'sim_collision_monitor_scenario',
+            '--scenario', 'sudden_obstacle_stop_resume',
+            '--seed', str(SEED), '--output', str(evidence),
+            '--contract', str(prepared['stop_contract']),
+            '--entity-name', entity, '--contact-topic', contact_topic,
+            '--goal-x-m', '6.0', '--run-timeout-s', '180',
+            '--direct-scan', '--ros-args', '-p', 'use_sim_time:=true',
+        ]
+    return [
+        'ros2', 'run', 'jdamr_cube_navigation',
+        'sim_nav_obstacle_scenario', '--scenario', case,
+        '--seed', str(SEED), '--output', str(evidence),
+        '--contract', str(prepared['contract']),
+        '--behavior-tree', str(BT), '--run-timeout-s', '180',
+        '--observation-persistence-s', '0.0',
+        '--ros-args', '-p', 'use_sim_time:=true',
+    ]
+
+
+def _case_passed(
+        document: dict[str, Any], case: str, returncode: int,
+        same_goal_command_evidence: dict[str, Any]) -> bool:
+    if case != 'sudden_stop_resume':
+        return scenario_passed(document, case, returncode)
+    command_evidence = same_goal_command_evidence.get('evidence', {})
+    return (
+        stop_scenario_passed(document, returncode)
+        and command_evidence.get('verdict') == 'CONFIRMED'
+        and command_evidence.get('terminal_succeeded') is True)
+
+
 def run_case(case: str, output_root: Path, domain_id: int,
              prepared: dict[str, Any], startup_only: bool = False) -> dict:
     """Launch isolated Gazebo plus the real onboard core and run one case."""
+    direct_stop = case == 'sudden_stop_resume'
+    scenario_contract = (
+        prepared['stop_contract'] if direct_stop else prepared['contract'])
+    scenario_source = STOP_SCENARIO_SOURCE if direct_stop else NAV_SCENARIO_SOURCE
     run_id = f'onboard_candidate_{case}_seed_{SEED}'
     case_dir = output_root / case
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -294,9 +373,13 @@ def run_case(case: str, output_root: Path, domain_id: int,
         'case': case, 'seed': SEED, 'domain_id': domain_id,
         'run_id': run_id, 'status': 'FAIL', 'scenario_started': False,
         'claim_scope': 'SIM_INTEGRATION',
-        'case_claim': (
-            'fixed_obstacle_detour' if case == 'detour'
-            else 'obstacle_removal_and_replan_not_sudden_stop_resume'),
+        'case_claim': {
+            'detour': 'fixed_obstacle_detour',
+            'event_driven_removal': (
+                'obstacle_removal_and_replan_not_sudden_stop_resume'),
+            'sudden_stop_resume': (
+                'synthetic_sudden_obstacle_stop_same_goal_resume'),
+        }[case],
         'runtime_profile': {
             'name': 'obstacle_candidate',
             'launch': 'onboard_nav2_core.launch.py',
@@ -309,6 +392,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'production_params': _source_identity(PRODUCTION_PARAMS),
             'candidate_params': _source_identity(prepared['params']),
             'candidate_bt': _source_identity(BT),
+            'scenario_contract': _source_identity(scenario_contract),
+            'scenario_source': _source_identity(scenario_source),
         },
     }
     try:
@@ -370,9 +455,11 @@ def run_case(case: str, output_root: Path, domain_id: int,
             result['status'] = 'PASS'
             return result
 
-        contract = json.loads(prepared['contract'].read_text(encoding='utf-8'))
-        role = 'route'
-        entity = contract['preloaded_obstacles']['models'][role]['name']
+        asset_contract = json.loads(
+            prepared['contract'].read_text(encoding='utf-8'))
+        role = 'front_observation_probe' if direct_stop else 'route'
+        entity = asset_contract[
+            'preloaded_obstacles']['models'][role]['name']
         contact_topic = (f'/world/slam_corridor/model/{entity}/link/body/'
                          'sensor/contact_sensor/contact')
         launched.append(_start([
@@ -383,15 +470,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
         launched.append(recorder)
         _wait_bag_ready(recorder[0], bag_dir)
         evidence = case_dir / 'scenario.json'
-        scenario = _start([
-            'ros2', 'run', 'jdamr_cube_navigation',
-            'sim_nav_obstacle_scenario', '--scenario', case,
-            '--seed', str(SEED), '--output', str(evidence),
-            '--contract', str(prepared['contract']),
-            '--behavior-tree', str(BT), '--run-timeout-s', '180',
-            '--observation-persistence-s', '0.0',
-            '--ros-args', '-p', 'use_sim_time:=true',
-        ], case_dir / 'scenario.log', environment)
+        scenario = _start(_scenario_command(
+            case, prepared, evidence, entity, contact_topic),
+            case_dir / 'scenario.log', environment)
         launched.append(scenario)
         result['scenario_started'] = True
         deadline_s = time.monotonic() + 210.0
@@ -417,7 +498,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'time_basis_mixing_forbidden': True,
         }
         result['raw_action_status'] = _status_summary(mcap)
-        result['same_goal_command_evidence'] = evaluate_same_goal_bag(mcap)
+        same_goal_evidence = evaluate_same_goal_bag(mcap)
+        result['same_goal_command_evidence'] = same_goal_evidence
         if not evidence.is_file():
             raise RuntimeError('scenario produced no evidence')
         scenario_document = json.loads(evidence.read_text(encoding='utf-8'))
@@ -450,31 +532,82 @@ def run_case(case: str, output_root: Path, domain_id: int,
                 for value in (*keepout_parameters.values(),
                               *clock_parameters.values())):
             raise RuntimeError('post-run candidate configuration drift')
-        result['scenario'] = {
-            'returncode': returncode,
-            'action_terminal': scenario_document.get('action_terminal'),
-            'events': [event['name'] for event in
-                       scenario_document.get('events', [])],
-            'costmap_message_counts': scenario_document.get(
-                'costmap_message_counts'),
-            'contact_count': scenario_document.get('contact_count'),
-            'contact_matched_publisher_count_max': scenario_document.get(
-                'contact_matched_publisher_count_max'),
-            'global_blocking': scenario_document.get('global_blocking'),
-            'local_blocking': scenario_document.get('local_blocking'),
-            'final_cmd_vel_zero': scenario_document.get('final_cmd_vel_zero'),
-            'final_zero_hold_s': scenario_document.get('final_zero_hold_s'),
-            'minimum_obstacle_aabb_distance_m': scenario_document.get(
-                'minimum_robot_obstacle_aabb_distance_m'),
-            'final_robot_pose_xy_yaw': scenario_document.get(
-                'final_robot_pose_xy_yaw'),
-            'mark_eligible_scan': scenario_document.get(
-                'mark_eligible_scan'),
-            'plans_after_mark_count': len(
-                scenario_document.get('plans_after_mark', [])),
-            'activation_error': scenario_document.get('activation_error'),
-        }
-        passed = scenario_passed(scenario_document, case, returncode)
+        if direct_stop:
+            result['scenario'] = {
+                'returncode': returncode,
+                'action_terminal': scenario_document.get('action_terminal'),
+                'events': [event['name'] for event in
+                           scenario_document.get('events', [])],
+                'goal_uuid': scenario_document.get('goal_uuid'),
+                'terminal_goal_uuid': scenario_document.get(
+                    'terminal_goal_uuid'),
+                'goal_send_count': scenario_document.get('goal_send_count'),
+                'goal_cancel_count': scenario_document.get(
+                    'goal_cancel_count'),
+                'stop_action_type': scenario_document.get('stop_action_type'),
+                'stop_polygon_name': scenario_document.get(
+                    'stop_polygon_name'),
+                'resume_action_type': scenario_document.get(
+                    'resume_action_type'),
+                'physical_stop_observed': scenario_document.get(
+                    'physical_stop_observed'),
+                'direct_scan_capture': scenario_document.get(
+                    'direct_scan_capture'),
+                'observer_scan_to_zero_command_s': (
+                    (
+                        scenario_document['direct_scan_capture'][
+                            'zero_receive_steady_ns']
+                        - scenario_document['direct_scan_capture'][
+                            'scan_receive_steady_ns']) / 1e9
+                    if (scenario_document.get('direct_scan_capture')
+                        and 'zero_receive_steady_ns'
+                        in scenario_document['direct_scan_capture'])
+                    else None),
+                'contact_count': scenario_document.get('contact_count'),
+                'contact_matched_publisher_count_max': scenario_document.get(
+                    'contact_matched_publisher_count_max'),
+                'minimum_clearance_m': scenario_document.get(
+                    'footprint_to_obstacle_clearance_m'),
+                'final_cmd_vel_zero': scenario_document.get(
+                    'final_cmd_vel_zero'),
+                'final_zero_hold_s': scenario_document.get(
+                    'final_zero_hold_s'),
+                'final_world_pose_m': scenario_document.get(
+                    'final_world_pose_m'),
+                'activation_error': scenario_document.get('activation_error'),
+                'harness_error': scenario_document.get('harness_error'),
+                'same_goal_command_verdict': same_goal_evidence[
+                    'evidence']['verdict'],
+            }
+        else:
+            result['scenario'] = {
+                'returncode': returncode,
+                'action_terminal': scenario_document.get('action_terminal'),
+                'events': [event['name'] for event in
+                           scenario_document.get('events', [])],
+                'costmap_message_counts': scenario_document.get(
+                    'costmap_message_counts'),
+                'contact_count': scenario_document.get('contact_count'),
+                'contact_matched_publisher_count_max': scenario_document.get(
+                    'contact_matched_publisher_count_max'),
+                'global_blocking': scenario_document.get('global_blocking'),
+                'local_blocking': scenario_document.get('local_blocking'),
+                'final_cmd_vel_zero': scenario_document.get(
+                    'final_cmd_vel_zero'),
+                'final_zero_hold_s': scenario_document.get(
+                    'final_zero_hold_s'),
+                'minimum_obstacle_aabb_distance_m': scenario_document.get(
+                    'minimum_robot_obstacle_aabb_distance_m'),
+                'final_robot_pose_xy_yaw': scenario_document.get(
+                    'final_robot_pose_xy_yaw'),
+                'mark_eligible_scan': scenario_document.get(
+                    'mark_eligible_scan'),
+                'plans_after_mark_count': len(
+                    scenario_document.get('plans_after_mark', [])),
+                'activation_error': scenario_document.get('activation_error'),
+            }
+        passed = _case_passed(
+            scenario_document, case, returncode, same_goal_evidence)
         result['status'] = 'PASS' if passed else 'FAIL'
     except Exception as error:
         result['harness_error'] = f'{type(error).__name__}: {error}'
@@ -523,7 +656,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.domain_id == 12 or args.domain_id not in DOMAIN_IDS:
         parser.error('only isolated ROS domain 186 or 187 is allowed')
-    selected = args.case or list(CASES)
+    selected = args.case or list(DEFAULT_CASES)
     assigned_domains = [args.domain_id + index
                         for index in range(len(selected))]
     if any(domain not in DOMAIN_IDS for domain in assigned_domains):

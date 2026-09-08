@@ -1,6 +1,7 @@
 """Tests for the bounded real-onboard candidate simulation smoke."""
 
 import importlib.util
+import json
 from pathlib import Path
 import sys  # noqa: I100
 
@@ -31,6 +32,12 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
     assert prepared['mask_report']['keepout_cells'] > 0
     assert prepared['mask_report']['zones'] == [
         'sim_route_away_northeast_corner']
+    direct = json.loads(
+        prepared['stop_contract'].read_text(encoding='utf-8'))
+    assert direct['integration_kind'] == 'onboard_candidate_direct_scan'
+    assert direct['preloaded_obstacle']['role'] == 'front_observation_probe'
+    assert direct['scan_gate'] == {
+        'used': False, 'monitor_input_topic': '/scan'}
 
 
 @pytest.mark.parametrize('domain_id', [12, 185, 188])
@@ -180,3 +187,68 @@ def test_output_cap_fails_without_rewriting_raw_logs(monkeypatch, tmp_path):
         SMOKE._cap_output(tmp_path)
 
     assert log.read_bytes() == raw
+
+
+def test_sudden_case_uses_direct_scan_on_the_operational_monitor_input(
+        tmp_path):
+    """Route the sudden case to the Collision Monitor scenario only."""
+    prepared = {
+        'contract': tmp_path / 'navigation.json',
+        'stop_contract': tmp_path / 'stop.json',
+    }
+    command = SMOKE._scenario_command(
+        'sudden_stop_resume', prepared, tmp_path / 'evidence.json',
+        'probe', '/contact')
+
+    assert 'sim_collision_monitor_scenario' in command
+    assert 'sudden_obstacle_stop_resume' in command
+    assert '--direct-scan' in command
+    assert str(prepared['stop_contract']) in command
+    assert '--behavior-tree' not in command
+
+
+def _valid_sudden_stop_resume():
+    return {
+        'goal_uuid': '01' * 16,
+        'terminal_goal_uuid': '01' * 16,
+        'goal_send_count': 1,
+        'goal_cancel_count': 0,
+        'action_terminal': 'succeeded',
+        'stop_action_type': 1,
+        'stop_polygon_name': 'StopZone',
+        'resume_action_type': 0,
+        'physical_stop_observed': True,
+        'clear_scan_stamp_ns': 3,
+        'contact_matched_publisher_count_max': 1,
+        'contact_count': 0,
+        'final_cmd_vel_zero': True,
+        'final_zero_hold_s': 2.0,
+        'final_world_pose_m': [6.0, 0.0],
+        'direct_scan_capture': {
+            'scan_receive_steady_ns': 1,
+            'zero_receive_steady_ns': 2,
+        },
+        'activation_error': None,
+        'harness_error': None,
+        'contract': {
+            'goal_pose': {'x_m': 6.0, 'y_m': 0.0},
+            'final_zero_hold_s': 1.95,
+        },
+    }
+
+
+def test_sudden_case_requires_physical_and_recorded_same_goal_evidence():
+    """Do not pass a command-only or physical-only stop-resume result."""
+    same_goal = {
+        'evidence': {'verdict': 'CONFIRMED', 'terminal_succeeded': True}}
+    document = _valid_sudden_stop_resume()
+
+    assert SMOKE._case_passed(document, 'sudden_stop_resume', 0, same_goal)
+
+    document['physical_stop_observed'] = False
+    assert not SMOKE._case_passed(
+        document, 'sudden_stop_resume', 0, same_goal)
+    document['physical_stop_observed'] = True
+    same_goal['evidence']['verdict'] = 'NOT_CONFIRMED'
+    assert not SMOKE._case_passed(
+        document, 'sudden_stop_resume', 0, same_goal)
