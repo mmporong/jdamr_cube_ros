@@ -12,10 +12,12 @@ TOPIC_TYPES = {
     '/cmd_vel_nav': 'geometry_msgs/msg/Twist',
     '/imu/data_raw': 'sensor_msgs/msg/Imu',
     '/navigate_to_pose/_action/status': 'action_msgs/msg/GoalStatusArray',
+    '/ground_truth_pose': 'geometry_msgs/msg/PoseStamped',
     '/odom': 'nav_msgs/msg/Odometry',
     '/plan': 'nav_msgs/msg/Path',
     '/scan': 'sensor_msgs/msg/LaserScan',
     '/tf': 'tf2_msgs/msg/TFMessage',
+    '/tf_static': 'tf2_msgs/msg/TFMessage',
 }
 
 

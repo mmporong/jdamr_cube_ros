@@ -502,8 +502,12 @@ class CorridorRoute(Node):
         ros_now_s = self.get_clock().now().nanoseconds * 1e-9
         now_s = time.monotonic()
         odom_seen_s, odom_stamp, linear_mps, angular_radps = self.parking_odom
-        command_seen_s, cmd_linear_mps, cmd_angular_radps = self.parking_command
-        ages_s = [now_s - odom_seen_s, now_s - command_seen_s]
+        _command_seen_s, cmd_linear_mps, cmd_angular_radps = (
+            self.parking_command)
+        # Odometry and TF must remain fresh. A final zero command need not be
+        # periodically republished; any later observed nonzero command or
+        # physical motion increments parking_motion_revision and resets hold.
+        ages_s = [now_s - odom_seen_s]
         for stamp in (odom_stamp, transform.header.stamp):
             age_s = ros_now_s - (stamp.sec + stamp.nanosec * 1e-9)
             if age_s < 0.0:
