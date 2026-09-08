@@ -58,6 +58,12 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
         0.30255615917893763)
     assert envelope['witnesses']['front_m']['link'] == 'arm_moving_jaw_link'
     assert envelope['production_stop_zone_deficit_m'] > 0.0
+    assert direct['protected_envelope'] == {
+        'front_m': pytest.approx(0.30255615917893763),
+        'rear_m': -0.23,
+        'half_width_m': 0.2,
+        'composition': 'union_AABB_of_base_footprint_and_stowed_arm',
+    }
     assert stop_candidate['collision_monitor']['ros__parameters'][
         'StopZone']['points'] == direct['stop_zone']['points']
 
@@ -281,6 +287,7 @@ def _valid_sudden_stop_resume():
         'contact_matched_publisher_count_max': 1,
         'contact_count': 0,
         'footprint_to_obstacle_clearance_m': 0.05,
+        'protected_envelope_to_obstacle_clearance_m': 0.02,
         'final_cmd_vel_zero': True,
         'final_zero_hold_s': 2.0,
         'final_world_pose_m': [6.0, 0.0],
@@ -314,6 +321,10 @@ def test_sudden_case_requires_physical_and_recorded_same_goal_evidence():
         document, 'sudden_stop_resume', 0, same_goal)
     same_goal['evidence']['verdict'] = 'CONFIRMED'
     document['footprint_to_obstacle_clearance_m'] = 0.0
+    assert not SMOKE._case_passed(
+        document, 'sudden_stop_resume', 0, same_goal)
+    document['footprint_to_obstacle_clearance_m'] = 0.05
+    document['protected_envelope_to_obstacle_clearance_m'] = 0.0
     assert not SMOKE._case_passed(
         document, 'sudden_stop_resume', 0, same_goal)
 

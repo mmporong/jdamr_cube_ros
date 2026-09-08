@@ -87,8 +87,18 @@ def build_contract(params_path: Path, urdf_path: Path | None = None) -> dict:
     bounded_stop_distance_m = reaction_distance_m + braking_distance_m
     cell_half_diagonal_m = motion['costmap_resolution_m'] / math.sqrt(2.0)
     arm_front_m = arm_envelope['bounds_m']['front_m']
+    protected_envelope = {
+        'front_m': max(arm_front_m, motion['footprint_front_m']),
+        'rear_m': min(
+            arm_envelope['bounds_m']['rear_m'], motion['footprint_rear_m']),
+        'half_width_m': max(
+            arm_envelope['bounds_m']['half_width_m'],
+            motion['footprint_half_width_m']),
+        'composition': 'union_AABB_of_base_footprint_and_stowed_arm',
+    }
     required_front_m = (
-        arm_front_m + bounded_stop_distance_m + cell_half_diagonal_m)
+        protected_envelope['front_m'] + bounded_stop_distance_m
+        + cell_half_diagonal_m)
     stop_zone = {
         **production_stop_zone,
         'front_m': _ceil_to_resolution(
@@ -103,7 +113,8 @@ def build_contract(params_path: Path, urdf_path: Path | None = None) -> dict:
             stop_zone['front_m'] + minimum_slowdown_lead_m,
         ), motion['costmap_resolution_m']),
     }
-    available_stop_distance_m = stop_zone['front_m'] - arm_front_m
+    available_stop_distance_m = (
+        stop_zone['front_m'] - protected_envelope['front_m'])
     if bounded_stop_distance_m >= available_stop_distance_m:
         raise ValueError(
             'candidate stop zone lacks stowed-arm stopping margin')
@@ -132,7 +143,7 @@ def build_contract(params_path: Path, urdf_path: Path | None = None) -> dict:
         },
     }
     contract['non_contact_margin'] = {
-        'protected_front_m': arm_front_m,
+        'protected_front_m': protected_envelope['front_m'],
         'maximum_approach_speed_mps': speed_mps,
         'reaction_time_s': reaction_time_s,
         'reaction_distance_m': reaction_distance_m,
@@ -150,6 +161,7 @@ def build_contract(params_path: Path, urdf_path: Path | None = None) -> dict:
     contract['travel_pose_envelope']['production_stop_zone_deficit_m'] = max(
         0.0, arm_front_m - production_stop_zone['front_m'])
     contract['travel_pose_envelope']['valid_only_at_joint_positions'] = True
+    contract['protected_envelope'] = protected_envelope
     contract['travel_pose_gate'] = {
         'required_before_navigation': True,
         'position_tolerance_rad': 0.03,
@@ -218,6 +230,7 @@ def scenario_passed(document: dict, returncode: int) -> bool:
         and document.get('contact_matched_publisher_count_max', 0) > 0
         and document.get('contact_count') == 0
         and document.get('footprint_to_obstacle_clearance_m', 0) > 0
+        and document.get('protected_envelope_to_obstacle_clearance_m', 0) > 0
         and document.get('final_cmd_vel_zero') is True
         and document.get('final_zero_hold_s', 0) >= contract.get(
             'final_zero_hold_s', math.inf)

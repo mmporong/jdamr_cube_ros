@@ -290,6 +290,8 @@ class CollisionMonitorScenario(Node):
         self.minimum_clearance_m = math.inf
         self.clearance_sample_count = 0
         self.minimum_clearance_witness: dict[str, Any] | None = None
+        self.minimum_protected_clearance_m = math.inf
+        self.minimum_protected_clearance_witness: dict[str, Any] | None = None
         self.clearance_samples: list[list[float | int]] = []
         self.obstacle_center_m: tuple[float, float] | None = None
         self.obstacle_active = False
@@ -500,6 +502,18 @@ class CollisionMonitorScenario(Node):
                     'obstacle_dimensions_m': dimensions,
                     'clearance_m': clearance_m,
                 }
+            protected = self.contract.get('protected_envelope')
+            if protected is not None:
+                protected_clearance_m = rectangle_clearance(
+                    robot_pose, protected, self.obstacle_center_m, dimensions)
+                if protected_clearance_m < self.minimum_protected_clearance_m:
+                    self.minimum_protected_clearance_m = protected_clearance_m
+                    self.minimum_protected_clearance_witness = {
+                        'robot_pose_xyyaw': robot_pose,
+                        'obstacle_center_xy': list(self.obstacle_center_m),
+                        'obstacle_dimensions_m': dimensions,
+                        'clearance_m': protected_clearance_m,
+                    }
             self.clearance_sample_count += 1
 
     def _cmd_vel(self, message: Twist) -> None:
@@ -1101,6 +1115,13 @@ class CollisionMonitorScenario(Node):
                 and math.isfinite(self.minimum_clearance_m) else None),
             'clearance_sample_count': self.clearance_sample_count,
             'minimum_clearance_witness': self.minimum_clearance_witness,
+            'protected_envelope_to_obstacle_clearance_m': (
+                self.minimum_protected_clearance_m
+                if self.args.scenario == 'sudden_obstacle_stop_resume'
+                and math.isfinite(self.minimum_protected_clearance_m)
+                else None),
+            'minimum_protected_clearance_witness': (
+                self.minimum_protected_clearance_witness),
             'clearance_samples': self.clearance_samples,
             'minimum_observed_scan_range_m': (
                 self.minimum_scan_range_m

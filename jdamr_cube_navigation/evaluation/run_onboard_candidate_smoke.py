@@ -670,6 +670,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
                     'contact_matched_publisher_count_max'),
                 'minimum_clearance_m': scenario_document.get(
                     'footprint_to_obstacle_clearance_m'),
+                'protected_envelope_minimum_clearance_m': (
+                    scenario_document.get(
+                        'protected_envelope_to_obstacle_clearance_m')),
                 'final_cmd_vel_zero': scenario_document.get(
                     'final_cmd_vel_zero'),
                 'final_zero_hold_s': scenario_document.get(
