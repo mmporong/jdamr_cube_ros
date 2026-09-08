@@ -38,6 +38,10 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
     assert direct['preloaded_obstacle']['role'] == 'front_observation_probe'
     assert direct['scan_gate'] == {
         'used': False, 'monitor_input_topic': '/scan'}
+    assert direct['sudden_obstacle']['activation_surface_x_m'] == (
+        pytest.approx(0.33))
+    assert direct['slowdown_zone']['slowdown_ratio'] == pytest.approx(0.60)
+    assert direct['non_contact_margin']['remaining_margin_m'] > 0.0
 
 
 @pytest.mark.parametrize('domain_id', [12, 185, 188])
@@ -214,6 +218,7 @@ def _valid_sudden_stop_resume():
         'goal_send_count': 1,
         'goal_cancel_count': 0,
         'action_terminal': 'succeeded',
+        'pre_stop_action_types': [2],
         'stop_action_type': 1,
         'stop_polygon_name': 'StopZone',
         'resume_action_type': 0,

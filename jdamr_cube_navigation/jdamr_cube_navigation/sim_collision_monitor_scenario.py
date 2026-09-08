@@ -259,6 +259,7 @@ class CollisionMonitorScenario(Node):
         self.physical_stop_observed = False
         self.physical_stop_steady_ns: int | None = None
         self.stop_state_count = 0
+        self.pre_stop_action_types: set[int] = set()
         self.last_action_type = 0
         self.stop_action_type: int | None = None
         self.stop_polygon_name: str | None = None
@@ -413,6 +414,8 @@ class CollisionMonitorScenario(Node):
         self.last_action_type = int(message.action_type)
         if self.direct_scan and self.trigger_steady_ns is None:
             return
+        if self.direct_scan and self.stop_steady_ns is None:
+            self.pre_stop_action_types.add(int(message.action_type))
         if message.action_type == CollisionMonitorState.STOP:
             self.stop_state_count += 1
             if self.stop_steady_ns is None:
@@ -1049,6 +1052,7 @@ class CollisionMonitorScenario(Node):
             'clear_reference_scan_stamp_ns': (
                 self.clear_reference_scan_stamp_ns),
             'stop_state_count': self.stop_state_count,
+            'pre_stop_action_types': sorted(self.pre_stop_action_types),
             'stop_action_type': self.stop_action_type,
             'stop_polygon_name': self.stop_polygon_name,
             'final_action_type': self.last_action_type,

@@ -544,6 +544,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
                 'goal_send_count': scenario_document.get('goal_send_count'),
                 'goal_cancel_count': scenario_document.get(
                     'goal_cancel_count'),
+                'pre_stop_action_types': scenario_document.get(
+                    'pre_stop_action_types'),
                 'stop_action_type': scenario_document.get('stop_action_type'),
                 'stop_polygon_name': scenario_document.get(
                     'stop_polygon_name'),

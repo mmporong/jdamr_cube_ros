@@ -13,6 +13,30 @@ from sim_collision_monitor_contract import derive_contract, sha256_file
 import yaml
 
 
+def _rectangle_zone(monitor: dict, name: str, action_type: str) -> dict:
+    zone = monitor[name]
+    if zone['action_type'] != action_type or zone['enabled'] is not True:
+        raise ValueError(f'probe requires the production {name}')
+    points = json.loads(zone['points'])
+    if (len(points) != 4 or any(len(point) != 2 for point in points)
+            or not all(math.isfinite(value)
+                       for point in points for value in point)):
+        raise ValueError(f'probe requires a finite rectangular {name}')
+    front_m = max(point[0] for point in points)
+    rear_m = min(point[0] for point in points)
+    half_width_m = max(abs(point[1]) for point in points)
+    if {tuple(point) for point in points} != {
+            (front_m, half_width_m), (front_m, -half_width_m),
+            (rear_m, half_width_m), (rear_m, -half_width_m)}:
+        raise ValueError(f'probe requires a symmetric rectangular {name}')
+    return {
+        'front_m': front_m, 'rear_m': rear_m,
+        'half_width_m': half_width_m,
+        'min_points': int(zone['min_points']),
+        'action_type': action_type,
+    }
+
+
 def build_contract(params_path: Path) -> dict:
     """Derive observation geometry from the unchanged production footprint."""
     params = yaml.safe_load(params_path.read_text(encoding='utf-8'))
@@ -25,38 +49,51 @@ def build_contract(params_path: Path) -> dict:
         float(smoother['smoothing_frequency']), 0.001,
         installed_nav2_versions(), gap_s, **motion)
     monitor = params['collision_monitor']['ros__parameters']
-    zone = monitor['StopZone']
-    if zone['action_type'] != 'stop' or zone['enabled'] is not True:
-        raise ValueError('probe requires the production StopZone')
-    points = json.loads(zone['points'])
-    if (len(points) != 4 or any(len(point) != 2 for point in points)
-            or not all(math.isfinite(value) for point in points for value in point)):
-        raise ValueError('probe requires a finite rectangular stop polygon')
-    front_m = max(point[0] for point in points)
-    rear_m = min(point[0] for point in points)
-    half_width_m = max(abs(point[1]) for point in points)
-    if {tuple(point) for point in points} != {
-            (front_m, half_width_m), (front_m, -half_width_m),
-            (rear_m, half_width_m), (rear_m, -half_width_m)}:
-        raise ValueError('probe requires an axis-aligned symmetric rectangle')
+    stop_zone = _rectangle_zone(monitor, 'StopZone', 'stop')
+    slowdown_zone = _rectangle_zone(monitor, 'SlowdownZone', 'slowdown')
+    front_m = stop_zone['front_m']
     footprint_front_m = motion['footprint_front_m']
     if front_m <= footprint_front_m:
         raise ValueError('no non-contact test region ahead of the footprint')
-    # Midpoint is a synthetic injection placement, not a calibrated safe
-    # distance.  It exercises the existing STOP zone without changing it.
-    surface_m = (front_m + footprint_front_m) / 2.0
+    if slowdown_zone['front_m'] <= front_m:
+        raise ValueError('SlowdownZone must extend beyond StopZone')
+    slowdown_ratio = float(monitor['SlowdownZone']['slowdown_ratio'])
+    slowed_speed_mps = motion['max_forward_speed_mps'] * slowdown_ratio
+    reaction_time_s = gap_s + 1.0 / float(smoother['smoothing_frequency'])
+    bounded_stop_distance_m = (
+        slowed_speed_mps * reaction_time_s
+        + slowed_speed_mps ** 2 / (2.0 * motion['max_decel_mps2']))
+    available_stop_distance_m = front_m - footprint_front_m
+    if bounded_stop_distance_m >= available_stop_distance_m:
+        raise ValueError('production slowdown and stop zones lack margin')
+    surface_m = (front_m + slowdown_zone['front_m']) / 2.0
     contract['stop_zone'] = {
-        'front_m': front_m, 'rear_m': rear_m,
-        'half_width_m': half_width_m,
-        'min_points': int(zone['min_points']),
+        **stop_zone,
         'inputs': contract['stop_zone']['inputs'],
         'source': 'unchanged_production_StopZone',
+    }
+    contract['slowdown_zone'] = {
+        **slowdown_zone,
+        'slowdown_ratio': slowdown_ratio,
+        'source': 'unchanged_production_SlowdownZone',
+    }
+    contract['non_contact_margin'] = {
+        'expected_slowed_speed_mps': slowed_speed_mps,
+        'reaction_time_s': reaction_time_s,
+        'bounded_stop_distance_m': bounded_stop_distance_m,
+        'available_stop_distance_m': available_stop_distance_m,
+        'remaining_margin_m': (
+            available_stop_distance_m - bounded_stop_distance_m),
+        'scope': (
+            'configuration-derived bound for simulation placement; '
+            'not measured physical stopping distance'),
     }
     contract['sudden_obstacle'].update({
         'activation_surface_x_m': surface_m,
         'activation_center_offset_x_m': (
             surface_m + contract['sudden_obstacle']['length_m'] / 2.0),
-        'placement': 'synthetic_midpoint_between_footprint_and_StopZone_front',
+        'placement': (
+            'synthetic_midpoint_between_StopZone_and_SlowdownZone_front'),
         'trigger_min_speed_mps': motion['max_forward_speed_mps'] * 0.9,
         'lead_margin_m': None,
     })
@@ -104,6 +141,7 @@ def scenario_passed(document: dict, returncode: int) -> bool:
         and document.get('goal_send_count') == 1
         and document.get('goal_cancel_count') == 0
         and document.get('action_terminal') == 'succeeded'
+        and 2 in document.get('pre_stop_action_types', [])
         and document.get('stop_action_type') == 1
         and document.get('stop_polygon_name') == 'StopZone'
         and document.get('resume_action_type') == 0
