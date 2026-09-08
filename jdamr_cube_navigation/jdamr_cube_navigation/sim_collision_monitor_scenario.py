@@ -298,6 +298,7 @@ class CollisionMonitorScenario(Node):
         self.minimum_protected_clearance_witness: dict[str, Any] | None = None
         self.clearance_samples: list[list[float | int]] = []
         self.obstacle_center_m: tuple[float, float] | None = None
+        self.obstacle_entry_edge_y_m: float | None = None
         self.obstacle_active = False
         self.obstacle_activation_steady_ns: int | None = None
         self.obstacle_activation_ros_ns: int | None = None
@@ -635,14 +636,22 @@ class CollisionMonitorScenario(Node):
             return triggered
         side = getattr(self.args, 'obstacle_entry_side', 'left')
         side_sign = 1.0 if side == 'left' else -1.0
-        start_y_m = center_y_m + side_sign * 0.85
+        edge_y_m = getattr(self.args, 'obstacle_crossing_edge_y_m', 1.0)
+        start_y_m = side_sign * edge_y_m
+        if not -edge_y_m < center_y_m < edge_y_m:
+            self.activation_error = (
+                'obstacle target must remain between corridor edges')
+            self.obstacle_active = False
+            return False
         steps = max(3, round(duration_s * 10.0))
         started_s = time.monotonic()
         self.obstacle_active = True
+        self.obstacle_entry_edge_y_m = start_y_m
         self._event(
             'obstacle_crossing_started', entry_side=side,
             start_pose_m=[center_x_m, start_y_m, 0.5],
             target_pose_m=[center_x_m, center_y_m, 0.5],
+            corridor_edge_y_m=edge_y_m,
             planned_duration_s=duration_s, step_count=steps)
         for index in range(steps + 1):
             ratio = index / steps
@@ -674,15 +683,28 @@ class CollisionMonitorScenario(Node):
         center_x_m, start_y_m = self.obstacle_center_m
         side = getattr(self.args, 'obstacle_entry_side', 'left')
         side_sign = 1.0 if side == 'left' else -1.0
-        exit_y_m = start_y_m - side_sign * 0.85
-        steps = max(3, round(duration_s * 10.0))
+        edge_y_m = getattr(self.args, 'obstacle_crossing_edge_y_m', 1.0)
+        exit_y_m = -side_sign * edge_y_m
+        entry_start_y_m = (
+            self.obstacle_entry_edge_y_m
+            if self.obstacle_entry_edge_y_m is not None
+            else side_sign * edge_y_m)
+        entry_distance_m = abs(entry_start_y_m - start_y_m)
+        if entry_distance_m <= 0.0:
+            self.activation_error = 'pedestrian entry distance is zero'
+            return False
+        crossing_speed_mps = entry_distance_m / duration_s
+        exit_duration_s = abs(exit_y_m - start_y_m) / crossing_speed_mps
+        steps = max(3, round(exit_duration_s * 10.0))
         started_s = time.monotonic()
         self._event(
             'obstacle_crossing_exit_started', exit_side=(
                 'right' if side == 'left' else 'left'),
             start_pose_m=[center_x_m, start_y_m, 0.5],
             exit_pose_m=[center_x_m, exit_y_m, 0.5],
-            planned_duration_s=duration_s, step_count=steps)
+            corridor_edge_y_m=edge_y_m,
+            crossing_speed_mps=crossing_speed_mps,
+            planned_duration_s=exit_duration_s, step_count=steps)
         for index in range(steps + 1):
             ratio = index / steps
             smooth_ratio = ratio * ratio * (3.0 - 2.0 * ratio)
@@ -691,7 +713,7 @@ class CollisionMonitorScenario(Node):
             if not self._set_entity_pose(
                     (center_x_m, y_m, 0.5), verify=index == steps):
                 return False
-            deadline_s = started_s + duration_s * (index + 1) / steps
+            deadline_s = started_s + exit_duration_s * (index + 1) / steps
             remaining_s = deadline_s - time.monotonic()
             if remaining_s > 0.0:
                 time.sleep(remaining_s)
@@ -1239,6 +1261,8 @@ class CollisionMonitorScenario(Node):
             'obstacle_hold_s': getattr(self.args, 'obstacle_hold_s', 0.0),
             'obstacle_crossing_s': getattr(
                 self.args, 'obstacle_crossing_s', 0.0),
+            'obstacle_crossing_edge_y_m': getattr(
+                self.args, 'obstacle_crossing_edge_y_m', 1.0),
             'obstacle_entry_side': getattr(
                 self.args, 'obstacle_entry_side', 'left'),
             'trigger_after_x_m': getattr(
@@ -1279,6 +1303,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--obstacle-hold-s', type=float, default=0.0)
     parser.add_argument('--obstacle-crossing-s', type=float, default=0.0)
     parser.add_argument(
+        '--obstacle-crossing-edge-y-m', type=float, default=1.0)
+    parser.add_argument(
         '--obstacle-entry-side', choices=('left', 'right'), default='left')
     parser.add_argument('--trigger-after-x-m', type=float)
     args = parser.parse_args(remove_ros_args()[1:])
@@ -1286,6 +1312,9 @@ def parse_args() -> argparse.Namespace:
         parser.error('--obstacle-hold-s must be nonnegative')
     if not 0.0 <= args.obstacle_crossing_s <= 5.0:
         parser.error('--obstacle-crossing-s must be between 0 and 5 seconds')
+    if not 0.5 <= args.obstacle_crossing_edge_y_m <= 1.1:
+        parser.error(
+            '--obstacle-crossing-edge-y-m must be between 0.5 and 1.1')
     if (args.trigger_after_x_m is not None
             and not math.isfinite(args.trigger_after_x_m)):
         parser.error('--trigger-after-x-m must be finite')

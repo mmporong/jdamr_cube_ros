@@ -532,11 +532,15 @@ Collision Monitor 동작, `/cmd_vel`, LiDAR 최소 거리·방향과 최근 검�
 `detour_sudden_stop_resume`는 출발 전부터 직선 경로를 막은 0.50×0.40 m
 고정 박스 우회와, 이후 보행자가 횡단할 때의 정지·동일 목표 재개·최종 도착을
 한 번의 Nav2 목표에서 검증한다. 대표 PASS는
-`$HOME/jdamr_artifacts/onboard_candidate_combined_20260908_v04`이며, 최대 횡방향 우회
-0.56953 m, 고정 박스 최소 이격 0.14786 m, 접촉 0회, 목표 전송 1회·취소
-0회를 기록했다.
+`$HOME/jdamr_artifacts/onboard_candidate_combined_20260908_v05`이며, 보행자는 통로
+한쪽 `y=+1.0 m`에서 반대쪽 `y=-1.0 m`까지 완전히 횡단한다. 최대 횡방향 우회
+0.57716 m, 고정 박스 최소 이격 0.13620 m, 접촉 0회, 목표 전송 1회·취소 0회를
+기록했다. Gazebo 하이라이트는
+`evaluation/media/gazebo_corridor_crossing_20260908`에 있다.
 
-MuJoCo 미디어는 이 PASS 기록을 모바일 베이스 중심의 3D 추종 시점으로
-재생한다. 주행 데이터의 원본은 Gazebo/ROS 2 MCAP이고, MuJoCo는 장면·LiDAR
-raycast·HUD 표현 계층이다. 자세한 증거 범위와 명령은
+MuJoCo 미디어는 이 PASS 기록을 측면 사선의 3D 시점으로 재생한다. 카메라는
+주행 거리의 75%만 따라가 로봇이 화면 왼쪽에서 오른쪽으로 이동하며, 보행자의
+통로 완전 횡단도 원래 steady-clock 이벤트 순서로 보여준다. 주행 데이터의 원본은
+Gazebo/ROS 2 MCAP이고, MuJoCo는 장면·LiDAR raycast·HUD 표현 계층이다. 자세한
+증거 범위와 명령은
 [20260908_DYNAMIC_OBSTACLE_READINESS.md](20260908_DYNAMIC_OBSTACLE_READINESS.md)에 있다.

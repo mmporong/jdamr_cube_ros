@@ -31,6 +31,7 @@ MAX_PLAN_POINTS = 48
 MAX_TRAIL_POINTS = 56
 LIDAR_RAY_COUNT = 45
 LIDAR_RANGE_M = 4.0
+CAMERA_TRACK_FRACTION = 0.75
 MIN_AVAILABLE_MEMORY_BYTES = 2 * 1024 ** 3
 MIN_FREE_DISK_BYTES = 1024 ** 3
 
@@ -98,7 +99,8 @@ def _load_run(run_root: Path) -> dict[str, Any]:
     events = {event['name']: event for event in scenario['events']}
     required = {
         'goal_accepted', 'obstacle_crossing_started', 'stop_state',
-        'clear_set_pose_requested', 'succeeded'}
+        'clear_set_pose_requested', 'obstacle_crossing_exit_started',
+        'obstacle_crossing_exit_completed', 'succeeded'}
     if not required <= set(events):
         raise ValueError(f'missing scenario events: {sorted(required - set(events))}')
     return {
@@ -145,7 +147,8 @@ def _anchors(run: dict[str, Any]) -> dict[str, Any]:
         (0.34, detour_ns),
         (0.49, int(events['obstacle_crossing_started']['ros_ns'])),
         (0.62, int(events['stop_state']['ros_ns'])),
-        (0.78, int(events['clear_set_pose_requested']['ros_ns'])),
+        (0.74, int(events['clear_set_pose_requested']['ros_ns'])),
+        (0.88, int(events['obstacle_crossing_exit_completed']['ros_ns'])),
         (1.00, int(events['succeeded']['ros_ns'])),
     ]
     if any(right[1] < left[1]
@@ -165,7 +168,9 @@ def _anchors(run: dict[str, Any]) -> dict[str, Any]:
         (0.34, detour_steady_ns),
         (0.49, int(crossing['steady_ns'])),
         (0.62, int(events['stop_state']['steady_ns'])),
-        (0.78, int(events['clear_set_pose_requested']['steady_ns'])),
+        (0.74, int(events['clear_set_pose_requested']['steady_ns'])),
+        (0.88, int(
+            events['obstacle_crossing_exit_completed']['steady_ns'])),
         (1.00, int(events['succeeded']['steady_ns'])),
     ]
     if any(right[1] <= left[1]
@@ -247,7 +252,7 @@ def _scene_xml(route: dict[str, Any]) -> str:
              width="512" height="512"/>
     <material name="floor" texture="floor_tex" texrepeat="16 3"
               reflectance="0.08" shininess="0.3"/>
-    <material name="wall" rgba="0.48 0.56 0.64 1" roughness="0.75"/>
+    <material name="wall" rgba="0.48 0.56 0.64 0.38" roughness="0.75"/>
     <material name="robot" rgba="0.06 0.36 0.62 1"
               metallic="0.35" roughness="0.32"/>
     <material name="robot_dark" rgba="0.035 0.055 0.075 1"
@@ -602,8 +607,9 @@ def render(run_root: Path, output_dir: Path) -> dict[str, Any]:
     renderer = mujoco.Renderer(model, height=HEIGHT, width=WIDTH)
     camera = mujoco.MjvCamera()
     camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-    camera.distance = 4.1
+    camera.distance = 6.3
     camera.elevation = -25.0
+    camera.azimuth = 108.0
     frames = round(DURATION_S * FPS)
     video_path = output_dir / 'mujoco_nav2_obstacle_challenge.mp4'
     preview_path = output_dir / 'mujoco_nav2_obstacle_challenge.jpg'
@@ -637,9 +643,8 @@ def render(run_root: Path, output_dir: Path) -> dict[str, Any]:
             data.mocap_quat[pedestrian_mocap_id] = (1.0, 0.0, 0.0, 0.0)
             mujoco.mj_forward(model, data)
             camera.lookat[:] = (
-                pose[1] + 1.25 * math.cos(pose[3]),
-                pose[2] + 1.25 * math.sin(pose[3]), 0.25)
-            camera.azimuth = 194.0 - math.degrees(pose[3])
+                -1.0 + CAMERA_TRACK_FRACTION * (pose[1] + 1.0),
+                0.0, 0.18)
             renderer.update_scene(data, camera=camera)
             _draw_world_traces(renderer.scene, plan, trail)
             nearest_lidar_m = _lidar_scan(
@@ -672,6 +677,14 @@ def render(run_root: Path, output_dir: Path) -> dict[str, Any]:
         'scenario': 'detour_sudden_stop_resume',
         'engine': {'name': 'MuJoCo', 'version': mujoco.__version__,
                    'render_backend': os.environ['MUJOCO_GL']},
+        'camera': {
+            'mode': 'side_oblique_partial_pan',
+            'azimuth_deg': 108.0,
+            'elevation_deg': -25.0,
+            'distance_m': 6.3,
+            'route_tracking_fraction': CAMERA_TRACK_FRACTION,
+            'screen_travel_direction': 'left_to_right',
+        },
         'video': {
             'path': video_path.name, 'sha256': _sha256(video_path),
             'size_bytes': video_path.stat().st_size,
@@ -704,6 +717,13 @@ def render(run_root: Path, output_dir: Path) -> dict[str, Any]:
             'same_goal_resume': run['result']['same_goal_command_evidence'][
                 'evidence']['verdict'],
             'contact_count': run['scenario']['contact_count'],
+            'pedestrian_corridor_crossing': {
+                'start_y_m': run['events']['obstacle_crossing_started'][
+                    'start_pose_m'][1],
+                'end_y_m': run['events'][
+                    'obstacle_crossing_exit_started']['exit_pose_m'][1],
+                'completed': True,
+            },
         },
         'resource_policy': {
             'streamed_frames': True, 'frames_retained_in_memory': 1,

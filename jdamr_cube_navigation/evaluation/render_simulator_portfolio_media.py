@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
 from pathlib import Path
+import subprocess
 
 import cv2
 import numpy as np  # noqa: I201
@@ -54,7 +54,8 @@ def _event_frame_interval(
     first_ns = metadata.get('first_frame_steady_ns')
     last_ns = metadata.get('last_frame_steady_ns')
     start_ns = events.get('obstacle_crossing_started', {}).get('steady_ns')
-    end_ns = events.get('clear_set_pose_requested', {}).get('steady_ns')
+    end_ns = events.get(
+        'obstacle_crossing_exit_completed', {}).get('steady_ns')
     values = (first_ns, last_ns, start_ns, end_ns, total_frames)
     if (not all(isinstance(value, int) for value in values)
             or total_frames < 20
@@ -233,6 +234,12 @@ def main() -> int:
             scenario['protected_envelope_minimum_clearance_m'],
         'command_latency_s': scenario['observer_scan_to_zero_command_s'],
         'entry_side': evidence.get('obstacle_entry_side'),
+        'pedestrian_start_y_m': next(
+            event['start_pose_m'][1] for event in evidence['events']
+            if event.get('name') == 'obstacle_crossing_started'),
+        'pedestrian_end_y_m': next(
+            event['exit_pose_m'][1] for event in evidence['events']
+            if event.get('name') == 'obstacle_crossing_exit_started'),
     }
     capture = cv2.VideoCapture(str(raw_video))
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -313,6 +320,7 @@ def main() -> int:
         'detected_visual_events': {
             'pedestrian_first_frame': obstacle_start,
             'pedestrian_last_frame': obstacle_end,
+            'full_corridor_crossing_completed': True,
             'arrival_overlay_first_frame': arrival_start,
         },
         'verified_metrics': metrics,

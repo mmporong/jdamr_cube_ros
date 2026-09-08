@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Serve a localhost-only JDAMR navigation supervision dashboard.
+"""
+Serve a localhost-only JDAMR navigation supervision dashboard.
 
 The dashboard separates live ROS observations from the last verified run.  It
 never exposes motion commands: operators use the page to understand LiDAR,

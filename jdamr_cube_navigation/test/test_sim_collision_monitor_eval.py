@@ -1648,7 +1648,8 @@ def test_crossing_obstacle_uses_fast_unverified_steps(monkeypatch):
     node = module.CollisionMonitorScenario.__new__(
         module.CollisionMonitorScenario)
     node.args = SimpleNamespace(
-        obstacle_crossing_s=0.3, obstacle_entry_side='right')
+        obstacle_crossing_s=0.3, obstacle_crossing_edge_y_m=1.0,
+        obstacle_entry_side='right')
     node.events = []
     node.obstacle_active = False
     calls = []
@@ -1660,8 +1661,40 @@ def test_crossing_obstacle_uses_fast_unverified_steps(monkeypatch):
 
     assert node._activate_crossing_obstacle(2.0, 0.0) is True
     assert len(calls) == 4
-    assert calls[0] == ((2.0, -0.85, 0.5), None, False)
+    assert calls[0] == ((2.0, -1.0, 0.5), None, False)
     assert calls[-1] == ((2.0, 0.0, 0.5), 'obstacle', True)
+
+
+def test_crossing_obstacle_exits_at_opposite_corridor_edge(monkeypatch):
+    """The pedestrian must cross the entire lane before being removed."""
+    module = _load(
+        '../jdamr_cube_navigation/sim_collision_monitor_scenario.py')
+    node = module.CollisionMonitorScenario.__new__(
+        module.CollisionMonitorScenario)
+    node.args = SimpleNamespace(
+        obstacle_crossing_s=0.8, obstacle_crossing_edge_y_m=1.0,
+        obstacle_entry_side='left')
+    node.contract = {'sudden_obstacle': {'removal_pose_m': [0.0, 40.0, 0.5]}}
+    node.events = []
+    node.obstacle_center_m = (2.0, 0.5)
+    node.obstacle_entry_edge_y_m = 1.0
+    calls = []
+    events = []
+    node._event = lambda name, **details: (
+        events.append({'name': name, **details}) or events[-1])
+    node._set_entity_pose = lambda pose, transition=None, verify=True: (
+        calls.append((pose, transition, verify)) or True)
+    monkeypatch.setattr(module.time, 'sleep', lambda duration: None)
+
+    assert node._clear_crossing_obstacle() is True
+    assert calls[-2][0] == (2.0, -1.0, 0.5)
+    assert calls[-1] == ((0.0, 40.0, 0.5), 'clear', True)
+    exit_event = next(
+        event for event in events
+        if event['name'] == 'obstacle_crossing_exit_started')
+    assert exit_event['exit_pose_m'] == [2.0, -1.0, 0.5]
+    assert exit_event['crossing_speed_mps'] == pytest.approx(0.625)
+    assert exit_event['planned_duration_s'] == pytest.approx(2.4)
 
 
 @pytest.mark.parametrize('scenario,request_name', [

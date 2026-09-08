@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
 from pathlib import Path
+import subprocess
 from typing import Any
 
 

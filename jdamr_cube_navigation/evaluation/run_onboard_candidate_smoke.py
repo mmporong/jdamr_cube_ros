@@ -51,6 +51,7 @@ PRODUCTION_PARAMS = ROOT / 'jdamr_cube_navigation/config/nav2_params.yaml'
 PROCESS_MARKER = 'JDAMR_NAV_EVAL_RUN_ID'
 DOMAIN_IDS = {186, 187}
 SEED = 11
+PEDESTRIAN_EDGE_Y_M = 1.0
 CASES = (
     'detour', 'event_driven_removal', 'sudden_stop_resume',
     'detour_sudden_stop_resume')
@@ -546,6 +547,7 @@ def _scenario_command(
             '--goal-x-m', '6.0', '--run-timeout-s', '180',
             '--obstacle-hold-s', str(obstacle_hold_s),
             '--obstacle-crossing-s', str(obstacle_crossing_s),
+            '--obstacle-crossing-edge-y-m', str(PEDESTRIAN_EDGE_Y_M),
             '--obstacle-entry-side', obstacle_entry_side,
             '--direct-scan', '--ros-args', '-p', 'use_sim_time:=true',
         ]
@@ -650,6 +652,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'simulator_gui': gui,
             'simulator_capture': (
                 'gazebo_camera_sensor' if record_video else 'disabled'),
+            'pedestrian_corridor_edges_y_m': [
+                PEDESTRIAN_EDGE_Y_M, -PEDESTRIAN_EDGE_Y_M],
         },
         'source_identity': {
             'runner': _source_identity(Path(__file__)),

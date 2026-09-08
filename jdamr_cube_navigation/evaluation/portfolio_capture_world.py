@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import xml.etree.ElementTree as ET
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 
 CAMERA_TOPIC = '/portfolio_scene/image_raw'

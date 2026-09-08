@@ -3,9 +3,9 @@
 import hashlib
 import importlib.util
 import json
+from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 
 EVALUATION = Path(__file__).resolve().parents[1] / 'evaluation'
@@ -95,13 +95,15 @@ def test_verified_event_clock_maps_to_camera_frames():
     evidence = {'events': [
         {'name': 'obstacle_crossing_started', 'steady_ns': 2_000_000_000},
         {'name': 'clear_set_pose_requested', 'steady_ns': 4_000_000_000},
+        {'name': 'obstacle_crossing_exit_completed',
+         'steady_ns': 5_000_000_000},
     ]}
     metadata = {
         'first_frame_steady_ns': 1_000_000_000,
         'last_frame_steady_ns': 6_000_000_000,
     }
 
-    assert RENDER._event_frame_interval(evidence, metadata, 101) == (20, 60)
+    assert RENDER._event_frame_interval(evidence, metadata, 101) == (20, 80)
 
 
 def test_bidirectional_source_requires_passing_hashed_highlight(tmp_path):

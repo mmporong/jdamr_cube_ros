@@ -1,4 +1,12 @@
 {
+  "camera": {
+    "azimuth_deg": 108.0,
+    "distance_m": 6.3,
+    "elevation_deg": -25.0,
+    "mode": "side_oblique_partial_pan",
+    "route_tracking_fraction": 0.75,
+    "screen_travel_direction": "left_to_right"
+  },
   "engine": {
     "name": "MuJoCo",
     "render_backend": "egl",
@@ -6,43 +14,43 @@
   },
   "gif": {
     "path": "mujoco_nav2_obstacle_challenge.gif",
-    "sha256": "3a82dd1298a029a48ff3adf506df0f1c4487e7fb6c47ec425ed84cad6571bd3f",
-    "size_bytes": 5575303
+    "sha256": "ee79966ea1657e004d1d771a1468722d1c2e3689c6ddf5b08638fa616f7b6373",
+    "size_bytes": 3558308
   },
   "preview": {
     "path": "mujoco_nav2_obstacle_challenge.jpg",
-    "sha256": "bc431f6f69aa0223cd94dac80651c58343b7a30a623b4f6ea6e79d24937a1630",
-    "size_bytes": 129047
+    "sha256": "3d35db98fd0d290ab33f5eeab129ee9f80a94b311b3c88b79d2b456afe5f5778",
+    "size_bytes": 125355
   },
   "resource_policy": {
     "abort_below_available_memory_bytes": 2147483648,
     "abort_below_free_disk_bytes": 1073741824,
-    "average_render_fps": 81.80105561664963,
+    "average_render_fps": 91.24165241818986,
     "frames_retained_in_memory": 1,
-    "minimum_available_memory_bytes": 10172862464,
-    "minimum_free_disk_bytes": 3610746880,
-    "peak_rss_kib": 252312,
-    "render_elapsed_s": 7.041473923018202,
+    "minimum_available_memory_bytes": 10173673472,
+    "minimum_free_disk_bytes": 3404943360,
+    "peak_rss_kib": 248312,
+    "render_elapsed_s": 6.312906273989938,
     "streamed_frames": true
   },
   "scenario": "detour_sudden_stop_resume",
   "scene": {
     "path": "jdamr_nav2_portfolio_scene.xml",
-    "sha256": "025c89174b8b5720a99f3dda1e7c2284d0746c255b85ab3b62b5cb3ff7b11d21"
+    "sha256": "084fa347ded7f243ef98e8170727705b85e3f5ea743f46ca9bbc50f3d96010a0"
   },
   "schema_version": 1,
   "source": {
     "mcap": {
-      "path": "onboard_candidate_combined_20260908_v04/detour_sudden_stop_resume/bag/bag_0.mcap",
-      "sha256": "ae1295590c4a3d0e8f2568bd42d6b24de1b44db7a3b4c3ff14fae81284e6e508"
+      "path": "onboard_candidate_combined_20260908_v05/detour_sudden_stop_resume/bag/bag_0.mcap",
+      "sha256": "839de01aa0159791f7c0891aba147729247af103a422083c24022187961e0b32"
     },
     "scenario": {
-      "path": "onboard_candidate_combined_20260908_v04/detour_sudden_stop_resume/scenario.json",
-      "sha256": "130ea13064e1e852a94f50c38f82bb98ce9e32d7d144611af044140890a851b2"
+      "path": "onboard_candidate_combined_20260908_v05/detour_sudden_stop_resume/scenario.json",
+      "sha256": "cb6c8956d8f10a17a01445f86f56c8c93c99a82ae6d374ebff2b982f2d768353"
     },
     "summary": {
-      "path": "onboard_candidate_combined_20260908_v04/summary.json",
-      "sha256": "2b4365add913665ffde55d21a42240f44f6508f445a046c7ca88c7776554b2a5"
+      "path": "onboard_candidate_combined_20260908_v05/summary.json",
+      "sha256": "9c9e3e5dfe30f484dfc0ed6a27fb979ebfd02a24ed3b8a31e3d23c3a4c75be38"
     }
   },
   "source_semantics": "MuJoCo visualization of recorded Nav2 ground truth, plans, and scenario events; Gazebo remains the physics/sensor evidence source",
@@ -51,17 +59,17 @@
     "contact_count": 0,
     "detour": {
       "detour_peak_pose_xy_yaw": [
-        -1.0516028407184337,
-        0.5695253898197663,
-        -0.002037000084178268
+        0.2307564687105559,
+        0.577157264337526,
+        0.001264435943416954
       ],
-      "detour_peak_ros_ns": 70550000000,
-      "maximum_abs_lateral_offset_m": 0.5695253898197663,
-      "minimum_clearance_m": 0.14785813109152526,
+      "detour_peak_ros_ns": 81350000000,
+      "maximum_abs_lateral_offset_m": 0.577157264337526,
+      "minimum_clearance_m": 0.13620040419101753,
       "minimum_clearance_pose_xy_yaw": [
-        -0.4979345155687427,
-        0.5430663487574711,
-        -0.015393694358375842
+        -1.5227239271698614,
+        0.4882362709891975,
+        0.19775566442146547
       ],
       "observation_window_x_m": [
         -2.25,
@@ -79,9 +87,14 @@
         "name": "g003_preloaded_route_obstacle"
       },
       "required_center_offset_m": 0.4,
-      "sample_count": 299,
+      "sample_count": 321,
       "status": "PASS",
       "straight_centerline_blocked": true
+    },
+    "pedestrian_corridor_crossing": {
+      "completed": true,
+      "end_y_m": -1.0,
+      "start_y_m": 1.0
     },
     "same_goal_resume": "CONFIRMED",
     "straight_centerline_blocked": true
@@ -92,8 +105,8 @@
     "frames": 576,
     "height": 720,
     "path": "mujoco_nav2_obstacle_challenge.mp4",
-    "sha256": "782c80f255cac8b78a3c4d038bbff1e75e4566c911be0a1ea99a5953d49867c2",
-    "size_bytes": 4906932,
+    "sha256": "6b21a5de413e7ec2f5d673568956d868f4e55123a60efdad9e7eaaf7c0fcddf3",
+    "size_bytes": 2178028,
     "width": 1280
   }
 }

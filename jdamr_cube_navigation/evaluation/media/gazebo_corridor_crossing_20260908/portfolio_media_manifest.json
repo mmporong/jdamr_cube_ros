@@ -1,0 +1,62 @@
+{
+  "claim_scope": "SIM_INTEGRATION",
+  "detected_visual_events": {
+    "arrival_overlay_first_frame": 1998,
+    "full_corridor_crossing_completed": true,
+    "pedestrian_first_frame": 1185,
+    "pedestrian_last_frame": 1295
+  },
+  "highlight": {
+    "fps": 30.0,
+    "frames": 423,
+    "middle_cruise_label": "8x",
+    "middle_cruise_stride": 8
+  },
+  "outputs": [
+    {
+      "path": "/home/lim/jdamr_artifacts/gazebo_corridor_crossing_20260908_v01/gazebo_dynamic_obstacle_full.mp4",
+      "sha256": "94ed3600dd297716f7e9502373439234e65a3a74b4b2a49557b5bc544eb6e4a6",
+      "size_bytes": 2106075
+    },
+    {
+      "path": "/home/lim/jdamr_artifacts/gazebo_corridor_crossing_20260908_v01/gazebo_dynamic_obstacle_highlight.mp4",
+      "sha256": "1c0295818cde100f0c8732a1d284390e89ed2d96319716107283d15d9b4752a4",
+      "size_bytes": 524055
+    },
+    {
+      "path": "/home/lim/jdamr_artifacts/gazebo_corridor_crossing_20260908_v01/gazebo_dynamic_obstacle_highlight.gif",
+      "sha256": "230c349aab31e788b39519690d5a7532dab64b1d9a072bd9966c85228ec983d9",
+      "size_bytes": 2114538
+    },
+    {
+      "path": "/home/lim/jdamr_artifacts/gazebo_corridor_crossing_20260908_v01/gazebo_obstacle_stop.png",
+      "sha256": "7fc8d595a1f50d166cc67744a8130067afe5ac6dac8bd0fc554b17498897db8a",
+      "size_bytes": 187579
+    },
+    {
+      "path": "/home/lim/jdamr_artifacts/gazebo_corridor_crossing_20260908_v01/gazebo_goal_arrival.png",
+      "sha256": "ca6b96ff2b2330e400886412e759cff8fdef6605c1168e127345994eb72721e0",
+      "size_bytes": 161317
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "overlays_applied_to_source": false,
+    "path": "/home/lim/jdamr_artifacts/onboard_candidate_combined_20260908_v05/detour_sudden_stop_resume/gazebo_sensor_raw.mp4",
+    "sha256": "8ce6079976ec944592113c73f87c6efd873f9f2343b1409e6fb1c0b616d409a3",
+    "summary": "/home/lim/jdamr_artifacts/onboard_candidate_combined_20260908_v05/summary.json",
+    "summary_sha256": "9c9e3e5dfe30f484dfc0ed6a27fb979ebfd02a24ed3b8a31e3d23c3a4c75be38",
+    "type": "gazebo_camera_sensor_video"
+  },
+  "status": "PASS",
+  "verified_metrics": {
+    "command_latency_s": 0.063062013,
+    "contact_count": 0,
+    "entry_side": "left",
+    "goal_cancel_count": 0,
+    "goal_send_count": 1,
+    "pedestrian_end_y_m": -1.0,
+    "pedestrian_start_y_m": 1.0,
+    "protected_clearance_m": 0.06766068616838483
+  }
+}

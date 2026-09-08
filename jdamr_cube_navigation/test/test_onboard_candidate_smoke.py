@@ -324,6 +324,8 @@ def test_sudden_case_uses_direct_scan_on_the_operational_monitor_input(
     assert '--direct-scan' in command
     assert command[command.index('--obstacle-hold-s') + 1] == '0.0'
     assert command[command.index('--obstacle-crossing-s') + 1] == '0.0'
+    assert command[
+        command.index('--obstacle-crossing-edge-y-m') + 1] == '1.0'
     assert command[command.index('--obstacle-entry-side') + 1] == 'left'
     assert str(prepared['stop_contract']) in command
     assert '--behavior-tree' not in command
