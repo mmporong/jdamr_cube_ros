@@ -6,13 +6,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
-import re  # noqa: I100
 import subprocess
 import time
+from pathlib import Path  # noqa: I100
 from typing import Any
 
+from evaluate_same_goal_bag import evaluate as evaluate_same_goal_bag
+
 from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
+
+from navigation_mcap_reader import read_navigation_messages
 
 from prepare_sim_nav_obstacle_run import prepare
 
@@ -38,6 +41,11 @@ ALLOWED_PARAM_DELTAS = {
      'always_send_full_costmap'),
 }
 CAP_BYTES = 64 * 1024 * 1024
+BAG_LIVE_CAP_BYTES = 56 * 1024 * 1024
+RECORDED_TOPICS = (
+    '/cmd_vel', '/collision_monitor_state',
+    '/navigate_to_pose/_action/status', '/odom', '/ground_truth_pose',
+    '/plan', '/amcl_pose', '/tf', '/tf_static')
 
 
 def _leaf_differences(
@@ -146,60 +154,97 @@ def _wait_log_markers(path: Path, markers: tuple[str, ...],
     raise RuntimeError(f'launch log readiness timeout: {missing}')
 
 
-def _raw_observers(case_dir: Path, environment: dict[str, str]):
-    launched = []
-    specs = (
-        ('action_status.log', '/navigate_to_pose/_action/status', None),
-        ('collision_monitor_state.log', '/collision_monitor_state', None),
-        ('cmd_vel.log', '/cmd_vel', None),
-        ('odom.log', '/odom', None),
-        ('global_costmap_once.log', '/global_costmap/costmap_raw', '--once'),
-        ('local_costmap_once.log', '/local_costmap/costmap_raw', '--once'),
-    )
-    for filename, topic, once in specs:
-        command = ['ros2', 'topic', 'echo', topic, '--full-length']
-        if topic == '/navigate_to_pose/_action/status':
-            command.extend([
-                '--qos-reliability', 'reliable',
-                '--qos-durability', 'transient_local'])
-        elif 'costmap' in topic:
-            command.extend([
-                '--qos-reliability', 'reliable',
-                '--qos-durability', 'transient_local'])
-        if once:
-            command.append(once)
-        launched.append(_start(command, case_dir / filename, environment))
-    return launched
+def _write_recording_qos(path: Path) -> None:
+    """Write compatible QoS while preserving the hidden status snapshot."""
+    profile = {
+        topic: {
+            'history': 'keep_last', 'depth': 10,
+            'reliability': 'best_effort', 'durability': 'volatile',
+        } for topic in RECORDED_TOPICS
+    }
+    profile['/navigate_to_pose/_action/status'].update({
+        'depth': 1, 'reliability': 'reliable',
+        'durability': 'transient_local'})
+    profile['/tf_static'].update({
+        'depth': 1, 'durability': 'transient_local'})
+    path.write_text(yaml.safe_dump(profile, sort_keys=True), encoding='utf-8')
 
 
-def _status_summary(path: Path) -> dict[str, Any]:
-    text = path.read_text(errors='replace') if path.is_file() else ''
-    uuids = []
-    for match in re.finditer(
-            r'goal_info:\s*\n\s*goal_id:\s*\n\s*uuid:\s*\n'
-            r'((?:\s*-\s*\d+\s*\n){16})', text):
-        values = [int(value) for value in re.findall(r'-\s*(\d+)', match[1])]
-        uuids.append(''.join(f'{value:02x}' for value in values))
-    statuses = [int(value) for value in re.findall(
-        r'(?m)^\s*status:\s*(\d+)\s*$', text)]
+def _start_compact_recorder(case_dir: Path, environment: dict[str, str]):
+    """Start one wall-log-time MCAP recorder for compact runtime evidence."""
+    qos_path = case_dir / 'recording_qos.yaml'
+    _write_recording_qos(qos_path)
+    bag_dir = case_dir / 'bag'
+    command = [
+        'ros2', 'bag', 'record', '-s', 'mcap', '-o', str(bag_dir),
+        '--storage-preset-profile', 'zstd_fast',
+        '--include-hidden-topics', '--qos-profile-overrides-path',
+        str(qos_path), '--topics', *RECORDED_TOPICS,
+    ]
+    if '--use-sim-time' in command:
+        raise RuntimeError('recorder log time must remain wall time')
+    return _start(command, case_dir / 'recorder.log', environment), bag_dir
+
+
+def _wait_bag_ready(process: subprocess.Popen, bag_dir: Path,
+                    timeout_s: float = 10.0) -> None:
+    """Wait until the single MCAP writer creates its data file."""
+    deadline_s = time.monotonic() + timeout_s
+    while time.monotonic() < deadline_s:
+        if process.poll() is not None:
+            raise RuntimeError('compact recorder exited before ready')
+        if any(bag_dir.glob('*.mcap')):
+            return
+        time.sleep(0.1)
+    raise RuntimeError('compact recorder readiness timeout')
+
+
+def _tree_size(root: Path) -> int:
+    return sum(path.stat().st_size for path in root.rglob('*')
+               if path.is_file())
+
+
+def _one_finalized_mcap(bag_dir: Path) -> Path:
+    matches = sorted(bag_dir.glob('*.mcap'))
+    metadata = bag_dir / 'metadata.yaml'
+    if len(matches) != 1 or not metadata.is_file():
+        raise RuntimeError('compact recorder did not finalize one MCAP')
+    mcap = matches[0]
+    with mcap.open('rb') as stream:
+        if stream.read(8) != b'\x89MCAP0\r\n':
+            raise RuntimeError('invalid MCAP header')
+        stream.seek(-8, 2)
+        if stream.read(8) != b'\x89MCAP0\r\n':
+            raise RuntimeError('invalid MCAP footer')
+    if _tree_size(bag_dir) > CAP_BYTES:
+        raise RuntimeError('finalized compact bag exceeds 64 MiB')
+    return mcap
+
+
+def _status_summary(mcap: Path) -> dict[str, Any]:
+    uuids, statuses, message_count = [], [], 0
+    for message in read_navigation_messages(
+            mcap, topics=['/navigate_to_pose/_action/status']):
+        message_count += 1
+        for status in message.ros_msg.status_list:
+            values = bytes(status.goal_info.goal_id.uuid)
+            uuids.append(values.hex())
+            statuses.append(int(status.status))
     return {
-        'message_count': text.count('status_list:'),
+        'message_count': message_count,
         'goal_uuids': sorted(set(uuids)),
         'statuses': statuses,
         'final_status': statuses[-1] if statuses else None,
-        'sha256': _sha256(path) if path.is_file() else None,
+        'source_mcap_sha256': _sha256(mcap),
     }
 
 
+def _source_identity(path: Path) -> dict[str, Any]:
+    return {'path': str(path.resolve()), 'sha256': _sha256(path)}
+
+
 def _cap_output(root: Path) -> int:
-    """Bound text evidence while preserving large-log heads and tails."""
-    for path in root.rglob('*.log'):
-        if path.stat().st_size <= 4 * 1024 * 1024:
-            continue
-        data = path.read_bytes()
-        marker = b'\nONBOARD_SMOKE_LOG_TRUNCATED\n'
-        path.write_bytes(data[:2 * 1024 * 1024] + marker
-                         + data[-2 * 1024 * 1024:])
+    """Enforce the evidence cap without deleting or rewriting raw data."""
     total = sum(
         path.stat().st_size for path in root.rglob('*') if path.is_file())
     if total > CAP_BYTES:
@@ -243,6 +288,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
         'GZ_PARTITION': f'jdamr_onboard_{os.getpid()}_{case}',
     })
     launched = []
+    bag_dir: Path | None = None
+    mcap: Path | None = None
     result: dict[str, Any] = {
         'case': case, 'seed': SEED, 'domain_id': domain_id,
         'run_id': run_id, 'status': 'FAIL', 'scenario_started': False,
@@ -250,6 +297,19 @@ def run_case(case: str, output_root: Path, domain_id: int,
         'case_claim': (
             'fixed_obstacle_detour' if case == 'detour'
             else 'obstacle_removal_and_replan_not_sudden_stop_resume'),
+        'runtime_profile': {
+            'name': 'obstacle_candidate',
+            'launch': 'onboard_nav2_core.launch.py',
+        },
+        'source_identity': {
+            'runner': _source_identity(Path(__file__)),
+            'onboard_core': _source_identity(
+                ROOT / 'jdamr_cube_navigation/launch/'
+                'onboard_nav2_core.launch.py'),
+            'production_params': _source_identity(PRODUCTION_PARAMS),
+            'candidate_params': _source_identity(prepared['params']),
+            'candidate_bt': _source_identity(BT),
+        },
     }
     try:
         launched.append(_start([
@@ -319,7 +379,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
             f'{contact_topic}@ros_gz_interfaces/msg/Contacts[gz.msgs.Contacts',
         ], case_dir / 'contact_bridge.log', environment))
-        launched.extend(_raw_observers(case_dir, environment))
+        recorder, bag_dir = _start_compact_recorder(case_dir, environment)
+        launched.append(recorder)
+        _wait_bag_ready(recorder[0], bag_dir)
         evidence = case_dir / 'scenario.json'
         scenario = _start([
             'ros2', 'run', 'jdamr_cube_navigation',
@@ -332,7 +394,30 @@ def run_case(case: str, output_root: Path, domain_id: int,
         ], case_dir / 'scenario.log', environment)
         launched.append(scenario)
         result['scenario_started'] = True
-        returncode = scenario[0].wait(timeout=210.0)
+        deadline_s = time.monotonic() + 210.0
+        while scenario[0].poll() is None:
+            if recorder[0].poll() is not None:
+                raise RuntimeError('compact recorder exited during scenario')
+            if _tree_size(output_root) > BAG_LIVE_CAP_BYTES:
+                raise RuntimeError('smoke evidence exceeded 56 MiB live cap')
+            if time.monotonic() >= deadline_s:
+                raise subprocess.TimeoutExpired('scenario', 210.0)
+            time.sleep(0.25)
+        returncode = scenario[0].wait(timeout=3.0)
+        if recorder[0].poll() is not None:
+            raise RuntimeError('compact recorder exited before scenario end')
+        _stop(recorder[0])
+        mcap = _one_finalized_mcap(bag_dir)
+        result['recording'] = {
+            'mcap': _source_identity(mcap),
+            'size_bytes': mcap.stat().st_size,
+            'topics': list(RECORDED_TOPICS),
+            'log_time_basis': 'wall_time',
+            'message_header_time_basis': 'publisher_defined_sim_time',
+            'time_basis_mixing_forbidden': True,
+        }
+        result['raw_action_status'] = _status_summary(mcap)
+        result['same_goal_command_evidence'] = evaluate_same_goal_bag(mcap)
         if not evidence.is_file():
             raise RuntimeError('scenario produced no evidence')
         scenario_document = json.loads(evidence.read_text(encoding='utf-8'))
@@ -400,8 +485,13 @@ def run_case(case: str, output_root: Path, domain_id: int,
         for _process, stream in launched:
             stream.close()
         survivors = _cleanup_identity(run_id, domain_id)
-        result['raw_action_status'] = _status_summary(
-            case_dir / 'action_status.log')
+        if 'raw_action_status' not in result and mcap is not None:
+            try:
+                result['raw_action_status'] = _status_summary(mcap)
+            except Exception as error:
+                result['recording_error'] = (
+                    f'{type(error).__name__}: {error}')
+                result['status'] = 'FAIL'
         result['teardown'] = {
             'launched_process_groups': groups,
             'remaining_process_groups': [group for group in groups
@@ -411,7 +501,12 @@ def run_case(case: str, output_root: Path, domain_id: int,
         if (result['teardown']['remaining_process_groups'] or survivors):
             result['status'] = 'FAIL'
             result['teardown_error'] = 'owned_processes_remain'
-        result['output_bytes'] = _cap_output(case_dir)
+        try:
+            result['output_bytes'] = _cap_output(case_dir)
+        except RuntimeError as error:
+            result['output_bytes'] = _tree_size(case_dir)
+            result['recording_error'] = str(error)
+            result['status'] = 'FAIL'
         (case_dir / 'summary.json').write_text(json.dumps(
             result, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
             encoding='utf-8')
@@ -451,7 +546,14 @@ def main() -> int:
     (args.output_root / 'summary.json').write_text(json.dumps(
         summary, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
         encoding='utf-8')
-    _cap_output(args.output_root)
+    try:
+        summary['output_bytes'] = _cap_output(args.output_root)
+    except RuntimeError as error:
+        summary['status'] = 'FAIL'
+        summary['output_error'] = str(error)
+    (args.output_root / 'summary.json').write_text(json.dumps(
+        summary, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8')
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0 if summary['status'] == 'PASS' else 2
 

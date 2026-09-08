@@ -8,6 +8,7 @@ from collections import deque
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import threading
@@ -15,6 +16,8 @@ import time
 from typing import Any
 
 from geometry_msgs.msg import PoseStamped, Twist
+
+from jdamr_cube_navigation.sim_scan_gate import _stop_zone_points
 
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import CollisionMonitorState
@@ -209,6 +212,14 @@ class CollisionMonitorScenario(Node):
         super().__init__('sim_collision_monitor_scenario')
         self.args = args
         self.contract = contract
+        self.direct_scan = getattr(args, 'direct_scan', False)
+        if self.direct_scan and (
+                args.scenario != 'sudden_obstacle_stop_resume'
+                or contract.get('integration_kind')
+                != 'onboard_candidate_direct_scan'):
+            raise ValueError('direct scan requires the onboard sudden contract')
+        self.direct_scan_armed = False
+        self.direct_scan_capture = None
         self.started_steady_ns = time.monotonic_ns()
         self.started_ros_ns = self.get_clock().now().nanoseconds
         self.events: list[dict[str, Any]] = []
@@ -309,10 +320,11 @@ class CollisionMonitorScenario(Node):
         self.create_subscription(
             TFMessage, '/tf_static', self._goal_tf_static,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self.freeze_client = self.create_client(
-            SetBool, '/sim_scan_gate/freeze_monitor')
+        self.freeze_client = (None if self.direct_scan else self.create_client(
+            SetBool, '/sim_scan_gate/freeze_monitor'))
         self.create_subscription(
-            LaserScan, '/sim_raw/scan', self._raw_scan,
+            LaserScan, '/scan' if self.direct_scan else '/sim_raw/scan',
+            self._raw_scan,
             qos_profile_sensor_data,
             callback_group=self.observation_group)
         self.create_subscription(
@@ -320,7 +332,8 @@ class CollisionMonitorScenario(Node):
             qos_profile_sensor_data,
             callback_group=self.observation_group)
         self.create_subscription(
-            LaserScan, '/collision_monitor_scan', self._monitor_scan,
+            LaserScan, '/scan' if self.direct_scan else '/collision_monitor_scan',
+            self._monitor_scan,
             qos_profile_sensor_data,
             callback_group=self.observation_group)
         self.create_subscription(
@@ -375,6 +388,19 @@ class CollisionMonitorScenario(Node):
         current_stamp_ns = stamp_ns(message)
         self.last_monitor_scan_stamp_ns = current_stamp_ns
         self.last_monitor_scan_steady_ns = time.monotonic_ns()
+        if (self.direct_scan and self.direct_scan_armed
+                and self.direct_scan_capture is None
+                and self.obstacle_request_steady_ns is not None
+                and self.reference_scan_stamp_ns is not None
+                and current_stamp_ns > self.reference_scan_stamp_ns):
+            points = _stop_zone_points(message, self.contract)
+            if len(points) >= self.contract['stop_zone']['min_points']:
+                self.direct_scan_capture = {
+                    'scan_receive_steady_ns': self.last_monitor_scan_steady_ns,
+                    'scan_header_stamp_ns': current_stamp_ns,
+                    'stop_zone_points': points,
+                    'semantic': self.contract['measurement_semantic'],
+                }
         if self.reference_scan_stamp_ns is None:
             self.reference_scan_stamp_ns = current_stamp_ns
         if (self.stop_steady_ns is not None
@@ -385,6 +411,8 @@ class CollisionMonitorScenario(Node):
 
     def _monitor_state(self, message: CollisionMonitorState) -> None:
         self.last_action_type = int(message.action_type)
+        if self.direct_scan and self.trigger_steady_ns is None:
+            return
         if message.action_type == CollisionMonitorState.STOP:
             self.stop_state_count += 1
             if self.stop_steady_ns is None:
@@ -462,6 +490,10 @@ class CollisionMonitorScenario(Node):
             and abs(message.linear.y) <= 1e-4
             and abs(message.angular.z) <= 1e-4)
         if is_zero:
+            if (self.direct_scan_capture is not None
+                    and 'zero_receive_steady_ns' not in self.direct_scan_capture):
+                self.direct_scan_capture['zero_receive_steady_ns'] = (
+                    time.monotonic_ns())
             if self.zero_started_ns is None:
                 self.zero_started_ns = time.monotonic_ns()
             if self.stop_steady_ns is not None and self.zero_steady_ns is None:
@@ -539,6 +571,10 @@ class CollisionMonitorScenario(Node):
         return True
 
     def _arm_reaction_capture(self) -> bool:
+        if getattr(self, 'direct_scan', False):
+            self.direct_scan_armed = True
+            self._event('direct_scan_observer_armed')
+            return True
         request_event = self._event('scan_gate_arm_requested')
         self.gate_arm_request_steady_ns = request_event['steady_ns']
         self.gate_arm_request_ros_ns = request_event['ros_ns']
@@ -842,6 +878,9 @@ class CollisionMonitorScenario(Node):
         elif (self.phase == 'RUNNING'
               and self.args.scenario != 'clear_baseline'
               and self.moving_observed and self.last_pose is not None):
+            if (self.direct_scan and self.last_linear_speed_mps
+                    < self.contract['sudden_obstacle']['trigger_min_speed_mps']):
+                return
             if self._trigger():
                 self.phase = (
                     'FREEZE_PENDING'
@@ -909,6 +948,8 @@ class CollisionMonitorScenario(Node):
                 self.terminal_ground_truth_pose, self.final_estimated_pose)
         return {
             'schema_version': 1,
+            'direct_scan_capture': self.direct_scan_capture,
+            'scan_capture_mode': 'direct_observer' if self.direct_scan else 'gate',
             'scenario_source': {
                 'path': str(Path(__file__).resolve()),
                 'size_bytes': Path(__file__).resolve().stat().st_size,
@@ -1070,7 +1111,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--contact-topic', default='')
     parser.add_argument('--goal-x-m', type=float, default=6.0)
     parser.add_argument('--run-timeout-s', type=float, default=180.0)
-    return parser.parse_args(remove_ros_args()[1:])
+    parser.add_argument('--direct-scan', action='store_true')
+    args = parser.parse_args(remove_ros_args()[1:])
+    if args.direct_scan and (
+            args.scenario != 'sudden_obstacle_stop_resume'
+            or os.environ.get('ROS_DOMAIN_ID') not in {'186', '187'}):
+        parser.error('--direct-scan is limited to isolated sudden-obstacle runs')
+    return args
 
 
 def main() -> int:
