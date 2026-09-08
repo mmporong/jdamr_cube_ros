@@ -47,3 +47,9 @@ def test_compact_reader_supports_parking_ground_truth_and_static_tf():
     assert TOPIC_TYPES['/ground_truth_pose'] == (
         'geometry_msgs/msg/PoseStamped')
     assert TOPIC_TYPES['/tf_static'] == 'tf2_msgs/msg/TFMessage'
+
+
+def test_simulation_route_uses_the_same_clock_as_sensor_headers():
+    """Prevent wall time from making every simulated observation stale."""
+    source = (EVALUATION_ROOT / 'run_parking_smoke.py').read_text()
+    assert "'--ros-args', '-p', 'use_sim_time:=true'" in source

@@ -213,6 +213,7 @@ def run(output_root: Path, domain_id: int) -> dict[str, Any]:
             'ros2', 'run', 'jdamr_cube_navigation', 'corridor_route',
             '--route', str(route), '--park-final',
             '--parking-contract', str(contract_path), '--execute',
+            '--ros-args', '-p', 'use_sim_time:=true',
         ], output_root / 'route.log', environment)
         launched.append(route_process)
         returncode = route_process[0].wait(timeout=180.0)
