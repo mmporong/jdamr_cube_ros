@@ -61,6 +61,21 @@ def test_export_replay_uses_causal_samples_and_captured_laser(tmp_path, monkeypa
     assert result['samples'][1]['scan']['front_minimum_m'] == pytest.approx(0.4)
     assert result['samples'][2]['command']['linear_mps'] == pytest.approx(0.18)
     assert result['bt_ticks_available'] is False
+    trimmed = exporter.export_replay(mcap, capture, 0.2)
+    assert trimmed['start_offset_s'] == 0.2
+    assert trimmed['duration_s'] == pytest.approx(0.2)
+    assert trimmed['samples'][0]['time_s'] == 0.0
+    assert trimmed['samples'][0]['command'] == {}
+    assert trimmed['samples'][0]['scan'] == result['samples'][1]['scan']
+    assert trimmed['samples'][1]['command'] == result['samples'][2]['command']
+
+
+@pytest.mark.parametrize('offset', [-1.0, math.nan, math.inf, 4.0, 5.0])
+def test_trim_rejects_offsets_outside_capture(monkeypatch, offset):
+    monkeypatch.syspath_prepend(str(EVALUATION))
+    import export_dashboard_replay as exporter
+    with pytest.raises(ValueError):
+        exporter.trimmed_start_ns(1_000_000_000, 5_000_000_000, offset)
 
 
 def test_replay_rejects_speedup_even_with_matching_file_hash(tmp_path, monkeypatch):
@@ -77,6 +92,8 @@ def test_replay_rejects_speedup_even_with_matching_file_hash(tmp_path, monkeypat
               'capture_sha256': exporter._sha256(capture),
               'raw_sha256': exporter._sha256(raw)}
     video.with_suffix('.timing.json').write_text(json.dumps(timing))
+    with pytest.raises(ValueError, match='provenance mismatch'):
+        exporter.validate_video(video, capture, 103.6, 3.0)
     monkeypatch.setattr(exporter.subprocess, 'run', lambda *a, **k:
                         SimpleNamespace(stdout='{"format":{"duration":"78.3"}}'))
     with pytest.raises(ValueError, match='duration differs'):

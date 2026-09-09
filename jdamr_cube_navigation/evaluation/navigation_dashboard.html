@@ -78,6 +78,20 @@
         align-items: center;
         gap: 12px;
       }
+      .header-title {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+      .header-title span {
+        font-size: 12px;
+      }
+      @media (max-width: 760px) {
+        .header-title {
+          flex-wrap: wrap;
+          gap: 4px 10px;
+        }
+      }
       main {
         max-width: 1720px;
         margin: auto;
@@ -90,13 +104,6 @@
       }
       .scene {
         min-width: 0;
-      }
-      .scene-head {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-        margin-bottom: 10px;
-        align-items: center;
       }
       .source-note {
         font-size: 12px;
@@ -367,9 +374,6 @@
           flex-direction: column;
           min-height: 0;
         }
-        .scene-head {
-          margin-bottom: 4px;
-        }
         .video-shell {
           flex: 1;
           min-height: 0;
@@ -482,11 +486,6 @@
           min-width: 45%;
           margin: 4px 0;
         }
-        .scene-head {
-          align-items: flex-start;
-          flex-direction: column;
-          gap: 4px;
-        }
         .source-controls {
           width: 100%;
           justify-content: space-between;
@@ -517,8 +516,9 @@
   </head>
   <body>
     <header>
-      <div>
+      <div class="header-title">
         <h1>JDAMR 주행 관제</h1>
+        <span class="source-note muted" id="source-note">가제보 주행 장면</span>
       </div>
       <div class="source-controls">
         <span class="source-note muted" id="mode-label">기록 재생</span>
@@ -528,16 +528,12 @@
     <main>
       <div class="layout">
         <section class="scene">
-          <div class="scene-head">
-            <h2>가제보 주행 장면</h2>
-            <span class="source-note muted" id="source-note"
-              >촬영 기록 확인 중</span
-            >
-          </div>
           <div class="video-shell">
             <video
               id="video"
               controls
+              autoplay
+              muted
               playsinline
               preload="auto"
               aria-label="가제보 주행 기록"

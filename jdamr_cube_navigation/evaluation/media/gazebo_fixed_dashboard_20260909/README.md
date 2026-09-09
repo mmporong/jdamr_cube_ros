@@ -46,7 +46,9 @@
 보행자가 지나간 뒤의 일부 순항 구간에 `8×` 배속을 표시했다.
 실제 카메라 수신은 평균 약 18.6fps다. 출력 파일은 프레임 수신 시각을 따라
 다음 프레임까지 화면을 유지하는 30fps 형식이며, 실제 센서가 30fps였다는 뜻은 아니다.
-웹 관제에는 배속 없는 전체 장면을 사용한다.
+웹 관제에는 [앞 3초를 덜어낸 108.6초 장면](gazebo_scene_trim3.mp4)을 배속 없이 사용하고,
+페이지를 열면 음소거로 자동재생한다. 센서 기록도 같은 3초만큼 이동해 영상과 맞췄다.
+111.6초 원본은 그대로 보존했다.
 
 ## 구현 범위
 
@@ -77,8 +79,8 @@ cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
 python3 jdamr_cube_navigation/evaluation/navigation_dashboard.py \
   --no-ros --port 8765 \
   --summary jdamr_cube_navigation/evaluation/media/gazebo_fixed_dashboard_20260909/verified_run.json \
-  --video "$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_v04/dashboard_scene_walltime.mp4" \
-  --replay "$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_v04/dashboard_replay_walltime.json"
+  --video "$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_trim3/dashboard_scene_walltime.mp4" \
+  --replay "$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_trim3/dashboard_replay_walltime.json"
 ```
 
 관제 주소는 `http://127.0.0.1:8765/`다. 기록 재생에는 파이와 GPU가 필요하지 않다.

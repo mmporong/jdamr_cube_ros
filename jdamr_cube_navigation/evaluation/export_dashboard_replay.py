@@ -17,13 +17,24 @@ from render_simulator_portfolio_media import (  # noqa: I201
     _read_telemetry, _saved_map_points, _sha256)
 
 
-def prepare_scene_video(capture: Path, output: Path) -> None:
+def trimmed_start_ns(start_ns: int, end_ns: int, offset_s: float) -> int:
+    """Keep the trim inside the captured interval on the original clock."""
+    if not math.isfinite(offset_s) or offset_s < 0:
+        raise ValueError('start offset must be finite and nonnegative')
+    shifted_ns = start_ns + round(offset_s * 1e9)
+    if shifted_ns >= end_ns:
+        raise ValueError('start offset must precede capture end')
+    return shifted_ns
+
+
+def prepare_scene_video(capture: Path, output: Path, offset_s: float = 0.0) -> None:
     """Resample raw camera frames at their receipt times, without overlays."""
     raw = capture.parent / 'gazebo_sensor_raw.mp4'
     metadata = json.loads(capture.read_text(encoding='utf-8'))
     stamps = [frame['wall_ns'] for frame in metadata['frame_timestamps']]
     if not stamps or any(b <= a for a, b in zip(stamps, stamps[1:])):
         raise ValueError('camera frame timestamps must increase')
+    start_ns = trimmed_start_ns(stamps[0], stamps[-1], offset_s)
     if output.exists() or output.resolve() == raw.resolve():
         raise ValueError('scene output must be a new file')
     reader = cv2.VideoCapture(str(raw))
@@ -41,10 +52,10 @@ def prepare_scene_video(capture: Path, output: Path) -> None:
             '-threads', '2', '-preset', 'fast', '-crf', '22',
             '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(output)],
             stdin=subprocess.PIPE)
-        count = math.ceil((stamps[-1] - stamps[0]) / 1e9 * fps) + 1
+        count = math.ceil((stamps[-1] - start_ns) / 1e9 * fps) + 1
         source_index = 0
         for index in range(count):
-            stamp_ns = stamps[0] + round(index / fps * 1e9)
+            stamp_ns = start_ns + round(index / fps * 1e9)
             while source_index + 1 < len(stamps) and stamps[source_index + 1] <= stamp_ns:
                 ok, frame = reader.read()
                 if not ok:
@@ -57,6 +68,7 @@ def prepare_scene_video(capture: Path, output: Path) -> None:
         evidence = {'video_sha256': _sha256(output), 'raw_sha256': _sha256(raw),
                     'capture_sha256': _sha256(capture), 'fps': fps,
                     'duration_s': count / fps, 'frames': count,
+                    'start_offset_s': offset_s,
                     'method': 'causal_camera_frame_hold_on_wall_time'}
         output.with_suffix('.timing.json').write_text(
             json.dumps(evidence, indent=2), encoding='utf-8')
@@ -71,10 +83,12 @@ def prepare_scene_video(capture: Path, output: Path) -> None:
                 writer.wait(timeout=5)
 
 
-def validate_video(video: Path, capture: Path, duration_s: float) -> dict:
+def validate_video(video: Path, capture: Path, duration_s: float,
+                   offset_s: float = 0.0) -> dict:
     """Require generated timing provenance, source identity and wall duration."""
     timing = json.loads(video.with_suffix('.timing.json').read_text(encoding='utf-8'))
-    if (timing.get('method') != 'causal_camera_frame_hold_on_wall_time'
+    if (timing.get('start_offset_s', 0.0) != offset_s
+            or timing.get('method') != 'causal_camera_frame_hold_on_wall_time'
             or timing.get('video_sha256') != _sha256(video)
             or timing.get('capture_sha256') != _sha256(capture)
             or timing.get('raw_sha256') != _sha256(capture.parent / 'gazebo_sensor_raw.mp4')):
@@ -88,7 +102,7 @@ def validate_video(video: Path, capture: Path, duration_s: float) -> dict:
     return timing
 
 
-def export_replay(mcap: Path, capture: Path) -> dict:
+def export_replay(mcap: Path, capture: Path, offset_s: float = 0.0) -> dict:
     """Preserve missing observations and never substitute future samples."""
     metadata = json.loads(capture.read_text(encoding='utf-8'))
     urdf = capture.parent / 'jdamr_cube_capture.urdf'
@@ -98,6 +112,7 @@ def export_replay(mcap: Path, capture: Path) -> dict:
         raise ValueError('replay requires a planar laser transform')
     frames = metadata['frame_timestamps']
     start_ns, end_ns = frames[0]['wall_ns'], frames[-1]['wall_ns']
+    start_ns = trimmed_start_ns(start_ns, end_ns, offset_s)
     telemetry = _read_telemetry(mcap)
     capture_view = 'unknown'
     for name in ('gazebo_capture_urdf.json', 'gazebo_capture_world.json'):
@@ -168,6 +183,7 @@ def export_replay(mcap: Path, capture: Path) -> dict:
     return {
         'schema_version': 1, 'source': 'recorded_ros', 'samples': samples,
         'duration_s': (end_ns - start_ns) / 1e9,
+        'start_offset_s': offset_s,
         'synchronization': 'camera wall time / MCAP receipt time; no speedup',
         'bt_ticks_available': False,
         'capture_view': capture_view,
@@ -187,11 +203,14 @@ def main():
                         help='Unsped wall-time video, not a highlight reel')
     parser.add_argument('--prepare-scene', action='store_true',
                         help='Create a new CPU-only wall-time video from raw frames')
+    parser.add_argument('--start-offset-s', type=float, default=0.0,
+                        help='Trim the same leading interval from video and ROS replay')
     args = parser.parse_args()
-    result = export_replay(args.mcap, args.capture)
+    result = export_replay(args.mcap, args.capture, args.start_offset_s)
     if args.prepare_scene:
-        prepare_scene_video(args.capture, args.video)
-    result['video_timing'] = validate_video(args.video, args.capture, result['duration_s'])
+        prepare_scene_video(args.capture, args.video, args.start_offset_s)
+    result['video_timing'] = validate_video(
+        args.video, args.capture, result['duration_s'], args.start_offset_s)
     result['video_sha256'] = _sha256(args.video)
     map_path = Path(__file__).parent / 'assets/nav_obstacle/slam_corridor_eval.yaml'
     keepout_path = args.capture.parent.parent / 'assets/sim_keepout_mask.yaml'

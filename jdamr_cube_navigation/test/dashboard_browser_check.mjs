@@ -41,6 +41,11 @@ try {
   await evaluate(
     `new Promise((resolve,reject)=>{let n=0;const t=setInterval(()=>{if(typeof replay!=='undefined'&&replay&&video.readyState>=2){clearInterval(t);resolve(true);}else if(++n>100){clearInterval(t);reject(Error('loading timeout'));}},100);})`,
   );
+  const autoplay = await evaluate(
+    "({enabled:video.autoplay,muted:video.muted,playing:!video.paused})",
+  );
+  if (!autoplay.enabled || !autoplay.muted || !autoplay.playing)
+    throw Error("muted autoplay failed");
   const seek = async (time) =>
     evaluate(
       `new Promise(resolve=>{video.pause();video.addEventListener('seeked',()=>{update();resolve({time:video.currentTime,state:$('behavior').textContent,front:$('front').textContent,cmd:$('cmd').textContent});},{once:true});video.currentTime=${time};})`,
@@ -153,6 +158,7 @@ try {
     throw Error("stale ROS misrepresented");
   const result = {
     status: "PASS",
+    autoplay,
     layouts,
     moving: a,
     stopped: b,
