@@ -76,9 +76,10 @@ source "$HOME/jdamr_ws/install/setup.bash"
 set -u
 export ROS_DOMAIN_ID=12
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
-export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-# 이전 셸이 SUBNET 범위로 만든 CLI daemon을 재사용하면 원격 그래프가 다시
-# 섞인다. 실행기의 LOCALHOST 환경으로 필요할 때 새 daemon이 생기게 한다.
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+# bringup의 원시 센서 publisher는 LOCALHOST로 유지한다. 이 호스트의 Nav2와
+# 기록기만 SUBNET participant로 만들어 현재 Fast DDS의 local user-data 경로를
+# 사용한다. 이전 discovery 범위의 CLI daemon은 재사용하지 않는다.
 ros2 daemon stop >/dev/null 2>&1 || true
 SHARE="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation"
 ROUTE="$SHARE/config/corridor_roundtrip.autonomous_20260826.yaml"

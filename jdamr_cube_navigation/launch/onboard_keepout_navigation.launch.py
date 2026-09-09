@@ -79,6 +79,7 @@ def generate_launch_description():
             'keepout_mask': keepout_mask,
             'params_file': params_file,
             'navigation_profile': navigation_profile,
+            'discovery_range': 'SUBNET',
             'use_sim_time': use_sim_time,
             'autostart': autostart,
         }.items(),
@@ -114,8 +115,13 @@ def generate_launch_description():
 
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
+        # Sensor publishers remain LOCALHOST-only.  On the current Jazzy /
+        # Fast DDS build, a SUBNET participant on the same host receives their
+        # user data in both directions while a LOCALHOST participant only
+        # discovers endpoint names.  The field observation belongs in the
+        # evaluation report; this comment pins the asymmetric boundary.
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
         DeclareLaunchArgument(
             'map',
             default_value=os.path.expanduser(

@@ -172,14 +172,18 @@ def test_saved_map_navigation_injects_the_safe_behavior_tree():
 
 
 def test_onboard_run_isolates_dds_from_wifi():
-    for path in (ONBOARD_LAUNCH, ONBOARD_CORE_LAUNCH):
-        source = path.read_text(encoding='utf-8')
+    wrapper_source = ONBOARD_LAUNCH.read_text(encoding='utf-8')
+    core_source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
-        ast.parse(source)
-        assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'" in source
+    ast.parse(wrapper_source)
+    ast.parse(core_source)
+    assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'" in wrapper_source
+    assert "'discovery_range': 'SUBNET'" in wrapper_source
+    assert "'discovery_range', default_value='LOCALHOST'" in core_source
+    assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', discovery_range" in core_source
 
     autorun = AUTORUN_SCRIPT.read_text(encoding='utf-8')
-    assert 'export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST' in autorun
+    assert 'export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET' in autorun
     assert 'ros2 daemon stop' in autorun
 
 

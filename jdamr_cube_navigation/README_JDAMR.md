@@ -2,7 +2,7 @@
 
 이 패키지는 Cartographer가 갱신하는 `/map`에서 frontier를 고르고, Nav2에 한 번에 목표 하나만 전달한다. `frontier_explorer`는 시작 시 항상 `IDLE`이며 직접 `/cmd_vel`을 발행하지 않는다. 최종 속도 명령은 Collision Monitor만 `/cmd_vel`에 발행해야 한다.
 
-실기 launch는 파이에서 재현된 Fast DDS 공유메모리 user-data 장애를 피하도록 자식 노드 시작 전에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 설정한다. 또한 실차의 센서·제어 DDS를 무선 인터페이스에서 분리하도록 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`를 설정한다. `real_bringup.launch.py`, `cartographer_real.launch.py`, `autonomous_mapping.launch.py`를 사용하면 두 설정을 별도로 넣을 필요가 없다. launch 밖에서 실기 ROS 노드를 직접 실행할 때도 같은 환경변수를 적용한다. 로봇의 ROS domain은 12이며 비대화형 셸에서는 `.bashrc`가 적용되지 않을 수 있으므로 아래 실행 예시처럼 domain과 discovery 범위를 명시한다.
+실기 launch는 파이에서 재현된 Fast DDS 공유메모리 user-data 장애를 피하도록 자식 노드 시작 전에 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`를 설정한다. 센서 bringup은 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`로 유지해 원시 `/scan`·`/odom`을 무선 DDS에서 분리한다. 현재 파이의 Jazzy/Fast DDS에서는 같은 호스트의 `LOCALHOST` subscriber가 endpoint 이름만 찾고 user data를 받지 못하는 현상을 재현했으므로, 온보드 Nav2·기록기·경로 실행기만 `SUBNET` participant로 기동한다. 같은 호스트의 `SUBNET` subscriber와 `LOCALHOST` sensor publisher 사이 데이터 전달 및 반대 방향의 명령 토픽 전달을 확인했다. 로봇의 ROS domain은 12이며 비대화형 셸에서는 `.bashrc`가 적용되지 않을 수 있으므로 전용 launch와 자동 실행기를 사용한다.
 
 ## 시작 전 안전 조건
 
@@ -148,7 +148,9 @@ ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
   keepout_mask:="$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml"
 ```
 
-`LOCALHOST` 주행 중에는 노트북 RViz가 파이의 ROS graph를 볼 수 없는 것이 정상이다.
+원시 센서 publisher는 `LOCALHOST`이므로 노트북 RViz에서 `/scan`·`/odom`이 보이지 않는
+것이 정상이다. 온보드 Nav2 participant는 센서 user data를 받기 위해 `SUBNET`이지만,
+주행 중 노트북에서 RViz나 센서 구독자를 실행하지 않는다.
 노트북에서는 RViz와 rosbag을 실행하지 않고 SSH로 텍스트 로그와 종료 상태만 확인한다.
 `keepout_operator_view.launch.py`는 실차 자율주행과 동시에 쓰지 않는 단일 호스트 정적
 진단용이다. 시각 검토는 주행 종료 뒤 로컬로 복사한 bag과

@@ -262,11 +262,18 @@ def _launch_navigation(context):
 def generate_launch_description():
     """Keep the proven corridor profile as the default onboard launch."""
     package_share = get_package_share_directory('jdamr_cube_navigation')
+    discovery_range = LaunchConfiguration('discovery_range')
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', discovery_range),
+        DeclareLaunchArgument(
+            'discovery_range', default_value='LOCALHOST',
+            choices=['LOCALHOST', 'SUBNET'],
+            description=(
+                'Keep simulation isolated; the physical wrapper selects '
+                'SUBNET to consume LOCALHOST sensor publishers on this host')),
         DeclareLaunchArgument(
             'map',
             default_value=os.path.expanduser(

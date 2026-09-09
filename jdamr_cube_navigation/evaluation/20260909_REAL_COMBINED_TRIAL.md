@@ -56,9 +56,11 @@ setsid nohup bash \
 touch "$HOME/jdamr_abort"
 ```
 
-무선 연결은 제어와 기록 경로에 포함되지 않는다. SSH가 끊겨도 파이의 실행과 MCAP 기록은
-계속된다. 로봇과 사람이 가까워지거나 예상하지 못한 움직임이 보이면 네트워크 명령을
-기다리지 않고 물리 전원을 차단한다.
+센서 bringup은 `LOCALHOST`, 온보드 Nav2·기록기는 `SUBNET` discovery를 사용한다. 이
+비대칭은 같은 파이 안에서 센서 user data를 전달하면서 원시 센서 publisher가 노트북의
+구독자를 발견하지 않도록 한다. SSH는 제어와 기록 경로에 포함되지 않으므로 연결이
+끊겨도 파이의 실행과 MCAP 기록은 계속된다. 로봇과 사람이 가까워지거나 예상하지 못한
+움직임이 보이면 네트워크 명령을 기다리지 않고 물리 전원을 차단한다.
 
 ## 실행 전 자동 확인과 예상 대기
 
@@ -110,3 +112,22 @@ python3 jdamr_cube_navigation/evaluation/corridor_run_media.py \
 실차 실행 전까지의 현재 범위는 `READY_FOR_REAL_TRIAL`이다. 시뮬레이션 통합 PASS와 파이
 배포 이력은 실차 결과를 대신하지 않으며, 위 주행의 원본이 생긴 뒤에만 포트폴리오의
 실차 장애물 대응 문구와 미디어를 갱신한다.
+
+## 2026-09-09 출발 직전 점검
+
+파이의 센서 bringup 프로세스는 살아 있었지만 `LOCALHOST`로 띄운 새 구독자는 endpoint
+이름만 찾고 `/scan`, `/odom`, `/battery_state` user data를 받지 못했다. 같은 구독자를
+`SUBNET`으로 바꾸자 세 토픽 표본이 즉시 수신됐고, 반대 방향인 `SUBNET` publisher에서
+`LOCALHOST` subscriber로 보내는 무해한 probe 토픽도 통과했다. 이에 원시 센서 publisher는
+`LOCALHOST`로 유지하고, 실차 wrapper가 온보드 Nav2·기록기·경로 실행기와 core launch에
+`SUBNET`을 전달하도록 수정·배포했다. core launch의 기본값은 시뮬레이션 격리를 위해
+`LOCALHOST`로 남겼다. ROS가 같은 호스트의 두 범위 조합을 지원하는 공식 행렬은
+[Improved Dynamic Discovery](https://docs.ros.org/en/rolling/Tutorials/Advanced/Improved-Dynamic-Discovery.html)에 있다.
+
+수정 뒤 읽기 전용 실측에서는 `/scan`, `/odom`, `/battery_state`가 수신됐고 배터리는
+11.976 V였다. 다만 현재 `/joint_states`는 실제 서보 telemetry가 아니라
+`joint_state_publisher`가 만든 전 관절 0 rad 표본이다. 후보 수납 자세와 비교하면 최대
+오차가 1.5 rad이므로 travel-pose gate는 정상적으로 FAIL한다. 실차에 팔이 장착돼 있다면
+실제 관절 상태 publisher와 물리 수납이 필요하고, 팔이 분리돼 있다면 팔 collision 외곽을
+전제로 한 후보와 별도로 base-only 보호 계약을 선택해야 한다. 이 물리 구성을 확인하기
+전에는 `obstacle_candidate` 실차 목표를 보내지 않는다.
