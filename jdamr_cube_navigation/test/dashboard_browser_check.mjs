@@ -33,7 +33,7 @@ try {
   await send("Page.enable");
   await send("Emulation.setDeviceMetricsOverride", {
     width: 1536,
-    height: 1200,
+    height: 900,
     deviceScaleFactor: 1,
     mobile: false,
   });
@@ -53,6 +53,43 @@ try {
   );
   const a = await seek(moving + 0.01),
     b = await seek(stopped + 0.01);
+  const layouts = [];
+  for (const [width, height] of [
+    [1366, 768],
+    [1280, 720],
+    [1920, 1080],
+  ]) {
+    await send("Emulation.setDeviceMetricsOverride", {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    const layout = await evaluate(`({
+      width: innerWidth, height: innerHeight,
+      pageWidth: document.documentElement.scrollWidth,
+      pageHeight: document.documentElement.scrollHeight,
+      removed: !document.querySelector('details') && !document.getElementById('live'),
+      videoHeight: video.clientHeight,
+      panelsFit: [...document.querySelectorAll('.state-panel,.flow-panel')]
+        .every(e=>e.scrollHeight<=e.clientHeight+1)
+    })`);
+    if (
+      !layout.removed ||
+      !layout.panelsFit ||
+      layout.videoHeight < 200 ||
+      layout.pageWidth > width ||
+      layout.pageHeight > height
+    )
+      throw Error("single-screen layout failed " + JSON.stringify(layout));
+    layouts.push(layout);
+  }
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: 1536,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   if (a.front === "미수신" || b.front === "미수신" || a.state === b.state)
     throw Error("replay state failed");
   await evaluate(`new Promise(r=>setTimeout(r,400))`);
@@ -89,7 +126,18 @@ try {
     "/tmp/jdamr_white_mobile.png",
     Buffer.from(shot.data, "base64"),
   );
-  await evaluate(`switchMode('live');poll()`);
+  await evaluate(`(async()=>{
+    const originalFetch=window.fetch, originalInterval=window.setInterval;
+    try {
+      window.setInterval=()=>0;
+      window.fetch=async url=>url==='/api/config'
+        ? {ok:true,json:async()=>({video_available:false,replay_available:false})}
+        : originalFetch(url);
+      await start();
+    } finally { window.fetch=originalFetch; window.setInterval=originalInterval; }
+  })()`);
+  if ((await evaluate("mode")) !== "live")
+    throw Error("no-replay source must automatically select live observation");
   const live = await evaluate(
     `({state:$('behavior').textContent,command:$('cmd').textContent})`,
   );
@@ -105,6 +153,7 @@ try {
     throw Error("stale ROS misrepresented");
   const result = {
     status: "PASS",
+    layouts,
     moving: a,
     stopped: b,
     paused,

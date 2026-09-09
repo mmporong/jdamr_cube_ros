@@ -29,10 +29,20 @@
   "screenshots": [
     {
       "path": "white_dashboard_desktop.png",
-      "sha256": "16e7344013af30bfe4f2bdaddd547ab2318df0f3e007c278b09e8a5a624ea6da",
-      "size_bytes": 408614
+      "sha256": "5dbbfed3cd056f1fb21c28704390e65590b79cd068bebf9f99542526f7ccb17e",
+      "size_bytes": 212815
     }
   ],
+  "compact_layout": {
+    "status": "PASS",
+    "removed_details_count": 2,
+    "live_button_removed": true,
+    "without_replay_automatically_selects_live_observation": true,
+    "desktop_viewports_without_overflow": [[1366, 768], [1280, 720], [1920, 1080]],
+    "state_and_flow_panels_without_content_overflow": true,
+    "mobile_page_width_px": 390,
+    "mobile_viewport_width_px": 390
+  },
   "stale": {
     "command": "미수신",
     "goal": "미수신",
