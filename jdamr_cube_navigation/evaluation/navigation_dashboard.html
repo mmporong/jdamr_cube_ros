@@ -333,6 +333,7 @@
         margin: 10px 0 0;
         padding: 0;
       }
+      .event-detail { display: block; font-size: 11px; line-height: 1.45; color: var(--muted); margin-top: 3px; }
       .events-panel button {
         display: flex;
         gap: 14px;
@@ -905,6 +906,58 @@
           return ["caution", "정지 확인 중"];
         return ["good", measured ? "주행 관측" : "주행 명령"];
       }
+      function detailedEvent(sample, label, previous = null) {
+        const action = sample.monitor?.action || "NO_DATA";
+        let reason = observation(sample)[1];
+        if (["SLOWDOWN", "APPROACH", "LIMIT"].includes(action))
+          reason = `충돌 감시가 ${action}을 보고했습니다. 요청 영역: ${sample.monitor?.polygon || "미기록"}. 유발 감지점과 내부 판단 사유는 미기록입니다.`;
+        if (action === "STOP")
+          reason = `충돌 감시 STOP 보고 · 요청 영역 ${sample.monitor?.polygon || "미기록"}. 소프트웨어 보호 정지이며 사람 분류·하드웨어 비상정지 여부는 확인할 수 없습니다.`;
+        if (action === "DO_NOTHING" && ["STOP", "SLOWDOWN", "APPROACH", "LIMIT"].includes(previous?.monitor?.action))
+          reason = `충돌 감시가 ${previous.monitor.action}에서 DO_NOTHING으로 변경됐습니다. 감시 제한 해제 보고이며 실제 이동 재개는 이후 속도로 별도 확인합니다.`;
+        if (label === "속도 감소 관측")
+          reason = `직전 명령 ${number(previous?.command?.linear_mps)} → ${number(sample.command?.linear_mps)} m/s. 감속 요청 상태가 없어 경로 추종·회전·목표 접근 중 어느 원인인지는 미확인입니다.`;
+        if (label === "정지 후 이동 재개")
+          reason = "직전 정지 명령 뒤 이동 명령을 관측했습니다. 충돌 감시의 마지막 보고는 " + action + ". 통로 해제의 세부 감지 조건과 동일 목표 여부는 이 표본만으로 확정하지 않습니다.";
+        if (sample.navigation?.status === "SUCCEEDED")
+          reason = "NavigateToPose action이 SUCCEEDED를 보고했습니다. 위치·각도 오차 수치는 이 기록에 없습니다.";
+        return {
+          time_s: sample.time_s, label,
+          detail: `${reason} 명령 ${number(sample.command?.linear_mps)} / 측정 ${number(sample.pose?.linear_mps)} m/s · 전방 ${number(sample.scan?.front_minimum_m, 2)} m · 감시 ${action} (수신 후 ${number(sample.ages_s?.monitor, 1)} s).`,
+        };
+      }
+      function buildEventLog(samples, maskPoints = []) {
+        const events = [];
+        let previous = null, previousLabel = null, nearMask = null, decreasing = false;
+        for (const sample of samples) {
+          const label = observation(sample)[0];
+          if (label !== previousLabel || sample.monitor?.action !== previous?.monitor?.action)
+            events.push(detailedEvent(sample, label, previous));
+          const cmd = sample.command?.linear_mps, oldCmd = previous?.command?.linear_mps;
+          const fresh = (s) => finite(s?.ages_s?.cmd) && s.ages_s.cmd <= 1 && s.ages_s.cmd >= 0;
+          // Display-only change threshold in m/s; it does not alter robot control.
+          const slowing = fresh(sample) && fresh(previous) && finite(cmd) && finite(oldCmd) && Math.abs(oldCmd) - Math.abs(cmd) > 0.02;
+          if (slowing && !decreasing && !["STOP", "SLOWDOWN", "APPROACH", "LIMIT"].includes(sample.monitor?.action))
+            events.push(detailedEvent(sample, "속도 감소 관측", previous));
+          const oldTurn = previous?.command?.angular_rps, turn = sample.command?.angular_rps;
+          if (fresh(sample) && fresh(previous) && finite(cmd) && finite(oldCmd) && finite(oldTurn) && finite(turn) && Math.abs(oldCmd) <= 0.005 && Math.abs(oldTurn) <= 0.005 && (Math.abs(cmd) > 0.005 || Math.abs(turn) > 0.005))
+            events.push(detailedEvent(sample, "정지 후 이동 재개", previous));
+          if (sample.map_pose?.slice(0, 2).every(finite) && maskPoints.length) {
+            const [x, y] = sample.map_pose;
+            const distances = maskPoints.filter(p => p.length >= 2 && p.slice(0, 2).every(finite)).map(([mx, my]) => Math.hypot(mx - x, my - y));
+            if (distances.length) {
+              const distance = Math.min(...distances);
+              // Display-only proximity to sampled mask points in metres, not footprint clearance.
+              const near = distance <= 0.6;
+              if ((near && nearMask !== true) || (!near && nearMask === true))
+                events.push({ time_s: sample.time_s, label: near ? "마스크 인근 진입" : "마스크 인근 이탈", detail: `기록된 위치 기준점과 표시용 마스크 점의 최근접 거리 ${distance.toFixed(2)} m (인근 표시 기준 0.60 m). 위치 수신 나이 미제공. 차체 침범·우회 성공 판정이 아닙니다.` });
+              nearMask = near;
+            }
+          }
+          decreasing = slowing; previous = sample; previousLabel = label;
+        }
+        return events;
+      }
       function speedHistorySamples(samples, time) {
         return samples.filter((sample) => finite(sample.time_s) && sample.time_s >= time - 8 && sample.time_s <= time);
       }
@@ -1001,7 +1054,6 @@
         list.replaceChildren();
         for (const event of transitions
           .filter((e) => e.time_s <= time)
-          .slice(-8)
           .reverse()) {
           const li = document.createElement("li"),
             button = document.createElement("button"),
@@ -1009,6 +1061,10 @@
             text = document.createElement("span");
           t.textContent = number(event.time_s, 1) + " s";
           text.textContent = event.label;
+          const detail = document.createElement("small");
+          detail.className = "event-detail";
+          detail.textContent = event.detail || "상세 근거 미수신";
+          text.append(detail);
           button.append(t, text);
           button.disabled = mode !== "recorded";
           button.onclick = () => {
@@ -1028,15 +1084,7 @@
             "영상은 저장 기록이며 실시간 ROS 장면이 아닙니다.";
           transitions = [];
         } else {
-          transitions = [];
-          let previous = null;
-          for (const sample of replay?.samples || []) {
-            const label = observation(sample)[0];
-            if (label !== previous) {
-              transitions.push({ time_s: sample.time_s, label });
-              previous = label;
-            }
-          }
+          transitions = buildEventLog(replay?.samples || [], replay?.keepout_points || []);
           $("source-note").textContent = replay?.capture_view?.includes(
             "follow",
           )
@@ -1081,7 +1129,7 @@
           if (mode === "live") {
             const label = observation(liveState)[0];
             if (label !== lastLiveKey) {
-              transitions.push({ time_s: liveState.uptime_s || 0, label });
+              transitions.push(detailedEvent({ ...liveState, time_s: liveState.uptime_s || 0 }, label));
               lastLiveKey = label;
               transitions = transitions.slice(-100);
             }

@@ -53,7 +53,12 @@ def test_export_replay_uses_causal_samples_and_captured_laser(tmp_path, monkeypa
     monkeypatch.setattr(exporter, '_read_telemetry', lambda _: {
         'scans': [(1_100_000_000, -math.pi, math.pi, 0.05, 8.0, [0.4, 2.0])],
         'cmd': [(1_300_000_000, 0.18, 0.0)], 'odom': [], 'plans': []})
-    monkeypatch.setattr(exporter, 'read_navigation_messages', lambda *a, **k: [])
+    from types import SimpleNamespace
+    monitor = SimpleNamespace(
+        log_time_ns=1_100_000_000,
+        channel=SimpleNamespace(topic='/collision_monitor_state'),
+        ros_msg=SimpleNamespace(action_type=1, polygon_name='StopZone'))
+    monkeypatch.setattr(exporter, 'read_navigation_messages', lambda *a, **k: [monitor])
     result = exporter.export_replay(mcap, capture)
     assert result['samples'][0]['command'] == {}
     assert 'scan' not in result['samples'][0]
@@ -61,6 +66,8 @@ def test_export_replay_uses_causal_samples_and_captured_laser(tmp_path, monkeypa
     assert result['samples'][1]['scan']['front_minimum_m'] == pytest.approx(0.4)
     assert result['samples'][2]['command']['linear_mps'] == pytest.approx(0.18)
     assert result['bt_ticks_available'] is False
+    assert result['samples'][0]['monitor']['polygon'] is None
+    assert result['samples'][1]['monitor'] == {'action': 'STOP', 'polygon': 'StopZone'}
     trimmed = exporter.export_replay(mcap, capture, 0.2)
     assert trimmed['start_offset_s'] == 0.2
     assert trimmed['duration_s'] == pytest.approx(0.2)

@@ -127,7 +127,8 @@ def export_replay(mcap: Path, capture: Path, offset_s: float = 0.0) -> dict:
         message = item.ros_msg
         if item.channel.topic == '/collision_monitor_state':
             telemetry['monitor'].append((
-                item.log_time_ns, int(message.action_type)))
+                item.log_time_ns, int(message.action_type),
+                getattr(message, 'polygon_name', '') or None))
         elif message.status_list:
             telemetry['navigation'].append((
                 item.log_time_ns, int(message.status_list[-1].status)))
@@ -170,7 +171,8 @@ def export_replay(mcap: Path, capture: Path, offset_s: float = 0.0) -> dict:
         navigation = latest('navigation', stamp_ns)
         sample['monitor'] = {'action': (
             {0: 'DO_NOTHING', 1: 'STOP', 2: 'SLOWDOWN', 3: 'APPROACH',
-             4: 'LIMIT'}.get(monitor[1], 'UNKNOWN') if monitor else 'NO_DATA')}
+            4: 'LIMIT'}.get(monitor[1], 'UNKNOWN') if monitor else 'NO_DATA')}
+        sample['monitor']['polygon'] = monitor[2] if monitor else None
         sample['navigation'] = {'status': (
             {1: 'ACCEPTED', 2: 'EXECUTING', 3: 'CANCELING', 4: 'SUCCEEDED',
              5: 'CANCELED', 6: 'ABORTED'}.get(navigation[1], 'UNKNOWN')

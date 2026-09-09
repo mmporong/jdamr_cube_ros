@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const html = fs.readFileSync(new URL('../evaluation/navigation_dashboard.html', import.meta.url), 'utf8');
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script);
-const source = script.slice(script.indexOf('function speedSignal('), script.indexOf('function speedHistorySamples('));
+const source = script.slice(script.indexOf('function speedSignal('), script.indexOf('function detailedEvent('));
 const signal = vm.runInNewContext(`(${source})`, { finite: Number.isFinite });
 const state = { command: { linear_mps: 0.18, angular_rps: 0 }, pose: { linear_mps: 0.18, angular_rps: 0 } };
 const check = (s, kind, tone, label) => {
@@ -46,3 +46,28 @@ assert.equal(historyValue({ ...state, ages_s: { cmd: 2 } }, 'command'), null);
 assert.equal(historyValue(state, 'command'), null);
 assert.equal(historyValue({ ...state, ages_s: { cmd: -1 } }, 'command'), null);
 console.log('PASS: stale held values and unknown timestamps create history gaps');
+const eventSource = script.slice(script.indexOf('function detailedEvent('), script.indexOf('function speedHistorySamples('));
+const eventLog = vm.runInNewContext(`${eventSource}; buildEventLog`, {
+  finite: Number.isFinite,
+  number: (v, d = 3) => Number.isFinite(v) ? v.toFixed(d) : '미수신',
+  observation: s => [s.monitor?.action || '대기', '상태 관측'],
+});
+const eventSamples = [0.18, 0.1, 0, 0.1].map((v, i) => ({
+  time_s: i, command: { linear_mps: v, angular_rps: 0 }, ages_s: { cmd: 0, monitor: 0 },
+  monitor: { action: i === 2 ? 'STOP' : 'DO_NOTHING' },
+  map_pose: [i, 0, 0],
+}));
+const log = eventLog(eventSamples, [[1, 0]]);
+assert.ok(log.some(e => e.label === '속도 감소 관측' && e.detail.includes('미확인')));
+assert.ok(log.some(e => e.label === '정지 후 이동 재개'));
+assert.ok(log.some(e => e.label === '마스크 인근 진입'));
+assert.ok(log.some(e => e.label === '마스크 인근 이탈'));
+assert.ok(log.every(e => e.detail && e.time_s <= 3));
+assert.ok(!eventLog(eventSamples.map(s => ({ ...s, ages_s: { cmd: 2 } }))).some(e => e.label === '속도 감소 관측'));
+console.log('PASS: detailed event evidence, mask proximity, resume and stale-command filtering');
+const turning = [
+  { ...eventSamples[2], command: { linear_mps: 0, angular_rps: 0.2 } },
+  eventSamples[3],
+];
+assert.ok(!eventLog(turning).some(e => e.label === '정지 후 이동 재개'));
+assert.ok(eventLog([eventSamples[2], { ...eventSamples[3], command: { linear_mps: 0, angular_rps: 0.2 } }]).some(e => e.label === '정지 후 이동 재개'));

@@ -89,6 +89,7 @@ VDA 5050은 관제와 이동 로봇 사이의 주문·상태 통신 규격이다
 
 ## 파일과 재현
 
+- [상세 이벤트 로그](detailed_events.json): 감속·정지 요청 영역, 제한 해제, 이동 재개, 마스크 인근 위치 비교, 도착. 시간은 앞 3초를 제거한 영상 기준이다.
 - [원본·출력 해시와 시간 정렬](render_manifest.json)
 - [무배속 장면의 시간 변환 근거](gazebo_scene_walltime.timing.json)
 - [브라우저 검증](browser_verification.json): 주행·정지 시점, 일시정지, 모바일 너비, ROS 미연결·오래된 데이터 처리
@@ -104,7 +105,7 @@ python3 jdamr_cube_navigation/evaluation/navigation_dashboard.py \
   --no-ros --port 8765 \
   --summary jdamr_cube_navigation/evaluation/media/gazebo_fixed_dashboard_20260909/verified_run.json \
   --video "$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_trim3/dashboard_scene_walltime.mp4" \
-  --replay "$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_trim3/dashboard_replay_walltime.json"
+  --replay "$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_trim3/dashboard_replay_detailed.json"
 ```
 
 관제 주소는 `http://127.0.0.1:8765/`다. 기록 재생에는 파이와 GPU가 필요하지 않다.
