@@ -687,12 +687,11 @@
             </div>
           </div>
           <div class="pipeline" aria-label="실제 속도 명령 처리 구조">
-            <b>경로 추종기</b><i>→</i><b>속도 평활화</b><i>→</i><b>충돌 감시</b
-            ><i>→</i><b>/cmd_vel</b>
+            <b title="설정상 역할: 경로에 맞는 속도 계산">경로 추종기</b><i>→</i><b title="설정상 역할: 가속·감속 조절">속도 평활화</b><i>→</i><b id="pipeline-monitor" class="signal" data-tone="neutral">충돌 감시 · 대기</b
+            ><i>→</i><b id="pipeline-command" class="signal" data-tone="neutral">최종 명령 · 대기</b>
           </div>
           <p class="pipeline-note">
-            위 연결선은 구현 구조입니다. 중간 /cmd_vel_nav·/cmd_vel_smoothed
-            토픽은 이 기록에 포함되지 않았습니다.
+            앞 두 단계는 처리 순서입니다. 색상과 수치는 기록된 충돌 감시 상태·최종 명령에 따라 바뀝니다.
           </p>
         </section>
         <section class="events-panel">
@@ -1029,6 +1028,15 @@
         const [label, reason] = observation(s);
         $("behavior").textContent = label;
         $("reason").textContent = reason;
+        const monitor = $("pipeline-monitor"), command = $("pipeline-command");
+        const action = s.observation_unavailable ? "NO_DATA" : s.monitor?.action;
+        const monitorLabels = { STOP: "보호 정지", SLOWDOWN: "감속 요청", APPROACH: "접근 속도 조절", LIMIT: "속도 제한", DO_NOTHING: "제한 없음" };
+        monitor.textContent = "충돌 감시 · " + (monitorLabels[action] || "대기");
+        monitor.dataset.tone = action === "STOP" ? "stop" : ["SLOWDOWN", "APPROACH", "LIMIT"].includes(action) ? "caution" : action === "DO_NOTHING" ? "good" : "neutral";
+        const monitorAge = s.ages_s?.monitor;
+        monitor.title = finite(monitorAge) ? `마지막 상태 보고 ${number(monitorAge, 1)}초 전` : "상태 수신 대기";
+        command.dataset.tone = speedSignal(s, "cmd")[0];
+        command.textContent = "/cmd_vel · " + (finite(s.command?.linear_mps) && !s.observation_unavailable ? number(s.command.linear_mps) + " m/s" : "대기");
         $("goal").textContent =
           goals[s.navigation?.status] || s.navigation?.status || "미수신";
         $("cmd").textContent = number(s.command?.linear_mps);
