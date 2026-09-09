@@ -52,6 +52,10 @@ PROCESS_MARKER = 'JDAMR_NAV_EVAL_RUN_ID'
 DOMAIN_IDS = {186, 187}
 SEED = 11
 PEDESTRIAN_EDGE_Y_M = 1.0
+VIDEO_EMPTY_SCENE_OBSERVATION_S = 2.0
+KEEPOUT_DEMO_SAFETY_MARGIN_M = 0.35
+KEEPOUT_DEMO_POLYGON_M = (
+    (-5.8, -1.1), (-4.8, -1.1), (-4.8, 0.1), (-5.8, 0.1))
 CASES = (
     'detour', 'event_driven_removal', 'sudden_stop_resume',
     'detour_sudden_stop_resume')
@@ -66,7 +70,7 @@ ALLOWED_PARAM_DELTAS = {
 CAP_BYTES = 64 * 1024 * 1024
 BAG_LIVE_CAP_BYTES = 56 * 1024 * 1024
 RECORDED_TOPICS = (
-    '/cmd_vel', '/collision_monitor_state',
+    '/scan', '/cmd_vel', '/collision_monitor_state',
     '/navigate_to_pose/_action/status', '/odom', '/ground_truth_pose',
     '/plan', '/amcl_pose', '/tf', '/tf_static')
 NAV_SCENARIO_SOURCE = (
@@ -98,7 +102,8 @@ def _leaf_differences(
     return set() if left == right else {prefix}
 
 
-def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
+def prepare_candidate_assets(
+        output_root: Path, keepout_demo: bool = False) -> dict[str, Any]:
     """Create production-faithful params and a nonempty route-away mask."""
     assets = output_root / 'assets'
     generated = prepare(assets)
@@ -177,30 +182,54 @@ def prepare_candidate_assets(output_root: Path) -> dict[str, Any]:
         direct_contract, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
         encoding='utf-8')
 
-    zones = assets / 'sim_keepout_zones.yaml'
-    zones.write_text(yaml.safe_dump({
+    if keepout_demo:
+        zone_id = 'sim_portfolio_corridor_keepout'
+        polygon = [list(point) for point in KEEPOUT_DEMO_POLYGON_M]
+    else:
+        zone_id = 'sim_route_away_northeast_corner'
+        polygon = [[9.7, 1.55], [10.25, 1.55],
+                   [10.25, 1.85], [9.7, 1.85]]
+    zone_config = {
         'schema_version': 1,
         'map_yaml': str((ASSETS / 'slam_corridor_eval.yaml').resolve()),
-        'safety_margin_m': 0.35,
+        'safety_margin_m': KEEPOUT_DEMO_SAFETY_MARGIN_M,
         'zones': [{
-            'id': 'sim_route_away_northeast_corner',
+            'id': zone_id,
             'enabled': True,
-            'polygon': [[9.7, 1.55], [10.25, 1.55],
-                        [10.25, 1.85], [9.7, 1.85]],
+            'polygon': polygon,
         }],
         'connectivity_checks': [{
             'id': 'candidate_route', 'start': [-8.0, 0.0],
             'goal': [6.0, 0.0], 'clearance_m': 0.0,
         }],
-    }, sort_keys=False), encoding='utf-8')
+    }
+    zones = assets / 'sim_keepout_zones.yaml'
+    zones.write_text(yaml.safe_dump(zone_config, sort_keys=False),
+                     encoding='utf-8')
     mask_report = build_mask(zones, assets / 'sim_keepout_mask')
     validate_mask(
         assets / 'sim_keepout_mask.yaml', ASSETS / 'slam_corridor_eval.yaml')
+    keepout_demo_spec = None
+    if keepout_demo:
+        x_values_m = [point[0] for point in polygon]
+        y_values_m = [point[1] for point in polygon]
+        keepout_demo_spec = {
+            'zone_id': zone_id,
+            'polygon_m': polygon,
+            'safety_margin_m': KEEPOUT_DEMO_SAFETY_MARGIN_M,
+            'expanded_bounds_m': {
+                'min_x_m': min(x_values_m) - KEEPOUT_DEMO_SAFETY_MARGIN_M,
+                'max_x_m': max(x_values_m) + KEEPOUT_DEMO_SAFETY_MARGIN_M,
+                'min_y_m': min(y_values_m) - KEEPOUT_DEMO_SAFETY_MARGIN_M,
+                'max_y_m': max(y_values_m) + KEEPOUT_DEMO_SAFETY_MARGIN_M,
+            },
+        }
     return {
         'params': generated['params'], 'contract': generated['contract'],
         'stop_contract': direct_contract_path,
         'mask': assets / 'sim_keepout_mask.yaml',
-        'mask_report': mask_report, 'param_deltas': differences,
+        'mask_zones': zones, 'mask_report': mask_report,
+        'keepout_demo': keepout_demo_spec, 'param_deltas': differences,
     }
 
 
@@ -507,6 +536,103 @@ def _detour_evidence(
     }
 
 
+def _keepout_route_evidence(
+        mcap: Path, keepout_spec: dict[str, Any],
+        stop_contract: dict[str, Any]) -> dict[str, Any]:
+    """Verify from ground truth that the robot passed north of the mask."""
+    bounds = keepout_spec['expanded_bounds_m']
+    inputs = stop_contract['stop_zone']['inputs']
+    footprint = {
+        'front_m': inputs['footprint_front_m'],
+        'rear_m': inputs['footprint_rear_m'],
+        'half_width_m': inputs['footprint_half_width_m'],
+    }
+    center_xy_m = [
+        (bounds['min_x_m'] + bounds['max_x_m']) / 2.0,
+        (bounds['min_y_m'] + bounds['max_y_m']) / 2.0,
+    ]
+    dimensions_m = [
+        bounds['max_x_m'] - bounds['min_x_m'],
+        bounds['max_y_m'] - bounds['min_y_m'],
+    ]
+    samples = []
+    before_zone = False
+    after_zone = False
+    for item in read_navigation_messages(mcap, topics=['/ground_truth_pose']):
+        message = item.ros_msg
+        x_m = float(message.pose.position.x)
+        y_m = float(message.pose.position.y)
+        before_zone = before_zone or x_m < bounds['min_x_m']
+        after_zone = after_zone or x_m > bounds['max_x_m']
+        if not bounds['min_x_m'] <= x_m <= bounds['max_x_m']:
+            continue
+        stamp = message.header.stamp
+        pose_xy_yaw = [x_m, y_m, _pose_yaw(message)]
+        samples.append({
+            'ros_ns': int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+            'pose_xy_yaw': pose_xy_yaw,
+            'clearance_m': rectangle_clearance(
+                pose_xy_yaw, footprint, center_xy_m, dimensions_m),
+        })
+    if not samples:
+        return {
+            'status': 'FAIL',
+            'reason': 'no_ground_truth_in_keepout_longitudinal_window',
+            'zone_id': keepout_spec['zone_id'],
+        }
+    minimum_clearance = min(samples, key=lambda item: item['clearance_m'])
+    minimum_y = min(samples, key=lambda item: item['pose_xy_yaw'][1])
+    passed = (
+        before_zone and after_zone
+        and minimum_y['pose_xy_yaw'][1] > bounds['max_y_m']
+        and minimum_clearance['clearance_m'] > 0.0)
+    return {
+        'status': 'PASS' if passed else 'FAIL',
+        'zone_id': keepout_spec['zone_id'],
+        'polygon_m': keepout_spec['polygon_m'],
+        'safety_margin_m': keepout_spec['safety_margin_m'],
+        'expanded_bounds_m': bounds,
+        'route_side': 'north',
+        'sample_count': len(samples),
+        'observed_before_zone': before_zone,
+        'observed_after_zone': after_zone,
+        'minimum_center_y_m': minimum_y['pose_xy_yaw'][1],
+        'minimum_center_y_ros_ns': minimum_y['ros_ns'],
+        'minimum_footprint_clearance_m': minimum_clearance['clearance_m'],
+        'minimum_clearance_pose_xy_yaw': minimum_clearance['pose_xy_yaw'],
+    }
+
+
+def _activate_route_obstacle(
+        route_spec: dict[str, Any], environment: dict[str, str],
+        activation: str, observation_s: float = 0.0) -> dict[str, Any]:
+    """Activate and verify the persistent obstacle with clock evidence."""
+    if observation_s > 0.0:
+        time.sleep(observation_s)
+    requested_wall_ns = time.time_ns()
+    requested_steady_ns = time.monotonic_ns()
+    active_pose_m = route_spec['active_pose_m']
+    if not _set_pose(route_spec['name'], *active_pose_m, environment):
+        raise RuntimeError('persistent route obstacle activation failed')
+    route_state = _wait_entity_pose(
+        route_spec['name'], active_pose_m, environment, timeout_s=15.0)
+    return {
+        'activation': activation,
+        'activation_requested_wall_ns': requested_wall_ns,
+        'activation_requested_steady_ns': requested_steady_ns,
+        'activation_verified_wall_ns': time.time_ns(),
+        'activation_verified_steady_ns': time.monotonic_ns(),
+        'pre_activation_observation_s': observation_s,
+        'entity_id': route_state['entity_id'],
+        'expected_pose_m': active_pose_m,
+        'observed_pose_m': route_state['pose_m'],
+        'dimensions_m': [
+            route_spec['length_m'], route_spec['width_m'],
+            route_spec['height_m']],
+        'straight_centerline_blocked': True,
+    }
+
+
 def scenario_passed(document: dict[str, Any], case: str,
                     returncode: int) -> bool:
     """Reject action success unless ground truth proves the intended route."""
@@ -618,11 +744,15 @@ def run_case(case: str, output_root: Path, domain_id: int,
     asset_contract = json.loads(
         prepared['contract'].read_text(encoding='utf-8'))
     route_spec = asset_contract['preloaded_obstacles']['models']['route']
+    keepout_demo_spec = prepared.get('keepout_demo')
     if record_video:
         world_path = case_dir / 'gazebo_capture.world'
         urdf_path = case_dir / 'jdamr_cube_capture.urdf'
         capture_world_report = build_capture_world(
-            ASSETS / 'slam_corridor_contact.world', world_path)
+            ASSETS / 'slam_corridor_contact.world', world_path,
+            keepout_polygon_m=(
+                keepout_demo_spec['polygon_m']
+                if keepout_demo_spec is not None else None))
         capture_urdf_report = build_capture_urdf(
             ASSETS / 'jdamr_cube_nav_eval.urdf', urdf_path)
         capture_world_manifest.write_text(json.dumps(
@@ -654,6 +784,7 @@ def run_case(case: str, output_root: Path, domain_id: int,
                 'gazebo_camera_sensor' if record_video else 'disabled'),
             'pedestrian_corridor_edges_y_m': [
                 PEDESTRIAN_EDGE_Y_M, -PEDESTRIAN_EDGE_Y_M],
+            'keepout_demo': keepout_demo_spec is not None,
         },
         'source_identity': {
             'runner': _source_identity(Path(__file__)),
@@ -671,6 +802,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
                 CAPTURE_WORLD_BUILDER),
             'canonical_evaluation_world': _source_identity(
                 ASSETS / 'slam_corridor_contact.world'),
+            'keepout_mask': _source_identity(prepared['mask']),
+            'keepout_zones': _source_identity(prepared['mask_zones']),
         },
     }
     try:
@@ -684,24 +817,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
         ], case_dir / 'gazebo.log', environment))
         _wait_topics({'/scan', '/odom', '/ground_truth_pose', '/joint_states'},
                      environment, 60.0)
-        if combined_detour:
-            active_pose_m = route_spec['active_pose_m']
-            if not _set_pose(
-                    route_spec['name'], *active_pose_m, environment):
-                raise RuntimeError('persistent route obstacle activation failed')
-            route_state = _wait_entity_pose(
-                route_spec['name'], active_pose_m, environment,
-                timeout_s=15.0)
-            result['static_route_obstacle'] = {
-                'activation': 'verified_before_nav2_start',
-                'entity_id': route_state['entity_id'],
-                'expected_pose_m': active_pose_m,
-                'observed_pose_m': route_state['pose_m'],
-                'dimensions_m': [
-                    route_spec['length_m'], route_spec['width_m'],
-                    route_spec['height_m']],
-                'straight_centerline_blocked': True,
-            }
+        if combined_detour and not record_video:
+            result['static_route_obstacle'] = _activate_route_obstacle(
+                route_spec, environment, 'verified_before_nav2_start')
         launched.append(_start([
             'ros2', 'launch', 'jdamr_cube_navigation',
             'onboard_nav2_core.launch.py',
@@ -801,6 +919,11 @@ def run_case(case: str, output_root: Path, domain_id: int,
         recorder, bag_dir = _start_compact_recorder(case_dir, environment)
         launched.append(recorder)
         _wait_bag_ready(recorder[0], bag_dir)
+        if combined_detour and record_video:
+            result['static_route_obstacle'] = _activate_route_obstacle(
+                route_spec, environment,
+                'verified_after_recorders_ready_before_goal',
+                VIDEO_EMPTY_SCENE_OBSERVATION_S)
         evidence = case_dir / 'scenario.json'
         pedestrian_motion_enabled = record_video or combined_detour
         scenario = _start(_scenario_command(
@@ -876,6 +999,13 @@ def run_case(case: str, output_root: Path, domain_id: int,
             measured_detour = _detour_evidence(
                 mcap, route_spec, stop_contract)
             result['detour_evidence'] = measured_detour
+        keepout_route = None
+        if keepout_demo_spec is not None:
+            stop_contract = json.loads(
+                prepared['stop_contract'].read_text(encoding='utf-8'))
+            keepout_route = _keepout_route_evidence(
+                mcap, keepout_demo_spec, stop_contract)
+            result['keepout_route_evidence'] = keepout_route
         if not evidence.is_file():
             raise RuntimeError('scenario produced no evidence')
         scenario_document = json.loads(evidence.read_text(encoding='utf-8'))
@@ -1010,6 +1140,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
         passed = _case_passed(
             scenario_document, case, returncode, same_goal_evidence,
             measured_detour)
+        if keepout_demo_spec is not None:
+            passed = passed and keepout_route['status'] == 'PASS'
         result['status'] = 'PASS' if passed else 'FAIL'
     except Exception as error:
         result['harness_error'] = f'{type(error).__name__}: {error}'
@@ -1057,6 +1189,7 @@ def main() -> int:
     parser.add_argument('--startup-only', action='store_true')
     parser.add_argument('--gui', action='store_true')
     parser.add_argument('--record-simulator-video', action='store_true')
+    parser.add_argument('--keepout-demo', action='store_true')
     parser.add_argument(
         '--pedestrian-entry', choices=('left', 'right'), default='left')
     args = parser.parse_args()
@@ -1075,7 +1208,8 @@ def main() -> int:
     if args.output_root.exists() and any(args.output_root.iterdir()):
         parser.error('output root must be new or empty')
     args.output_root.mkdir(parents=True, exist_ok=True)
-    prepared = prepare_candidate_assets(args.output_root)
+    prepared = prepare_candidate_assets(
+        args.output_root, keepout_demo=args.keepout_demo)
     results = []
     for index, case in enumerate(selected):
         results.append(run_case(

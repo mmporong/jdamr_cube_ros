@@ -74,6 +74,49 @@ def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
         SMOKE.MOBILE_MANIPULATOR_PROTECTION)
 
 
+def test_keepout_demo_builds_connected_corridor_mask(tmp_path):
+    prepared = SMOKE.prepare_candidate_assets(tmp_path, keepout_demo=True)
+
+    assert prepared['keepout_demo'] == {
+        'zone_id': 'sim_portfolio_corridor_keepout',
+        'polygon_m': [
+            [-5.8, -1.1], [-4.8, -1.1],
+            [-4.8, 0.1], [-5.8, 0.1]],
+        'safety_margin_m': 0.35,
+        'expanded_bounds_m': {
+            'min_x_m': pytest.approx(-6.15),
+            'max_x_m': pytest.approx(-4.45),
+            'min_y_m': pytest.approx(-1.45),
+            'max_y_m': pytest.approx(0.45),
+        },
+    }
+    assert prepared['mask_report']['zones'] == [
+        'sim_portfolio_corridor_keepout']
+    assert prepared['mask_report']['connectivity_checks'][0][
+        'connected'] is True
+
+
+def test_main_forwards_keepout_demo_to_asset_preparation(
+        monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_prepare(output_root, keepout_demo=False):
+        captured['output_root'] = output_root
+        captured['keepout_demo'] = keepout_demo
+        return {}
+
+    monkeypatch.setattr(SMOKE, 'prepare_candidate_assets', fake_prepare)
+    monkeypatch.setattr(
+        SMOKE, 'run_case', lambda *_args, **_kwargs: {'status': 'PASS'})
+    monkeypatch.setattr(SMOKE, '_cap_output', lambda _root: 1)
+    monkeypatch.setattr(sys, 'argv', [
+        'run_onboard_candidate_smoke.py', '--output-root', str(tmp_path),
+        '--domain-id', '186', '--case', 'detour', '--keepout-demo'])
+
+    assert SMOKE.main() == 0
+    assert captured == {'output_root': tmp_path, 'keepout_demo': True}
+
+
 def test_json_string_parameter_compares_the_runtime_geometry_semantically():
     """Ignore harmless whitespace while retaining exact numeric geometry."""
     output = 'String value is: [[0.4, 0.25], [0.4, -0.25]]'
@@ -205,7 +248,7 @@ def test_missing_obstacle_or_contact_observation_cannot_pass(field, missing):
 
 def test_compact_recorder_uses_wall_log_time_and_hidden_status_qos(
         monkeypatch, tmp_path):
-    """Keep same-goal ordering on recorder wall time without scan payloads."""
+    """Keep sensor and same-goal evidence on one recorder wall clock."""
     captured = {}
 
     def fake_start(command, log_path, environment):
@@ -220,7 +263,7 @@ def test_compact_recorder_uses_wall_log_time_and_hidden_status_qos(
     assert command.count('ros2') == 1
     assert '--include-hidden-topics' in command
     assert '--use-sim-time' not in command
-    assert '/scan' not in command
+    assert '/scan' in command
     assert '/joint_states' not in command
     assert set(SMOKE.RECORDED_TOPICS) <= set(command)
     qos = yaml.safe_load(
@@ -382,6 +425,82 @@ def test_detour_evidence_requires_real_lateral_motion_and_clearance(
     assert evidence['straight_centerline_blocked'] is True
     assert evidence['maximum_abs_lateral_offset_m'] == pytest.approx(0.55)
     assert evidence['minimum_clearance_m'] > 0.0
+
+
+def test_keepout_evidence_requires_north_passage_and_footprint_clearance(
+        monkeypatch, tmp_path):
+    def sample(x_m, y_m, stamp_ns):
+        stamp = SimpleNamespace(
+            sec=stamp_ns // 1_000_000_000,
+            nanosec=stamp_ns % 1_000_000_000)
+        pose = SimpleNamespace(
+            position=SimpleNamespace(x=x_m, y=y_m),
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))
+        return SimpleNamespace(
+            ros_msg=SimpleNamespace(
+                header=SimpleNamespace(stamp=stamp), pose=pose))
+
+    samples = [
+        sample(-7.0, 0.0, 1), sample(-6.0, 0.75, 2),
+        sample(-5.3, 0.75, 3), sample(-4.5, 0.75, 4),
+        sample(-4.0, 0.0, 5),
+    ]
+    monkeypatch.setattr(
+        SMOKE, 'read_navigation_messages',
+        lambda *_args, **_kwargs: samples)
+    keepout = {
+        'zone_id': 'demo', 'polygon_m': [], 'safety_margin_m': 0.35,
+        'expanded_bounds_m': {
+            'min_x_m': -6.15, 'max_x_m': -4.45,
+            'min_y_m': -1.45, 'max_y_m': 0.45,
+        },
+    }
+    contract = {'stop_zone': {'inputs': {
+        'footprint_front_m': 0.23, 'footprint_rear_m': -0.23,
+        'footprint_half_width_m': 0.2,
+    }}}
+
+    evidence = SMOKE._keepout_route_evidence(
+        tmp_path / 'run.mcap', keepout, contract)
+
+    assert evidence['status'] == 'PASS'
+    assert evidence['route_side'] == 'north'
+    assert evidence['minimum_center_y_m'] == pytest.approx(0.75)
+    assert evidence['minimum_footprint_clearance_m'] > 0.0
+
+    samples[2] = sample(-5.3, 0.4, 3)
+    evidence = SMOKE._keepout_route_evidence(
+        tmp_path / 'run.mcap', keepout, contract)
+    assert evidence['status'] == 'FAIL'
+
+
+def test_video_route_activation_records_empty_scene_interval(monkeypatch):
+    sleeps = []
+    wall_ns = iter((100, 200))
+    steady_ns = iter((300, 400))
+    route = {
+        'name': 'route', 'active_pose_m': [-1.0, 0.0, 0.5],
+        'length_m': 0.5, 'width_m': 0.4, 'height_m': 1.0,
+    }
+    monkeypatch.setattr(SMOKE.time, 'sleep', sleeps.append)
+    monkeypatch.setattr(SMOKE.time, 'time_ns', lambda: next(wall_ns))
+    monkeypatch.setattr(
+        SMOKE.time, 'monotonic_ns', lambda: next(steady_ns))
+    monkeypatch.setattr(SMOKE, '_set_pose', lambda *_args: True)
+    monkeypatch.setattr(
+        SMOKE, '_wait_entity_pose',
+        lambda *_args, **_kwargs: {
+            'entity_id': 7, 'pose_m': [-1.0, 0.0, 0.5]})
+
+    evidence = SMOKE._activate_route_obstacle(
+        route, {}, 'verified_after_recorders_ready_before_goal', 2.0)
+
+    assert sleeps == [2.0]
+    assert evidence['activation_requested_wall_ns'] == 100
+    assert evidence['activation_verified_wall_ns'] == 200
+    assert evidence['activation_requested_steady_ns'] == 300
+    assert evidence['activation_verified_steady_ns'] == 400
+    assert evidence['pre_activation_observation_s'] == 2.0
 
 
 def _valid_sudden_stop_resume():
