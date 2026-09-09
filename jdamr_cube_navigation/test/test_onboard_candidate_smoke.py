@@ -538,13 +538,39 @@ def test_reevaluation_preserves_source_and_gates_revised_status(
     bag = case / 'bag'
     bag.mkdir(parents=True)
     assets.mkdir()
+    (case / 'scenario.json').write_text('{}', encoding='utf-8')
+    mcap = bag / 'bag_0.mcap'
+    mcap.write_bytes(b'mcap')
+    stop_contract = assets / 'onboard_stop_contract.json'
+    stop_contract.write_text('{}', encoding='utf-8')
+    mask_yaml = assets / 'sim_keepout_mask.yaml'
+    mask_yaml.write_text(
+        'image: mask.pgm\n', encoding='utf-8')
+    mask_image = assets / 'mask.pgm'
+    mask_image.write_bytes(b'mask')
+    zones = assets / 'sim_keepout_zones.yaml'
+    zones.write_text(yaml.safe_dump({
+        'safety_margin_m': 0.35,
+        'zones': [{'id': 'demo', 'polygon': [[0, 0], [1, 0], [0, 1]]}],
+    }), encoding='utf-8')
+    (assets / 'sim_keepout_mask.json').write_text(json.dumps({
+        'mask_sha256': SMOKE._sha256(mask_image),
+        'mask_yaml': str(mask_yaml.resolve()),
+        'zones_yaml': str(zones.resolve()),
+        'zones': ['demo'], 'keepout_cells': 1, 'safety_margin_m': 0.35,
+    }), encoding='utf-8')
     original_result = {
         'case': case.name, 'status': 'FAIL', 'harness_error': None,
         'scenario': {'returncode': 0},
         'detour_evidence': {'status': 'PASS'},
         'same_goal_command_evidence': {},
         'raw_action_status': {'final_status': 4},
-        'recording': {'mcap': {'sha256': 'mcap-hash'}},
+        'recording': {'mcap': {'sha256': SMOKE._sha256(mcap)}},
+        'source_identity': {
+            'keepout_mask': REEVALUATE._source_identity(mask_yaml),
+            'keepout_zones': REEVALUATE._source_identity(zones),
+            'scenario_contract': REEVALUATE._source_identity(stop_contract),
+        },
         'teardown': {
             'remaining_process_groups': [], 'identity_survivors': []},
         'keepout_route_evidence': {'status': 'FAIL'},
@@ -554,27 +580,13 @@ def test_reevaluation_preserves_source_and_gates_revised_status(
         json.dumps(root_summary), encoding='utf-8')
     (case / 'summary.json').write_text(
         json.dumps(original_result), encoding='utf-8')
-    (case / 'scenario.json').write_text('{}', encoding='utf-8')
-    (bag / 'bag_0.mcap').write_bytes(b'mcap')
-    (assets / 'onboard_stop_contract.json').write_text(
-        '{}', encoding='utf-8')
-    (assets / 'sim_keepout_mask.yaml').write_text(
-        'image: mask.pgm\n', encoding='utf-8')
-    (assets / 'sim_keepout_mask.pgm').write_bytes(b'mask')
-    (assets / 'sim_keepout_zones.yaml').write_text(yaml.safe_dump({
-        'safety_margin_m': 0.35,
-        'zones': [{'id': 'demo', 'polygon': [[0, 0], [1, 0], [0, 1]]}],
-    }), encoding='utf-8')
     monkeypatch.setattr(
         REEVALUATE, '_keepout_route_evidence',
         lambda *_args: {
-            'status': 'PASS', 'minimum_footprint_clearance_m': 0.04})
+            'status': 'PASS', 'minimum_footprint_clearance_m': 0.04,
+            'mask': {'occupied_cell_count': 1}})
     monkeypatch.setattr(REEVALUATE, '_case_passed', lambda *_args: True)
     original_sha = REEVALUATE._sha256(source / 'summary.json')
-    monkeypatch.setattr(
-        REEVALUATE, '_sha256',
-        lambda path: ('mcap-hash' if Path(path).suffix == '.mcap'
-                      else SMOKE._sha256(Path(path))))
 
     output = tmp_path / 'revised'
     result = REEVALUATE.reevaluate(source, output)
@@ -588,6 +600,23 @@ def test_reevaluation_preserves_source_and_gates_revised_status(
     assert revised['reevaluation']['source_files_modified'] is False
     assert (output / 'source_summary.json').is_file()
     assert REEVALUATE._sha256(source / 'summary.json') == original_sha
+
+    original_result['recording_error'] = 'incomplete recording'
+    original_result['teardown_error'] = 'owned process remains'
+    root_summary['results'] = [original_result]
+    root_summary['output_error'] = 'evidence cap exceeded'
+    (source / 'summary.json').write_text(
+        json.dumps(root_summary), encoding='utf-8')
+    (case / 'summary.json').write_text(
+        json.dumps(original_result), encoding='utf-8')
+
+    blocked = REEVALUATE.reevaluate(source, tmp_path / 'blocked')
+
+    assert blocked['status'] == 'FAIL'
+    blocked_checks = blocked['reevaluation']['other_original_checks']
+    assert blocked_checks['original_recording_error_absent'] is False
+    assert blocked_checks['original_teardown_error_absent'] is False
+    assert blocked_checks['root_output_error_absent'] is False
 
 
 def _valid_sudden_stop_resume():

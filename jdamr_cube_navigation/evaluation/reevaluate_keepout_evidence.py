@@ -30,6 +30,17 @@ def _single_mcap(case_dir: Path) -> Path:
     return matches[0]
 
 
+def _identity_matches(identity: Any, path: Path) -> bool:
+    if not isinstance(identity, dict):
+        return False
+    try:
+        recorded_path = Path(str(identity['path'])).resolve()
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+    return recorded_path == path.resolve() and identity.get('sha256') == _sha256(
+        path)
+
+
 def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
     """Write a provenance-linked result without modifying source evidence."""
     input_root = input_root.resolve()
@@ -42,8 +53,8 @@ def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
     if not isinstance(results, list) or len(results) != 1:
         raise ValueError('source summary must contain exactly one result')
     case = str(results[0].get('case', ''))
-    if not case:
-        raise ValueError('source result has no case name')
+    if case != 'detour_sudden_stop_resume':
+        raise ValueError('only the combined keepout case can be re-evaluated')
     source_case_dir = input_root / case
     source_case_summary_path = source_case_dir / 'summary.json'
     original = _load_json(source_case_summary_path)
@@ -66,6 +77,10 @@ def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
     stop_contract_path = input_root / 'assets' / 'onboard_stop_contract.json'
     stop_contract = _load_json(stop_contract_path)
     mask_yaml = input_root / 'assets' / 'sim_keepout_mask.yaml'
+    mask_definition = yaml.safe_load(mask_yaml.read_text(encoding='utf-8'))
+    mask_image = (mask_yaml.parent / mask_definition['image']).resolve()
+    mask_report_path = input_root / 'assets' / 'sim_keepout_mask.json'
+    mask_report = _load_json(mask_report_path)
     mcap = _single_mcap(source_case_dir)
     evidence = _keepout_route_evidence(
         mcap, mask_yaml, keepout_spec, stop_contract)
@@ -85,10 +100,42 @@ def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
         or teardown.get('identity_survivors'))
     recorded_hash = original.get('recording', {}).get('mcap', {}).get('sha256')
     mcap_hash_matches = recorded_hash == _sha256(mcap)
+    identities = original.get('source_identity', {})
+    asset_identities_match = all((
+        _identity_matches(identities.get('keepout_mask'), mask_yaml),
+        _identity_matches(identities.get('keepout_zones'), zones_path),
+        _identity_matches(
+            identities.get('scenario_contract'), stop_contract_path),
+    ))
+    mask_report_matches = all((
+        mask_report.get('mask_sha256') == _sha256(mask_image),
+        Path(str(mask_report.get('mask_yaml', ''))).resolve()
+        == mask_yaml.resolve(),
+        Path(str(mask_report.get('zones_yaml', ''))).resolve()
+        == zones_path.resolve(),
+        mask_report.get('zones') == [keepout_spec['zone_id']],
+        mask_report.get('keepout_cells')
+        == evidence.get('mask', {}).get('occupied_cell_count'),
+        mask_report.get('safety_margin_m') == keepout_spec['safety_margin_m'],
+    ))
+    keepout_only_failure = all((
+        source_summary.get('status') == 'FAIL',
+        original.get('status') == 'FAIL',
+        original.get('keepout_route_evidence', {}).get('status') == 'FAIL',
+        results[0] == original,
+        behavioral_gate,
+    ))
     checks = {
+        'asset_source_identities_match': asset_identities_match,
+        'keepout_was_only_failed_gate': keepout_only_failure,
+        'mask_report_matches_generated_assets': mask_report_matches,
         'original_behavior_gate': behavioral_gate,
         'original_harness_error_absent': not original.get('harness_error'),
+        'original_recording_error_absent': not original.get('recording_error'),
+        'original_teardown_error_absent': not original.get('teardown_error'),
         'raw_action_terminal_succeeded': raw_action_succeeded,
+        'root_output_error_absent': not source_summary.get('output_error'),
+        'root_result_matches_case_summary': results[0] == original,
         'source_mcap_hash_matches': mcap_hash_matches,
         'teardown_clean': teardown_clean,
     }
@@ -122,7 +169,11 @@ def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
             'case_summary': _source_identity(source_case_summary_path),
             'scenario': _source_identity(scenario_path),
             'mcap': _source_identity(mcap),
+            'mask_image': _source_identity(mask_image),
+            'mask_report': _source_identity(mask_report_path),
             'mask_yaml': _source_identity(mask_yaml),
+            'stop_contract': _source_identity(stop_contract_path),
+            'zones': _source_identity(zones_path),
         },
         'evaluator': _source_identity(Path(__file__)),
         'source_root': str(input_root),
