@@ -1,0 +1,564 @@
+{
+  "cases_requested": [
+    "detour_sudden_stop_resume"
+  ],
+  "claim_scope": "SIM_INTEGRATION",
+  "output_bytes": 13590477,
+  "results": [
+    {
+      "case": "detour_sudden_stop_resume",
+      "case_claim": "persistent_centerline_obstacle_detour_then_pedestrian_stop_same_goal_resume",
+      "claim_scope": "SIM_INTEGRATION",
+      "detour_evidence": {
+        "detour_peak_pose_xy_yaw": [
+          -1.0875959128242272,
+          0.6413429047399598,
+          -0.00020745383342633627
+        ],
+        "detour_peak_ros_ns": 86600000000,
+        "maximum_abs_lateral_offset_m": 0.6413429047399598,
+        "minimum_clearance_m": 0.19870223275316298,
+        "minimum_clearance_pose_xy_yaw": [
+          -0.44468635827584574,
+          0.5664544290911394,
+          -0.10043775017493298
+        ],
+        "observation_window_x_m": [
+          -2.25,
+          0.25
+        ],
+        "obstacle": {
+          "center_xy_m": [
+            -1.0,
+            0.0
+          ],
+          "dimensions_m": [
+            0.5,
+            0.4
+          ],
+          "name": "g003_preloaded_route_obstacle"
+        },
+        "required_center_offset_m": 0.4,
+        "sample_count": 280,
+        "status": "PASS",
+        "straight_centerline_blocked": true
+      },
+      "domain_id": 186,
+      "keepout_route_evidence": {
+        "crossing_sample_count": 216,
+        "mask": {
+          "image": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/assets/sim_keepout_mask.pgm",
+            "sha256": "f49ef6018c14559af2f038e7461d7f4fdbc1607e126aade5f3a416a05ef6be21"
+          },
+          "occupied_bounds_m": {
+            "max_x_m": -3.15,
+            "max_y_m": 0.44999999999999984,
+            "min_x_m": -4.85,
+            "min_y_m": -1.4500000000000002
+          },
+          "occupied_cell_count": 1252,
+          "resolution_m_per_cell": 0.05,
+          "yaml": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/assets/sim_keepout_mask.yaml",
+            "sha256": "186b21c0759f531ecec6400c01718ae7ce8c400fcf29e0d1abf1777511f29442"
+          }
+        },
+        "minimum_center_y_m": 0.6348066193599953,
+        "minimum_center_y_ros_ns": 63350000000,
+        "minimum_clearance_pose_xy_yaw": [
+          -4.724824977728894,
+          0.6812127692358024,
+          0.31163574737729793
+        ],
+        "minimum_clearance_ros_ns": 64600000000,
+        "minimum_footprint_clearance_m": 0.043018548219867885,
+        "observed_after_zone": true,
+        "observed_before_zone": true,
+        "polygon_m": [
+          [
+            -4.5,
+            -1.1
+          ],
+          [
+            -3.5,
+            -1.1
+          ],
+          [
+            -3.5,
+            0.1
+          ],
+          [
+            -4.5,
+            0.1
+          ]
+        ],
+        "route_side": "north",
+        "safety_margin_m": 0.35,
+        "sample_count": 2050,
+        "status": "PASS",
+        "zone_id": "sim_portfolio_corridor_keepout"
+      },
+      "output_bytes": 13469204,
+      "raw_action_status": {
+        "final_status": 4,
+        "goal_uuids": [
+          "fd91ddb0df3041df8ef9aabedb1af18a"
+        ],
+        "message_count": 2,
+        "source_mcap_sha256": "c7ace93fe8debcfef50149626358bbb0b72c8c86aee468271ffeb2d750bfbf69",
+        "statuses": [
+          2,
+          4
+        ]
+      },
+      "recording": {
+        "log_time_basis": "wall_time",
+        "mcap": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/bag/bag_0.mcap",
+          "sha256": "c7ace93fe8debcfef50149626358bbb0b72c8c86aee468271ffeb2d750bfbf69"
+        },
+        "message_header_time_basis": "publisher_defined_sim_time",
+        "size_bytes": 2165990,
+        "time_basis_mixing_forbidden": true,
+        "topics": [
+          "/scan",
+          "/cmd_vel",
+          "/collision_monitor_state",
+          "/navigate_to_pose/_action/status",
+          "/odom",
+          "/ground_truth_pose",
+          "/plan",
+          "/amcl_pose",
+          "/tf",
+          "/tf_static"
+        ]
+      },
+      "run_id": "onboard_candidate_detour_sudden_stop_resume_seed_11",
+      "runtime_profile": {
+        "keepout_demo": true,
+        "launch": "onboard_nav2_core.launch.py",
+        "mobile_manipulator_stop_field": true,
+        "name": "obstacle_candidate",
+        "pedestrian_corridor_edges_y_m": [
+          1.5,
+          -1.5
+        ],
+        "simulator_capture": "gazebo_camera_sensor",
+        "simulator_gui": false
+      },
+      "same_goal_command_evidence": {
+        "claim_scope": "COMMAND_SPACE_ONLY_NOT_PHYSICAL_STOP_OR_SAFETY",
+        "counts": {
+          "action_status": 2,
+          "cmd_vel": 2025,
+          "collision_monitor_state": 19
+        },
+        "evidence": {
+          "action_status_messages": 2,
+          "action_status_observations": [
+            {
+              "malformed": false,
+              "stamp_ns": 1788923020547749302,
+              "statuses": [
+                {
+                  "goal_uuid": "fd91ddb0df3041df8ef9aabedb1af18a",
+                  "status": 2
+                }
+              ]
+            },
+            {
+              "malformed": false,
+              "stamp_ns": 1788923121898311111,
+              "statuses": [
+                {
+                  "goal_uuid": "fd91ddb0df3041df8ef9aabedb1af18a",
+                  "status": 4
+                }
+              ]
+            }
+          ],
+          "data_gap_reasons": [],
+          "episodes": [
+            {
+              "clear_stamp_ns": 1788923083663309932,
+              "exclusion_reasons": [],
+              "goal_uuid": "fd91ddb0df3041df8ef9aabedb1af18a",
+              "resume_command_stamp_ns": 1788923083663319099,
+              "same_goal_resumed": true,
+              "stop_stamp_ns": 1788923080963212866,
+              "terminal_exclusion_reasons": [],
+              "terminal_succeeded": true,
+              "zero_command_stamp_ns": 1788923080963224257
+            }
+          ],
+          "scope": "COMMAND_SPACE_ONLY",
+          "terminal_succeeded": true,
+          "verdict": "CONFIRMED"
+        },
+        "schema_version": 1,
+        "source": {
+          "mcap": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/bag/bag_0.mcap",
+          "sha256": "c7ace93fe8debcfef50149626358bbb0b72c8c86aee468271ffeb2d750bfbf69",
+          "size_bytes": 2165990
+        },
+        "time_basis": "recorder_log_time_ns",
+        "window": "entire_recording"
+      },
+      "scenario": {
+        "action_terminal": "succeeded",
+        "activation_error": null,
+        "contact_count": 0,
+        "contact_matched_publisher_count_max": 1,
+        "direct_scan_capture": {
+          "scan_header_stamp_ns": 101000000000,
+          "scan_receive_steady_ns": 772593325224875,
+          "semantic": "observer scan-receive to zero-command-receive interval only; not sensor-publish, obstacle-appearance, or physical-stop latency",
+          "stop_zone_points": [
+            [
+              0.39829293298696805,
+              0.18572700081067947
+            ],
+            [
+              0.3992834603780718,
+              0.22132638850464886
+            ],
+            [
+              0.3894224147094069,
+              0.24333808221837536
+            ]
+          ],
+          "zero_receive_steady_ns": 772593340958855
+        },
+        "events": [
+          "goal_accepted",
+          "direct_scan_observer_armed",
+          "obstacle_set_pose_requested",
+          "obstacle_crossing_started",
+          "obstacle_set_pose_ack",
+          "obstacle_pose_verified",
+          "obstacle_crossing_completed",
+          "stop_state",
+          "final_zero",
+          "physical_stop",
+          "clear_set_pose_requested",
+          "obstacle_crossing_exit_started",
+          "do_nothing_after_stop",
+          "obstacle_crossing_exit_completed",
+          "clear_set_pose_ack",
+          "clear_pose_verified",
+          "obstacle_deactivated",
+          "goal_position_tolerance_entered",
+          "succeeded"
+        ],
+        "final_cmd_vel_zero": true,
+        "final_world_pose_m": [
+          5.9583209395781696,
+          0.07788679536535892
+        ],
+        "final_zero_hold_s": 1.956413597,
+        "goal_cancel_count": 0,
+        "goal_send_count": 1,
+        "goal_uuid": "fd91ddb0df3041df8ef9aabedb1af18a",
+        "harness_error": null,
+        "minimum_clearance_m": 0.17535556478984127,
+        "observer_scan_to_zero_command_s": 0.01573398,
+        "obstacle_crossing_edge_y_m": 1.5,
+        "physical_stop_observed": true,
+        "pre_stop_action_types": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "protected_envelope_minimum_clearance_m": 0.10370660901086137,
+        "raw_contact_count": 0,
+        "resume_action_type": 0,
+        "returncode": 0,
+        "robot_contact_pairs": [],
+        "same_goal_command_verdict": "CONFIRMED",
+        "stop_action_type": 1,
+        "stop_polygon_name": "StopZone",
+        "terminal_goal_uuid": "fd91ddb0df3041df8ef9aabedb1af18a"
+      },
+      "scenario_started": true,
+      "seed": 11,
+      "simulator_video": {
+        "capture_duration_s": 111.543382023,
+        "capture_metadata": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/gazebo_sensor_capture.json",
+          "sha256": "982aedf7d8373b2681c4e82dc13163baa272a5096049f22ab1e5ec6396269a7a"
+        },
+        "capture_urdf": {
+          "collision_xml_unchanged": true,
+          "hidden_visual_count": 11,
+          "hidden_visual_links": [
+            "arm_riser_link",
+            "rgbd_mast_link",
+            "rgbd_camera_link",
+            "arm_base_link",
+            "arm_shoulder_link",
+            "arm_upper_arm_link",
+            "arm_lower_arm_link",
+            "arm_wrist_link",
+            "arm_wrist_camera_link",
+            "arm_gripper_link",
+            "arm_moving_jaw_link"
+          ],
+          "inertial_xml_unchanged": true,
+          "joint_xml_unchanged": true,
+          "output": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/jdamr_cube_capture.urdf",
+            "sha256": "61b552495ea3259bf5b33957bd1aaa9367ac096e846b1deb5f2843142a617d4a"
+          },
+          "schema_version": 1,
+          "source": {
+            "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/assets/nav_obstacle/jdamr_cube_nav_eval.urdf",
+            "sha256": "b089475072ea0243c4c668b42c861ced0a06ef2d4a175b823d82fc564438789f"
+          },
+          "styled_navigation_link_count": 6
+        },
+        "capture_urdf_manifest": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/gazebo_capture_urdf.json",
+          "sha256": "d06f4b31f47f4937964d58a83b32311d0ea283273953c70d86373d3f2584ebee"
+        },
+        "capture_world": {
+          "camera": {
+            "height": 720,
+            "rate_hz": 30.0,
+            "source": "gazebo_world_camera_sensor",
+            "topic": "/portfolio_scene/image_raw",
+            "view": "fixed_world_oblique_full_route",
+            "width": 1280
+          },
+          "collision_change_scope": "corridor_edge_pedestrian_doorways",
+          "collision_xml_unchanged": false,
+          "detected_obstacle_visual": "camera_person_lidar_box_proxy",
+          "keepout_authored_polygon_m": [
+            [
+              -4.5,
+              -1.1
+            ],
+            [
+              -3.5,
+              -1.1
+            ],
+            [
+              -3.5,
+              0.1
+            ],
+            [
+              -4.5,
+              0.1
+            ]
+          ],
+          "output": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/gazebo_capture.world",
+            "sha256": "6dee35b400e9025edd237910d975561a8953f7d2dfc562e75f386b802ace1287"
+          },
+          "pedestrian_doorway": {
+            "camera_and_lidar_geometry_aligned": true,
+            "center_x_m": 1.5,
+            "crossing_edge_y_m": 1.5,
+            "supported_entry_sides": [
+              "left",
+              "right"
+            ],
+            "walls": [
+              "wall_north",
+              "wall_south"
+            ],
+            "width_m": 1.8
+          },
+          "schema_version": 1,
+          "source": {
+            "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/assets/nav_obstacle/slam_corridor_contact.world",
+            "sha256": "9a65b877a28c0de5db4a8d5aa2893367f493e5033ab298ce76a885e8e2c2b849"
+          },
+          "visual_only_markers": [
+            "portfolio_architectural_shell"
+          ]
+        },
+        "capture_world_manifest": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/gazebo_capture_world.json",
+          "sha256": "5d3680106e6d2cb9b9e73db5e974a060e7645f817a24c4afa530180aed845e9c"
+        },
+        "first_frame_steady_ns": 772525630415505,
+        "frames": 2074,
+        "height": 720,
+        "overlays_applied": false,
+        "raw_video": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/detour_sudden_stop_resume/gazebo_sensor_raw.mp4",
+          "sha256": "9e4d0e7f7455dada9c11624eaf10dd4bdd5e7142f783a00774eb2d03b5e24ec7"
+        },
+        "source": "gazebo_camera_sensor",
+        "topic": "/portfolio_scene/image_raw",
+        "width": 1280
+      },
+      "source_identity": {
+        "candidate_bt": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/behavior_trees/navigate_to_pose_dynamic_obstacle_eval.xml",
+          "sha256": "07f18484e60b55cf3c224c9f866473b57ebacafd768659d9a9b215850ad00509"
+        },
+        "candidate_params": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/assets/nav2_obstacle_eval.params.yaml",
+          "sha256": "0ced497696383e82e7abd27ab4b39205ecdad0c020c2df772fd8a7a1a0727794"
+        },
+        "canonical_evaluation_world": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/assets/nav_obstacle/slam_corridor_contact.world",
+          "sha256": "9a65b877a28c0de5db4a8d5aa2893367f493e5033ab298ce76a885e8e2c2b849"
+        },
+        "capture_world_builder": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/portfolio_capture_world.py",
+          "sha256": "9512fd2111178619f547163bf786fc4d728725144b7bb23009e5ae57f562b192"
+        },
+        "keepout_mask": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/assets/sim_keepout_mask.yaml",
+          "sha256": "186b21c0759f531ecec6400c01718ae7ce8c400fcf29e0d1abf1777511f29442"
+        },
+        "keepout_zones": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/assets/sim_keepout_zones.yaml",
+          "sha256": "22f15aebf18ad206752f94e22f9d7ff67cea99c32ed7e7d2f954f896d9c6dfb1"
+        },
+        "mobile_manipulator_protection": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/mobile_manipulator_protection.yaml",
+          "sha256": "c9e27729646b76cdcab4f8b8039ada7f118e5834f607b216c0aed2065047e727"
+        },
+        "onboard_core": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/launch/onboard_nav2_core.launch.py",
+          "sha256": "31915dc49a3c96bdae8e3606869377cfd8419194cd1b99e0ea8f169cc8d10751"
+        },
+        "production_params": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/nav2_params.yaml",
+          "sha256": "99db2ca2ca6790c6f27ba2a56a55c12ac1146dec29a4913a4d73d9948a7da50c"
+        },
+        "runner": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/run_onboard_candidate_smoke.py",
+          "sha256": "15a86ea8a918c1202ae291e67cffc58bee3253d54cc0ee988553f85a2c6e9ed8"
+        },
+        "scenario_contract": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_fixed_doorway_20260909_v04/assets/onboard_stop_contract.json",
+          "sha256": "0dbd279af2a957f979f1b92f0103a44d736d712b163b7954379bfe4a8ce04ee0"
+        },
+        "scenario_source": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/jdamr_cube_navigation/sim_collision_monitor_scenario.py",
+          "sha256": "e52b8c3f819cc8e46a8dffd5ad77ec83b325acd25e840f7761d6c2a15ba70d90"
+        }
+      },
+      "startup": {
+        "candidate_bt": "String value is: /home/lim/jdamr_cube_ws/install/jdamr_cube_navigation/share/jdamr_cube_navigation/behavior_trees/navigate_to_pose_dynamic_obstacle_eval.xml",
+        "gz_partition": "jdamr_onboard_983798_detour_sudden_stop_resume",
+        "keepout_enabled": {
+          "global_costmap": "Boolean value is: True",
+          "local_costmap": "Boolean value is: True"
+        },
+        "lifecycle": {
+          "/amcl": "active [3]",
+          "/behavior_server": "active [3]",
+          "/bt_navigator": "active [3]",
+          "/collision_monitor": "active [3]",
+          "/controller_server": "active [3]",
+          "/keepout_costmap_filter_info_server": "active [3]",
+          "/keepout_filter_mask_server": "active [3]",
+          "/map_server": "active [3]",
+          "/planner_server": "active [3]",
+          "/velocity_smoother": "active [3]"
+        },
+        "mask_keepout_cells": 1252,
+        "postrun_diagnostics": {
+          "status": "PASS"
+        },
+        "pre_goal_use_sim_time": {
+          "/collision_monitor": "Boolean value is: True",
+          "/controller_server": "Boolean value is: True"
+        },
+        "protective_parameters": {
+          "SlowdownZone.points": "String value is: [[0.5, 0.35], [0.5, -0.35], [-0.38, -0.35], [-0.38, 0.35]]",
+          "StopZone.points": "String value is: [[0.4, 0.25], [0.4, -0.25], [-0.28, -0.25], [-0.28, 0.25]]"
+        },
+        "ros_localhost_only": "1",
+        "status": "PASS",
+        "timing_note": "moving serial diagnostics after the scenario reduces delay; explicit component use_sim_time is the clock-domain fix",
+        "use_sim_time": {
+          "/amcl": "Boolean value is: True",
+          "/bt_navigator": "Boolean value is: True",
+          "/collision_monitor": "Boolean value is: True",
+          "/controller_server": "Boolean value is: True"
+        }
+      },
+      "static_route_obstacle": {
+        "activation": "verified_after_recorders_ready_before_goal",
+        "activation_requested_steady_ns": 772528234904902,
+        "activation_requested_wall_ns": 1788923015862878199,
+        "activation_verified_steady_ns": 772528702297570,
+        "activation_verified_wall_ns": 1788923016330272771,
+        "dimensions_m": [
+          0.5,
+          0.4,
+          1.0
+        ],
+        "entity_id": 44,
+        "expected_pose_m": [
+          -1.0,
+          0.0,
+          0.5
+        ],
+        "observed_pose_m": [
+          -1.0,
+          0.0,
+          0.5
+        ],
+        "pre_activation_observation_s": 2.0,
+        "straight_centerline_blocked": true
+      },
+      "status": "PASS",
+      "teardown": {
+        "identity_survivors": [],
+        "launched_process_groups": [
+          984360,
+          984728,
+          992213,
+          992214,
+          992404,
+          993271,
+          993811
+        ],
+        "remaining_process_groups": []
+      },
+      "travel_pose": {
+        "absolute_errors_rad": {
+          "arm_elbow_flex": 1.446638364654973e-10,
+          "arm_gripper": 1.0980649722226717e-10,
+          "arm_shoulder_lift": 3.635869383344925e-11,
+          "arm_shoulder_pan": 2.696237111431196e-16,
+          "arm_wrist_flex": 1.0942580175310468e-10,
+          "arm_wrist_roll": 2.9387745356305125e-13
+        },
+        "expected_positions_rad": {
+          "arm_elbow_flex": 1.5,
+          "arm_gripper": 0.0,
+          "arm_shoulder_lift": -1.0,
+          "arm_shoulder_pan": 0.0,
+          "arm_wrist_flex": 0.8,
+          "arm_wrist_roll": 0.0
+        },
+        "maximum_error_rad": 1.446638364654973e-10,
+        "measured_positions_rad": {
+          "arm_elbow_flex": 1.5000000001446638,
+          "arm_gripper": -1.0980649722226717e-10,
+          "arm_shoulder_lift": -0.9999999999636413,
+          "arm_shoulder_pan": 2.696237111431196e-16,
+          "arm_wrist_flex": 0.8000000001094258,
+          "arm_wrist_roll": 2.9387745356305125e-13
+        },
+        "missing_joints": [],
+        "source_topic": "/joint_states",
+        "status": "PASS",
+        "tolerance_rad": 0.03
+      }
+    }
+  ],
+  "schema_version": 1,
+  "seed": 11,
+  "status": "PASS"
+}

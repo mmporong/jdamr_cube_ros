@@ -1,0 +1,41 @@
+{
+  "status": "PASS",
+  "source_run": "gazebo_fixed_doorway_20260909_v04",
+  "moving": {
+    "cmd": "0.157",
+    "front": "2.32 m",
+    "state": "주행 중",
+    "time": 7.81
+  },
+  "stopped": {
+    "cmd": "0.000",
+    "front": "0.42 m",
+    "state": "충돌 감시 정지",
+    "time": 67.81
+  },
+  "paused": {
+    "state": "충돌 감시 정지",
+    "time": 67.81
+  },
+  "mobile": {
+    "page": 390,
+    "viewport": 390
+  },
+  "live": {
+    "command": "미수신",
+    "goal": "미수신",
+    "state": "관측 대기"
+  },
+  "screenshots": [
+    {
+      "path": "white_dashboard_desktop.png",
+      "sha256": "16e7344013af30bfe4f2bdaddd547ab2318df0f3e007c278b09e8a5a624ea6da",
+      "size_bytes": 408614
+    }
+  ],
+  "stale": {
+    "command": "미수신",
+    "goal": "미수신",
+    "state": "관측 대기"
+  }
+}

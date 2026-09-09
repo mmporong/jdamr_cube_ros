@@ -4,6 +4,10 @@
 
 ## 구성
 
+- [고정 사선 카메라 관제 메인 영상](media/gazebo_fixed_dashboard_20260909/README.md):
+  실제 문에서의 횡단, 금지 구역·박스 우회, 동일 목표 재개 PASS와 동기화된 화이트 관제
+- [고정 카메라 재촬영 인계](20260909_FIXED_CAMERA_HANDOFF.md):
+  횡단 배치 시간 보정, 변경 범위와 검증 근거
 - [금지 구역·장애물 대응 관제 영상](media/gazebo_keepout_dashboard_20260909/README.md):
   기존 추종 카메라의 Gazebo·라이다·위치·계획 경로·속도 기록 보관본,
   실제 마스크 격자와 회전 차체 외곽선의 이격 검증 및 원본 해시

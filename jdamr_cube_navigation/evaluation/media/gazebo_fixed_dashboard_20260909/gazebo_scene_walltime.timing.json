@@ -1,0 +1,9 @@
+{
+  "video_sha256": "6c4e826eccaf634e2b113d74c9c77e183d7d8d06ecc9a20e9597563a83dd4839",
+  "raw_sha256": "9e4d0e7f7455dada9c11624eaf10dd4bdd5e7142f783a00774eb2d03b5e24ec7",
+  "capture_sha256": "982aedf7d8373b2681c4e82dc13163baa272a5096049f22ab1e5ec6396269a7a",
+  "fps": 30.0,
+  "duration_s": 111.6,
+  "frames": 3348,
+  "method": "causal_camera_frame_hold_on_wall_time"
+}

@@ -45,7 +45,11 @@ ROS 파라미터 확인은 daemon을 사용하지 않고 탐색 시간을 명시
 
 - 합성 관제 영상: `$HOME/jdamr_artifacts/gazebo_fixed_main_media_20260909_v04/`
 - 무배속 웹 재생: `$HOME/jdamr_artifacts/gazebo_fixed_replay_20260909_v04/`
-- 생성 완료와 해시·브라우저 검증은 미디어 패키지의 manifest로 확인한다.
+- [완성 미디어 패키지](media/gazebo_fixed_dashboard_20260909/README.md):
+  관제 MP4 84.8초, GIF 12초, 무배속 가제보 장면 약 111.6초, 대표 PNG.
+- 브라우저에서 주행/정지 시점 동기화, 일시정지 고정, 모바일 너비,
+  ROS 미연결과 오래된 상태 제거를 확인했다.
+- 독립 코드 리뷰 차단 이슈 없음. 소스 SHA와 v04 기록을 대조했다.
 
 화면의 지도는 저장 지도에 실제 관측과 계획 경로를 겹친 것이다.
 새 SLAM 지도 생성, 사람 분류, 개별 BT 노드 tick 관측은 주장하지 않는다.
