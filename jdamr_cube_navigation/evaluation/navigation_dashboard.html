@@ -182,6 +182,13 @@
         border-radius: 10px;
         padding: 12px;
       }
+      .speed-history { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 2px; }
+      .speed-history h3 { margin: 0; font-size: 12px; }
+      .speed-history p { margin: 2px 0; font-size: 10px; color: var(--muted); }
+      #speed-history { display: block; width: 100%; height: 48px; }
+      @media (min-width: 1100px) and (min-height: 700px) and (max-height: 740px) {
+        #speed-history { height: 36px; }
+      }
       .state-title {
         display: flex;
         justify-content: space-between;
@@ -438,7 +445,7 @@
           padding-top: 6px;
         }
         #radar {
-          height: clamp(120px, calc(100dvh - 570px), 220px);
+          height: clamp(90px, calc(100dvh - 648px), 220px);
         }
         .scan-values {
           grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -623,6 +630,11 @@
           <p class="scan-empty" id="scan-note">
             센서 기록을 기다리고 있습니다.
           </p>
+          <section class="speed-history" aria-label="명령과 실제 속도 변화">
+            <h3>최근 8초 속도 변화</h3>
+            <p>파랑 실선: 명령 · 초록 점선: 차체 측정</p>
+            <canvas id="speed-history" aria-label="현재 시점 이전의 명령 속도와 차체 측정 속도 추이"></canvas>
+          </section>
         </aside>
       </div>
       <div class="lower">
@@ -877,6 +889,54 @@
           return ["caution", "정지 확인 중"];
         return ["good", measured ? "주행 관측" : "주행 명령"];
       }
+      function speedHistorySamples(samples, time) {
+        return samples.filter((sample) => finite(sample.time_s) && sample.time_s >= time - 8 && sample.time_s <= time);
+      }
+      function speedHistoryValue(sample, key) {
+        const age = sample.ages_s?.[key === "command" ? "cmd" : "odom"];
+        // History freshness limit in seconds; held stale values are not measurements.
+        return finite(age) && age >= 0 && age <= 1 ? sample[key]?.linear_mps : null;
+      }
+      function drawSpeedHistory(time) {
+        const context = canvasContext("speed-history");
+        if (!context) return;
+        const [c, w, h] = context;
+        const samples = mode === "recorded" ? speedHistorySamples(replay?.samples || [], time) : [];
+        const values = samples.flatMap((s) => [speedHistoryValue(s, "command"), speedHistoryValue(s, "pose")]).filter(finite);
+        c.font = "10px sans-serif";
+        c.fillStyle = "#536579";
+        if (!values.length) {
+          c.fillText(mode === "recorded" ? "이 시점의 속도 기록 없음" : "기록 재생에서 제공하는 추이입니다", 0, 30);
+          return;
+        }
+        const low = Math.min(0, ...values), high = Math.max(0.05, ...values);
+        const x = (t) => 36 + (t - (time - 8)) / 8 * (w - 40);
+        const y = (v) => 6 + (high - v) / (high - low) * (h - 24);
+        c.strokeStyle = "#dce3eb";
+        c.beginPath(); c.moveTo(36, y(0)); c.lineTo(w, y(0)); c.stroke();
+        c.fillText(high.toFixed(2), 0, 10);
+        c.fillText(low.toFixed(2), 0, h - 18);
+        c.fillText("m/s", 0, h - 2);
+        c.fillText("−8 s", 36, h - 2);
+        c.fillText("현재", w - 24, h - 2);
+        for (const [key, color, dash] of [["command", "#235fd1", []], ["pose", "#14733c", [3, 2]]]) {
+          c.strokeStyle = color; c.fillStyle = color; c.setLineDash(dash); c.beginPath();
+          let previous = null;
+          for (const sample of samples) {
+            const value = speedHistoryValue(sample, key);
+            if (!finite(value)) { previous = null; continue; }
+            // Do not bridge missing samples or recording gaps longer than one second.
+            if (previous === null || sample.time_s - previous > 1) c.moveTo(x(sample.time_s), y(value));
+            else c.lineTo(x(sample.time_s), y(value));
+            previous = sample.time_s;
+          }
+          c.stroke(); c.setLineDash([]);
+          for (const sample of samples) {
+            const value = speedHistoryValue(sample, key);
+            if (finite(value)) { c.beginPath(); c.arc(x(sample.time_s), y(value), 1.2, 0, Math.PI * 2); c.fill(); }
+          }
+        }
+      }
       function render(s, time) {
         const [label, reason] = observation(s);
         $("behavior").textContent = label;
@@ -893,6 +953,7 @@
         }
         $("turn").textContent = number(s.pose?.angular_rps);
         $("clock").textContent = number(time, 1);
+        drawSpeedHistory(time);
         const scan = s.scan;
         $("front").textContent = finite(scan?.front_minimum_m)
           ? number(scan.front_minimum_m, 2) + " m"
