@@ -72,3 +72,14 @@ const turning = [
 ];
 assert.ok(!eventLog(turning).some(e => e.label === '정지 후 이동 재개'));
 assert.ok(eventLog([eventSamples[2], { ...eventSamples[3], command: { linear_mps: 0, angular_rps: 0.2 } }]).some(e => e.label === '정지 후 이동 재개'));
+const playbackSource = script.slice(script.indexOf('function applyPlaybackRate()'), script.indexOf('$("playback-rate").addEventListener'));
+const playbackVideo = { duration: 108.6 };
+const playbackSelect = { value: '1' };
+const applyRate = vm.runInNewContext(`(${playbackSource})`, { video: playbackVideo, $: () => playbackSelect, finite: Number.isFinite });
+for (const [choice, rate] of [['0.5', 0.75], ['1', 1.5], ['2', 3], ['minute', 108.6 / 60]]) {
+  playbackSelect.value = choice;
+  applyRate();
+  assert.equal(playbackVideo.playbackRate, rate);
+  assert.equal(playbackVideo.defaultPlaybackRate, rate);
+}
+console.log('PASS: presentation speed baseline and one-minute playback');

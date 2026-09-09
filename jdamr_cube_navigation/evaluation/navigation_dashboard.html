@@ -83,6 +83,8 @@
         align-items: baseline;
         gap: 12px;
       }
+      .playback-control { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+      #playback-rate { font: inherit; color: var(--ink); background: white; border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
       .header-title span {
         font-size: 12px;
       }
@@ -564,6 +566,14 @@
         <h1>JDAMR 주행 관제</h1>
         <span class="source-note muted" id="source-note">Gazebo recording</span>
       </div>
+      <label class="playback-control">재생 속도
+        <select id="playback-rate" aria-label="영상 재생 속도">
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="minute">1분 재생</option>
+        </select>
+      </label>
     </header>
     <main>
       <div class="layout">
@@ -1173,7 +1183,19 @@
         }
       }
       start();
+      function applyPlaybackRate() {
+        const choice = $("playback-rate").value;
+        // Presentation 1× equals 1.5× source time; telemetry stays on source time.
+        const rate = choice === "minute" ? video.duration / 60 : Number(choice) * 1.5;
+        if (finite(rate) && rate > 0) {
+          video.defaultPlaybackRate = rate;
+          video.playbackRate = rate;
+        }
+      }
+      $("playback-rate").addEventListener("change", applyPlaybackRate);
+      applyPlaybackRate();
       video.addEventListener("loadedmetadata", () => {
+        applyPlaybackRate();
         const requested = Number(new URLSearchParams(location.search).get("t"));
         if (Number.isFinite(requested) && requested > 0)
           video.currentTime = Math.min(requested, video.duration);
