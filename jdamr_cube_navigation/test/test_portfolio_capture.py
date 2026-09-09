@@ -123,12 +123,14 @@ def test_capture_world_adds_fixed_camera_and_physical_doorway(tmp_path):
         "./link/sensor[@name='portfolio_camera']")
     assert report['camera']['view'] == 'fixed_world_oblique_full_route'
     assert camera.findtext('topic') == '/portfolio_scene/image_raw'
-    assert camera.findtext('camera/horizontal_fov') == '1.18'
+    assert camera.findtext('camera/horizontal_fov') == '0.94'
+    assert camera.findtext('camera/clip/far') == '26'
+    assert world.findtext('scene/background') == '1 1 1 1'
     model_pose = [float(value) for value in
                   camera_model.findtext('pose').split()]
     sensor_pose = [float(value) for value in camera.findtext('pose').split()]
-    assert model_pose[:3] == [-0.5, -11.0, 5.6]
-    assert sensor_pose[4:] == [0.43, 1.5708]
+    assert model_pose[:3] == [-12.0, -11.0, 8.0]
+    assert sensor_pose[4:] == [0.5, 0.85]
 
 
 def test_capture_urdf_hides_arm_visuals_without_follow_camera(tmp_path):

@@ -994,10 +994,20 @@ class CollisionMonitorScenario(Node):
             self.navigation_count_at_trigger = self.navigation_scan_count
             self.trigger_pose = pose_snapshot
             self.reference_scan_stamp_ns = self.last_monitor_scan_stamp_ns
-            center_x_m = pose_snapshot[0] + self.contract[
+            # Crossing takes time; the instantaneous-insertion offset alone
+            # lets the robot consume that gap before the actor reaches its lane.
+            # This places the test actor, never a pre-emptive robot command.
+            crossing_duration_s = getattr(self.args, 'obstacle_crossing_s', 0.0)
+            crossing_lead_m = crossing_duration_s * self.contract[
+                'stop_zone']['inputs']['max_forward_speed_mps']
+            center_x_m = (pose_snapshot[0] + self.contract[
                 'sudden_obstacle']['activation_center_offset_x_m']
+                + crossing_lead_m)
             center_y_m = pose_snapshot[1]
-            request_event = self._event('obstacle_set_pose_requested')
+            request_event = self._event(
+                'obstacle_set_pose_requested',
+                crossing_placement_lead_m=crossing_lead_m,
+                crossing_duration_s=crossing_duration_s)
             self.obstacle_request_steady_ns = request_event['steady_ns']
             self.obstacle_request_ros_ns = request_event['ros_ns']
             return self._activate_crossing_obstacle(

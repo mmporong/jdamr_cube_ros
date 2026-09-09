@@ -148,6 +148,49 @@ def test_json_string_parameter_compares_the_runtime_geometry_semantically():
         SMOKE._json_string_parameter('Double value is: 0.4')
 
 
+def test_parameter_retries_only_transient_discovery(monkeypatch):
+    """An active node's first discovery timeout must not abort the capture."""
+    calls = []
+    responses = iter([
+        subprocess.CompletedProcess([], 1, '', 'timed out waiting for parameter services'),
+        subprocess.CompletedProcess([], 0, 'Boolean value is: True', ''),
+    ])
+
+    def run(command, environment, **kwargs):
+        calls.append(command)
+        return next(responses)
+
+    monkeypatch.setattr(SMOKE, '_run', run)
+    assert SMOKE._parameter('/collision_monitor', 'use_sim_time', {}) == (
+        'Boolean value is: True')
+    assert len(calls) == 2
+    assert all('--no-daemon' in command for command in calls)
+
+
+@pytest.mark.parametrize('errors,expected_calls', [
+    ([], 1), (['Parameter not set'], 1),
+    (['Node not found', 'Node not found'], 2),
+    (['timed out waiting for parameter services', 'second failure'], 2),
+])
+def test_parameter_retry_boundaries(monkeypatch, errors, expected_calls):
+    """Retries neither hide permanent failures nor repeat indefinitely."""
+    calls = []
+
+    def run(command, environment, **kwargs):
+        calls.append(command)
+        index = len(calls) - 1
+        error = errors[index] if index < len(errors) else ''
+        return subprocess.CompletedProcess([], int(bool(error)), 'True', error)
+
+    monkeypatch.setattr(SMOKE, '_run', run)
+    if errors:
+        with pytest.raises(RuntimeError, match=errors[-1]):
+            SMOKE._parameter('/collision_monitor', 'use_sim_time', {})
+    else:
+        assert SMOKE._parameter('/collision_monitor', 'use_sim_time', {}) == 'True'
+    assert len(calls) == expected_calls
+
+
 @pytest.mark.parametrize('domain_id', [12, 185, 188])
 def test_main_rejects_physical_or_unassigned_domains(
         monkeypatch, tmp_path, domain_id):

@@ -273,11 +273,19 @@ def _run(command: list[str], environment: dict[str, str], timeout_s=10.0):
 
 
 def _parameter(node: str, name: str, environment: dict[str, str]) -> str:
-    result = _run(['ros2', 'param', 'get', node, name], environment)
-    if result.returncode != 0:
-        raise RuntimeError(f'parameter unavailable: {node}.{name}: '
-                           f'{result.stderr.strip()}')
-    return result.stdout.strip()
+    """Read directly and retry one transient parameter discovery timeout."""
+    for attempt in range(2):
+        result = _run(
+            ['ros2', 'param', 'get', '--no-daemon', '--timeout', '5', node, name],
+            environment, timeout_s=15.0)
+        if result.returncode == 0:
+            return result.stdout.strip()
+        message = result.stderr.strip()
+        transient = ('timed out waiting for parameter services' in message
+                     or message.endswith('Node not found'))
+        if attempt or not transient:
+            break
+    raise RuntimeError(f'parameter unavailable: {node}.{name}: {message}')
 
 
 def _json_string_parameter(output: str) -> Any:
@@ -871,7 +879,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
             'simulator_capture': (
                 'gazebo_camera_sensor' if record_video else 'disabled'),
             'pedestrian_corridor_edges_y_m': [
-                PEDESTRIAN_EDGE_Y_M, -PEDESTRIAN_EDGE_Y_M],
+                PEDESTRIAN_DOORWAY_EDGE_Y_M if record_video else PEDESTRIAN_EDGE_Y_M,
+                -(PEDESTRIAN_DOORWAY_EDGE_Y_M if record_video else PEDESTRIAN_EDGE_Y_M)],
             'keepout_demo': keepout_demo_spec is not None,
         },
         'source_identity': {

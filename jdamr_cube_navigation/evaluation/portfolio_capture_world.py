@@ -52,16 +52,16 @@ def _fixed_world_camera() -> ET.Element:
     """Build an oblique world camera that covers the complete route."""
     model = ET.Element('model', {'name': 'portfolio_scene_camera'})
     ET.SubElement(model, 'static').text = 'true'
-    ET.SubElement(model, 'pose').text = '-0.5 -11 5.6 0 0 0'
+    ET.SubElement(model, 'pose').text = '-12 -11 8 0 0 0'
     link = ET.SubElement(model, 'link', {'name': 'camera_mount'})
     sensor = ET.SubElement(
         link, 'sensor', {'name': 'portfolio_camera', 'type': 'camera'})
-    ET.SubElement(sensor, 'pose').text = '0 0 0 0 0.43 1.5708'
+    ET.SubElement(sensor, 'pose').text = '0 0 0 0 0.5 0.85'
     ET.SubElement(sensor, 'always_on').text = 'true'
     ET.SubElement(sensor, 'update_rate').text = str(CAMERA_RATE_HZ)
     ET.SubElement(sensor, 'topic').text = CAMERA_TOPIC
     camera = ET.SubElement(sensor, 'camera')
-    ET.SubElement(camera, 'horizontal_fov').text = '1.18'
+    ET.SubElement(camera, 'horizontal_fov').text = '0.94'
     ET.SubElement(camera, 'visibility_mask').text = str(
         CAMERA_VISIBILITY_MASK)
     image = ET.SubElement(camera, 'image')
@@ -70,7 +70,7 @@ def _fixed_world_camera() -> ET.Element:
     ET.SubElement(image, 'format').text = 'R8G8B8'
     clip = ET.SubElement(camera, 'clip')
     ET.SubElement(clip, 'near').text = '0.1'
-    ET.SubElement(clip, 'far').text = '100'
+    ET.SubElement(clip, 'far').text = '26'
     return model
 
 
@@ -413,7 +413,7 @@ def _style_scene(world: ET.Element) -> None:
             world.insert(list(world).index(first_model), scene)
     for tag, value in (
             ('ambient', '0.24 0.27 0.30 1'),
-            ('background', '0.06 0.075 0.09 1'),
+            ('background', '1 1 1 1'),
             ('shadows', 'true'), ('grid', 'false')):
         child = scene.find(tag)
         if child is None:

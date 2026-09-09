@@ -1607,13 +1607,16 @@ def test_scan_gate_latches_first_publish_and_first_post_trigger_zero(
     assert document['zero_receive_steady_ns'] == 130
 
 
-def test_sudden_trigger_uses_one_post_arm_pose_snapshot():
+@pytest.mark.parametrize('crossing_duration_s', [0.0, 0.8])
+def test_sudden_trigger_uses_one_post_arm_pose_snapshot(crossing_duration_s):
     """Concurrent ground-truth updates cannot split trigger and entity pose."""
     module = _load(
         '../jdamr_cube_navigation/sim_collision_monitor_scenario.py')
     node = module.CollisionMonitorScenario.__new__(
         module.CollisionMonitorScenario)
-    node.args = SimpleNamespace(scenario='sudden_obstacle_stop_resume')
+    node.args = SimpleNamespace(
+        scenario='sudden_obstacle_stop_resume',
+        obstacle_crossing_s=crossing_duration_s)
     node.contract = _load(
         'sim_collision_monitor_contract.py').derive_contract(20.0, 0.001)
     node.world_pose = (1.0, 2.0)
@@ -1621,7 +1624,7 @@ def test_sudden_trigger_uses_one_post_arm_pose_snapshot():
     node.navigation_scan_count = 4
     node.last_monitor_scan_stamp_ns = 5
     node.events = []
-    node._event = lambda name: {'steady_ns': 10, 'ros_ns': 20}
+    node._event = lambda name, **details: {'steady_ns': 10, 'ros_ns': 20}
 
     def arm():
         node.world_pose = (1.1, 2.1)
@@ -1629,7 +1632,8 @@ def test_sudden_trigger_uses_one_post_arm_pose_snapshot():
 
     captured = []
     node._arm_reaction_capture = arm
-    node._set_entity_pose = lambda pose, transition: captured.append(pose) or True
+    node._activate_crossing_obstacle = lambda x, y: (
+        captured.append((x, y, 0.5)) or True)
     node.obstacle_center_m = None
     node.obstacle_active = False
     node.obstacle_request_steady_ns = None
@@ -1638,7 +1642,9 @@ def test_sudden_trigger_uses_one_post_arm_pose_snapshot():
     assert node._trigger() is True
     offset = node.contract['sudden_obstacle']['activation_center_offset_x_m']
     assert node.trigger_pose == (1.1, 2.1)
-    assert captured == [(1.1 + offset, 2.1, 0.5)]
+    lead_m = crossing_duration_s * node.contract[
+        'stop_zone']['inputs']['max_forward_speed_mps']
+    assert captured == [(1.1 + offset + lead_m, 2.1, 0.5)]
 
 
 def test_crossing_obstacle_uses_fast_unverified_steps(monkeypatch):
