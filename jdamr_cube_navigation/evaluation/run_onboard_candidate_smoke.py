@@ -14,7 +14,8 @@ from typing import Any
 
 from evaluate_same_goal_bag import evaluate as evaluate_same_goal_bag
 
-from jdamr_cube_navigation.keepout_mask import build_mask, validate_mask
+from jdamr_cube_navigation.keepout_mask import (
+    _map_metadata, build_mask, KEEPOUT_PIXEL, validate_mask)
 from jdamr_cube_navigation.mobile_manipulator_protection import (
     load_mobile_manipulator_protection,
 )
@@ -569,24 +570,46 @@ def _detour_evidence(
 
 
 def _keepout_route_evidence(
-        mcap: Path, keepout_spec: dict[str, Any],
+        mcap: Path, mask_yaml: Path, keepout_spec: dict[str, Any],
         stop_contract: dict[str, Any]) -> dict[str, Any]:
-    """Verify from ground truth that the robot passed north of the mask."""
-    bounds = keepout_spec['expanded_bounds_m']
+    """Verify footprint clearance against the generated mask raster."""
+    mask = _map_metadata(mask_yaml)
+    resolution_m = mask['resolution']
+    origin_x_m, origin_y_m, _origin_yaw_rad = mask['origin']
+    occupied_cells = []
+    for row in range(mask['height']):
+        center_y_m = origin_y_m + (
+            mask['height'] - row - 0.5) * resolution_m
+        for column in range(mask['width']):
+            if mask['pixels'][row * mask['width'] + column] != KEEPOUT_PIXEL:
+                continue
+            occupied_cells.append((
+                origin_x_m + (column + 0.5) * resolution_m,
+                center_y_m))
+    if not occupied_cells:
+        return {
+            'status': 'FAIL', 'reason': 'keepout_mask_has_no_occupied_cells',
+            'zone_id': keepout_spec['zone_id'],
+        }
+    occupied_min_x_m = min(cell[0] for cell in occupied_cells) - (
+        resolution_m / 2.0)
+    occupied_max_x_m = max(cell[0] for cell in occupied_cells) + (
+        resolution_m / 2.0)
+    occupied_min_y_m = min(cell[1] for cell in occupied_cells) - (
+        resolution_m / 2.0)
+    occupied_max_y_m = max(cell[1] for cell in occupied_cells) + (
+        resolution_m / 2.0)
     inputs = stop_contract['stop_zone']['inputs']
     footprint = {
         'front_m': inputs['footprint_front_m'],
         'rear_m': inputs['footprint_rear_m'],
         'half_width_m': inputs['footprint_half_width_m'],
     }
-    center_xy_m = [
-        (bounds['min_x_m'] + bounds['max_x_m']) / 2.0,
-        (bounds['min_y_m'] + bounds['max_y_m']) / 2.0,
-    ]
-    dimensions_m = [
-        bounds['max_x_m'] - bounds['min_x_m'],
-        bounds['max_y_m'] - bounds['min_y_m'],
-    ]
+    robot_radius_m = max(
+        math.hypot(x_m, y_m)
+        for x_m in (footprint['front_m'], footprint['rear_m'])
+        for y_m in (-footprint['half_width_m'], footprint['half_width_m']))
+    cell_half_diagonal_m = resolution_m / math.sqrt(2.0)
     samples = []
     before_zone = False
     after_zone = False
@@ -594,43 +617,74 @@ def _keepout_route_evidence(
         message = item.ros_msg
         x_m = float(message.pose.position.x)
         y_m = float(message.pose.position.y)
-        before_zone = before_zone or x_m < bounds['min_x_m']
-        after_zone = after_zone or x_m > bounds['max_x_m']
-        if not bounds['min_x_m'] <= x_m <= bounds['max_x_m']:
-            continue
+        before_zone = before_zone or x_m < occupied_min_x_m
+        after_zone = after_zone or x_m > occupied_max_x_m
         stamp = message.header.stamp
         pose_xy_yaw = [x_m, y_m, _pose_yaw(message)]
+        nearest_cell = min(
+            occupied_cells,
+            key=lambda cell: (cell[0] - x_m) ** 2 + (cell[1] - y_m) ** 2)
+        clearance_m = rectangle_clearance(
+            pose_xy_yaw, footprint, nearest_cell,
+            (resolution_m, resolution_m))
+        search_radius_m = (
+            clearance_m + robot_radius_m + cell_half_diagonal_m)
+        for cell in occupied_cells:
+            if math.hypot(cell[0] - x_m, cell[1] - y_m) > search_radius_m:
+                continue
+            clearance_m = min(clearance_m, rectangle_clearance(
+                pose_xy_yaw, footprint, cell,
+                (resolution_m, resolution_m)))
         samples.append({
             'ros_ns': int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
             'pose_xy_yaw': pose_xy_yaw,
-            'clearance_m': rectangle_clearance(
-                pose_xy_yaw, footprint, center_xy_m, dimensions_m),
+            'clearance_m': clearance_m,
         })
     if not samples:
         return {
             'status': 'FAIL',
-            'reason': 'no_ground_truth_in_keepout_longitudinal_window',
+            'reason': 'no_ground_truth_samples',
             'zone_id': keepout_spec['zone_id'],
         }
     minimum_clearance = min(samples, key=lambda item: item['clearance_m'])
-    minimum_y = min(samples, key=lambda item: item['pose_xy_yaw'][1])
+    crossing_samples = [
+        sample for sample in samples
+        if occupied_min_x_m <= sample['pose_xy_yaw'][0] <= occupied_max_x_m]
+    minimum_y = (
+        min(crossing_samples, key=lambda item: item['pose_xy_yaw'][1])
+        if crossing_samples else None)
     passed = (
         before_zone and after_zone
-        and minimum_y['pose_xy_yaw'][1] > bounds['max_y_m']
+        and minimum_y is not None
+        and minimum_y['pose_xy_yaw'][1] > occupied_max_y_m
         and minimum_clearance['clearance_m'] > 0.0)
     return {
         'status': 'PASS' if passed else 'FAIL',
         'zone_id': keepout_spec['zone_id'],
         'polygon_m': keepout_spec['polygon_m'],
         'safety_margin_m': keepout_spec['safety_margin_m'],
-        'expanded_bounds_m': bounds,
+        'mask': {
+            'yaml': _source_identity(mask_yaml),
+            'image': _source_identity(mask['image']),
+            'resolution_m_per_cell': resolution_m,
+            'occupied_cell_count': len(occupied_cells),
+            'occupied_bounds_m': {
+                'min_x_m': occupied_min_x_m,
+                'max_x_m': occupied_max_x_m,
+                'min_y_m': occupied_min_y_m,
+                'max_y_m': occupied_max_y_m,
+            },
+        },
         'route_side': 'north',
         'sample_count': len(samples),
+        'crossing_sample_count': len(crossing_samples),
         'observed_before_zone': before_zone,
         'observed_after_zone': after_zone,
-        'minimum_center_y_m': minimum_y['pose_xy_yaw'][1],
-        'minimum_center_y_ros_ns': minimum_y['ros_ns'],
+        'minimum_center_y_m': (
+            minimum_y['pose_xy_yaw'][1] if minimum_y else None),
+        'minimum_center_y_ros_ns': minimum_y['ros_ns'] if minimum_y else None,
         'minimum_footprint_clearance_m': minimum_clearance['clearance_m'],
+        'minimum_clearance_ros_ns': minimum_clearance['ros_ns'],
         'minimum_clearance_pose_xy_yaw': minimum_clearance['pose_xy_yaw'],
     }
 
@@ -1036,7 +1090,7 @@ def run_case(case: str, output_root: Path, domain_id: int,
             stop_contract = json.loads(
                 prepared['stop_contract'].read_text(encoding='utf-8'))
             keepout_route = _keepout_route_evidence(
-                mcap, keepout_demo_spec, stop_contract)
+                mcap, prepared['mask'], keepout_demo_spec, stop_contract)
             result['keepout_route_evidence'] = keepout_route
         if not evidence.is_file():
             raise RuntimeError('scenario produced no evidence')

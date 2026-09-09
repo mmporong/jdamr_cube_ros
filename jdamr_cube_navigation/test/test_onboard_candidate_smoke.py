@@ -24,6 +24,11 @@ SPEC = importlib.util.spec_from_file_location(
     EVALUATION / 'run_onboard_candidate_smoke.py')
 SMOKE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SMOKE)
+REEVALUATE_SPEC = importlib.util.spec_from_file_location(
+    'reevaluate_keepout_evidence',
+    EVALUATION / 'reevaluate_keepout_evidence.py')
+REEVALUATE = importlib.util.module_from_spec(REEVALUATE_SPEC)
+REEVALUATE_SPEC.loader.exec_module(REEVALUATE)
 
 
 def test_candidate_params_have_only_allowed_measurement_deltas(tmp_path):
@@ -455,37 +460,44 @@ def test_keepout_evidence_requires_north_passage_and_footprint_clearance(
             ros_msg=SimpleNamespace(
                 header=SimpleNamespace(stamp=stamp), pose=pose))
 
+    pixels = bytearray([254]) * 25
+    pixels[3 * 5 + 2] = 0
+    mask_image = tmp_path / 'mask.pgm'
+    mask_image.write_bytes(b'P5\n5 5\n255\n' + bytes(pixels))
+    mask_yaml = tmp_path / 'mask.yaml'
+    mask_yaml.write_text(yaml.safe_dump({
+        'image': mask_image.name, 'resolution': 1.0,
+        'origin': [0.0, 0.0, 0.0], 'negate': 0,
+        'occupied_thresh': 0.65, 'free_thresh': 0.196,
+    }), encoding='utf-8')
     samples = [
-        sample(-7.0, 0.0, 1), sample(-6.0, 0.75, 2),
-        sample(-5.3, 0.75, 3), sample(-4.5, 0.75, 4),
-        sample(-4.0, 0.0, 5),
+        sample(1.0, 2.5, 1), sample(2.5, 2.5, 2),
+        sample(4.0, 2.5, 3),
     ]
     monkeypatch.setattr(
         SMOKE, 'read_navigation_messages',
         lambda *_args, **_kwargs: samples)
     keepout = {
         'zone_id': 'demo', 'polygon_m': [], 'safety_margin_m': 0.35,
-        'expanded_bounds_m': {
-            'min_x_m': -6.15, 'max_x_m': -4.45,
-            'min_y_m': -1.45, 'max_y_m': 0.45,
-        },
     }
     contract = {'stop_zone': {'inputs': {
-        'footprint_front_m': 0.23, 'footprint_rear_m': -0.23,
+        'footprint_front_m': 0.2, 'footprint_rear_m': -0.2,
         'footprint_half_width_m': 0.2,
     }}}
 
     evidence = SMOKE._keepout_route_evidence(
-        tmp_path / 'run.mcap', keepout, contract)
+        tmp_path / 'run.mcap', mask_yaml, keepout, contract)
 
     assert evidence['status'] == 'PASS'
     assert evidence['route_side'] == 'north'
-    assert evidence['minimum_center_y_m'] == pytest.approx(0.75)
+    assert evidence['minimum_center_y_m'] == pytest.approx(2.5)
     assert evidence['minimum_footprint_clearance_m'] > 0.0
+    assert evidence['mask']['occupied_cell_count'] == 1
+    assert evidence['sample_count'] == 3
 
-    samples[2] = sample(-5.3, 0.4, 3)
+    samples[1] = sample(2.5, 1.5, 2)
     evidence = SMOKE._keepout_route_evidence(
-        tmp_path / 'run.mcap', keepout, contract)
+        tmp_path / 'run.mcap', mask_yaml, keepout, contract)
     assert evidence['status'] == 'FAIL'
 
 
@@ -516,6 +528,66 @@ def test_video_route_activation_records_empty_scene_interval(monkeypatch):
     assert evidence['activation_requested_steady_ns'] == 300
     assert evidence['activation_verified_steady_ns'] == 400
     assert evidence['pre_activation_observation_s'] == 2.0
+
+
+def test_reevaluation_preserves_source_and_gates_revised_status(
+        monkeypatch, tmp_path):
+    source = tmp_path / 'source'
+    case = source / 'detour_sudden_stop_resume'
+    assets = source / 'assets'
+    bag = case / 'bag'
+    bag.mkdir(parents=True)
+    assets.mkdir()
+    original_result = {
+        'case': case.name, 'status': 'FAIL', 'harness_error': None,
+        'scenario': {'returncode': 0},
+        'detour_evidence': {'status': 'PASS'},
+        'same_goal_command_evidence': {},
+        'raw_action_status': {'final_status': 4},
+        'recording': {'mcap': {'sha256': 'mcap-hash'}},
+        'teardown': {
+            'remaining_process_groups': [], 'identity_survivors': []},
+        'keepout_route_evidence': {'status': 'FAIL'},
+    }
+    root_summary = {'status': 'FAIL', 'results': [original_result]}
+    (source / 'summary.json').write_text(
+        json.dumps(root_summary), encoding='utf-8')
+    (case / 'summary.json').write_text(
+        json.dumps(original_result), encoding='utf-8')
+    (case / 'scenario.json').write_text('{}', encoding='utf-8')
+    (bag / 'bag_0.mcap').write_bytes(b'mcap')
+    (assets / 'onboard_stop_contract.json').write_text(
+        '{}', encoding='utf-8')
+    (assets / 'sim_keepout_mask.yaml').write_text(
+        'image: mask.pgm\n', encoding='utf-8')
+    (assets / 'sim_keepout_mask.pgm').write_bytes(b'mask')
+    (assets / 'sim_keepout_zones.yaml').write_text(yaml.safe_dump({
+        'safety_margin_m': 0.35,
+        'zones': [{'id': 'demo', 'polygon': [[0, 0], [1, 0], [0, 1]]}],
+    }), encoding='utf-8')
+    monkeypatch.setattr(
+        REEVALUATE, '_keepout_route_evidence',
+        lambda *_args: {
+            'status': 'PASS', 'minimum_footprint_clearance_m': 0.04})
+    monkeypatch.setattr(REEVALUATE, '_case_passed', lambda *_args: True)
+    original_sha = REEVALUATE._sha256(source / 'summary.json')
+    monkeypatch.setattr(
+        REEVALUATE, '_sha256',
+        lambda path: ('mcap-hash' if Path(path).suffix == '.mcap'
+                      else SMOKE._sha256(Path(path))))
+
+    output = tmp_path / 'revised'
+    result = REEVALUATE.reevaluate(source, output)
+
+    assert result['status'] == 'PASS'
+    assert result['original_status'] == 'FAIL'
+    revised = json.loads((output / case.name / 'summary.json').read_text())
+    assert revised['status'] == 'PASS'
+    assert revised['original_status'] == 'FAIL'
+    assert revised['reevaluation']['other_original_checks_passed'] is True
+    assert revised['reevaluation']['source_files_modified'] is False
+    assert (output / 'source_summary.json').is_file()
+    assert REEVALUATE._sha256(source / 'summary.json') == original_sha
 
 
 def _valid_sudden_stop_resume():
