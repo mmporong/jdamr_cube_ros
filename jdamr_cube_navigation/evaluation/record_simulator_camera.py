@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import signal
 import threading
 import time
+from pathlib import Path
 
 import cv2
 from cv_bridge import CvBridge  # noqa: I201
@@ -40,10 +40,16 @@ class CameraRecorder(Node):
         self.last_frame_steady_ns: int | None = None
         self.first_frame_wall_ns: int | None = None
         self.last_frame_wall_ns: int | None = None
+        self.frame_timestamps: list[dict[str, int]] = []
         self.create_subscription(
             Image, topic, self._on_image, qos_profile_sensor_data)
 
     def _on_image(self, message: Image) -> None:
+        callback_steady_ns = time.monotonic_ns()
+        callback_wall_ns = time.time_ns()
+        sim_ns = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec))
         frame = self.bridge.imgmsg_to_cv2(message, desired_encoding='bgr8')
         if self.writer is None:
             self.height, self.width = frame.shape[:2]
@@ -54,14 +60,20 @@ class CameraRecorder(Node):
                 (self.width, self.height))
             if not self.writer.isOpened():
                 raise RuntimeError(f'video writer unavailable: {self.output}')
-            self.first_frame_steady_ns = time.monotonic_ns()
-            self.first_frame_wall_ns = time.time_ns()
+            self.first_frame_steady_ns = callback_steady_ns
+            self.first_frame_wall_ns = callback_wall_ns
             self.ready_file.write_text(
                 f'{self.width}x{self.height}@{self.fps:g}\n', encoding='utf-8')
         self.writer.write(frame)
+        self.frame_timestamps.append({
+            'index': self.frames,
+            'steady_ns': callback_steady_ns,
+            'wall_ns': callback_wall_ns,
+            'sim_ns': sim_ns,
+        })
         self.frames += 1
-        self.last_frame_steady_ns = time.monotonic_ns()
-        self.last_frame_wall_ns = time.time_ns()
+        self.last_frame_steady_ns = callback_steady_ns
+        self.last_frame_wall_ns = callback_wall_ns
 
     def finalize(self) -> None:
         """Close the codec and persist capture provenance."""
@@ -73,7 +85,7 @@ class CameraRecorder(Node):
             duration_s = (
                 self.last_frame_steady_ns - self.first_frame_steady_ns) / 1e9
         document = {
-            'schema_version': 1,
+            'schema_version': 2,
             'source': 'gazebo_camera_sensor',
             'topic': self.topic,
             'output': str(self.output.resolve()),
@@ -88,6 +100,7 @@ class CameraRecorder(Node):
             'first_frame_wall_ns': self.first_frame_wall_ns,
             'last_frame_wall_ns': self.last_frame_wall_ns,
             'capture_duration_s': duration_s,
+            'frame_timestamps': self.frame_timestamps,
         }
         self.metadata.write_text(
             json.dumps(document, indent=2, sort_keys=True) + '\n',
