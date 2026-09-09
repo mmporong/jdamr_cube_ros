@@ -156,6 +156,26 @@
         color: var(--muted);
         margin-left: 4px;
       }
+      .signal {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #52647a;
+      }
+      .signal::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        flex-shrink: 0;
+      }
+      .signal[data-tone="good"] { color: #14733c; }
+      .signal[data-tone="caution"] { color: #946000; }
+      .signal[data-tone="stop"] { color: #bd2737; }
       .state-panel {
         background: var(--paper);
         border: 1px solid var(--line);
@@ -518,11 +538,7 @@
     <header>
       <div class="header-title">
         <h1>JDAMR 주행 관제</h1>
-        <span class="source-note muted" id="source-note">가제보 주행 장면</span>
-      </div>
-      <div class="source-controls">
-        <span class="source-note muted" id="mode-label">기록 재생</span>
-        <span class="pill" id="connection">데이터 확인 중</span>
+        <span class="source-note muted" id="source-note">Gazebo recording</span>
       </div>
     </header>
     <main>
@@ -545,10 +561,12 @@
               <div>
                 <small>명령 속도</small><strong id="cmd">미수신</strong
                 ><span class="unit">m/s</span>
+                <span id="cmd-status" class="signal" data-tone="neutral">미수신</span>
               </div>
               <div>
                 <small>차체 측정 속도</small><strong id="speed">미수신</strong
                 ><span class="unit">m/s</span>
+                <span id="speed-status" class="signal" data-tone="neutral">미수신</span>
               </div>
               <div>
                 <small>차체 회전 속도</small><strong id="turn">미수신</strong
@@ -842,6 +860,23 @@
           c.fill();
         }
       }
+      function speedSignal(s, kind) {
+        const measured = kind === "speed";
+        const value = measured ? s.pose?.linear_mps : s.command?.linear_mps;
+        if (s.observation_unavailable || !finite(value)) return ["neutral", "미수신"];
+        const angular = measured ? s.pose?.angular_rps : s.command?.angular_rps;
+        // Match the existing observation deadband; units are m/s and rad/s respectively.
+        const moving = Math.abs(value) > 0.005 || (finite(angular) && Math.abs(angular) > 0.005);
+        if (s.monitor?.action === "STOP")
+          return moving ? ["caution", measured ? "정지 확인 중" : "관측 확인"] : ["stop", measured ? "정지 관측" : "충돌 감시 정지"];
+        if (["ABORTED", "CANCELED"].includes(s.navigation?.status)) return ["caution", "목표 종료 확인"];
+        if (s.navigation?.status === "SUCCEEDED") return moving ? ["caution", "정지 확인 중"] : ["good", "도착 · 정지"];
+        if (!moving) return ["neutral", measured ? "정지 관측" : "정지 명령"];
+        if (s.monitor?.action === "SLOWDOWN") return ["caution", measured ? "감속 요청 중" : "감속 명령"];
+        if (measured && finite(s.command?.linear_mps) && Math.abs(s.command.linear_mps) <= 0.005 && finite(s.command?.angular_rps) && Math.abs(s.command.angular_rps) <= 0.005)
+          return ["caution", "정지 확인 중"];
+        return ["good", measured ? "주행 관측" : "주행 명령"];
+      }
       function render(s, time) {
         const [label, reason] = observation(s);
         $("behavior").textContent = label;
@@ -850,6 +885,12 @@
           goals[s.navigation?.status] || s.navigation?.status || "미수신";
         $("cmd").textContent = number(s.command?.linear_mps);
         $("speed").textContent = number(s.pose?.linear_mps);
+        for (const kind of ["cmd", "speed"]) {
+          const [tone, text] = speedSignal(s, kind);
+          const badge = $(kind + "-status");
+          badge.dataset.tone = tone;
+          badge.textContent = text;
+        }
         $("turn").textContent = number(s.pose?.angular_rps);
         $("clock").textContent = number(time, 1);
         const scan = s.scan;
@@ -902,15 +943,12 @@
       }
       function switchMode(next) {
         mode = next;
-        $("mode-label").textContent =
-          next === "recorded" ? "기록 재생" : "센서 관측";
         $("clock-label").textContent =
           next === "recorded" ? "영상 시점" : "관측 세션";
         if (next === "live") {
           video.pause();
           $("source-note").textContent =
             "영상은 저장 기록이며 실시간 ROS 장면이 아닙니다.";
-          $("connection").textContent = "실시간 ROS 관측";
           transitions = [];
         } else {
           transitions = [];
@@ -926,10 +964,7 @@
             "follow",
           )
             ? "기존 촬영 · 고정 구도 재촬영 대기"
-            : "가제보 카메라 기록";
-          $("connection").textContent = replay
-            ? "영상 시각에 동기화"
-            : "재생 데이터 없음";
+            : "Gazebo recording";
         }
         update();
       }
@@ -967,9 +1002,6 @@
             },
           };
           if (mode === "live") {
-            $("connection").textContent = raw.live
-              ? "실시간 ROS 수신 중"
-              : "ROS 미연결 · 수신 대기";
             const label = observation(liveState)[0];
             if (label !== lastLiveKey) {
               transitions.push({ time_s: liveState.uptime_s || 0, label });
@@ -982,7 +1014,6 @@
           if (mode === "live") {
             liveState = { observation_unavailable: true };
             update();
-            $("connection").textContent = "ROS 관측 서버 연결 끊김";
             $("reason").textContent =
               "서버 응답이 없습니다. 마지막 관측값을 현재 상태로 판단하지 마세요.";
           }
@@ -1003,7 +1034,6 @@
           switchMode(config.replay_available ? "recorded" : "live");
           setInterval(poll, 1000);
         } catch (e) {
-          $("connection").textContent = "데이터를 불러오지 못했습니다";
           $("reason").textContent =
             "관제 서버와 기록 파일 연결을 확인해야 합니다.";
         }

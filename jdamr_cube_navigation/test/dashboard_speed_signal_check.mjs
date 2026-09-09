@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const html = fs.readFileSync(new URL('../evaluation/navigation_dashboard.html', import.meta.url), 'utf8');
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+new vm.Script(script);
+const source = script.slice(script.indexOf('function speedSignal('), script.indexOf('function render('));
+const signal = vm.runInNewContext(`(${source})`, { finite: Number.isFinite });
+const state = { command: { linear_mps: 0.18, angular_rps: 0 }, pose: { linear_mps: 0.18, angular_rps: 0 } };
+const check = (s, kind, tone, label) => {
+  const result = signal(s, kind);
+  assert.equal(result[0], tone);
+  assert.equal(result[1], label);
+};
+check(state, 'cmd', 'good', '주행 명령');
+check(state, 'speed', 'good', '주행 관측');
+check({ ...state, monitor: { action: 'SLOWDOWN' } }, 'speed', 'caution', '감속 요청 중');
+check({ ...state, monitor: { action: 'STOP' } }, 'speed', 'caution', '정지 확인 중');
+const stopped = { ...state, command: { linear_mps: 0, angular_rps: 0 }, pose: { linear_mps: 0, angular_rps: 0 } };
+check({ ...stopped, monitor: { action: 'STOP' } }, 'cmd', 'stop', '충돌 감시 정지');
+check({ ...stopped, monitor: { action: 'STOP' } }, 'speed', 'stop', '정지 관측');
+check(stopped, 'cmd', 'neutral', '정지 명령');
+check({ ...state, command: stopped.command }, 'speed', 'caution', '정지 확인 중');
+check({ ...stopped, navigation: { status: 'SUCCEEDED' } }, 'speed', 'good', '도착 · 정지');
+check({ ...state, observation_unavailable: true }, 'cmd', 'neutral', '미수신');
+check({}, 'speed', 'neutral', '미수신');
+assert.ok(!html.includes('id="mode-label"'));
+assert.ok(!script.includes('$("mode-label")'));
+assert.ok(!html.includes('id="connection"'));
+assert.ok(!script.includes('$("connection")'));
+assert.ok(html.includes('Gazebo recording'));
+console.log('PASS: 11 speed signal cases, removed labels, English heading, JavaScript syntax');
