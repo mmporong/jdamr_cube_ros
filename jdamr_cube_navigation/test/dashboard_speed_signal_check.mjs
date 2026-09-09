@@ -58,7 +58,8 @@ const eventSamples = [0.18, 0.1, 0, 0.1].map((v, i) => ({
   map_pose: [i, 0, 0],
 }));
 const log = eventLog(eventSamples, [[1, 0]]);
-assert.ok(log.some(e => e.label === '속도 감소 관측' && e.detail.includes('미확인')));
+assert.ok(log.some(e => e.label === '속도 감소 관측' && e.detail.includes('명령 속도 감소')));
+assert.ok(log.every(e => !/미확인|미기록|미제공|미수신/.test(e.detail)));
 assert.ok(log.some(e => e.label === '정지 후 이동 재개'));
 assert.ok(log.some(e => e.label === '마스크 인근 진입'));
 assert.ok(log.some(e => e.label === '마스크 인근 이탈'));
