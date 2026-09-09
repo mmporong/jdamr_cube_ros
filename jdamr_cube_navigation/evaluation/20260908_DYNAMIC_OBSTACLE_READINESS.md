@@ -254,10 +254,13 @@ python3 jdamr_cube_navigation/evaluation/navigation_dashboard.py \
 않았다. 갱신 전 launch·route 백업은
 `$HOME/jdamr_artifacts/onboard_protection_backup_20260908.I7yFqG`에 있다.
 
-첫 실차 검증은 수납 자세·저속·감독 조건의 고정 장애물 우회 1회로 시작한다. 이어서
-정면 통로에 물체를 배치해 정지 여유를 외부 줄자로 측정하고, 물체 제거 뒤 같은 목표가
-재개되는지 온보드 MCAP과 route goal UUID로 확인한다. 아래 조건 중 하나면 해당 실행은
-성공 증거로 쓰지 않는다.
+실차 사용 횟수를 줄이기 위해 고정 장애물 우회와 이동 장애물 정지·재개는 복도 왕복
+한 번에 순차 실행한다. 먼저 예정 경로를 막은 고정 장애물을 우회하고, 해당 장애물을
+통과한 뒤 별도 이동 장애물이 통로를 완전히 횡단하도록 구성한다. 두 사건을 겹치지 않아
+경로 재계획과 Collision Monitor 정지의 원인을 분리한다. 저장 지도·Keepout 준수와 최종
+원점 복귀도 같은 MCAP에 기록한다. 실행 순서와 판정 기준은
+[실차 통합 장애물 주행 절차](20260909_REAL_COMBINED_TRIAL.md)를 따른다. 아래 조건 중
+하나면 해당 실행은 성공 증거로 쓰지 않는다.
 
 - `/joint_states` 수납 자세 게이트 불통과 또는 stale
 - 보호영역 파라미터 불일치

@@ -127,6 +127,11 @@ recorder가 예상치 않게 끝나면 navigation도 종료한다.
 route에 같은 값을 전달한다. 따로 실행하면 launch의 `navigation_profile`과 route의
 `--navigation-profile`을 모두 맞춰야 한다. 옵션을 생략하면 `corridor`다.
 
+실차 사용 횟수를 줄이는 장애물 검증은 고정 장애물 우회, 이동 장애물 정지·동일 목표
+재개, Keepout 준수와 원점 복귀를 왕복 한 번에 순차 수집한다. 각 사건을 동시에 만들지
+않으며, 통합 실행 명령과 성공 판정은
+[2026-09-09 실차 통합 절차](evaluation/20260909_REAL_COMBINED_TRIAL.md)를 따른다.
+
 합성 컨테이너에는 자식 costmap용 ParameterFile도 전달한다. Keepout 서버의 ACTIVE만으로
 적용 완료라고 판단하지 않고, 양쪽 costmap의 필터 활성과 mask 수신도 확인한다.
 현재 후보의 검증 범위는 위 점검 문서가 기준이며, 파일 배포를 실차 검증으로 해석하지 않는다.
