@@ -127,6 +127,13 @@ recorder가 예상치 않게 끝나면 navigation도 종료한다.
 route에 같은 값을 전달한다. 따로 실행하면 launch의 `navigation_profile`과 route의
 `--navigation-profile`을 모두 맞춰야 한다. 옵션을 생략하면 `corridor`다.
 
+팔이 장착되지 않은 실차는 `--navigation-profile obstacle_base_candidate`를 사용한다.
+이 프로필은 같은 온라인 재계획 BT와 Wait 복구를 사용하지만 가짜 `/joint_states`를
+팔 수납 증거로 사용하지 않는다. 차체 전방 외곽과 기존 속도·scan gap·감속도 계약에서
+유도한 StopZone 0.35 m·SlowdownZone 0.45 m는
+`config/base_obstacle_protection.yaml`에 근거와 함께 둔다. 팔을 다시 장착하면 이
+프로필을 사용하지 않고 실제 관절 telemetry가 연결된 `obstacle_candidate`로 돌아간다.
+
 실차 사용 횟수를 줄이는 장애물 검증은 고정 장애물 우회, 이동 장애물 정지·동일 목표
 재개, Keepout 준수와 원점 복귀를 왕복 한 번에 순차 수집한다. 각 사건을 동시에 만들지
 않으며, 통합 실행 명령과 성공 판정은

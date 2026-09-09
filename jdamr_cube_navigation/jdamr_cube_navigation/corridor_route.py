@@ -42,6 +42,7 @@ ODOM_QOS = QoSProfile(depth=1)
 NAVIGATION_BEHAVIOR_TREES = {
     'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
     'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
+    'obstacle_base_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
 }
 GOAL_STATUS_NAMES = {
     GoalStatus.STATUS_UNKNOWN: 'STATUS_UNKNOWN',

@@ -8,6 +8,7 @@ import time
 from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.mobile_manipulator_protection import (
     evaluate_travel_pose,
+    load_base_obstacle_protection,
     load_mobile_manipulator_protection,
 )
 
@@ -17,6 +18,8 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PROTECTION_PATH = (
     PACKAGE_ROOT / 'config' / 'mobile_manipulator_protection.yaml')
+BASE_PROTECTION_PATH = (
+    PACKAGE_ROOT / 'config' / 'base_obstacle_protection.yaml')
 ONBOARD_CORE_LAUNCH = (
     PACKAGE_ROOT / 'launch' / 'onboard_nav2_core.launch.py')
 
@@ -89,6 +92,36 @@ def test_obstacle_profile_applies_protection_only_to_collision_monitor():
     assert "if profile == 'obstacle_candidate':" in source
     assert "protection['collision_monitor_overrides']" in source
     assert ("'collision_monitor', collision_monitor_parameters" in source)
+
+
+def test_base_only_profile_has_no_arm_pose_dependency():
+    """Use a separate conservative envelope when no arm is installed."""
+    contract = load_base_obstacle_protection(BASE_PROTECTION_PATH)
+
+    assert 'travel_pose' not in contract
+    assert contract['validated_geometry_m']['stop_zone'] == {
+        'front_m': 0.35, 'rear_m': -0.28, 'half_width_m': 0.25}
+    assert contract['validated_geometry_m']['slowdown_zone'] == {
+        'front_m': 0.45, 'rear_m': -0.38, 'half_width_m': 0.35}
+
+    derivation = contract['derivation']
+    reaction_m = derivation['maximum_forward_speed_mps'] * (
+        derivation['maximum_scan_gap_s']
+        + 1.0 / derivation['velocity_smoother_frequency_hz'])
+    braking_m = derivation['maximum_forward_speed_mps'] ** 2 / (
+        2.0 * derivation['maximum_deceleration_mps2'])
+    half_cell_diagonal_m = (
+        derivation['costmap_resolution_m'] * math.sqrt(2.0) / 2.0)
+    required_front_m = (
+        derivation['base_front_m'] + reaction_m + braking_m
+        + half_cell_diagonal_m)
+    assert derivation['candidate_stop_front_m'] >= required_front_m
+    assert derivation['candidate_slowdown_front_m'] > \
+        derivation['candidate_stop_front_m']
+
+    source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
+    assert "elif profile == 'obstacle_base_candidate':" in source
+    assert "load_base_obstacle_protection" in source
 
 
 def test_corridor_route_blocks_stale_or_non_stowed_arm_state():

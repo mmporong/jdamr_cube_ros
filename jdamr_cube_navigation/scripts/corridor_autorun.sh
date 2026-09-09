@@ -38,8 +38,9 @@ while [ $# -gt 0 ]; do
     --navigation-profile)
       [ "$#" -ge 2 ] || { echo "--navigation-profile 값이 필요하다" >&2; exit 2; }
       case "$2" in
-        corridor|obstacle_candidate) NAVIGATION_PROFILE="$2"; shift 2 ;;
-        *) echo "주행 프로필은 corridor 또는 obstacle_candidate여야 한다" >&2; exit 2 ;;
+        corridor|obstacle_candidate|obstacle_base_candidate)
+          NAVIGATION_PROFILE="$2"; shift 2 ;;
+        *) echo "주행 프로필이 올바르지 않다" >&2; exit 2 ;;
       esac ;;
     *) echo "알 수 없는 인자: $1" >&2; exit 2 ;;
   esac

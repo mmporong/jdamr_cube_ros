@@ -138,7 +138,9 @@ def generate_launch_description():
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument(
             'navigation_profile', default_value='corridor',
-            choices=['corridor', 'obstacle_candidate'],
+            choices=[
+                'corridor', 'obstacle_candidate',
+                'obstacle_base_candidate'],
             description='Select the same navigation profile for the route runner'),
         DeclareLaunchArgument(
             'record_bag', default_value='true',

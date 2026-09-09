@@ -45,7 +45,7 @@ rm -f "$HOME/jdamr_abort"
 run_id="real_combined_obstacle_$(date +%Y%m%dT%H%M%S)"
 setsid nohup bash \
   "$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation/scripts/corridor_autorun.sh" \
-  --run-id "$run_id" --delay 0 --navigation-profile obstacle_candidate \
+  --run-id "$run_id" --delay 0 --navigation-profile obstacle_base_candidate \
   > "$HOME/jdamr_artifacts/${run_id}.start.log" 2>&1 &
 ```
 
@@ -69,9 +69,9 @@ touch "$HOME/jdamr_abort"
 75초 자원 계측이 포함된다. 이 대기를 장애물 시나리오마다 반복하지 않고 통합 주행 앞에서
 한 번만 수행한다.
 
-후보 프로필은 수납 팔의 `/joint_states`가 없거나 허용 오차를 벗어나면 목표를 보내지 않는다.
-따라서 상체를 분리한 실차라면 현재 후보를 그대로 실행할 수 없으며, 그 사실을 숨기기 위해
-자세 게이트를 비활성화하지 않는다.
+이 절차는 팔이 없는 실차용 `obstacle_base_candidate`를 선택한다. 팔 장착용
+`obstacle_candidate`의 수납 자세 게이트를 비활성화하거나 가짜 `/joint_states`로
+통과시키지 않는다.
 
 ## 성공 판정
 
@@ -125,9 +125,7 @@ python3 jdamr_cube_navigation/evaluation/corridor_run_media.py \
 [Improved Dynamic Discovery](https://docs.ros.org/en/rolling/Tutorials/Advanced/Improved-Dynamic-Discovery.html)에 있다.
 
 수정 뒤 읽기 전용 실측에서는 `/scan`, `/odom`, `/battery_state`가 수신됐고 배터리는
-11.976 V였다. 다만 현재 `/joint_states`는 실제 서보 telemetry가 아니라
-`joint_state_publisher`가 만든 전 관절 0 rad 표본이다. 후보 수납 자세와 비교하면 최대
-오차가 1.5 rad이므로 travel-pose gate는 정상적으로 FAIL한다. 실차에 팔이 장착돼 있다면
-실제 관절 상태 publisher와 물리 수납이 필요하고, 팔이 분리돼 있다면 팔 collision 외곽을
-전제로 한 후보와 별도로 base-only 보호 계약을 선택해야 한다. 이 물리 구성을 확인하기
-전에는 `obstacle_candidate` 실차 목표를 보내지 않는다.
+11.976 V였다. `/joint_states`는 실제 서보 telemetry가 아니라 `joint_state_publisher`가
+만든 전 관절 0 rad 표본이었고, 사용자는 실차에 팔이 없음을 확인했다. 따라서 팔 장착용
+후보의 travel-pose gate를 우회하지 않고, 차체 외곽용 `obstacle_base_candidate`와
+`base_obstacle_protection.yaml`을 별도로 연결했다.

@@ -1,0 +1,17 @@
+schema_version: 1
+claim_scope: base_only_obstacle_candidate_not_safety_certification
+collision_monitor_overrides:
+  StopZone.points: '[[0.35, 0.25], [0.35, -0.25], [-0.28, -0.25], [-0.28, 0.25]]'
+  SlowdownZone.points: '[[0.45, 0.35], [0.45, -0.35], [-0.38, -0.35], [-0.38, 0.35]]'
+derivation:
+  root_frame: base_footprint
+  base_front_m: 0.23
+  maximum_forward_speed_mps: 0.18
+  maximum_scan_gap_s: 0.107525
+  velocity_smoother_frequency_hz: 20.0
+  maximum_deceleration_mps2: 0.5
+  costmap_resolution_m: 0.05
+  candidate_stop_front_m: 0.35
+  candidate_slowdown_front_m: 0.45
+  source_contract: mobile_manipulator_protection.yaml
+  method: base_envelope_plus_full_speed_stop_bound_and_half_cell_diagonal

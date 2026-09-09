@@ -12,6 +12,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.keepout_mask import validate_mask
 from jdamr_cube_navigation.mobile_manipulator_protection import (
+    load_base_obstacle_protection,
     load_mobile_manipulator_protection,
 )
 from jdamr_cube_navigation.nav2_liveness_guard import DEFAULT_REQUIRED
@@ -57,6 +58,8 @@ def _launch_navigation(context):
     behavior_tree = {
         'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
         'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
+        'obstacle_base_candidate': (
+            'navigate_to_pose_dynamic_obstacle_eval.xml'),
     }[profile]
     map_yaml = LaunchConfiguration('map')
     keepout_mask = LaunchConfiguration('keepout_mask')
@@ -68,6 +71,9 @@ def _launch_navigation(context):
     if profile == 'obstacle_candidate':
         protection = load_mobile_manipulator_protection(Path(
             package_share) / 'config' / 'mobile_manipulator_protection.yaml')
+    elif profile == 'obstacle_base_candidate':
+        protection = load_base_obstacle_protection(Path(
+            package_share) / 'config' / 'base_obstacle_protection.yaml')
 
     configured_params = ParameterFile(
         RewrittenYaml(
@@ -159,7 +165,7 @@ def _launch_navigation(context):
         'collision_monitor', 'bt_navigator',
     ]
     required_nodes = list(DEFAULT_REQUIRED)
-    if profile == 'obstacle_candidate':
+    if profile in {'obstacle_candidate', 'obstacle_base_candidate'}:
         # The candidate BT calls Wait during bounded recovery.  Load only
         # that plugin; selecting this profile must not enable spin or backup.
         nav2_components.insert(-1, ComposableNode(
@@ -290,7 +296,9 @@ def generate_launch_description():
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument(
             'navigation_profile', default_value='corridor',
-            choices=['corridor', 'obstacle_candidate'],
+            choices=[
+                'corridor', 'obstacle_candidate',
+                'obstacle_base_candidate'],
             description='Candidate enables online replanning and Wait recovery'),
         OpaqueFunction(function=_validate_keepout),
         OpaqueFunction(function=_launch_navigation),
