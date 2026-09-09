@@ -80,12 +80,12 @@ def test_keepout_demo_builds_connected_corridor_mask(tmp_path):
     assert prepared['keepout_demo'] == {
         'zone_id': 'sim_portfolio_corridor_keepout',
         'polygon_m': [
-            [-5.8, -1.1], [-4.8, -1.1],
-            [-4.8, 0.1], [-5.8, 0.1]],
+            [-4.5, -1.1], [-3.5, -1.1],
+            [-3.5, 0.1], [-4.5, 0.1]],
         'safety_margin_m': 0.35,
         'expanded_bounds_m': {
-            'min_x_m': pytest.approx(-6.15),
-            'max_x_m': pytest.approx(-4.45),
+            'min_x_m': pytest.approx(-4.85),
+            'max_x_m': pytest.approx(-3.15),
             'min_y_m': pytest.approx(-1.45),
             'max_y_m': pytest.approx(0.45),
         },
@@ -94,6 +94,21 @@ def test_keepout_demo_builds_connected_corridor_mask(tmp_path):
         'sim_portfolio_corridor_keepout']
     assert prepared['mask_report']['connectivity_checks'][0][
         'connected'] is True
+    candidate = yaml.safe_load(
+        prepared['params'].read_text(encoding='utf-8'))
+    for name in ('local_costmap', 'global_costmap'):
+        costmap = candidate[name][name]['ros__parameters']
+        assert costmap['filters'] == [
+            'keepout_filter', 'keepout_inflation']
+        assert costmap['keepout_inflation'] == {
+            'plugin': 'nav2_costmap_2d::InflationLayer',
+            'inflation_radius': 0.45,
+            'cost_scaling_factor': 3.0,
+        }
+    assert SMOKE._leaf_differences(
+        yaml.safe_load(SMOKE.PRODUCTION_PARAMS.read_text(encoding='utf-8')),
+        candidate) == (
+            SMOKE.ALLOWED_PARAM_DELTAS | SMOKE.KEEPOUT_DEMO_PARAM_DELTAS)
 
 
 def test_main_forwards_keepout_demo_to_asset_preparation(

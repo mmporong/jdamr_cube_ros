@@ -54,8 +54,10 @@ SEED = 11
 PEDESTRIAN_EDGE_Y_M = 1.0
 VIDEO_EMPTY_SCENE_OBSERVATION_S = 2.0
 KEEPOUT_DEMO_SAFETY_MARGIN_M = 0.35
+KEEPOUT_FILTER_INFLATION_RADIUS_M = 0.45
+KEEPOUT_FILTER_COST_SCALING_FACTOR_PER_M = 3.0
 KEEPOUT_DEMO_POLYGON_M = (
-    (-5.8, -1.1), (-4.8, -1.1), (-4.8, 0.1), (-5.8, 0.1))
+    (-4.5, -1.1), (-3.5, -1.1), (-3.5, 0.1), (-4.5, 0.1))
 CASES = (
     'detour', 'event_driven_removal', 'sudden_stop_resume',
     'detour_sudden_stop_resume')
@@ -66,6 +68,14 @@ ALLOWED_PARAM_DELTAS = {
      'always_send_full_costmap'),
     ('global_costmap', 'global_costmap', 'ros__parameters',
      'always_send_full_costmap'),
+}
+KEEPOUT_DEMO_PARAM_DELTAS = {
+    ('local_costmap', 'local_costmap', 'ros__parameters', 'filters'),
+    ('local_costmap', 'local_costmap', 'ros__parameters',
+     'keepout_inflation'),
+    ('global_costmap', 'global_costmap', 'ros__parameters', 'filters'),
+    ('global_costmap', 'global_costmap', 'ros__parameters',
+     'keepout_inflation'),
 }
 CAP_BYTES = 64 * 1024 * 1024
 BAG_LIVE_CAP_BYTES = 56 * 1024 * 1024
@@ -113,10 +123,21 @@ def prepare_candidate_assets(
     candidate['amcl']['ros__parameters']['initial_pose'].update({
         'x': -8.0, 'y': 0.0, 'z': 0.0, 'yaw': 0.0})
     for name in ('local_costmap', 'global_costmap'):
-        candidate[name][name]['ros__parameters'][
-            'always_send_full_costmap'] = True
+        costmap_params = candidate[name][name]['ros__parameters']
+        costmap_params['always_send_full_costmap'] = True
+        if keepout_demo:
+            costmap_params['filters'] = [
+                'keepout_filter', 'keepout_inflation']
+            costmap_params['keepout_inflation'] = {
+                'plugin': 'nav2_costmap_2d::InflationLayer',
+                'inflation_radius': KEEPOUT_FILTER_INFLATION_RADIUS_M,
+                'cost_scaling_factor': (
+                    KEEPOUT_FILTER_COST_SCALING_FACTOR_PER_M),
+            }
     differences = _leaf_differences(production, candidate)
-    if differences != ALLOWED_PARAM_DELTAS:
+    allowed_differences = ALLOWED_PARAM_DELTAS | (
+        KEEPOUT_DEMO_PARAM_DELTAS if keepout_demo else set())
+    if differences != allowed_differences:
         raise RuntimeError(f'candidate parameter delta drift: {differences}')
     generated['params'].write_text(
         yaml.safe_dump(candidate, sort_keys=False), encoding='utf-8')
@@ -129,6 +150,14 @@ def prepare_candidate_assets(
         'delta_paths': sorted('.'.join(path) for path in differences),
         'production_scan_overrides_added': [],
     }
+    if keepout_demo:
+        contract['candidate_params']['keepout_filter_chain'] = {
+            'costmaps': ['local_costmap', 'global_costmap'],
+            'filters': ['keepout_filter', 'keepout_inflation'],
+            'inflation_radius_m': KEEPOUT_FILTER_INFLATION_RADIUS_M,
+            'cost_scaling_factor_per_m': (
+                KEEPOUT_FILTER_COST_SCALING_FACTOR_PER_M),
+        }
     contract['claim_scope'] = (
         'SIM_INTEGRATION only: isolated Gazebo smoke of the real onboard '
         'obstacle_candidate launch; no physical-robot or safety claim.')
@@ -176,6 +205,9 @@ def prepare_candidate_assets(
         'delta_paths': sorted('.'.join(path) for path in differences),
         'production_scan_overrides_added': [],
     }
+    if keepout_demo:
+        direct_contract['candidate_params']['keepout_filter_chain'] = (
+            contract['candidate_params']['keepout_filter_chain'])
     direct_contract['runtime_protection_config'] = _source_identity(
         MOBILE_MANIPULATOR_PROTECTION)
     direct_contract_path.write_text(json.dumps(
