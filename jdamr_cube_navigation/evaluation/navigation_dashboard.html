@@ -1185,8 +1185,8 @@
       start();
       function applyPlaybackRate() {
         const choice = $("playback-rate").value;
-        // Presentation 1× equals 1.5× source time; telemetry stays on source time.
-        const rate = choice === "minute" ? video.duration / 60 : Number(choice) * 1.5;
+        // Presentation 1× equals 3× source time; telemetry stays on source time.
+        const rate = choice === "minute" ? video.duration / 60 : Number(choice) * 3;
         if (finite(rate) && rate > 0) {
           video.defaultPlaybackRate = rate;
           video.playbackRate = rate;

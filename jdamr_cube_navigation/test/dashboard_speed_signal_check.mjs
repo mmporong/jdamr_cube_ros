@@ -76,7 +76,7 @@ const playbackSource = script.slice(script.indexOf('function applyPlaybackRate()
 const playbackVideo = { duration: 108.6 };
 const playbackSelect = { value: '1' };
 const applyRate = vm.runInNewContext(`(${playbackSource})`, { video: playbackVideo, $: () => playbackSelect, finite: Number.isFinite });
-for (const [choice, rate] of [['0.5', 0.75], ['1', 1.5], ['2', 3], ['minute', 108.6 / 60]]) {
+for (const [choice, rate] of [['0.5', 1.5], ['1', 3], ['2', 6], ['minute', 108.6 / 60]]) {
   playbackSelect.value = choice;
   applyRate();
   assert.equal(playbackVideo.playbackRate, rate);
