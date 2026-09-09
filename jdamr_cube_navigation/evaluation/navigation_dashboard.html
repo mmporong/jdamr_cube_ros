@@ -432,6 +432,22 @@
         }
         .state-panel {
           min-height: 0;
+          display: flex;
+          flex-direction: column;
+        }
+        .state-panel > * {
+          flex-shrink: 0;
+        }
+        .state-panel .speed-history {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+        }
+        .state-panel #speed-history {
+          flex: 1;
+          height: 0;
+          min-height: clamp(36px, calc(100dvh - 704px), 48px);
         }
         #behavior {
           font-size: 25px;
