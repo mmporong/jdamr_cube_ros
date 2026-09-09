@@ -1312,9 +1312,9 @@ def parse_args() -> argparse.Namespace:
         parser.error('--obstacle-hold-s must be nonnegative')
     if not 0.0 <= args.obstacle_crossing_s <= 5.0:
         parser.error('--obstacle-crossing-s must be between 0 and 5 seconds')
-    if not 0.5 <= args.obstacle_crossing_edge_y_m <= 1.1:
+    if not 0.5 <= args.obstacle_crossing_edge_y_m <= 1.5:
         parser.error(
-            '--obstacle-crossing-edge-y-m must be between 0.5 and 1.1')
+            '--obstacle-crossing-edge-y-m must be between 0.5 and 1.5')
     if (args.trigger_after_x_m is not None
             and not math.isfinite(args.trigger_after_x_m)):
         parser.error('--trigger-after-x-m must be finite')

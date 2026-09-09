@@ -4,6 +4,9 @@
 
 ## 구성
 
+- [금지 구역·장애물 대응 관제 영상](media/gazebo_keepout_dashboard_20260909/README.md):
+  기존 추종 카메라의 Gazebo·라이다·위치·계획 경로·속도 기록 보관본,
+  실제 마스크 격자와 회전 차체 외곽선의 이격 검증 및 원본 해시
 - [20260908_PURPOSE_AND_RUNTIME_AUDIT.md](20260908_PURPOSE_AND_RUNTIME_AUDIT.md):
   현재 목적·완료 증거, 온보드 장애물 후보·goal UUID 기록·경량 후처리 구현,
   G005 오정지 수정과 제한시간 진단
@@ -27,7 +30,8 @@
 - `make_sim_sensor_variant.py`: URDF 센서율·노이즈를 허용 목록 안에서 바꾸고 해시 manifest를 만드는 도구
 - `run_sim_slam_experiment.py`: 격리 Gazebo, backend, MCAP, 왕복 경로와 ATE/RPE를 한 번에 실행하는 도구
 - `compare_sim_slam_experiments.py`: 동일 조건의 backend·센서 stress 행렬을 검증하고 비교 자료를 만드는 도구
-- `portfolio_capture_world.py`: 물리 모델을 유지한 채 3인칭 카메라와 촬영용 시각 요소를 더하는 도구
+- `portfolio_capture_world.py`: 고정 월드 카메라와 촬영용 시각 요소를 추가하고,
+  양쪽 복도 벽에 보행자 출입구를 만든다. 변경된 벽과 나머지 충돌 형상의 보존 여부를 별도로 기록한다.
 - `record_simulator_camera.py`: Gazebo 카메라 센서 프레임을 메타데이터와 함께 MP4로 기록하는 도구
 - `render_simulator_portfolio_media.py`: 검증 이벤트와 3D 영상을 결합해 방향별 하이라이트를 만드는 도구
 - `render_bidirectional_reel.py`: 해시가 확인된 좌·우 하이라이트만 하나의 대표 영상으로 연결하는 도구
@@ -36,7 +40,51 @@
 - `setup_mujoco_renderer.sh`, `run_mujoco_portfolio_render.sh`: 격리된 MuJoCo 환경 설치와
   재현 실행 진입점
 - `navigation_dashboard.py`: LiDAR·Nav2·Collision Monitor·검증 영상을 localhost에서 보여주는 관측 전용 대시보드
+- `export_dashboard_replay.py`: MCAP 관측을 영상의 wall-time 축으로 추출한다.
+  영상 SHA-256을 확인하며 탐색·일시정지 시 미래 관측값을 사용하지 않는다.
 - `../launch/offline_replay_guard.launch.py`: 저장 지도와 이동 명령을 재생하지 않고 AMCL `map -> odom`을 제거하는 launch
+
+## 관제와 행동 로직의 증거 범위
+
+실제 주행은 `navigate_to_pose_dynamic_obstacle_eval.xml`의 Nav2 행동 트리로
+경로 계획·추종·재계획을 실행한다. 실패 시 costmap 정리와 대기를 수행하며,
+Collision Monitor는 행동 트리 바깥에서 최종 속도를 감독한다.
+
+데이터 흐름은 controller → `/cmd_vel_nav` → velocity smoother →
+`/cmd_vel_smoothed` → Collision Monitor → `/cmd_vel`이다. 현재 bag에는
+중간 두 속도 토픽이 없으므로 관제에서 해당 연결은 구조 설명이지 실시간 수신 증거가 아니다.
+`/scan`, `/odom`, `/plan`, `/collision_monitor_state`, 목표 action 상태는 기록으로 확인한다.
+
+관제의 관측 상태는 로봇을 제어하는 새 상태머신이 아니다. 목표 수락·주행·정지·재개·도착을
+기록에서 보여주는 수동 관측 계층이다. 개별 BT 노드의 tick 상태는 아직 기록하지 않으므로
+실행 중인 노드처럼 표시하지 않는다. 하역·충전·VDA 5050 order/action 연동도 현재 구현 범위 밖이다.
+
+고정 카메라와 실제 출입구 설정의 코드 검증과 새 GPU 촬영은 별개다.
+기존 추종 카메라 영상은 원본으로 보존하며 새 촬영 성공을 주장하는 데 사용하지 않는다.
+GPU 촬영은 사용자에게 시작 전에 알리고 사용 보류가 해제된 뒤 진행한다.
+
+### CPU 관제 재생 재현
+
+`export_dashboard_replay.py --prepare-scene`는 원본 프레임 수와 카메라 시각을 확인한 뒤
+CPU 인코더로 원래 시간 길이의 장면만 생성한다. 영상에 관제 UI를 다시 구워 넣지 않아 웹 화면과
+중복되지 않는다. `.timing.json`의 원본·카메라 메타데이터·출력 해시와 실제 영상 길이를 확인하므로
+속도를 줄인 하이라이트를 같은 시간축으로 연결할 수 없다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_cube_ws/install/setup.bash"
+python3 jdamr_cube_navigation/evaluation/navigation_dashboard.py \
+  --no-ros --port 8765 \
+  --summary jdamr_cube_navigation/evaluation/media/gazebo_keepout_dashboard_20260909/verified_run.json \
+  --video "$HOME/jdamr_artifacts/gazebo_keepout_main_media_20260909_v02/dashboard_scene_walltime.mp4" \
+  --replay "$HOME/jdamr_artifacts/gazebo_keepout_main_media_20260909_v02/dashboard_replay_walltime.json"
+```
+
+서버는 localhost만 열고 ROS 이동 명령을 발행하지 않는다. 실행 터미널의 `Ctrl+C`로 종료한다.
+실시간 ROS를 선택했을 때 센서 관측이 끊기면 과거 목표·속도·STOP을 현재 상태로 표시하지 않는다.
+브라우저 검증 스크립트는 `../test/dashboard_browser_check.mjs`이며, 별도로 실행한
+GPU 비활성 headless Chrome의 localhost 디버깅 포트 9225를 사용한다.
 
 ## AMCL 재지역화 평가
 

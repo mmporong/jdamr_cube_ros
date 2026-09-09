@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 from pathlib import Path
 import shutil
-from typing import Any  # noqa: I100
+from typing import Any
 
 from run_onboard_candidate_smoke import (
-    _case_passed, _keepout_route_evidence, _sha256, _source_identity)
+    _keepout_route_evidence, _sha256, _source_identity)
 
 import yaml
 
@@ -41,12 +42,64 @@ def _identity_matches(identity: Any, path: Path) -> bool:
         path)
 
 
+def _summary_behavior_passed(
+        original: dict[str, Any], stop_contract: dict[str, Any]) -> bool:
+    """Accept only behavior evidence already preserved in the case summary."""
+    scenario = original.get('scenario', {})
+    same_goal = original.get('same_goal_command_evidence', {}).get(
+        'evidence', {})
+    episodes = same_goal.get('episodes', [])
+    goal_uuid = scenario.get('goal_uuid')
+    pose = scenario.get('final_world_pose_m')
+    goal = stop_contract.get('goal_pose', {})
+    arrived = (
+        isinstance(pose, list) and len(pose) == 2
+        and all(math.isfinite(value) for value in pose)
+        and 'x_m' in goal and 'y_m' in goal
+        and math.dist(pose, (goal['x_m'], goal['y_m'])) <= 0.5)
+    capture = scenario.get('direct_scan_capture') or {}
+    events = set(scenario.get('events', []))
+    return all((
+        original.get('detour_evidence', {}).get('status') == 'PASS',
+        original.get('raw_action_status', {}).get('final_status') == 4,
+        scenario.get('returncode') == 0,
+        scenario.get('action_terminal') == 'succeeded',
+        bool(goal_uuid),
+        scenario.get('terminal_goal_uuid') == goal_uuid,
+        scenario.get('goal_send_count') == 1,
+        scenario.get('goal_cancel_count') == 0,
+        scenario.get('stop_action_type') == 1,
+        scenario.get('stop_polygon_name') == 'StopZone',
+        scenario.get('resume_action_type') == 0,
+        scenario.get('physical_stop_observed') is True,
+        scenario.get('contact_matched_publisher_count_max', 0) > 0,
+        scenario.get('contact_count') == 0,
+        scenario.get('minimum_clearance_m', 0) > 0,
+        scenario.get('protected_envelope_minimum_clearance_m', 0) > 0,
+        scenario.get('final_cmd_vel_zero') is True,
+        scenario.get('final_zero_hold_s', 0)
+        >= stop_contract.get('final_zero_hold_s', math.inf),
+        capture.get('zero_receive_steady_ns', 0)
+        > capture.get('scan_receive_steady_ns', math.inf),
+        scenario.get('activation_error') is None,
+        scenario.get('harness_error') is None,
+        scenario.get('same_goal_command_verdict') == 'CONFIRMED',
+        same_goal.get('verdict') == 'CONFIRMED',
+        same_goal.get('terminal_succeeded') is True,
+        len(episodes) == 1,
+        episodes[0].get('same_goal_resumed') is True,
+        episodes[0].get('terminal_succeeded') is True,
+        {'physical_stop', 'obstacle_deactivated', 'succeeded'} <= events,
+        arrived,
+    ))
+
+
 def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
     """Write a provenance-linked result without modifying source evidence."""
     input_root = input_root.resolve()
     output_root = output_root.resolve()
-    if input_root == output_root:
-        raise ValueError('input and output roots must differ')
+    if input_root == output_root or output_root.is_relative_to(input_root):
+        raise ValueError('output must be outside the input evidence tree')
     source_summary_path = input_root / 'summary.json'
     source_summary = _load_json(source_summary_path)
     results = source_summary.get('results')
@@ -86,12 +139,8 @@ def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
         mcap, mask_yaml, keepout_spec, stop_contract)
 
     scenario_path = source_case_dir / 'scenario.json'
-    scenario = _load_json(scenario_path)
-    same_goal = original.get('same_goal_command_evidence', {})
-    returncode = int(original.get('scenario', {}).get('returncode', -1))
-    behavioral_gate = _case_passed(
-        scenario, case, returncode, same_goal,
-        original.get('detour_evidence'))
+    _load_json(scenario_path)
+    behavioral_gate = _summary_behavior_passed(original, stop_contract)
     raw_action_succeeded = original.get('raw_action_status', {}).get(
         'final_status') == 4
     teardown = original.get('teardown', {})
@@ -179,6 +228,14 @@ def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
         'source_root': str(input_root),
         'output_root': str(output_root),
         'source_files_modified': False,
+        'scenario_usage': 'retained_copy_only_not_status_input',
+        'historical_scenario_integrity_verified': False,
+        'limitations': [
+            ('the source run did not preserve a pre-existing scenario hash; '
+             'this re-evaluation does not assert historical scenario integrity'),
+            ('behavior gating uses only fields preserved in the original case '
+             'summary and does not re-run the scenario verdict'),
+        ],
     }
     revised.pop('output_bytes', None)
     (output_case_dir / 'summary.json').write_text(json.dumps(
@@ -198,6 +255,7 @@ def reevaluate(input_root: Path, output_root: Path) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Run the fail-closed offline keepout re-evaluation CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input-root', required=True, type=Path)
     parser.add_argument('--output-root', required=True, type=Path)

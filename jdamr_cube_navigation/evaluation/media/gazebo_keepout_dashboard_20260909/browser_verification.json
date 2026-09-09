@@ -1,0 +1,32 @@
+{
+  "status": "PASS",
+  "moving": {
+    "time": 5.609999,
+    "state": "주행 중",
+    "front": "2.31 m",
+    "cmd": "0.122"
+  },
+  "stopped": {
+    "time": 61.61,
+    "state": "충돌 감시 정지",
+    "front": "0.37 m",
+    "cmd": "0.000"
+  },
+  "paused": {
+    "time": 61.61,
+    "state": "충돌 감시 정지"
+  },
+  "mobile": {
+    "page": 390,
+    "viewport": 390
+  },
+  "live": {
+    "state": "관측 대기",
+    "command": "미수신"
+  },
+  "stale": {
+    "state": "관측 대기",
+    "command": "미수신",
+    "goal": "미수신"
+  }
+}

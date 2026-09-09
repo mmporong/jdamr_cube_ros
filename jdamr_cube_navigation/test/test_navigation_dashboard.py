@@ -17,6 +17,72 @@ sys.modules[SPEC.name] = DASHBOARD
 SPEC.loader.exec_module(DASHBOARD)
 
 
+def test_replay_rejects_wrong_video_and_noncausal_time(tmp_path):
+    """A highlight or reversed timeline must not masquerade as aligned data."""
+    import hashlib
+    video = tmp_path / 'video.mp4'
+    video.write_bytes(b'recorded-video')
+    path = tmp_path / 'replay.json'
+    document = {'schema_version': 1, 'samples': [{'time_s': 0.0}],
+                'video_sha256': hashlib.sha256(video.read_bytes()).hexdigest()}
+    path.write_text(json.dumps(document))
+    assert DASHBOARD.load_replay(path, video) == document
+    document['samples'].append({'time_s': 0.0})
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='time ordered'):
+        DASHBOARD.load_replay(path, video)
+    document['samples'].pop()
+    document['video_sha256'] = 'wrong'
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='identity mismatch'):
+        DASHBOARD.load_replay(path, video)
+
+
+def test_export_replay_uses_causal_samples_and_captured_laser(tmp_path, monkeypatch):
+    """Future commands stay absent and front is measured in the base frame."""
+    monkeypatch.syspath_prepend(str(EVALUATION))
+    import export_dashboard_replay as exporter
+    capture = tmp_path / 'capture.json'
+    capture.write_text(json.dumps({'frame_timestamps': [
+        {'wall_ns': 1_000_000_000}, {'wall_ns': 1_400_000_000}]}))
+    (tmp_path / 'jdamr_cube_capture.urdf').write_text(
+        '<robot><joint name="laser_joint"><origin rpy="0 0 3.141592653589793"/>'
+        '</joint></robot>')
+    mcap = tmp_path / 'bag.mcap'
+    mcap.write_bytes(b'test fixture')
+    monkeypatch.setattr(exporter, '_read_telemetry', lambda _: {
+        'scans': [(1_100_000_000, -math.pi, math.pi, 0.05, 8.0, [0.4, 2.0])],
+        'cmd': [(1_300_000_000, 0.18, 0.0)], 'odom': [], 'plans': []})
+    monkeypatch.setattr(exporter, 'read_navigation_messages', lambda *a, **k: [])
+    result = exporter.export_replay(mcap, capture)
+    assert result['samples'][0]['command'] == {}
+    assert 'scan' not in result['samples'][0]
+    assert result['samples'][1]['command'] == {}
+    assert result['samples'][1]['scan']['front_minimum_m'] == pytest.approx(0.4)
+    assert result['samples'][2]['command']['linear_mps'] == pytest.approx(0.18)
+    assert result['bt_ticks_available'] is False
+
+
+def test_replay_rejects_speedup_even_with_matching_file_hash(tmp_path, monkeypatch):
+    """Hash equality does not prove that a video retained wall-time duration."""
+    monkeypatch.syspath_prepend(str(EVALUATION))
+    import export_dashboard_replay as exporter
+    from types import SimpleNamespace
+    video, capture = tmp_path / 'video.mp4', tmp_path / 'capture.json'
+    raw = tmp_path / 'gazebo_sensor_raw.mp4'
+    for path in (video, capture, raw):
+        path.write_bytes(b'test fixture')
+    timing = {'method': 'causal_camera_frame_hold_on_wall_time',
+              'video_sha256': exporter._sha256(video),
+              'capture_sha256': exporter._sha256(capture),
+              'raw_sha256': exporter._sha256(raw)}
+    video.with_suffix('.timing.json').write_text(json.dumps(timing))
+    monkeypatch.setattr(exporter.subprocess, 'run', lambda *a, **k:
+                        SimpleNamespace(stdout='{"format":{"duration":"78.3"}}'))
+    with pytest.raises(ValueError, match='duration differs'):
+        exporter.validate_video(video, capture, 103.6)
+
+
 def test_scan_projection_is_bounded_and_reports_front_obstacle():
     """Downsample display rays without losing full-scan safety metrics."""
     state = DASHBOARD.LiveState()

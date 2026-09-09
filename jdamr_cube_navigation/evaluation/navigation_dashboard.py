@@ -11,14 +11,15 @@ authority.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import math
+import threading
+import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
-import math
 from pathlib import Path
-import threading
-import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -27,6 +28,29 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_HTML = HERE / 'navigation_dashboard.html'
 MAX_SCAN_POINTS = 180
 MAX_MEDIA_BYTES = 96 * 1024 * 1024
+
+
+def load_replay(path: Path | None, video: Path | None) -> dict | None:
+    """Reject mismatched videos and invalid or unbounded replay timelines."""
+    if path is None:
+        return None
+    if (not path.is_file() or path.is_symlink()
+            or path.stat().st_size > MAX_MEDIA_BYTES or video is None):
+        raise ValueError('replay requires a bounded regular file and a video')
+    replay = json.loads(path.read_text(encoding='utf-8'))
+    if (not isinstance(replay, dict) or replay.get('schema_version') != 1
+            or not isinstance(replay.get('samples'), list)):
+        raise ValueError('invalid recorded telemetry document')
+    previous_s = -1.0
+    for sample in replay['samples']:
+        stamp_s = _finite_number(sample.get('time_s'))
+        if stamp_s is None or stamp_s < 0 or stamp_s <= previous_s:
+            raise ValueError('replay samples must be strictly time ordered')
+        previous_s = stamp_s
+    if hashlib.sha256(video.read_bytes()).hexdigest() != replay.get('video_sha256'):
+        raise ValueError('replay video identity mismatch')
+    json.dumps(replay, allow_nan=False)
+    return replay
 
 
 def _finite_number(value: Any) -> float | None:
@@ -223,6 +247,7 @@ class LiveState:
             return {
                 'schema_version': 1,
                 'observed_at_monotonic_ns': now_ns,
+                'uptime_s': (now_ns - self.started_ns) / 1e9,
                 'mode': 'LIVE_ROS' if live else 'OFFLINE_REPLAY_READY',
                 'live': live,
                 'scan': dict(self.scan),
@@ -390,7 +415,7 @@ def _media_range(header: str | None, size: int) -> tuple[int, int] | None:
 
 
 def make_handler(html: Path, video: Path | None, state: LiveState,
-                 verified_run: dict[str, Any]):
+                 verified_run: dict[str, Any], replay: dict | None = None):
     """Create an HTTP handler closed over immutable server configuration."""
 
     class Handler(BaseHTTPRequestHandler):
@@ -476,8 +501,14 @@ def make_handler(html: Path, video: Path | None, state: LiveState,
                     'poll_interval_ms': 200,
                     'scan_render_limit': MAX_SCAN_POINTS,
                     'command_surface': 'read_only',
+                    'replay_available': replay is not None,
                 }, separators=(',', ':')).encode('utf-8')
                 self._send(body, 'application/json; charset=utf-8')
+            elif path == '/api/replay':
+                self._send(json.dumps(
+                    replay or {'available': False}, ensure_ascii=False,
+                    allow_nan=False, separators=(',', ':')).encode('utf-8'),
+                    'application/json; charset=utf-8')
             elif path in {'/media/replay.mp4', '/media/gazebo.mp4'}:
                 self._serve_video()
             else:
@@ -495,6 +526,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--summary', type=Path)
     parser.add_argument('--media-manifest', type=Path)
     parser.add_argument('--video', type=Path)
+    parser.add_argument('--replay', type=Path,
+                        help='Recorded ROS telemetry synchronized to the video')
     parser.add_argument('--no-ros', action='store_true')
     args = parser.parse_args()
     if args.host not in {'127.0.0.1', '::1', 'localhost'}:
@@ -520,7 +553,8 @@ def main() -> int:
     observer = RosObserver(state)
     if not args.no_ros:
         observer.start()
-    handler = make_handler(args.html, args.video, state, verified_run)
+    replay = load_replay(args.replay, args.video)
+    handler = make_handler(args.html, args.video, state, verified_run, replay)
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(json.dumps({
         'url': f'http://{args.host}:{args.port}/',

@@ -1,327 +1,1041 @@
 <!doctype html>
 <html lang="ko">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23071018'/%3E%3Cpath d='M12 42V22h8v20m8 0V18h8v24m8 0V26h8v16' stroke='%2352d1c5' stroke-width='4'/%3E%3C/svg%3E">
-  <title>JDAMR Navigation Control</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --deck: #071018;
-      --plot: #0b1721;
-      --grid: #203443;
-      --ink: #e7f0f2;
-      --muted: #8ca0aa;
-      --lidar: #52d1c5;
-      --nav: #5dade2;
-      --warn: #ffc857;
-      --stop: #ff5a5f;
-      --pass: #76d39b;
-    }
-    * { box-sizing: border-box; }
-    [hidden] { display: none !important; }
-    html, body { margin: 0; min-height: 100%; background: var(--deck); color: var(--ink); }
-    body {
-      font-family: "IBM Plex Sans KR", "Noto Sans KR", sans-serif;
-      letter-spacing: -.01em;
-      background-image:
-        linear-gradient(rgba(32,52,67,.22) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(32,52,67,.18) 1px, transparent 1px);
-      background-size: 32px 32px;
-    }
-    button, code, .mono, .metric-value, .status-code {
-      font-family: "IBM Plex Mono", "Noto Sans Mono CJK KR", monospace;
-    }
-    header {
-      min-height: 78px;
-      display: grid;
-      grid-template-columns: 1fr auto;
-      align-items: center;
-      gap: 24px;
-      padding: 15px 24px;
-      border-bottom: 1px solid var(--grid);
-      background: rgba(7,16,24,.96);
-    }
-    .identity { display: flex; align-items: baseline; gap: 14px; }
-    .identity strong { font-size: 24px; letter-spacing: -.04em; }
-    .identity span { color: var(--muted); font-size: 13px; }
-    .status-line { display: flex; align-items: center; gap: 20px; }
-    .status-code { font-size: 13px; color: var(--muted); }
-    .status-pill {
-      border: 1px solid currentColor;
-      padding: 7px 12px;
-      font-weight: 700;
-      font-size: 13px;
-    }
-    .status-pill.live { color: var(--pass); }
-    .status-pill.offline { color: var(--warn); }
-    main {
-      display: grid;
-      grid-template-columns: minmax(560px, 1.65fr) minmax(320px, .85fr) 260px;
-      grid-template-rows: minmax(430px, calc(100vh - 238px)) 158px;
-      min-height: calc(100vh - 78px);
-    }
-    section, aside { min-width: 0; border-right: 1px solid var(--grid); }
-    .panel-head {
-      height: 45px;
-      padding: 12px 16px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--grid);
-      background: rgba(11,23,33,.92);
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .panel-head b { color: var(--ink); font-size: 13px; font-weight: 650; }
-    .scene { display: flex; flex-direction: column; background: #020609; }
-    .video-wrap { position: relative; flex: 1; overflow: hidden; }
-    video { width: 100%; height: 100%; object-fit: contain; background: #020609; }
-    .video-empty {
-      position: absolute; inset: 0; display: grid; place-items: center;
-      color: var(--muted); background: #071018;
-    }
-    .scene-readout {
-      position: absolute; left: 16px; bottom: 16px;
-      display: grid; grid-template-columns: repeat(3, auto);
-      border: 1px solid rgba(231,240,242,.24);
-      background: rgba(7,16,24,.86);
-      backdrop-filter: blur(6px);
-    }
-    .scene-readout div { padding: 9px 13px; border-right: 1px solid rgba(231,240,242,.16); }
-    .scene-readout div:last-child { border: 0; }
-    .scene-readout small { display: block; color: var(--muted); font-size: 10px; }
-    .scene-readout strong { font: 600 13px/1.6 "IBM Plex Mono", monospace; }
-    .lidar { display: flex; flex-direction: column; background: rgba(11,23,33,.88); }
-    .radar-wrap { position: relative; flex: 1; min-height: 300px; }
-    #radar { width: 100%; height: 100%; display: block; }
-    .radar-center {
-      position: absolute; inset: 50% auto auto 50%; transform: translate(-50%,-50%);
-      width: 22px; height: 30px; border: 2px solid var(--nav); background: #10283a;
-    }
-    .scan-strip {
-      display: grid; grid-template-columns: repeat(3, 1fr);
-      border-top: 1px solid var(--grid);
-    }
-    .scan-strip div { padding: 11px 12px; border-right: 1px solid var(--grid); }
-    .scan-strip div:last-child { border: 0; }
-    .scan-strip small { color: var(--muted); display: block; font-size: 10px; }
-    .scan-strip strong { font: 600 14px "IBM Plex Mono", monospace; }
-    aside { background: rgba(7,16,24,.96); border-right: 0; overflow-y: auto; }
-    .rail-row { padding: 6px 16px; border-bottom: 1px solid var(--grid); }
-    .rail-row small { display: block; color: var(--muted); font-size: 10px; margin-bottom: 2px; }
-    .rail-row strong { display: block; font-size: 13px; line-height: 1.25; }
-    .rail-row .metric-value { color: var(--nav); font-size: 17px; line-height: 1.1; }
-    .rail-row.danger .metric-value { color: var(--stop); }
-    .rail-row.warning .metric-value { color: var(--warn); }
-    .readonly {
-      margin: 7px 16px; padding: 6px 9px; border-left: 3px solid var(--lidar);
-      background: rgba(82,209,197,.08); color: var(--muted); font-size: 10px;
-      line-height: 1.35;
-    }
-    .timeline {
-      grid-column: 1 / 4;
-      border-top: 1px solid var(--grid);
-      background: rgba(7,16,24,.98);
-      padding: 16px 24px 20px;
-    }
-    .timeline-head { display: flex; justify-content: space-between; margin-bottom: 18px; }
-    .timeline-head b { font-size: 13px; }
-    .timeline-head span { color: var(--muted); font-size: 11px; }
-    .event-line { display: grid; grid-template-columns: repeat(5, 1fr); position: relative; }
-    .event-line::before {
-      content: ""; position: absolute; top: 8px; left: 5%; right: 5%; height: 2px;
-      background: linear-gradient(90deg, var(--nav), var(--warn), var(--stop), var(--lidar), var(--pass));
-    }
-    .event { position: relative; text-align: center; }
-    .event i {
-      display: block; position: relative; z-index: 1; margin: 0 auto 9px;
-      width: 17px; height: 17px; background: var(--deck); border: 3px solid var(--nav);
-    }
-    .event:nth-child(2) i { border-color: var(--warn); }
-    .event:nth-child(3) i { border-color: var(--stop); }
-    .event:nth-child(4) i { border-color: var(--lidar); }
-    .event:nth-child(5) i { border-color: var(--pass); }
-    .event b { display: block; font-size: 11px; }
-    .event span { color: var(--muted); font: 10px/1.5 "IBM Plex Mono", monospace; }
-    @media (max-width: 1050px) {
-      main { grid-template-columns: 1.2fr .8fr; grid-template-rows: 500px 430px auto; }
-      aside { grid-column: 1 / 3; display: grid; grid-template-columns: repeat(4,1fr); }
-      .timeline { grid-column: 1 / 3; }
-      .readonly { grid-column: span 2; }
-    }
-    @media (max-width: 720px) {
-      header { grid-template-columns: 1fr; gap: 7px; }
-      main { display: block; }
-      .scene { height: 430px; }
-      .lidar { height: 430px; }
-      aside { display: grid; grid-template-columns: repeat(2,1fr); }
-      .timeline { overflow-x: auto; }
-      .event-line { min-width: 620px; }
-    }
-    @media (prefers-reduced-motion: reduce) { video { scroll-behavior: auto; } }
-  </style>
-</head>
-<body>
-  <header>
-    <div class="identity">
-      <strong>JDAMR Navigation Control</strong>
-      <span>Nav2 · Collision Monitor · 2D LiDAR · 3D Evidence</span>
-    </div>
-    <div class="status-line">
-      <span class="status-code" id="run-id">RUN —</span>
-      <span class="status-pill offline" id="mode">연결 확인 중</span>
-    </div>
-  </header>
-  <main>
-    <section class="scene">
-      <div class="panel-head"><b>3D 주행 장면</b><span id="scene-source">기록 기반 증거 재생</span></div>
-      <div class="video-wrap">
-        <video id="evidence-video" src="/media/replay.mp4" muted loop controls playsinline></video>
-        <div class="video-empty" id="video-empty">3D 증거 영상 대기</div>
-        <div class="scene-readout" id="scene-readout">
-          <div><small>차체 위치</small><strong id="pose">—</strong></div>
-          <div><small>선속도</small><strong id="speed">—</strong></div>
-          <div><small>목표 상태</small><strong id="goal">—</strong></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>JDAMR 주행 관제</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #fff;
+        --surface: #f3f6fa;
+        --ink: #182b42;
+        --muted: #536579;
+        --line: #dce3eb;
+        --blue: #235fd1;
+        --teal: #007e87;
+        --mask: #a53381;
+        --amber: #9b6300;
+        --red: #b72f39;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--surface);
+        color: var(--ink);
+        font-family: "Noto Sans CJK KR", "Noto Sans KR", sans-serif;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+      button,
+      select {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:focus-visible,
+      summary:focus-visible,
+      a:focus-visible,
+      video:focus-visible {
+        outline: 3px solid var(--blue);
+        outline-offset: 3px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 18px 28px;
+        background: var(--paper);
+        border-bottom: 1px solid var(--line);
+      }
+      h1 {
+        font-size: 23px;
+        letter-spacing: -0.06em;
+        margin: 0;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 0;
+      }
+      p {
+        margin: 0;
+      }
+      small,
+      .muted {
+        color: var(--muted);
+      }
+      header small {
+        display: block;
+        font-size: 12px;
+      }
+      .source-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .switch {
+        display: flex;
+        padding: 3px;
+        background: var(--surface);
+        border-radius: 8px;
+      }
+      .switch button {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        padding: 7px 12px;
+        border-radius: 5px;
+      }
+      .switch button[aria-pressed="true"] {
+        background: var(--paper);
+        color: var(--blue);
+        box-shadow: 0 1px 3px #182b4220;
+      }
+      main {
+        max-width: 1720px;
+        margin: auto;
+        padding: 22px 28px 30px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 20px;
+      }
+      .scene {
+        min-width: 0;
+      }
+      .scene-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 10px;
+        align-items: center;
+      }
+      .source-note {
+        font-size: 12px;
+      }
+      .video-shell {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+        position: relative;
+      }
+      video {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16/9;
+        background: var(--surface);
+      }
+      .empty {
+        padding: 40px;
+        text-align: center;
+        color: var(--muted);
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .telemetry {
+        display: flex;
+        gap: 0;
+        align-items: center;
+        flex-wrap: wrap;
+        padding: 14px 18px;
+        background: var(--paper);
+        border-top: 1px solid var(--line);
+      }
+      .telemetry div {
+        padding-right: 28px;
+        min-width: 150px;
+      }
+      .telemetry small {
+        display: block;
+        font-size: 12px;
+      }
+      .telemetry strong {
+        font-size: 22px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .unit {
+        font-size: 12px;
+        color: var(--muted);
+        margin-left: 4px;
+      }
+      .state-panel {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 20px;
+      }
+      .state-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .state-title span {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      #behavior {
+        font-size: 30px;
+        font-weight: 650;
+        letter-spacing: -0.055em;
+        margin: 12px 0 4px;
+        color: var(--blue);
+      }
+      #reason {
+        min-height: 52px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .meta-row {
+        display: flex;
+        justify-content: space-between;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+        margin-top: 12px;
+        font-size: 12px;
+      }
+      .radar-title {
+        display: flex;
+        justify-content: space-between;
+        margin: 22px 0 8px;
+      }
+      .radar-title span {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 240px;
+        background: var(--surface);
+        border-radius: 8px;
+      }
+      .scan-values {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px 14px;
+        margin-top: 12px;
+      }
+      .scan-values small {
+        font-size: 11px;
+        display: block;
+      }
+      .scan-values strong {
+        font-size: 17px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+      .scan-empty {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 10px;
+      }
+      .lower {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 20px;
+        margin-top: 20px;
+      }
+      .flow-panel,
+      .events-panel {
+        background: var(--paper);
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      .flow-panel > p {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 5px 0 16px;
+      }
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      .node {
+        border-left: 3px solid var(--line);
+        padding: 6px 10px;
+        background: var(--surface);
+        min-width: 0;
+      }
+      .node.received {
+        border-left-color: var(--teal);
+      }
+      .node b {
+        display: block;
+        font-size: 12px;
+      }
+      .node code {
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .node span {
+        display: block;
+        font-size: 11px;
+        color: var(--teal);
+        margin-top: 5px;
+      }
+      .pipeline {
+        margin-top: 18px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        font-size: 12px;
+      }
+      .pipeline b {
+        font-weight: 500;
+        padding: 6px 8px;
+        background: var(--surface);
+      }
+      .pipeline i {
+        font-style: normal;
+        color: var(--muted);
+      }
+      .pipeline-note {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 8px;
+      }
+      .events-panel {
+        max-height: 285px;
+        overflow: auto;
+      }
+      .events-panel ol {
+        list-style: none;
+        margin: 10px 0 0;
+        padding: 0;
+      }
+      .events-panel button {
+        display: flex;
+        gap: 14px;
+        width: 100%;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        padding: 9px 0;
+        text-align: left;
+        background: transparent;
+        color: var(--ink);
+        font-size: 12px;
+      }
+      .events-panel time {
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+        min-width: 52px;
+      }
+      details {
+        margin-top: 18px;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px 18px;
+      }
+      summary {
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      details p {
+        max-width: 80ch;
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 12px;
+      }
+      .bt {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-top: 16px;
+      }
+      .bt span {
+        padding: 10px 14px;
+        background: var(--surface);
+        font-size: 13px;
+      }
+      .results {
+        display: flex;
+        gap: 28px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      .results div small {
+        display: block;
+      }
+      .results strong {
+        font-size: 18px;
+        font-variant-numeric: tabular-nums;
+      }
+      footer {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 20px;
+      }
+      .pill {
+        font-size: 11px;
+        color: var(--teal);
+        padding: 4px 8px;
+        background: #eaf5f5;
+        border-radius: 5px;
+      }
+      .error {
+        color: var(--red);
+      }
+      .scene-map {
+        margin-top: 16px;
+      }
+      .scene-map canvas {
+        height: 140px;
+      }
+      .map-caption {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 7px;
+      }
+      .map-caption em {
+        font-style: normal;
+        color: var(--mask);
+      }
+      @media (max-width: 1080px) {
+        .layout,
+        .lower {
+          grid-template-columns: minmax(0, 1fr) 300px;
+        }
+        main {
+          padding: 16px;
+        }
+        .telemetry div {
+          min-width: 125px;
+          padding-right: 14px;
+        }
+        .flow {
+          grid-template-columns: 1fr 1fr;
+        }
+        header {
+          padding: 16px;
+        }
+      }
+      @media (max-width: 760px) {
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .layout,
+        .lower {
+          grid-template-columns: 1fr;
+        }
+        .telemetry strong {
+          font-size: 18px;
+        }
+        .telemetry div {
+          min-width: 45%;
+          margin: 4px 0;
+        }
+        .scene-head {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .source-controls {
+          width: 100%;
+          justify-content: space-between;
+        }
+        .events-panel {
+          max-height: 240px;
+        }
+        .scan-values {
+          grid-template-columns: repeat(3, 1fr);
+        }
+        canvas {
+          height: 220px;
+        }
+        main {
+          padding: 12px;
+        }
+        h1 {
+          font-size: 21px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          scroll-behavior: auto !important;
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>JDAMR 주행 관제</h1>
+        <small>자율주행 장면과 로봇의 판단 근거</small>
+      </div>
+      <div class="source-controls">
+        <div class="switch" aria-label="데이터 소스">
+          <button id="recorded" aria-pressed="true">기록 재생</button
+          ><button id="live" aria-pressed="false">실시간 ROS</button>
         </div>
+        <span class="pill" id="connection">데이터 확인 중</span>
       </div>
-    </section>
-    <section class="lidar">
-      <div class="panel-head"><b>LiDAR 감지</b><span id="scan-fresh">/scan —</span></div>
-      <div class="radar-wrap">
-        <canvas id="radar"></canvas>
-        <div class="radar-center" aria-label="JDAMR 차체"></div>
+    </header>
+    <main>
+      <div class="layout">
+        <section class="scene">
+          <div class="scene-head">
+            <h2>가제보 주행 장면</h2>
+            <span class="source-note muted" id="source-note"
+              >촬영 기록 확인 중</span
+            >
+          </div>
+          <div class="video-shell">
+            <video
+              id="video"
+              controls
+              playsinline
+              preload="auto"
+              aria-label="가제보 주행 기록"
+            ></video>
+            <p class="empty" id="video-empty" hidden>
+              이 실행에는 영상이 연결되지 않았습니다.
+            </p>
+            <div class="telemetry">
+              <div>
+                <small>명령 속도</small><strong id="cmd">미수신</strong
+                ><span class="unit">m/s</span>
+              </div>
+              <div>
+                <small>차체 측정 속도</small><strong id="speed">미수신</strong
+                ><span class="unit">m/s</span>
+              </div>
+              <div>
+                <small>차체 회전 속도</small><strong id="turn">미수신</strong
+                ><span class="unit">rad/s</span>
+              </div>
+              <div>
+                <small id="clock-label">영상 시점</small
+                ><strong id="clock">0.0</strong><span class="unit">s</span>
+              </div>
+            </div>
+          </div>
+          <div class="scene-map" id="map-panel" hidden>
+            <p class="map-caption">
+              저장 지도와 현재 관측 · 파랑은 계획 경로 · 청록은 LiDAR ·
+              <em>자홍은 진입 금지 구역</em>
+            </p>
+            <canvas
+              id="map"
+              aria-label="저장 지도 위 실제 계획 경로와 LiDAR 관측"
+            ></canvas>
+          </div>
+        </section>
+        <aside class="state-panel">
+          <div class="state-title">
+            <h2>현재 관측 상태</h2>
+            <span>제어 명령을 보내지 않음</span>
+          </div>
+          <p id="behavior" aria-live="polite">기록 확인 중</p>
+          <p id="reason">
+            영상과 같은 시점의 센서·명령·목표 상태를 불러옵니다.
+          </p>
+          <div class="meta-row">
+            <span>목표 action</span><b id="goal">미수신</b>
+          </div>
+          <div class="radar-title">
+            <h2>LiDAR 감지</h2>
+            <span id="scan-age">미수신</span>
+          </div>
+          <canvas
+            id="radar"
+            aria-label="로봇 전방 기준 실제 LiDAR 감지점"
+          ></canvas>
+          <div class="scan-values">
+            <div>
+              <small>전방 최소</small><strong id="front">미수신</strong>
+            </div>
+            <div>
+              <small>전체 최소</small><strong id="minimum">미수신</strong>
+            </div>
+            <div>
+              <small>최근접 방향</small><strong id="angle">미수신</strong>
+            </div>
+          </div>
+          <p class="scan-empty" id="scan-note">
+            센서 기록을 기다리고 있습니다.
+          </p>
+        </aside>
       </div>
-      <div class="scan-strip">
-        <div><small>전방 최소</small><strong id="front-min">—</strong></div>
-        <div><small>전체 최소</small><strong id="scan-min">—</strong></div>
-        <div><small>최근접 각도</small><strong id="scan-angle">—</strong></div>
+      <div class="lower">
+        <section class="flow-panel">
+          <h2>ROS 데이터 흐름</h2>
+          <p>
+            수신 근거가 있는 항목만 표시합니다. 기록 재생은 현재 로봇의 연결
+            상태가 아닙니다.
+          </p>
+          <div class="flow">
+            <div class="node" data-topic="scans">
+              <b>주변 감지</b><code>/scan</code><span>미수신</span>
+            </div>
+            <div class="node" data-topic="plans">
+              <b>경로 계획</b><code>/plan</code><span>미수신</span>
+            </div>
+            <div class="node" data-topic="monitor">
+              <b>충돌 감시</b><code>/collision_monitor_state</code
+              ><span>미수신</span>
+            </div>
+            <div class="node" data-topic="odom">
+              <b>실제 움직임</b><code>/odom</code><span>미수신</span>
+            </div>
+          </div>
+          <div class="pipeline" aria-label="실제 속도 명령 처리 구조">
+            <b>경로 추종기</b><i>→</i><b>속도 평활화</b><i>→</i><b>충돌 감시</b
+            ><i>→</i><b>/cmd_vel</b>
+          </div>
+          <p class="pipeline-note">
+            위 연결선은 구현 구조입니다. 중간 /cmd_vel_nav·/cmd_vel_smoothed
+            토픽은 이 기록에 포함되지 않았습니다.
+          </p>
+        </section>
+        <section class="events-panel">
+          <h2>관측 상태 변경</h2>
+          <p class="muted" id="event-note" style="font-size: 12px">
+            현재 재생 시점까지의 변경만 표시합니다.
+          </p>
+          <ol id="events"></ol>
+        </section>
       </div>
-    </section>
-    <aside>
-      <div class="panel-head"><b>주행 판단</b><span>read only</span></div>
-      <div class="rail-row" id="monitor-row"><small>Collision Monitor</small><div class="metric-value" id="monitor">NO DATA</div><strong id="polygon">polygon —</strong></div>
-      <div class="rail-row"><small>Nav2 action</small><div class="metric-value" id="nav">NO GOAL</div><strong id="goal-count">목표 —</strong></div>
-      <div class="rail-row"><small>최종 cmd_vel</small><div class="metric-value" id="cmd">0.00 m/s</div><strong id="turn">0.00 rad/s</strong></div>
-      <div class="rail-row"><small>직전 검증 결과</small><div class="metric-value" id="verdict">—</div><strong id="contact">접촉 —</strong></div>
-      <div class="rail-row"><small>고정 장애물 우회</small><div class="metric-value" id="detour">—</div><strong id="static-clearance">최소 이격 —</strong></div>
-      <div class="rail-row"><small>보호영역 최소 이격</small><div class="metric-value" id="clearance">—</div><strong id="latency">정지명령 —</strong></div>
-      <div class="readonly" id="readonly-note">이 화면은 관측 전용입니다. 목표 전송과 속도 명령 권한을 갖지 않아 기존 Nav2·Collision Monitor 제어 체인을 바꾸지 않습니다.</div>
-    </aside>
-    <section class="timeline">
-      <div class="timeline-head"><b>동적 장애물 대응 흐름</b><span id="scope">검증 범위 —</span></div>
-      <div class="event-line">
-        <div class="event"><i></i><b>목표 유지</b><span>NavigateToPose</span></div>
-        <div class="event"><i></i><b>LiDAR 감지</b><span>front zone</span></div>
-        <div class="event"><i></i><b>안전 정지</b><span>STOP polygon</span></div>
-        <div class="event"><i></i><b>경로 재개</b><span>same goal UUID</span></div>
-        <div class="event"><i></i><b>목표 도착</b><span>terminal success</span></div>
-      </div>
-    </section>
-  </main>
-  <script>
-    const $ = id => document.getElementById(id);
-    const fmt = (value, unit, digits=2) => Number.isFinite(value) ? `${value.toFixed(digits)} ${unit}` : '—';
-    const age = value => Number.isFinite(value) ? `${value.toFixed(2)} s` : '—';
-    let latestScan = [];
-
-    function drawRadar() {
-      const canvas = $('radar');
-      const rect = canvas.getBoundingClientRect();
-      const scale = window.devicePixelRatio || 1;
-      const width = Math.max(1, Math.round(rect.width * scale));
-      const height = Math.max(1, Math.round(rect.height * scale));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width; canvas.height = height;
+      <details>
+        <summary>행동 트리는 어떻게 판단하나요?</summary>
+        <div class="bt">
+          <span>목표 수락</span><b>→</b><span>경로 계획 · 재계획</span><b>→</b
+          ><span>경로 추종</span><b>→</b><span>도착</span>
+        </div>
+        <p>
+          현재 Nav2 행동 트리(Behavior Tree)는 주행 중 경로를 다시 계산하고,
+          계획이나 추종 실패 시 costmap을 정리한 뒤 대기합니다. Collision
+          Monitor는 별도 계층에서 최종 속도를 제한합니다.
+        </p>
+        <p>
+          이 도식은 실제 설정의 구조 설명입니다. 개별 BT 노드의 실행 전환 로그는
+          이번 기록에 없어 노드가 실행 중인 것처럼 강조하지 않습니다. 위 ‘현재
+          관측 상태’는 ROS 관측을 요약하며 새로운 제어 상태머신이 아닙니다.
+        </p>
+      </details>
+      <details>
+        <summary>전체 실행 결과와 검증 범위</summary>
+        <div class="results" id="results"></div>
+        <p>
+          시뮬레이션의 저장 지도 기반 자율주행 기록입니다. 새 SLAM 지도 생성이나
+          실차 검증을 뜻하지 않습니다. 보행자는 시나리오에서 움직인 장애물이며
+          LiDAR가 사람으로 분류한 결과가 아닙니다. 하역·충전·VDA 5050 연동은
+          현재 구현 범위에 포함되지 않습니다.
+        </p>
+      </details>
+      <footer>
+        기록 모드에서는 영상 탐색·일시정지에 관측값이 함께 맞춰집니다. 카메라
+        수신 시각과 MCAP 수신 시각을 사용하며 전송 지연은 포함될 수 있습니다.
+      </footer>
+    </main>
+    <script>
+      "use strict";
+      const $ = (id) => document.getElementById(id),
+        video = $("video");
+      let replay = null,
+        mode = "recorded",
+        liveState = null,
+        transitions = [],
+        lastLiveKey = null;
+      const finite = (v) => typeof v === "number" && Number.isFinite(v);
+      const number = (v, d = 3) => (finite(v) ? v.toFixed(d) : "미수신");
+      const goals = {
+        EXECUTING: "수행 중",
+        ACTIVE: "수행 중",
+        ACCEPTED: "수락됨",
+        SUCCEEDED: "도착",
+        ABORTED: "실패",
+        CANCELED: "취소",
+        CANCELING: "취소 중",
+        NO_DATA: "미수신",
+        NO_GOAL: "목표 없음",
+      };
+      function observation(s) {
+        if (s.observation_unavailable)
+          return [
+            "관측 대기",
+            "ROS 센서 연결이 없거나 관측이 오래됐습니다. 마지막 값을 현재 상태로 표시하지 않습니다.",
+          ];
+        const nav = s.navigation?.status,
+          action = s.monitor?.action,
+          cmd = s.command?.linear_mps,
+          turn = s.command?.angular_rps;
+        if (nav === "SUCCEEDED")
+          return [
+            "도착",
+            "NavigateToPose action에서 목표 도달을 보고했습니다.",
+          ];
+        if (nav === "ABORTED" || nav === "CANCELED")
+          return [
+            nav === "ABORTED" ? "주행 실패" : "목표 취소",
+            "목표 action의 종료 상태를 확인했습니다.",
+          ];
+        if (!finite(cmd))
+          return [
+            "관측 대기",
+            "이 시점에는 최종 속도 명령이 아직 기록되지 않았습니다.",
+          ];
+        const moving =
+          Math.abs(cmd) > 0.005 || (finite(turn) && Math.abs(turn) > 0.005);
+        if (action === "STOP" && !moving)
+          return [
+            "충돌 감시 정지",
+            "Collision Monitor의 STOP과 최종 정지 명령이 관측됐습니다. 차체 측정 속도로 실제 감속 여부를 확인하세요.",
+          ];
+        if (action === "STOP" && moving)
+          return [
+            "관측 시각 확인",
+            "STOP 상태와 이동 명령이 함께 보입니다. 서로 다른 토픽의 수신 시각 차이를 확인해야 합니다.",
+          ];
+        if (moving)
+          return [
+            action === "SLOWDOWN" ? "감속 주행" : "주행 중",
+            action === "SLOWDOWN"
+              ? "Collision Monitor가 감속을 요청했습니다."
+              : "최종 속도 명령이 전달되고 있습니다. 경로 추종과 재계획은 Nav2가 수행합니다.",
+          ];
+        return [
+          "정지 명령",
+          "최종 명령 속도가 0에 가깝습니다. 이 값만으로 사람 감지나 고장을 단정하지 않습니다.",
+        ];
       }
-      const ctx = canvas.getContext('2d');
-      ctx.setTransform(scale,0,0,scale,0,0);
-      const w = rect.width, h = rect.height, cx = w/2, cy = h/2;
-      const radius = Math.min(w,h) * .41;
-      ctx.clearRect(0,0,w,h);
-      ctx.strokeStyle = '#203443'; ctx.lineWidth = 1;
-      for (let ring=1; ring<=4; ring++) {
-        ctx.beginPath(); ctx.arc(cx,cy,radius*ring/4,0,Math.PI*2); ctx.stroke();
+      function latest(time) {
+        const a = replay?.samples || [];
+        let lo = 0,
+          hi = a.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (a[mid].time_s <= time) lo = mid + 1;
+          else hi = mid;
+        }
+        return lo ? a[lo - 1] : {};
       }
-      for (let deg=0; deg<360; deg+=30) {
-        const a=(deg-90)*Math.PI/180;
-        ctx.beginPath(); ctx.moveTo(cx,cy);
-        ctx.lineTo(cx+Math.cos(a)*radius,cy+Math.sin(a)*radius); ctx.stroke();
+      function canvasContext(id) {
+        const canvas = $(id),
+          rect = canvas.getBoundingClientRect(),
+          ratio = Math.min(window.devicePixelRatio || 1, 2);
+        if (!rect.width || !rect.height) return null;
+        const w = Math.round(rect.width * ratio),
+          h = Math.round(rect.height * ratio);
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        const c = canvas.getContext("2d");
+        c.setTransform(ratio, 0, 0, ratio, 0, 0);
+        c.clearRect(0, 0, rect.width, rect.height);
+        return [c, rect.width, rect.height];
       }
-      ctx.fillStyle='#8ca0aa'; ctx.font='10px IBM Plex Mono, monospace';
-      ctx.fillText('0°',cx-7,cy-radius-8); ctx.fillText('±180°',cx-16,cy+radius+16);
-      if (!latestScan.length) return;
-      const maxRange = 4.0;
-      for (const [deg, distance] of latestScan) {
-        const clamped=Math.min(maxRange,Math.max(0,distance));
-        const a=(deg-90)*Math.PI/180;
-        const r=radius*clamped/maxRange;
-        ctx.fillStyle = distance < .45 ? '#ff5a5f' : distance < .8 ? '#ffc857' : '#52d1c5';
-        ctx.fillRect(cx+Math.cos(a)*r-1.5,cy+Math.sin(a)*r-1.5,3,3);
+      function radar(scan) {
+        const result = canvasContext("radar");
+        if (!result) return;
+        const [c, w, h] = result,
+          cx = w / 2,
+          cy = h / 2 + 5,
+          r = Math.min(w, h) / 2 - 25;
+        c.strokeStyle = "#dce3eb";
+        c.fillStyle = "#536579";
+        c.font = "11px sans-serif";
+        for (let n = 1; n <= 3; n++) {
+          c.beginPath();
+          c.arc(cx, cy, (r * n) / 3, 0, Math.PI * 2);
+          c.stroke();
+          c.fillText(n + "m", cx + 4, cy - (r * n) / 3 + 11);
+        }
+        c.fillText("전방", cx - 11, 13);
+        c.strokeStyle = "#dce3eb";
+        c.beginPath();
+        c.moveTo(cx - r, cy);
+        c.lineTo(cx + r, cy);
+        c.moveTo(cx, cy - r);
+        c.lineTo(cx, cy + r);
+        c.stroke();
+        c.fillStyle = "#007e87";
+        for (const [a, d] of scan?.points || []) {
+          if (!finite(a) || !finite(d) || d > 3) continue;
+          const rad = (a * Math.PI) / 180;
+          c.beginPath();
+          c.arc(
+            cx - (Math.sin(rad) * r * d) / 3,
+            cy - (Math.cos(rad) * r * d) / 3,
+            2,
+            0,
+            Math.PI * 2,
+          );
+          c.fill();
+        }
+        c.fillStyle = "#235fd1";
+        c.beginPath();
+        c.moveTo(cx, cy - 8);
+        c.lineTo(cx - 5, cy + 6);
+        c.lineTo(cx + 5, cy + 6);
+        c.closePath();
+        c.fill();
       }
-    }
-
-    function render(data) {
-      const live = data.live === true;
-      $('mode').textContent = live ? 'LIVE ROS' : 'SIM REPLAY READY';
-      $('mode').className = `status-pill ${live ? 'live' : 'offline'}`;
-      const run = data.verified_run || {};
-      $('run-id').textContent = run.run_id ? `RUN ${run.run_id}` : 'RUN —';
-      $('scene-source').textContent = live ? 'ROS 2 live telemetry' : 'MuJoCo evidence replay';
-      $('scene-readout').hidden = !live;
-      $('readonly-note').hidden = !live;
-      const pose = data.pose || {};
-      $('pose').textContent = Number.isFinite(pose.x_m) ? `${pose.x_m.toFixed(2)}, ${pose.y_m.toFixed(2)} m` : '—';
-      $('speed').textContent = fmt(pose.linear_mps,'m/s');
-      $('goal').textContent = data.navigation?.status || 'NO GOAL';
-      $('nav').textContent = data.navigation?.status || 'NO GOAL';
-      const coverage = Number.isFinite(run.directional_run_count) ? `${run.directional_run_count}방향 · ` : '';
-      $('goal-count').textContent = run.available ? `${coverage}전송 ${run.goal_send_count ?? '—'} · 취소 ${run.goal_cancel_count ?? '—'}` : '목표 —';
-      const monitor = data.collision_monitor || {};
-      $('monitor').textContent = monitor.action || 'NO DATA';
-      $('polygon').textContent = monitor.polygon ? `polygon ${monitor.polygon}` : 'polygon —';
-      const danger = monitor.action === 'STOP';
-      $('monitor-row').className = `rail-row ${danger ? 'danger' : monitor.action === 'SLOWDOWN' ? 'warning' : ''}`;
-      $('cmd').textContent = fmt(data.command?.linear_mps,'m/s');
-      $('turn').textContent = fmt(data.command?.angular_rps,'rad/s');
-      latestScan = data.scan?.points || [];
-      $('scan-fresh').textContent = `/scan ${age(data.freshness?.scan_age_s)}`;
-      $('front-min').textContent = fmt(data.scan?.front_minimum_m,'m');
-      $('scan-min').textContent = fmt(data.scan?.minimum_m,'m');
-      $('scan-angle').textContent = fmt(data.scan?.closest_angle_deg,'°',0);
-      $('verdict').textContent = run.available ? run.status : '—';
-      $('contact').textContent = run.available ? `${coverage}물리 접촉 ${run.contact_count ?? '—'}회` : '접촉 —';
-      $('detour').textContent = run.straight_centerline_blocked === true ? fmt(run.maximum_lateral_offset_m,'m',3) : '—';
-      $('static-clearance').textContent = Number.isFinite(run.static_obstacle_clearance_m) ? `최소 이격 ${fmt(run.static_obstacle_clearance_m,'m',3)}` : '최소 이격 —';
-      $('clearance').textContent = fmt(run.protected_clearance_m,'m',3);
-      $('latency').textContent = run.available ? `scan→정지명령 ${fmt(run.observer_scan_to_zero_command_s,'s',3)}` : '정지명령 —';
-      $('scope').textContent = run.claim_scope ? `검증 범위 ${run.claim_scope}` : '검증 범위 —';
-      drawRadar();
-    }
-
-    async function poll() {
-      try {
-        const response = await fetch('/api/state', {cache:'no-store'});
-        if (!response.ok) throw new Error(String(response.status));
-        render(await response.json());
-      } catch (_) {
-        $('mode').textContent='관제 서버 응답 없음';
-        $('mode').className='status-pill offline';
+      function drawMap(s) {
+        if (mode !== "recorded" || !replay?.map_points?.length) {
+          $("map-panel").hidden = true;
+          return;
+        }
+        $("map-panel").hidden = false;
+        const result = canvasContext("map");
+        if (!result) return;
+        const [c, w, h] = result,
+          xy = (x, y) => [((x + 8) / 16) * w, h / 2 - (y / 5) * h];
+        c.fillStyle = "#97a4b3";
+        for (const [x, y] of replay.map_points) {
+          const [u, v] = xy(x, y);
+          c.fillRect(u, v, 1.4, 1.4);
+        }
+        c.fillStyle = "#a53381";
+        for (const [x, y] of replay.keepout_points || []) {
+          const [u, v] = xy(x, y);
+          c.fillRect(u, v, 2, 2);
+        }
+        if (s.plan?.length) {
+          c.strokeStyle = "#235fd1";
+          c.beginPath();
+          s.plan.forEach(([x, y], i) => {
+            const [u, v] = xy(x, y);
+            i ? c.lineTo(u, v) : c.moveTo(u, v);
+          });
+          c.stroke();
+        }
+        if (s.scan_pose) {
+          const [x, y, yaw] = s.scan_pose;
+          c.fillStyle = "#007e87";
+          for (const [a, d] of s.scan?.points || []) {
+            const rad = yaw + (a * Math.PI) / 180;
+            const [u, v] = xy(x + Math.cos(rad) * d, y + Math.sin(rad) * d);
+            c.fillRect(u, v, 2, 2);
+          }
+        }
+        if (s.map_pose) {
+          const [u, v] = xy(s.map_pose[0], s.map_pose[1]);
+          c.fillStyle = "#235fd1";
+          c.beginPath();
+          c.arc(u, v, 5, 0, Math.PI * 2);
+          c.fill();
+        }
       }
-    }
-
-    async function boot() {
-      const config = await fetch('/api/config', {cache:'no-store'}).then(r=>r.json());
-      const video = $('evidence-video');
-      $('video-empty').hidden = config.video_available;
-      video.hidden = !config.video_available;
-      if (config.video_available) video.play().catch(()=>{});
-      await poll();
-      setInterval(poll, config.poll_interval_ms || 200);
-    }
-    addEventListener('resize', drawRadar);
-    boot().catch(()=>{ $('mode').textContent='초기화 실패'; });
-  </script>
-</body>
+      function render(s, time) {
+        const [label, reason] = observation(s);
+        $("behavior").textContent = label;
+        $("reason").textContent = reason;
+        $("goal").textContent =
+          goals[s.navigation?.status] || s.navigation?.status || "미수신";
+        $("cmd").textContent = number(s.command?.linear_mps);
+        $("speed").textContent = number(s.pose?.linear_mps);
+        $("turn").textContent = number(s.pose?.angular_rps);
+        $("clock").textContent = number(time, 1);
+        const scan = s.scan;
+        $("front").textContent = finite(scan?.front_minimum_m)
+          ? number(scan.front_minimum_m, 2) + " m"
+          : "미수신";
+        $("minimum").textContent = finite(scan?.minimum_m)
+          ? number(scan.minimum_m, 2) + " m"
+          : "미수신";
+        $("angle").textContent = finite(scan?.closest_angle_deg)
+          ? number(scan.closest_angle_deg, 1) + "°"
+          : "미수신";
+        const age = s.ages_s?.scans ?? s.freshness_s?.scan;
+        $("scan-age").textContent = finite(age)
+          ? "수신 후 " + number(age, 1) + " s"
+          : "기록 없음";
+        $("scan-note").textContent = scan
+          ? "로봇 전방 기준 · 3 m 범위 표시 · 사람 분류 기능 아님"
+          : "해당 시점에 LiDAR 관측이 없습니다. 미래 스캔을 대신 표시하지 않습니다.";
+        radar(scan);
+        drawMap(s);
+        for (const node of document.querySelectorAll("[data-topic]")) {
+          const key = node.dataset.topic,
+            age = s.ages_s?.[key];
+          node.classList.toggle("received", finite(age));
+          node.querySelector("span").textContent = finite(age)
+            ? "마지막 관측 " + number(age, 1) + " s 전"
+            : "기록 없음";
+        }
+        const list = $("events");
+        list.replaceChildren();
+        for (const event of transitions
+          .filter((e) => e.time_s <= time)
+          .slice(-8)
+          .reverse()) {
+          const li = document.createElement("li"),
+            button = document.createElement("button"),
+            t = document.createElement("time"),
+            text = document.createElement("span");
+          t.textContent = number(event.time_s, 1) + " s";
+          text.textContent = event.label;
+          button.append(t, text);
+          button.disabled = mode !== "recorded";
+          button.onclick = () => {
+            video.currentTime = event.time_s;
+          };
+          li.append(button);
+          list.append(li);
+        }
+      }
+      function switchMode(next) {
+        mode = next;
+        $("recorded").setAttribute("aria-pressed", String(next === "recorded"));
+        $("live").setAttribute("aria-pressed", String(next === "live"));
+        $("clock-label").textContent =
+          next === "recorded" ? "영상 시점" : "관측 세션";
+        if (next === "live") {
+          video.pause();
+          $("source-note").textContent =
+            "영상은 저장 기록이며 실시간 ROS 장면이 아닙니다.";
+          $("connection").textContent = "실시간 ROS 관측";
+          transitions = [];
+        } else {
+          transitions = [];
+          let previous = null;
+          for (const sample of replay?.samples || []) {
+            const label = observation(sample)[0];
+            if (label !== previous) {
+              transitions.push({ time_s: sample.time_s, label });
+              previous = label;
+            }
+          }
+          $("source-note").textContent = replay?.capture_view?.includes(
+            "follow",
+          )
+            ? "기존 촬영 · 고정 구도 재촬영 대기"
+            : "가제보 카메라 기록";
+          $("connection").textContent = replay
+            ? "영상 시각에 동기화"
+            : "재생 데이터 없음";
+        }
+        update();
+      }
+      function update() {
+        if (mode === "recorded")
+          render(latest(video.currentTime), video.currentTime);
+        else render(liveState || {}, liveState?.uptime_s || 0);
+      }
+      video.addEventListener("timeupdate", update);
+      video.addEventListener("seeked", update);
+      video.addEventListener("pause", update);
+      window.addEventListener("resize", update);
+      $("recorded").onclick = () => switchMode("recorded");
+      $("live").onclick = () => switchMode("live");
+      async function poll() {
+        try {
+          const response = await fetch("/api/state");
+          if (!response.ok) throw Error("state");
+          const raw = await response.json(),
+            f = raw.freshness || {};
+          const fresh = (age) => finite(age) && age <= 1.0,
+            available = raw.live === true;
+          liveState = {
+            ...raw,
+            observation_unavailable: !available,
+            monitor: available ? raw.collision_monitor : { action: "NO_DATA" },
+            navigation: available ? raw.navigation : { status: "NO_DATA" },
+            command: available && fresh(f.cmd_age_s) ? raw.command : {},
+            pose: available && fresh(f.odom_age_s) ? raw.pose : {},
+            scan: available && fresh(f.scan_age_s) ? raw.scan : null,
+            ages_s: {
+              scans: f.scan_age_s,
+              odom: f.odom_age_s,
+              cmd: f.cmd_age_s,
+              monitor: f.monitor_age_s,
+              navigation: f.goal_age_s,
+            },
+          };
+          if (mode === "live") {
+            $("connection").textContent = raw.live
+              ? "실시간 ROS 수신 중"
+              : "ROS 미연결 · 수신 대기";
+            const label = observation(liveState)[0];
+            if (label !== lastLiveKey) {
+              transitions.push({ time_s: liveState.uptime_s || 0, label });
+              lastLiveKey = label;
+              transitions = transitions.slice(-100);
+            }
+            update();
+          }
+        } catch (e) {
+          if (mode === "live") {
+            liveState = { observation_unavailable: true };
+            update();
+            $("connection").textContent = "ROS 관측 서버 연결 끊김";
+            $("reason").textContent =
+              "서버 응답이 없습니다. 마지막 관측값을 현재 상태로 판단하지 마세요.";
+          }
+        }
+      }
+      async function start() {
+        try {
+          const config = await (await fetch("/api/config")).json();
+          video.hidden = !config.video_available;
+          $("video-empty").hidden = config.video_available;
+          if (config.video_available) video.src = "/media/replay.mp4";
+          if (config.replay_available) {
+            const response = await fetch("/api/replay");
+            if (!response.ok) throw Error("replay");
+            replay = await response.json();
+          }
+          await poll();
+          const run = liveState?.verified_run || {};
+          const values = [
+            ["검증 판정", run.status],
+            ["목표 도달", run.action_terminal],
+            [
+              "물리 접촉",
+              finite(run.contact_count) ? run.contact_count + "회" : null,
+            ],
+            [
+              "목표 취소",
+              finite(run.goal_cancel_count)
+                ? run.goal_cancel_count + "회"
+                : null,
+            ],
+          ];
+          for (const [label, value] of values) {
+            if (value == null) continue;
+            const div = document.createElement("div"),
+              small = document.createElement("small"),
+              strong = document.createElement("strong");
+            small.textContent = label;
+            strong.textContent = value;
+            div.append(small, strong);
+            $("results").append(div);
+          }
+          switchMode("recorded");
+          setInterval(poll, 1000);
+        } catch (e) {
+          $("connection").textContent = "데이터를 불러오지 못했습니다";
+          $("reason").textContent =
+            "관제 서버와 기록 파일 연결을 확인해야 합니다.";
+        }
+      }
+      start();
+      video.addEventListener("loadedmetadata", () => {
+        const requested = Number(new URLSearchParams(location.search).get("t"));
+        if (Number.isFinite(requested) && requested > 0)
+          video.currentTime = Math.min(requested, video.duration);
+      });
+    </script>
+  </body>
 </html>

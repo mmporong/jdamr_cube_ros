@@ -1,0 +1,773 @@
+{
+  "cases_requested": [
+    "detour_sudden_stop_resume"
+  ],
+  "claim_scope": "SIM_INTEGRATION",
+  "original_status": "FAIL",
+  "reevaluation": {
+    "evaluator": {
+      "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/reevaluate_keepout_evidence.py",
+      "sha256": "bef053ab0e0a5e2e4441c29718aad5bf5ec062d81f10337bbd1f7d6375ff0d01"
+    },
+    "historical_scenario_integrity_verified": false,
+    "limitations": [
+      "the source run did not preserve a pre-existing scenario hash; this re-evaluation does not assert historical scenario integrity",
+      "behavior gating uses only fields preserved in the original case summary and does not re-run the scenario verdict"
+    ],
+    "method": "generated_mask_raster_cells_vs_rotated_robot_footprint",
+    "other_original_checks": {
+      "asset_source_identities_match": true,
+      "keepout_was_only_failed_gate": true,
+      "mask_report_matches_generated_assets": true,
+      "original_behavior_gate": true,
+      "original_harness_error_absent": true,
+      "original_recording_error_absent": true,
+      "original_teardown_error_absent": true,
+      "raw_action_terminal_succeeded": true,
+      "root_output_error_absent": true,
+      "root_result_matches_case_summary": true,
+      "source_mcap_hash_matches": true,
+      "teardown_clean": true
+    },
+    "other_original_checks_passed": true,
+    "output_root": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02_reevaluated_v05",
+    "scenario_usage": "retained_copy_only_not_status_input",
+    "source": {
+      "case_summary": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/summary.json",
+        "sha256": "f76ea95332dc57046a90697f5652f1bb1195fbc9a9acff28cd7c69cf0d0187ad"
+      },
+      "mask_image": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.pgm",
+        "sha256": "f49ef6018c14559af2f038e7461d7f4fdbc1607e126aade5f3a416a05ef6be21"
+      },
+      "mask_report": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.json",
+        "sha256": "2e4c6ca5d5070cd6aa64dd70c609d3483e161449f9a8c48c4428105eecb3f362"
+      },
+      "mask_yaml": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.yaml",
+        "sha256": "186b21c0759f531ecec6400c01718ae7ce8c400fcf29e0d1abf1777511f29442"
+      },
+      "mcap": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/bag/bag_0.mcap",
+        "sha256": "fb3a89f0b6efa3d8b26564982620ad2fc188e59ed6a57c8484b54733e7602b0b"
+      },
+      "root_summary": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/summary.json",
+        "sha256": "0510486a321ff1167ad970602e90fad0bc2eb149def2e752e45b8bfb794b7c0b"
+      },
+      "scenario": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/scenario.json",
+        "sha256": "47515c810bf1df5d0cfb456c2142b254fab20cff07a6efd26e26be1c44a1e357"
+      },
+      "stop_contract": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/onboard_stop_contract.json",
+        "sha256": "04d75c6c627e19c3efe5cef29c1de7180deb348887b0f929739bf23f45608c72"
+      },
+      "zones": {
+        "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_zones.yaml",
+        "sha256": "22f15aebf18ad206752f94e22f9d7ff67cea99c32ed7e7d2f954f896d9c6dfb1"
+      }
+    },
+    "source_files_modified": false,
+    "source_root": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02",
+    "status": "PASS"
+  },
+  "results": [
+    {
+      "case": "detour_sudden_stop_resume",
+      "case_claim": "persistent_centerline_obstacle_detour_then_pedestrian_stop_same_goal_resume",
+      "claim_scope": "SIM_INTEGRATION",
+      "detour_evidence": {
+        "detour_peak_pose_xy_yaw": [
+          -0.8772404128802304,
+          0.6388265479291357,
+          0.00024141172002569884
+        ],
+        "detour_peak_ros_ns": 78700000000,
+        "maximum_abs_lateral_offset_m": 0.6388265479291357,
+        "minimum_clearance_m": 0.20660611335471737,
+        "minimum_clearance_pose_xy_yaw": [
+          -1.4846727873750059,
+          0.5949368294241385,
+          0.05202633961167047
+        ],
+        "observation_window_x_m": [
+          -2.25,
+          0.25
+        ],
+        "obstacle": {
+          "center_xy_m": [
+            -1.0,
+            0.0
+          ],
+          "dimensions_m": [
+            0.5,
+            0.4
+          ],
+          "name": "g003_preloaded_route_obstacle"
+        },
+        "required_center_offset_m": 0.4,
+        "sample_count": 279,
+        "status": "PASS",
+        "straight_centerline_blocked": true
+      },
+      "domain_id": 186,
+      "keepout_route_evidence": {
+        "crossing_sample_count": 223,
+        "mask": {
+          "image": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.pgm",
+            "sha256": "f49ef6018c14559af2f038e7461d7f4fdbc1607e126aade5f3a416a05ef6be21"
+          },
+          "occupied_bounds_m": {
+            "max_x_m": -3.15,
+            "max_y_m": 0.44999999999999984,
+            "min_x_m": -4.85,
+            "min_y_m": -1.4500000000000002
+          },
+          "occupied_cell_count": 1252,
+          "resolution_m_per_cell": 0.05,
+          "yaml": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.yaml",
+            "sha256": "186b21c0759f531ecec6400c01718ae7ce8c400fcf29e0d1abf1777511f29442"
+          }
+        },
+        "minimum_center_y_m": 0.632098774597189,
+        "minimum_center_y_ros_ns": 54700000000,
+        "minimum_clearance_pose_xy_yaw": [
+          -4.742174081160264,
+          0.6800526184994427,
+          0.3774798127757169
+        ],
+        "minimum_clearance_ros_ns": 55850000000,
+        "minimum_footprint_clearance_m": 0.04782952318273787,
+        "observed_after_zone": true,
+        "observed_before_zone": true,
+        "polygon_m": [
+          [
+            -4.5,
+            -1.1
+          ],
+          [
+            -3.5,
+            -1.1
+          ],
+          [
+            -3.5,
+            0.1
+          ],
+          [
+            -4.5,
+            0.1
+          ]
+        ],
+        "route_side": "north",
+        "safety_margin_m": 0.35,
+        "sample_count": 1935,
+        "status": "PASS",
+        "zone_id": "sim_portfolio_corridor_keepout"
+      },
+      "original_status": "FAIL",
+      "raw_action_status": {
+        "final_status": 4,
+        "goal_uuids": [
+          "f60b3176ed9440959645a66f305843fa"
+        ],
+        "message_count": 2,
+        "source_mcap_sha256": "fb3a89f0b6efa3d8b26564982620ad2fc188e59ed6a57c8484b54733e7602b0b",
+        "statuses": [
+          2,
+          4
+        ]
+      },
+      "recording": {
+        "log_time_basis": "wall_time",
+        "mcap": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/bag/bag_0.mcap",
+          "sha256": "fb3a89f0b6efa3d8b26564982620ad2fc188e59ed6a57c8484b54733e7602b0b"
+        },
+        "message_header_time_basis": "publisher_defined_sim_time",
+        "size_bytes": 2093240,
+        "time_basis_mixing_forbidden": true,
+        "topics": [
+          "/scan",
+          "/cmd_vel",
+          "/collision_monitor_state",
+          "/navigate_to_pose/_action/status",
+          "/odom",
+          "/ground_truth_pose",
+          "/plan",
+          "/amcl_pose",
+          "/tf",
+          "/tf_static"
+        ]
+      },
+      "reevaluation": {
+        "evaluator": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/reevaluate_keepout_evidence.py",
+          "sha256": "bef053ab0e0a5e2e4441c29718aad5bf5ec062d81f10337bbd1f7d6375ff0d01"
+        },
+        "historical_scenario_integrity_verified": false,
+        "limitations": [
+          "the source run did not preserve a pre-existing scenario hash; this re-evaluation does not assert historical scenario integrity",
+          "behavior gating uses only fields preserved in the original case summary and does not re-run the scenario verdict"
+        ],
+        "method": "generated_mask_raster_cells_vs_rotated_robot_footprint",
+        "other_original_checks": {
+          "asset_source_identities_match": true,
+          "keepout_was_only_failed_gate": true,
+          "mask_report_matches_generated_assets": true,
+          "original_behavior_gate": true,
+          "original_harness_error_absent": true,
+          "original_recording_error_absent": true,
+          "original_teardown_error_absent": true,
+          "raw_action_terminal_succeeded": true,
+          "root_output_error_absent": true,
+          "root_result_matches_case_summary": true,
+          "source_mcap_hash_matches": true,
+          "teardown_clean": true
+        },
+        "other_original_checks_passed": true,
+        "output_root": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02_reevaluated_v05",
+        "scenario_usage": "retained_copy_only_not_status_input",
+        "source": {
+          "case_summary": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/summary.json",
+            "sha256": "f76ea95332dc57046a90697f5652f1bb1195fbc9a9acff28cd7c69cf0d0187ad"
+          },
+          "mask_image": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.pgm",
+            "sha256": "f49ef6018c14559af2f038e7461d7f4fdbc1607e126aade5f3a416a05ef6be21"
+          },
+          "mask_report": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.json",
+            "sha256": "2e4c6ca5d5070cd6aa64dd70c609d3483e161449f9a8c48c4428105eecb3f362"
+          },
+          "mask_yaml": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.yaml",
+            "sha256": "186b21c0759f531ecec6400c01718ae7ce8c400fcf29e0d1abf1777511f29442"
+          },
+          "mcap": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/bag/bag_0.mcap",
+            "sha256": "fb3a89f0b6efa3d8b26564982620ad2fc188e59ed6a57c8484b54733e7602b0b"
+          },
+          "root_summary": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/summary.json",
+            "sha256": "0510486a321ff1167ad970602e90fad0bc2eb149def2e752e45b8bfb794b7c0b"
+          },
+          "scenario": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/scenario.json",
+            "sha256": "47515c810bf1df5d0cfb456c2142b254fab20cff07a6efd26e26be1c44a1e357"
+          },
+          "stop_contract": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/onboard_stop_contract.json",
+            "sha256": "04d75c6c627e19c3efe5cef29c1de7180deb348887b0f929739bf23f45608c72"
+          },
+          "zones": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_zones.yaml",
+            "sha256": "22f15aebf18ad206752f94e22f9d7ff67cea99c32ed7e7d2f954f896d9c6dfb1"
+          }
+        },
+        "source_files_modified": false,
+        "source_root": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02",
+        "status": "PASS"
+      },
+      "run_id": "onboard_candidate_detour_sudden_stop_resume_seed_11",
+      "runtime_profile": {
+        "keepout_demo": true,
+        "launch": "onboard_nav2_core.launch.py",
+        "mobile_manipulator_stop_field": true,
+        "name": "obstacle_candidate",
+        "pedestrian_corridor_edges_y_m": [
+          1.0,
+          -1.0
+        ],
+        "simulator_capture": "gazebo_camera_sensor",
+        "simulator_gui": false
+      },
+      "same_goal_command_evidence": {
+        "claim_scope": "COMMAND_SPACE_ONLY_NOT_PHYSICAL_STOP_OR_SAFETY",
+        "counts": {
+          "action_status": 2,
+          "cmd_vel": 1898,
+          "collision_monitor_state": 7
+        },
+        "evidence": {
+          "action_status_messages": 2,
+          "action_status_observations": [
+            {
+              "malformed": false,
+              "stamp_ns": 1788915439656526242,
+              "statuses": [
+                {
+                  "goal_uuid": "f60b3176ed9440959645a66f305843fa",
+                  "status": 2
+                }
+              ]
+            },
+            {
+              "malformed": false,
+              "stamp_ns": 1788915535117169470,
+              "statuses": [
+                {
+                  "goal_uuid": "f60b3176ed9440959645a66f305843fa",
+                  "status": 4
+                }
+              ]
+            }
+          ],
+          "data_gap_reasons": [],
+          "episodes": [
+            {
+              "clear_stamp_ns": 1788915498992922775,
+              "exclusion_reasons": [],
+              "goal_uuid": "f60b3176ed9440959645a66f305843fa",
+              "resume_command_stamp_ns": 1788915498992953042,
+              "same_goal_resumed": true,
+              "stop_stamp_ns": 1788915495852987669,
+              "terminal_exclusion_reasons": [],
+              "terminal_succeeded": true,
+              "zero_command_stamp_ns": 1788915495853006294
+            }
+          ],
+          "scope": "COMMAND_SPACE_ONLY",
+          "terminal_succeeded": true,
+          "verdict": "CONFIRMED"
+        },
+        "schema_version": 1,
+        "source": {
+          "mcap": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/bag/bag_0.mcap",
+          "sha256": "fb3a89f0b6efa3d8b26564982620ad2fc188e59ed6a57c8484b54733e7602b0b",
+          "size_bytes": 2093240
+        },
+        "time_basis": "recorder_log_time_ns",
+        "window": "entire_recording"
+      },
+      "scenario": {
+        "action_terminal": "succeeded",
+        "activation_error": null,
+        "contact_count": 0,
+        "contact_matched_publisher_count_max": 1,
+        "direct_scan_capture": {
+          "scan_header_stamp_ns": 89500000000,
+          "scan_receive_steady_ns": 765008204564127,
+          "semantic": "observer scan-receive to zero-command-receive interval only; not sensor-publish, obstacle-appearance, or physical-stop latency",
+          "stop_zone_points": [
+            [
+              0.3884366037730243,
+              0.061522278795578776
+            ],
+            [
+              0.3894166939641998,
+              0.06866463423896565
+            ],
+            [
+              0.39945402433763083,
+              0.07764595987970221
+            ],
+            [
+              0.38100522271553117,
+              0.08098512465924095
+            ],
+            [
+              0.3651914652684001,
+              0.08431105869722466
+            ],
+            [
+              0.3945693555104685,
+              0.09837715196060899
+            ],
+            [
+              0.387390493341588,
+              0.10380093270606515
+            ],
+            [
+              0.36290230947776686,
+              0.10406052753986302
+            ],
+            [
+              0.3811938137586404,
+              0.11654260705027474
+            ],
+            [
+              0.38127497485165823,
+              0.12388371113310155
+            ],
+            [
+              0.38852215799631623,
+              0.13377886826395174
+            ],
+            [
+              0.38034187911288886,
+              0.1384330840218954
+            ],
+            [
+              0.38835476059615764,
+              0.14907538520877514
+            ],
+            [
+              0.3737011673173306,
+              0.15098503292548465
+            ],
+            [
+              0.3787009695240457,
+              0.1607489839750454
+            ],
+            [
+              0.39329554790023297,
+              0.17510641700150786
+            ],
+            [
+              0.37361622861950694,
+              0.17422006731404546
+            ],
+            [
+              0.3877180729315083,
+              0.1891026956990079
+            ],
+            [
+              0.3659275746099326,
+              0.18644936995733327
+            ],
+            [
+              0.3733703389336213,
+              0.1985244870314368
+            ],
+            [
+              0.3861164763876218,
+              0.21402781167067372
+            ],
+            [
+              0.35780167729591245,
+              0.20657685106162132
+            ],
+            [
+              0.3804393543140016,
+              0.22859097849869844
+            ],
+            [
+              0.38519620499067225,
+              0.24069725382954993
+            ],
+            [
+              0.3621063865704459,
+              0.2351545896804747
+            ]
+          ],
+          "zero_receive_steady_ns": 765008229192412
+        },
+        "events": [
+          "goal_accepted",
+          "direct_scan_observer_armed",
+          "obstacle_set_pose_requested",
+          "obstacle_crossing_started",
+          "stop_state",
+          "final_zero",
+          "physical_stop",
+          "obstacle_set_pose_ack",
+          "obstacle_pose_verified",
+          "obstacle_crossing_completed",
+          "clear_set_pose_requested",
+          "obstacle_crossing_exit_started",
+          "do_nothing_after_stop",
+          "obstacle_crossing_exit_completed",
+          "clear_set_pose_ack",
+          "clear_pose_verified",
+          "obstacle_deactivated",
+          "goal_position_tolerance_entered",
+          "succeeded"
+        ],
+        "final_cmd_vel_zero": true,
+        "final_world_pose_m": [
+          6.083503562491139,
+          0.09213865069414699
+        ],
+        "final_zero_hold_s": 1.972159826,
+        "goal_cancel_count": 0,
+        "goal_send_count": 1,
+        "goal_uuid": "f60b3176ed9440959645a66f305843fa",
+        "harness_error": null,
+        "minimum_clearance_m": 0.13774399588966624,
+        "observer_scan_to_zero_command_s": 0.024628285,
+        "physical_stop_observed": true,
+        "pre_stop_action_types": [
+          1
+        ],
+        "protected_envelope_minimum_clearance_m": 0.0652644390240602,
+        "raw_contact_count": 0,
+        "resume_action_type": 0,
+        "returncode": 0,
+        "robot_contact_pairs": [],
+        "same_goal_command_verdict": "CONFIRMED",
+        "stop_action_type": 1,
+        "stop_polygon_name": "StopZone",
+        "terminal_goal_uuid": "f60b3176ed9440959645a66f305843fa"
+      },
+      "scenario_started": true,
+      "seed": 11,
+      "simulator_video": {
+        "capture_duration_s": 103.559206635,
+        "capture_metadata": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/gazebo_sensor_capture.json",
+          "sha256": "fdc3f5fa68062d65872a84df2636c26f2cb23254a426429b4d8be2f9967bb722"
+        },
+        "capture_urdf": {
+          "camera": {
+            "height": 720,
+            "rate_hz": 30.0,
+            "source": "gazebo_camera_sensor",
+            "topic": "/portfolio_scene/image_raw",
+            "view": "robot_follow_oblique_3d_corridor",
+            "width": 1280
+          },
+          "collision_xml_unchanged": true,
+          "hidden_visual_count": 11,
+          "hidden_visual_links": [
+            "arm_riser_link",
+            "rgbd_mast_link",
+            "rgbd_camera_link",
+            "arm_base_link",
+            "arm_shoulder_link",
+            "arm_upper_arm_link",
+            "arm_lower_arm_link",
+            "arm_wrist_link",
+            "arm_wrist_camera_link",
+            "arm_gripper_link",
+            "arm_moving_jaw_link"
+          ],
+          "inertial_xml_unchanged": true,
+          "joint_xml_unchanged": true,
+          "output": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/jdamr_cube_capture.urdf",
+            "sha256": "470b3754abf650cddede9dc85f0f23c82002d592e705839d1dd7f09c3e260134"
+          },
+          "schema_version": 1,
+          "source": {
+            "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/assets/nav_obstacle/jdamr_cube_nav_eval.urdf",
+            "sha256": "b089475072ea0243c4c668b42c861ced0a06ef2d4a175b823d82fc564438789f"
+          },
+          "styled_navigation_link_count": 6
+        },
+        "capture_urdf_manifest": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/gazebo_capture_urdf.json",
+          "sha256": "68f66d28ca0e1b1b17f94a54624fdf861000a0014680d84fa67203db9c84d95e"
+        },
+        "capture_world": {
+          "collision_xml_unchanged": true,
+          "detected_obstacle_visual": "camera_person_lidar_box_proxy",
+          "keepout_authored_polygon_m": [
+            [
+              -4.5,
+              -1.1
+            ],
+            [
+              -3.5,
+              -1.1
+            ],
+            [
+              -3.5,
+              0.1
+            ],
+            [
+              -4.5,
+              0.1
+            ]
+          ],
+          "output": {
+            "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/gazebo_capture.world",
+            "sha256": "0d800982c2492d94682d7b5c2d04832522194f5e2e5b5cb1237cb7828ddbe07a"
+          },
+          "schema_version": 1,
+          "source": {
+            "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/assets/nav_obstacle/slam_corridor_contact.world",
+            "sha256": "9a65b877a28c0de5db4a8d5aa2893367f493e5033ab298ce76a885e8e2c2b849"
+          },
+          "visual_only_markers": [
+            "portfolio_architectural_shell"
+          ]
+        },
+        "capture_world_manifest": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/gazebo_capture_world.json",
+          "sha256": "a67eb999b2f10fb1f25064e53db19827a5f11275a4c1e7f3666bfc34dde6ddb0"
+        },
+        "first_frame_steady_ns": 764946812359824,
+        "frames": 2187,
+        "height": 720,
+        "overlays_applied": false,
+        "raw_video": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/detour_sudden_stop_resume/gazebo_sensor_raw.mp4",
+          "sha256": "6998dfb237d7d80680db671b3a19c32e0d7a379ae9f908cc2c22320405061a75"
+        },
+        "source": "gazebo_camera_sensor",
+        "topic": "/portfolio_scene/image_raw",
+        "width": 1280
+      },
+      "source_identity": {
+        "candidate_bt": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/behavior_trees/navigate_to_pose_dynamic_obstacle_eval.xml",
+          "sha256": "07f18484e60b55cf3c224c9f866473b57ebacafd768659d9a9b215850ad00509"
+        },
+        "candidate_params": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/nav2_obstacle_eval.params.yaml",
+          "sha256": "0ced497696383e82e7abd27ab4b39205ecdad0c020c2df772fd8a7a1a0727794"
+        },
+        "canonical_evaluation_world": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/assets/nav_obstacle/slam_corridor_contact.world",
+          "sha256": "9a65b877a28c0de5db4a8d5aa2893367f493e5033ab298ce76a885e8e2c2b849"
+        },
+        "capture_world_builder": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/portfolio_capture_world.py",
+          "sha256": "0e448268e2173519e68745b345688cb9d21087142957d608ea23f013a4488127"
+        },
+        "keepout_mask": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_mask.yaml",
+          "sha256": "186b21c0759f531ecec6400c01718ae7ce8c400fcf29e0d1abf1777511f29442"
+        },
+        "keepout_zones": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/sim_keepout_zones.yaml",
+          "sha256": "22f15aebf18ad206752f94e22f9d7ff67cea99c32ed7e7d2f954f896d9c6dfb1"
+        },
+        "mobile_manipulator_protection": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/mobile_manipulator_protection.yaml",
+          "sha256": "c9e27729646b76cdcab4f8b8039ada7f118e5834f607b216c0aed2065047e727"
+        },
+        "onboard_core": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/launch/onboard_nav2_core.launch.py",
+          "sha256": "31915dc49a3c96bdae8e3606869377cfd8419194cd1b99e0ea8f169cc8d10751"
+        },
+        "production_params": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/config/nav2_params.yaml",
+          "sha256": "99db2ca2ca6790c6f27ba2a56a55c12ac1146dec29a4913a4d73d9948a7da50c"
+        },
+        "runner": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/run_onboard_candidate_smoke.py",
+          "sha256": "ef83126b92e7347e0cb6b828fde68cc17ebdcf43fa885a73b7fcd483d89ddf06"
+        },
+        "scenario_contract": {
+          "path": "/home/lim/jdamr_artifacts/gazebo_keepout_dashboard_20260909_v02/assets/onboard_stop_contract.json",
+          "sha256": "04d75c6c627e19c3efe5cef29c1de7180deb348887b0f929739bf23f45608c72"
+        },
+        "scenario_source": {
+          "path": "/home/lim/jdamr_cube_ws/src/jdamr_cube_ros/jdamr_cube_navigation/jdamr_cube_navigation/sim_collision_monitor_scenario.py",
+          "sha256": "d748f73ce4f4d5a3db1af7c1e3fd3a361b2600ee9a2128d171db9dc673ac171e"
+        }
+      },
+      "startup": {
+        "candidate_bt": "String value is: /home/lim/jdamr_cube_ws/install/jdamr_cube_navigation/share/jdamr_cube_navigation/behavior_trees/navigate_to_pose_dynamic_obstacle_eval.xml",
+        "gz_partition": "jdamr_onboard_4000936_detour_sudden_stop_resume",
+        "keepout_enabled": {
+          "global_costmap": "Boolean value is: True",
+          "local_costmap": "Boolean value is: True"
+        },
+        "lifecycle": {
+          "/amcl": "active [3]",
+          "/behavior_server": "active [3]",
+          "/bt_navigator": "active [3]",
+          "/collision_monitor": "active [3]",
+          "/controller_server": "active [3]",
+          "/keepout_costmap_filter_info_server": "active [3]",
+          "/keepout_filter_mask_server": "active [3]",
+          "/map_server": "active [3]",
+          "/planner_server": "active [3]",
+          "/velocity_smoother": "active [3]"
+        },
+        "mask_keepout_cells": 1252,
+        "postrun_diagnostics": {
+          "status": "PASS"
+        },
+        "pre_goal_use_sim_time": {
+          "/collision_monitor": "Boolean value is: True",
+          "/controller_server": "Boolean value is: True"
+        },
+        "protective_parameters": {
+          "SlowdownZone.points": "String value is: [[0.5, 0.35], [0.5, -0.35], [-0.38, -0.35], [-0.38, 0.35]]",
+          "StopZone.points": "String value is: [[0.4, 0.25], [0.4, -0.25], [-0.28, -0.25], [-0.28, 0.25]]"
+        },
+        "ros_localhost_only": "1",
+        "status": "PASS",
+        "timing_note": "moving serial diagnostics after the scenario reduces delay; explicit component use_sim_time is the clock-domain fix",
+        "use_sim_time": {
+          "/amcl": "Boolean value is: True",
+          "/bt_navigator": "Boolean value is: True",
+          "/collision_monitor": "Boolean value is: True",
+          "/controller_server": "Boolean value is: True"
+        }
+      },
+      "static_route_obstacle": {
+        "activation": "verified_after_recorders_ready_before_goal",
+        "activation_requested_steady_ns": 764949328628616,
+        "activation_requested_wall_ns": 1788915436956602595,
+        "activation_verified_steady_ns": 764949761675009,
+        "activation_verified_wall_ns": 1788915437389650291,
+        "dimensions_m": [
+          0.5,
+          0.4,
+          1.0
+        ],
+        "entity_id": 40,
+        "expected_pose_m": [
+          -1.0,
+          0.0,
+          0.5
+        ],
+        "observed_pose_m": [
+          -1.0,
+          0.0,
+          0.5
+        ],
+        "pre_activation_observation_s": 2.0,
+        "straight_centerline_blocked": true
+      },
+      "status": "PASS",
+      "teardown": {
+        "identity_survivors": [],
+        "launched_process_groups": [
+          4001546,
+          4001943,
+          4006721,
+          4006722,
+          4006979,
+          4007487,
+          4007878
+        ],
+        "remaining_process_groups": []
+      },
+      "travel_pose": {
+        "absolute_errors_rad": {
+          "arm_elbow_flex": 2.6637980710120246e-10,
+          "arm_gripper": 1.6052012020138947e-10,
+          "arm_shoulder_lift": 6.694755860792156e-11,
+          "arm_shoulder_pan": 4.997042681020567e-16,
+          "arm_wrist_flex": 2.0151214030761366e-10,
+          "arm_wrist_roll": 5.411406495736862e-13
+        },
+        "expected_positions_rad": {
+          "arm_elbow_flex": 1.5,
+          "arm_gripper": 0.0,
+          "arm_shoulder_lift": -1.0,
+          "arm_shoulder_pan": 0.0,
+          "arm_wrist_flex": 0.8,
+          "arm_wrist_roll": 0.0
+        },
+        "maximum_error_rad": 2.6637980710120246e-10,
+        "measured_positions_rad": {
+          "arm_elbow_flex": 1.5000000002663798,
+          "arm_gripper": -1.6052012020138947e-10,
+          "arm_shoulder_lift": -0.9999999999330524,
+          "arm_shoulder_pan": 4.997042681020567e-16,
+          "arm_wrist_flex": 0.8000000002015122,
+          "arm_wrist_roll": 5.411406495736862e-13
+        },
+        "missing_joints": [],
+        "source_topic": "/joint_states",
+        "status": "PASS",
+        "tolerance_rad": 0.03
+      }
+    }
+  ],
+  "schema_version": 1,
+  "seed": 11,
+  "status": "PASS"
+}

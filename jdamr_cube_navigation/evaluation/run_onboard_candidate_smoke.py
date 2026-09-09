@@ -35,6 +35,7 @@ from portfolio_capture_world import (
     build_capture_world,
     CAMERA_RATE_HZ,
     CAMERA_TOPIC as SIM_CAMERA_TOPIC,
+    PEDESTRIAN_DOORWAY_EDGE_Y_M,
 )
 from prepare_sim_nav_obstacle_run import prepare
 
@@ -747,7 +748,8 @@ def _scenario_command(
         case: str, prepared: dict[str, Any], evidence: Path,
         entity: str, contact_topic: str,
         obstacle_hold_s: float = 0.0, obstacle_crossing_s: float = 0.0,
-        obstacle_entry_side: str = 'left') -> list[str]:
+        obstacle_entry_side: str = 'left',
+        obstacle_crossing_edge_y_m: float = PEDESTRIAN_EDGE_Y_M) -> list[str]:
     if case in {'sudden_stop_resume', 'detour_sudden_stop_resume'}:
         command = [
             'ros2', 'run', 'jdamr_cube_navigation',
@@ -759,7 +761,7 @@ def _scenario_command(
             '--goal-x-m', '6.0', '--run-timeout-s', '180',
             '--obstacle-hold-s', str(obstacle_hold_s),
             '--obstacle-crossing-s', str(obstacle_crossing_s),
-            '--obstacle-crossing-edge-y-m', str(PEDESTRIAN_EDGE_Y_M),
+            '--obstacle-crossing-edge-y-m', str(obstacle_crossing_edge_y_m),
             '--obstacle-entry-side', obstacle_entry_side,
             '--direct-scan', '--ros-args', '-p', 'use_sim_time:=true',
         ]
@@ -1016,7 +1018,9 @@ def run_case(case: str, output_root: Path, domain_id: int,
             case, prepared, evidence, entity, contact_topic,
             obstacle_hold_s=2.0 if pedestrian_motion_enabled else 0.0,
             obstacle_crossing_s=0.8 if pedestrian_motion_enabled else 0.0,
-            obstacle_entry_side=pedestrian_entry),
+            obstacle_entry_side=pedestrian_entry,
+            obstacle_crossing_edge_y_m=(
+                PEDESTRIAN_DOORWAY_EDGE_Y_M if record_video else PEDESTRIAN_EDGE_Y_M)),
             case_dir / 'scenario.log', environment)
         launched.append(scenario)
         result['scenario_started'] = True
@@ -1144,6 +1148,8 @@ def run_case(case: str, output_root: Path, domain_id: int,
             result['scenario'] = {
                 'returncode': returncode,
                 'action_terminal': scenario_document.get('action_terminal'),
+                'obstacle_crossing_edge_y_m': scenario_document.get(
+                    'obstacle_crossing_edge_y_m'),
                 'events': [event['name'] for event in
                            scenario_document.get('events', [])],
                 'goal_uuid': scenario_document.get('goal_uuid'),

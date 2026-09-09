@@ -408,6 +408,16 @@ def test_combined_case_delays_pedestrian_until_after_static_detour(tmp_path):
     assert '--direct-scan' in command
 
 
+def test_capture_crossing_can_start_outside_the_doorway(tmp_path):
+    """The capture-only start does not change the canonical corridor run."""
+    prepared = {'stop_contract': tmp_path / 'stop.json'}
+    command = SMOKE._scenario_command(
+        'detour_sudden_stop_resume', prepared,
+        tmp_path / 'evidence.json', 'probe', '/contact',
+        obstacle_crossing_edge_y_m=1.5)
+    assert command[command.index('--obstacle-crossing-edge-y-m') + 1] == '1.5'
+
+
 def test_detour_evidence_requires_real_lateral_motion_and_clearance(
         monkeypatch, tmp_path):
     def sample(x_m, y_m, stamp_ns):
@@ -533,16 +543,26 @@ def test_video_route_activation_records_empty_scene_interval(monkeypatch):
 def test_reevaluation_preserves_source_and_gates_revised_status(
         monkeypatch, tmp_path):
     source = tmp_path / 'source'
+    with pytest.raises(ValueError, match='outside'):
+        REEVALUATE.reevaluate(source, source / 'assets' / 'nested')
     case = source / 'detour_sudden_stop_resume'
     assets = source / 'assets'
     bag = case / 'bag'
     bag.mkdir(parents=True)
     assets.mkdir()
-    (case / 'scenario.json').write_text('{}', encoding='utf-8')
+    source_scenario = {
+        'action_terminal': 'tampered', 'contact_count': 9,
+        'clear_scan_stamp_ns': None,
+    }
+    (case / 'scenario.json').write_text(
+        json.dumps(source_scenario), encoding='utf-8')
     mcap = bag / 'bag_0.mcap'
     mcap.write_bytes(b'mcap')
     stop_contract = assets / 'onboard_stop_contract.json'
-    stop_contract.write_text('{}', encoding='utf-8')
+    stop_contract.write_text(json.dumps({
+        'goal_pose': {'x_m': 6.0, 'y_m': 0.0},
+        'final_zero_hold_s': 1.95,
+    }), encoding='utf-8')
     mask_yaml = assets / 'sim_keepout_mask.yaml'
     mask_yaml.write_text(
         'image: mask.pgm\n', encoding='utf-8')
@@ -559,11 +579,30 @@ def test_reevaluation_preserves_source_and_gates_revised_status(
         'zones_yaml': str(zones.resolve()),
         'zones': ['demo'], 'keepout_cells': 1, 'safety_margin_m': 0.35,
     }), encoding='utf-8')
+    summary_scenario = {
+        'returncode': 0, 'action_terminal': 'succeeded',
+        'goal_uuid': '01' * 16, 'terminal_goal_uuid': '01' * 16,
+        'goal_send_count': 1, 'goal_cancel_count': 0,
+        'stop_action_type': 1, 'stop_polygon_name': 'StopZone',
+        'resume_action_type': 0, 'physical_stop_observed': True,
+        'contact_matched_publisher_count_max': 1, 'contact_count': 0,
+        'minimum_clearance_m': 0.05,
+        'protected_envelope_minimum_clearance_m': 0.02,
+        'final_cmd_vel_zero': True, 'final_zero_hold_s': 2.0,
+        'final_world_pose_m': [6.0, 0.0], 'activation_error': None,
+        'harness_error': None, 'same_goal_command_verdict': 'CONFIRMED',
+        'direct_scan_capture': {
+            'scan_receive_steady_ns': 1, 'zero_receive_steady_ns': 2},
+        'events': ['physical_stop', 'obstacle_deactivated', 'succeeded'],
+    }
     original_result = {
         'case': case.name, 'status': 'FAIL', 'harness_error': None,
-        'scenario': {'returncode': 0},
+        'scenario': summary_scenario,
         'detour_evidence': {'status': 'PASS'},
-        'same_goal_command_evidence': {},
+        'same_goal_command_evidence': {'evidence': {
+            'verdict': 'CONFIRMED', 'terminal_succeeded': True,
+            'episodes': [{
+                'same_goal_resumed': True, 'terminal_succeeded': True}]}},
         'raw_action_status': {'final_status': 4},
         'recording': {'mcap': {'sha256': SMOKE._sha256(mcap)}},
         'source_identity': {
@@ -585,7 +624,6 @@ def test_reevaluation_preserves_source_and_gates_revised_status(
         lambda *_args: {
             'status': 'PASS', 'minimum_footprint_clearance_m': 0.04,
             'mask': {'occupied_cell_count': 1}})
-    monkeypatch.setattr(REEVALUATE, '_case_passed', lambda *_args: True)
     original_sha = REEVALUATE._sha256(source / 'summary.json')
 
     output = tmp_path / 'revised'
@@ -597,6 +635,10 @@ def test_reevaluation_preserves_source_and_gates_revised_status(
     assert revised['status'] == 'PASS'
     assert revised['original_status'] == 'FAIL'
     assert revised['reevaluation']['other_original_checks_passed'] is True
+    assert revised['reevaluation']['scenario_usage'] == (
+        'retained_copy_only_not_status_input')
+    assert revised['reevaluation'][
+        'historical_scenario_integrity_verified'] is False
     assert revised['reevaluation']['source_files_modified'] is False
     assert (output / 'source_summary.json').is_file()
     assert REEVALUATE._sha256(source / 'summary.json') == original_sha
