@@ -1,6 +1,6 @@
 # 장애물 앞에서 멈추고 같은 목표로 다시 주행하기
 
-[관제 메인 영상](gazebo_sensor_dashboard_highlight.mp4) · [보행자 대응 GIF](gazebo_sensor_dashboard_highlight.gif) · [가제보 장면 전체](gazebo_scene_walltime.mp4)
+[최신 관제 대표 영상](dashboard_portfolio_1x.mp4) · [센서 오버레이 영상](gazebo_sensor_dashboard_highlight.mp4) · [보행자 대응 GIF](gazebo_sensor_dashboard_highlight.gif) · [가제보 장면 전체](gazebo_scene_walltime.mp4)
 
 ![보행자 정지와 센서 관측](gazebo_lidar_pedestrian_stop.png)
 
@@ -13,6 +13,11 @@
 
 [화이트 관제 화면](white_dashboard_desktop.png)은 영상과 같은 시점의 센서·주행 상태를 보여준다.
 영상 탐색과 일시정지에 맞춰 표시값도 바뀐다.
+
+최신 관제 대표 영상은 웹의 기본 `1×`로 한 번 재생한 36.53초 기록이다.
+화면에 표시되는 `1×`는 원본 시간축의 3배속이며, 센서·속도·상세 로그는
+영상 시점에 맞춰 갱신된다. 녹화 프레임과 인코딩 정보는
+[관제 녹화 정보](dashboard_portfolio_manifest.json)에 남겼다.
 
 - LiDAR: 레이저 거리 센서가 반환한 감지점과 전방 최소 거리
 - 명령 속도와 차체 측정 속도: 정지 명령과 실제 정지를 구분하는 근거
@@ -90,6 +95,7 @@ VDA 5050은 관제와 이동 로봇 사이의 주문·상태 통신 규격이다
 ## 파일과 재현
 
 - [상세 이벤트 로그](detailed_events.json): 감속·정지 요청 영역, 제한 해제, 이동 재개, 마스크 인근 위치 비교, 도착. 시간은 앞 3초를 제거한 영상 기준이다.
+- [관제 녹화 정보](dashboard_portfolio_manifest.json): 화면 크기, 재생 배율, 프레임 수, 출력 해시
 - [원본·출력 해시와 시간 정렬](render_manifest.json)
 - [무배속 장면의 시간 변환 근거](gazebo_scene_walltime.timing.json)
 - [브라우저 검증](browser_verification.json): 주행·정지 시점, 일시정지, 모바일 너비, ROS 미연결·오래된 데이터 처리

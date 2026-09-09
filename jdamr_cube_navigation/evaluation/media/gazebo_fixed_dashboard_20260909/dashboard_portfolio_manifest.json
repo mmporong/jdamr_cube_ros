@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "status": "PASS",
+  "source_commit": "45d30fe",
+  "dashboard_url": "http://127.0.0.1:8765/",
+  "capture": {
+    "method": "Chrome DevTools Page.startScreencast",
+    "browser_viewport_px": [1842, 971],
+    "captured_frame_size_px": [1280, 675],
+    "captured_frames": 864,
+    "wall_duration_s": 36.493981,
+    "presentation_rate": 3.0,
+    "displayed_rate": "1x",
+    "source_video_duration_s": 108.6
+  },
+  "output": {
+    "path": "dashboard_portfolio_1x.mp4",
+    "codec": "h264",
+    "width_px": 1280,
+    "height_px": 720,
+    "frame_rate": 30,
+    "frames": 1096,
+    "duration_s": 36.533333,
+    "size_bytes": 1384758,
+    "sha256": "2306969ca921dc9923ba9ef1d2067a5d270e1e1ded8f81b26db621bdce1880ea",
+    "audio": false
+  },
+  "processing": {
+    "timing": "captured compositor timestamps converted to 30 fps with frame hold",
+    "padding": "white vertical padding from 1280x675 to 1280x720",
+    "pointer_cleanup": {
+      "reason": "the browser compositor embedded a stationary pointer over an empty floor area",
+      "method": "ffmpeg delogo using surrounding pixels",
+      "source_region_px": [720, 345, 48, 48]
+    }
+  },
+  "sources": {
+    "replay_sha256": "b6a87ede1db5f18b6e69aea2ece5cd1d2856b759905558eea4d30fe1180ef75b",
+    "scene_video_sha256": "46a37dfc0270142287dd4d3f368995c948c352ab15b0f1b7d544a7b70cd8883a"
+  },
+  "verification": {
+    "decoded_full_video": true,
+    "visual_checkpoints_s": [0.5, 12.0, 22.0, 35.0],
+    "dashboard_states_visible": ["moving", "slowdown", "stop", "resume", "arrival"]
+  }
+}
