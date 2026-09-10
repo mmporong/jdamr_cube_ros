@@ -312,6 +312,23 @@ def _select_frame_collision_event(
     ))
 
 
+def _collision_badge(
+        action_name: str, polygon_name: str,
+        duration_s: float | None = None) -> str:
+    """Translate internal collision-monitor state into operator language."""
+    if action_name == 'STOP' and polygon_name == 'StopZone':
+        duration_text = (
+            f' {duration_s:.2f}초' if duration_s is not None else '')
+        return f'자동 안전 정지{duration_text} · 충돌 방지 개입'
+    action_labels = {
+        'SLOWDOWN': '안전 감속 제어',
+        'APPROACH': '접근 속도 제어',
+        'LIMIT': '속도 제한',
+        'STOP': '자동 안전 정지',
+    }
+    return action_labels.get(action_name, action_name)
+
+
 def _point_to_polyline_distance(
         point: tuple[float, float],
         polyline: list[tuple[float, float]]) -> float:
@@ -1262,7 +1279,13 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                     best_observation = (score, cluster)
             if best_observation is None:
                 continue
-            episode = {**episode, 'obstacle_cluster': best_observation[1]}
+            score, obstacle_cluster = best_observation
+            episode = {
+                **episode,
+                'obstacle_cluster': obstacle_cluster,
+                'route_gap_m': score[0],
+                'robot_gap_m': score[1],
+            }
             associated_episodes.append(episode)
             for sample_index in range(
                     episode['start_index'], episode['end_index'] + 1):
@@ -1295,6 +1318,10 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         draw = ImageDraw.Draw(frame)
         collision_event = _select_frame_collision_event(
             collision_events, int(frame_stamp_ns), half_frame_ns)
+        is_safety_stop = (
+            collision_event is not None
+            and collision_event['action_name'] == 'STOP'
+            and collision_event['polygon_name'] == 'StopZone')
         evidence_stamp_ns = (
             collision_event['stamp_ns']
             if collision_event is not None else int(frame_stamp_ns))
@@ -1314,10 +1341,8 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                 drive_state = '장애물 회피 선회'
             else:
                 drive_state = '기준 경로 복귀'
-        if (collision_event is not None
-                and collision_event['action_name'] == 'STOP'
-                and collision_event['polygon_name'] == 'StopZone'):
-            drive_state = '장애물 감지 · 정지'
+        if is_safety_stop:
+            drive_state = '충돌 위험 · 자동 정지'
 
         selected_cluster = (
             active_episode['obstacle_cluster']
@@ -1343,8 +1368,13 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
             bottom = max(point[1] for point in cluster_pixels) + 5
             draw.rectangle(
                 (left, top, right, bottom), outline='#be123c', width=3)
-            draw.text((left + 4, max(top_px + 2, top - 18)),
-                      '기준 경로상 방해물', font=note_font,
+            obstacle_label = (
+                '긴급 정지 대상' if is_safety_stop else '장애물')
+            label_top = (
+                bottom + 4 if is_safety_stop
+                else max(top_px + 2, top - 18))
+            draw.text((left + 4, label_top),
+                      obstacle_label, font=note_font,
                       fill='#be123c', stroke_width=2,
                       stroke_fill='#fff1f2')
 
@@ -1381,6 +1411,8 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         x_px, y_px = travelled[-1]
         draw.ellipse((x_px - 8, y_px - 8, x_px + 8, y_px + 8),
                      fill='#fbbf24', outline='#111827', width=3)
+        stop_duration_s = None
+        same_goal_resumed = False
         if collision_event is not None:
             action_name = collision_event['action_name']
             polygon_name = collision_event['polygon_name']
@@ -1389,13 +1421,13 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                     'same_goal_resume_evidence']['episodes']
                 if episode['stop_stamp_ns'] == collision_event['stamp_ns']
             ), None)
-            duration_s = (
+            stop_duration_s = (
                 (resume_episode['clear_stamp_ns']
                  - resume_episode['stop_stamp_ns']) / 1e9
                 if resume_episode is not None else None)
-            duration_text = (
-                f' {duration_s:.2f}s' if duration_s is not None else '')
-            badge = f'{action_name}{duration_text} · {polygon_name}'
+            same_goal_resumed = resume_episode is not None
+            badge = _collision_badge(
+                action_name, polygon_name, stop_duration_s)
             badge_box = draw.textbbox((0, 0), badge, font=label_font)
             badge_width = badge_box[2] - badge_box[0] + 20
             badge_left = min(canvas_size[0] - badge_width - 12, x_px + 14)
@@ -1419,14 +1451,26 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
             f"{active_episode['sequence']:02d}/"
             f'{len(associated_episodes):02d}'
             if active_episode is not None else '—')
+        route_gap_text = (
+            f"{active_episode['route_gap_m']:.2f}m"
+            if active_episode is not None else '—')
+        intervention_label = '회피 구간'
+        intervention_text = episode_text
+        if is_safety_stop:
+            intervention_label = '안전 개입'
+            duration_text = (
+                f'{stop_duration_s:.2f}초' if stop_duration_s is not None
+                else '정지')
+            resume_text = (
+                '목표 재개' if same_goal_resumed else '재개 확인 중')
+            intervention_text = f'{duration_text} · {resume_text}'
         cards = (
             ('주행 시간', f'{elapsed_s:5.1f}s  ·  {progress_pct:4.1f}%'),
             ('주행 상태', drive_state),
             ('경로 이탈', f'{current_deviation_m:.2f} m'),
             ('라이다 근거',
-             f'선별 {len(selected_cluster)}점 · '
-             f'방해물 {int(bool(selected_cluster))}'),
-            ('회피 구간', episode_text),
+             f'{len(selected_cluster)}점 · 경로 {route_gap_text}'),
+            (intervention_label, intervention_text),
         )
         card_gap = 8
         card_left = 18
@@ -1446,8 +1490,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                       fill=value_color)
         draw.text((18, 119),
                   '파랑 원래 주행 경로  ·  초록 실제 주행  ·  '
-                  '보라 장애물 연관 회피 선회  ·  '
-                  '빨강 기준 경로상 라이다 방해물',
+                  '보라 장애물 회피 선회  ·  빨강 장애물',
                   font=note_font, fill='#cbd5e1')
         bar_left = 24
         bar_right = canvas_size[0] - 24

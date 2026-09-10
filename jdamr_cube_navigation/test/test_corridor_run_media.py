@@ -19,6 +19,7 @@ from corridor_run_media import (  # noqa: E402,I100,I201
     ANIMATION_BOTTOM_PX,
     ANIMATION_TOP_PX,
     _cluster_points,
+    _collision_badge,
     _compose_pose2d,
     _plan_observation,
     _point_to_polyline_distance,
@@ -254,6 +255,28 @@ def test_frame_collision_event_prefers_stop_and_ignores_startup_fault():
     selected = _select_frame_collision_event(events, 103, 4)
 
     assert selected['stamp_ns'] == 104
+
+
+def test_collision_badge_hides_internal_stop_zone_names():
+    """Present safety meaning instead of internal monitor identifiers."""
+    badge = _collision_badge('STOP', 'StopZone', 0.14)
+
+    assert badge == '자동 안전 정지 0.14초 · 충돌 방지 개입'
+    assert 'STOP' not in badge
+    assert 'StopZone' not in badge
+
+
+@pytest.mark.parametrize(
+    ('action_name', 'expected'),
+    [
+        ('SLOWDOWN', '안전 감속 제어'),
+        ('APPROACH', '접근 속도 제어'),
+        ('LIMIT', '속도 제한'),
+    ],
+)
+def test_collision_badge_localizes_non_stop_actions(action_name, expected):
+    """Keep internal collision-monitor action names out of operator media."""
+    assert _collision_badge(action_name, 'InternalZone') == expected
 
 
 def test_compose_pose2d_rotates_child_translation():
