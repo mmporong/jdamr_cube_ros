@@ -20,14 +20,12 @@ from corridor_run_media import (  # noqa: E402,I100,I201
     ANIMATION_TOP_PX,
     _cluster_points,
     _compose_pose2d,
-    _plan_lateral_change_m,
     _plan_observation,
     _point_to_polyline_distance,
     _project_scan_points,
+    _route_deviation_episodes,
     _select_frame_collision_event,
-    _select_route_blocking_clusters,
-    _stop_replan_events,
-    _update_static_obstacle_tracks,
+    _select_path_obstacle_cluster,
     analyse_run,
     gap_statistics,
     parse_route_log,
@@ -285,58 +283,33 @@ def test_lidar_clustering_boxes_nearby_returns_without_object_label():
     assert len(clusters[0]) == 3
 
 
-def test_lidar_tracking_keeps_confirmed_static_object_fixed():
-    """Anchor a persistent lidar object instead of letting its box jitter."""
-    tracks = _update_static_obstacle_tracks(
-        [], [[(0.0, 0.0), (0.2, 0.0), (0.1, 0.2)]], 1)
-    tracks = _update_static_obstacle_tracks(
-        tracks, [[(0.05, 0.02), (0.25, 0.02), (0.15, 0.22)]], 2)
-    fixed_bounds = tracks[0]['bounds']
-
-    tracks = _update_static_obstacle_tracks(
-        tracks, [[(0.08, 0.04), (0.28, 0.04), (0.18, 0.24)]], 3)
-
-    assert tracks[0]['hits'] == 3
-    assert tracks[0]['bounds'] == fixed_bounds
-
-
-def test_route_blocking_selection_keeps_only_closest_cluster_on_old_plan():
-    """Exclude persistent lidar clusters unrelated to a plan change."""
+def test_path_obstacle_selection_ignores_unrelated_lidar_clusters():
+    """Keep only a cluster on the baseline and within local sensor range."""
     blocking = [(1.0, 0.1), (1.1, 0.1), (1.05, 0.2)]
-    nearby_but_not_closest = [(2.0, 0.3), (2.1, 0.3), (2.05, 0.4)]
     unrelated = [(3.0, 1.0), (3.1, 1.0), (3.05, 1.1)]
+    too_far_from_robot = [(6.0, 0.1), (6.1, 0.1), (6.05, 0.2)]
 
-    selected = _select_route_blocking_clusters(
-        [unrelated, nearby_but_not_closest, blocking],
-        [(0.0, 0.0), (4.0, 0.0)], max_distance_m=0.4, limit=1)
+    selected = _select_path_obstacle_cluster(
+        [unrelated, too_far_from_robot, blocking],
+        [(0.0, 0.0), (8.0, 0.0)], (0.0, 0.0),
+        route_distance_m=0.5, robot_distance_m=2.5)
 
-    assert selected == [blocking]
+    assert selected == blocking
 
 
-def test_stop_replan_pairs_stop_with_material_plan_update():
-    """Preserve the old plan and identify the recorded post-stop update."""
-    plans = [
-        {'stamp_ns': 100, 'frame_id': 'map',
-         'points_xy_m': [(0.0, 0.0), (4.0, 0.0)]},
-        {'stamp_ns': 200, 'frame_id': 'map',
-         'points_xy_m': [(1.0, 0.0), (4.0, 0.0)]},
-        {'stamp_ns': 300, 'frame_id': 'map',
-         'points_xy_m': [(1.0, 1.0), (4.0, 1.0)]},
+def test_route_deviation_episodes_group_only_contiguous_threshold_crossings():
+    """Keep obstacle-linked detours separate from ordinary tracked travel."""
+    samples = [
+        {'stamp_ns': 100}, {'stamp_ns': 200}, {'stamp_ns': 300},
+        {'stamp_ns': 400}, {'stamp_ns': 500},
     ]
-    collisions = [{
-        'stamp_ns': 250,
-        'action_name': 'STOP',
-        'polygon_name': 'StopZone',
-    }]
+    deviations = [0.05, 0.13, 0.30, 0.08, 0.14]
 
-    events = _stop_replan_events(
-        collisions, plans, threshold_m=0.25, search_window_ns=100)
+    episodes = _route_deviation_episodes(samples, deviations)
 
-    assert _plan_lateral_change_m(
-        plans[0]['points_xy_m'], plans[1]['points_xy_m']) == 0.0
-    assert events[0]['old_plan'] == plans[1]
-    assert events[0]['new_plan'] == plans[2]
-    assert events[0]['lateral_change_m'] == pytest.approx(1.0)
+    assert [(item['start_index'], item['end_index'])
+            for item in episodes] == [(1, 2), (4, 4)]
+    assert episodes[0]['peak_deviation_m'] == pytest.approx(0.30)
 
 
 def test_analyse_run_collects_navigation_events_in_existing_reader_loop(

@@ -79,7 +79,9 @@ DEFAULT_ANIMATION_FRAMES = 384
 DEFAULT_ANIMATION_FPS = 24
 DEFAULT_ANIMATION_PLAYBACK_SPEED = 0.75
 DEVIATION_HIGHLIGHT_M = 0.12
-PLAN_REPLAN_THRESHOLD_M = 0.25
+ROUTE_OBSTACLE_DISTANCE_M = 0.50
+ROBOT_OBSTACLE_DISTANCE_M = 2.50
+DEVIATION_OBSTACLE_LEAD_NS = 8_000_000_000
 COLLISION_PRIORITY = {
     'DO_NOTHING': 0,
     'LIMIT': 1,
@@ -365,115 +367,59 @@ def _cluster_points(points: list[tuple[float, float]],
     return clusters
 
 
-def _plan_lateral_change_m(
-        previous: list[tuple[float, float]],
-        current: list[tuple[float, float]]) -> float:
-    """Return the current plan's p90 offset from its predecessor."""
-    if not previous or not current:
-        return 0.0
-    distances = sorted(
-        _point_to_polyline_distance(point, previous) for point in current)
-    percentile_index = round(0.9 * (len(distances) - 1))
-    return distances[percentile_index]
-
-
-def _stop_replan_events(
-        collision_events: list[dict[str, Any]],
-        plans: list[dict[str, Any]],
-        *, threshold_m: float = PLAN_REPLAN_THRESHOLD_M,
-        search_window_ns: int = 4_000_000_000) -> list[dict[str, Any]]:
-    """Pair each real StopZone entry with the next material plan update."""
-    plan_stamps_ns = [entry['stamp_ns'] for entry in plans]
-    events = []
-    for collision in collision_events:
-        if (collision['action_name'] != 'STOP'
-                or collision['polygon_name'] != 'StopZone'):
+def _route_deviation_episodes(
+        samples: list[dict[str, Any]],
+        deviations_m: list[float],
+        *, threshold_m: float = DEVIATION_HIGHLIGHT_M
+        ) -> list[dict[str, Any]]:
+    """Group contiguous cross-track threshold violations into episodes."""
+    episodes = []
+    start_index = None
+    for index, deviation_m in enumerate(deviations_m):
+        highlighted = deviation_m >= threshold_m
+        if highlighted and start_index is None:
+            start_index = index
+        final_sample = index == len(deviations_m) - 1
+        if start_index is None or (highlighted and not final_sample):
             continue
-        stop_stamp_ns = collision['stamp_ns']
-        old_index = bisect.bisect_right(plan_stamps_ns, stop_stamp_ns) - 1
-        if old_index < 0:
-            continue
-        for plan_index in range(old_index + 1, len(plans)):
-            plan = plans[plan_index]
-            if plan['stamp_ns'] > stop_stamp_ns + search_window_ns:
-                break
-            change_m = _plan_lateral_change_m(
-                plans[plan_index - 1]['points_xy_m'],
-                plan['points_xy_m'])
-            if change_m < threshold_m:
-                continue
-            events.append({
-                'stop_stamp_ns': stop_stamp_ns,
-                'update_stamp_ns': plan['stamp_ns'],
-                'old_plan': plans[old_index],
-                'new_plan': plan,
-                'lateral_change_m': change_m,
-            })
-            break
-    return events
-
-
-def _update_static_obstacle_tracks(
-        tracks: list[dict[str, Any]],
-        clusters: list[list[tuple[float, float]]],
-        stamp_ns: int, *, match_radius_m: float = 0.35,
-        confirm_hits: int = 2,
-        ttl_ns: int = 4_000_000_000) -> list[dict[str, Any]]:
-    """Anchor persistent lidar clusters in the map frame without jitter."""
-    active = [
-        track for track in tracks
-        if stamp_ns - track['last_seen_stamp_ns'] <= ttl_ns
-    ]
-    unmatched = set(range(len(active)))
-    for cluster in clusters:
-        xs = [point[0] for point in cluster]
-        ys = [point[1] for point in cluster]
-        bounds = (min(xs), min(ys), max(xs), max(ys))
-        center = ((bounds[0] + bounds[2]) / 2,
-                  (bounds[1] + bounds[3]) / 2)
-        candidates = sorted(
-            (math.dist(center, active[index]['center']), index)
-            for index in unmatched)
-        if candidates and candidates[0][0] <= match_radius_m:
-            index = candidates[0][1]
-            unmatched.remove(index)
-            track = active[index]
-            if stamp_ns > track['last_seen_stamp_ns']:
-                track['hits'] += 1
-                if track['hits'] <= confirm_hits:
-                    track['center'] = center
-                    track['bounds'] = bounds
-            track['last_seen_stamp_ns'] = stamp_ns
-            continue
-        active.append({
-            'center': center,
-            'bounds': bounds,
-            'hits': 1,
-            'last_seen_stamp_ns': stamp_ns,
+        end_index = index if highlighted else index - 1
+        peak_index = max(
+            range(start_index, end_index + 1),
+            key=lambda candidate: deviations_m[candidate])
+        episodes.append({
+            'start_index': start_index,
+            'end_index': end_index,
+            'start_stamp_ns': samples[start_index]['stamp_ns'],
+            'end_stamp_ns': samples[end_index]['stamp_ns'],
+            'peak_deviation_m': deviations_m[peak_index],
         })
-    return active
+        start_index = None
+    return episodes
 
 
-def _select_route_blocking_clusters(
+def _select_path_obstacle_cluster(
         clusters: list[list[tuple[float, float]]],
-        old_plan: list[tuple[float, float]],
-        *, max_distance_m: float = 0.4,
-        limit: int = 1) -> list[list[tuple[float, float]]]:
-    """Select only clusters closest enough to obstruct a superseded plan."""
-    if not old_plan or limit < 1:
-        return []
+        planned_route: list[tuple[float, float]],
+        robot_xy_m: tuple[float, float],
+        *, route_distance_m: float = ROUTE_OBSTACLE_DISTANCE_M,
+        robot_distance_m: float = ROBOT_OBSTACLE_DISTANCE_M
+        ) -> list[tuple[float, float]] | None:
+    """Select one lidar cluster on the baseline and near the robot."""
     ranked = sorted(
         (
-            min(_point_to_polyline_distance(point, old_plan)
+            min(_point_to_polyline_distance(point, planned_route)
                 for point in cluster),
+            min(math.dist(point, robot_xy_m) for point in cluster),
+            -len(cluster),
             cluster,
         )
         for cluster in clusters if cluster
     )
-    return [
-        cluster for distance_m, cluster in ranked[:limit]
-        if distance_m <= max_distance_m
-    ]
+    for route_gap_m, robot_gap_m, _size, cluster in ranked:
+        if (route_gap_m <= route_distance_m
+                and robot_gap_m <= robot_distance_m):
+            return cluster
+    return None
 
 
 def _command_state(command: Any) -> str:
@@ -1218,30 +1164,6 @@ def _world_to_pixel(x_m: float, y_m: float, *, resolution_m: float,
     return round(x_px * scale), round(y_px * scale + top_px)
 
 
-def _draw_dashed_polyline(draw: ImageDraw.ImageDraw,
-                          points: list[tuple[int, int]],
-                          *, fill: str, width: int,
-                          dash_px: float = 10.0,
-                          gap_px: float = 7.0) -> None:
-    """Draw a dashed polyline for a superseded navigation plan."""
-    for start, end in zip(points, points[1:]):
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        length = math.hypot(dx, dy)
-        if length == 0.0:
-            continue
-        cursor = 0.0
-        while cursor < length:
-            segment_end = min(length, cursor + dash_px)
-            draw.line((
-                (round(start[0] + dx * cursor / length),
-                 round(start[1] + dy * cursor / length)),
-                (round(start[0] + dx * segment_end / length),
-                 round(start[1] + dy * segment_end / length)),
-            ), fill=fill, width=width)
-            cursor += dash_px + gap_px
-
-
 def render_animation(route_yaml: Path, metrics: dict[str, Any],
                      series: dict[str, Any], output: Path,
                      frames: int, fps: int,
@@ -1288,21 +1210,65 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
     sample_stamps_ns = [entry['stamp_ns'] for entry in samples]
     scans = series.get('scans', [])
     collision_events = series.get('collision_states', [])
-    plans = series.get('plans', [])
-    plan_stamps_ns = [entry['stamp_ns'] for entry in plans]
-    significant_plan_changes = []
-    for previous, current in zip(plans, plans[1:]):
-        lateral_change_m = _plan_lateral_change_m(
-            previous['points_xy_m'], current['points_xy_m'])
-        if lateral_change_m >= PLAN_REPLAN_THRESHOLD_M:
-            significant_plan_changes.append({
-                'stamp_ns': current['stamp_ns'],
-                'lateral_change_m': lateral_change_m,
-            })
-    replans = _stop_replan_events(collision_events, plans)
     laser_pose = series.get('laser_pose')
     start_ns = metrics['capture']['drive_start_unix_ns']
     end_ns = metrics['capture']['drive_end_unix_ns']
+    deviation_episodes = _route_deviation_episodes(
+        samples, route_deviations_m)
+    associated_deviation_flags = [False] * len(samples)
+    associated_episodes = []
+    if laser_pose is not None:
+        for episode in deviation_episodes:
+            best_observation = None
+            observation_stamps_ns = [
+                samples[sample_index]['stamp_ns']
+                for sample_index in range(
+                    episode['start_index'], episode['end_index'] + 1)
+            ]
+            observation_stamps_ns.extend(
+                collision['stamp_ns'] for collision in collision_events
+                if collision['action_name'] == 'STOP'
+                and collision['polygon_name'] == 'StopZone'
+                and (episode['start_stamp_ns'] - DEVIATION_OBSTACLE_LEAD_NS
+                     <= collision['stamp_ns'] <= episode['end_stamp_ns']))
+            for observation_stamp_ns in observation_stamps_ns:
+                scan = _nearest_by_stamp(
+                    scans, observation_stamp_ns, max_gap_ns=1_000_000_000)
+                if scan is None:
+                    continue
+                projected = _project_scan_points(
+                    scan, scan['map_base_pose'], laser_pose, occupancy,
+                    resolution_m, origin)
+                clusters = [
+                    cluster for cluster in _cluster_points(
+                        projected['obstacle_candidates'])
+                    if (max(point[0] for point in cluster)
+                        - min(point[0] for point in cluster)) <= 1.5
+                    and (max(point[1] for point in cluster)
+                         - min(point[1] for point in cluster)) <= 1.5
+                ]
+                robot_xy_m = scan['map_base_pose'][:2]
+                cluster = _select_path_obstacle_cluster(
+                    clusters, planned, robot_xy_m)
+                if cluster is None:
+                    continue
+                route_gap_m = min(
+                    _point_to_polyline_distance(point, planned)
+                    for point in cluster)
+                robot_gap_m = min(
+                    math.dist(point, robot_xy_m) for point in cluster)
+                score = (route_gap_m, robot_gap_m, -len(cluster))
+                if best_observation is None or score < best_observation[0]:
+                    best_observation = (score, cluster)
+            if best_observation is None:
+                continue
+            episode = {**episode, 'obstacle_cluster': best_observation[1]}
+            associated_episodes.append(episode)
+            for sample_index in range(
+                    episode['start_index'], episode['end_index'] + 1):
+                associated_deviation_flags[sample_index] = True
+    for sequence, episode in enumerate(associated_episodes, start=1):
+        episode['sequence'] = sequence
     playback_frames = round(frames / playback_speed)
     stop_hold_frames = round(fps / playback_speed)
     uniform_stamps_ns = list(np.linspace(
@@ -1312,15 +1278,10 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         if event['action_name'] == 'STOP'
         and event['polygon_name'] == 'StopZone'
     ]
-    replan_stamps_ns = sorted({
-        event['update_stamp_ns'] for event in replans
-    })
     frame_stamps_ns = sorted(
         uniform_stamps_ns
         + [stamp_ns for stamp_ns in stop_stamps_ns
-           for _ in range(max(1, stop_hold_frames))]
-        + [stamp_ns for stamp_ns in replan_stamps_ns
-           for _ in range(max(1, fps))])
+           for _ in range(max(1, stop_hold_frames))])
     half_frame_ns = max(
         1, round((end_ns - start_ns) / (playback_frames - 1) / 2))
     title_font = _pil_font(22, bold=True)
@@ -1328,7 +1289,6 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
     label_font = _pil_font(15, bold=True)
     note_font = _pil_font(13)
     metric_label_font = _pil_font(11, bold=True)
-    stable_obstacle_tracks: list[dict[str, Any]] = []
     frames_out = []
     for frame_stamp_ns in frame_stamps_ns:
         frame = base.copy()
@@ -1338,160 +1298,56 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         evidence_stamp_ns = (
             collision_event['stamp_ns']
             if collision_event is not None else int(frame_stamp_ns))
-        scan = _nearest_by_stamp(
-            scans, evidence_stamp_ns, max_gap_ns=1_000_000_000)
-        current_plan = None
-        if plans:
-            plan_index = bisect.bisect_right(
-                plan_stamps_ns, evidence_stamp_ns) - 1
-            if plan_index >= 0:
-                current_plan = plans[plan_index]
-
-        replan_candidates = [
-            event for event in replans
-            if event['stop_stamp_ns'] - 2_000_000_000
+        stop = max(1, bisect.bisect_right(sample_stamps_ns,
+                                          evidence_stamp_ns))
+        active_episode = next((
+            episode for episode in associated_episodes
+            if episode['start_stamp_ns'] - DEVIATION_OBSTACLE_LEAD_NS
             <= evidence_stamp_ns
-            <= event['update_stamp_ns'] + 10_000_000_000
-        ]
-        started_replans = [
-            event for event in replan_candidates
-            if event['stop_stamp_ns'] <= evidence_stamp_ns
-        ]
-        active_replan = (
-            max(started_replans, key=lambda event: event['stop_stamp_ns'])
-            if started_replans else
-            min(replan_candidates,
-                key=lambda event: event['stop_stamp_ns'], default=None)
-        )
-        plan_state = '기존 경로 추종'
-        plan_change_m = 0.0
-        plan_to_draw = current_plan
-        plan_labels = []
-        if active_replan is not None:
-            plan_change_m = active_replan['lateral_change_m']
-            if evidence_stamp_ns < active_replan['stop_stamp_ns']:
-                plan_state = '기존 경로 접근'
-                plan_to_draw = active_replan['old_plan']
-            elif evidence_stamp_ns < active_replan['update_stamp_ns']:
-                plan_state = '물체 감지 · 정지 · 재계산'
-                plan_to_draw = active_replan['old_plan']
+            <= episode['end_stamp_ns'] + 3_000_000_000
+        ), None)
+        drive_state = '기준 경로 추종'
+        if active_episode is not None:
+            if evidence_stamp_ns < active_episode['start_stamp_ns']:
+                drive_state = '기준 경로상 장애물 감지'
+            elif evidence_stamp_ns <= active_episode['end_stamp_ns']:
+                drive_state = '장애물 회피 선회'
             else:
-                plan_state = '경로 갱신 · 우회 재개'
-                old_points = active_replan['old_plan']['points_xy_m']
-                new_points = active_replan['new_plan']['points_xy_m']
-                old_pixels = [
-                    _world_to_pixel(
-                        x_m, y_m, resolution_m=resolution_m, origin=origin,
-                        height=height, scale=scale, top_px=top_px)
-                    for x_m, y_m in old_points
-                ]
-                _draw_dashed_polyline(
-                    draw, old_pixels, fill='#94a3b8', width=3)
-                plan_to_draw = active_replan['new_plan']
-                if old_points and new_points:
-                    changed_point = max(
-                        new_points,
-                        key=lambda point: _point_to_polyline_distance(
-                            point, old_points))
-                    old_point = min(
-                        old_points,
-                        key=lambda point: math.dist(point, changed_point))
-                    plan_labels = [
-                        ('정지 전 계획', old_point, '#64748b'),
-                        ('갱신 계획', changed_point, '#ea580c'),
-                    ]
+                drive_state = '기준 경로 복귀'
         if (collision_event is not None
                 and collision_event['action_name'] == 'STOP'
                 and collision_event['polygon_name'] == 'StopZone'):
-            plan_state = '물체 감지 · 정지 · 재계산'
-        if plan_to_draw is not None and plan_to_draw['frame_id'] == 'map':
-            plan_pixels = [
-                _world_to_pixel(
-                    x_m, y_m, resolution_m=resolution_m, origin=origin,
-                    height=height, scale=scale, top_px=top_px)
-                for x_m, y_m in plan_to_draw['points_xy_m']
-            ]
-            if len(plan_pixels) > 1:
-                draw.line(plan_pixels, fill='#f97316', width=4)
-        for label, point, color in plan_labels:
-            label_x, label_y = _world_to_pixel(
-                *point, resolution_m=resolution_m, origin=origin,
+            drive_state = '장애물 감지 · 정지'
+
+        selected_cluster = (
+            active_episode['obstacle_cluster']
+            if active_episode is not None else [])
+        for x_m, y_m in selected_cluster:
+            x_point, y_point = _world_to_pixel(
+                x_m, y_m, resolution_m=resolution_m, origin=origin,
                 height=height, scale=scale, top_px=top_px)
-            text_box = draw.textbbox((0, 0), label, font=note_font)
-            text_width = text_box[2] - text_box[0]
-            label_top = label_y - 28 if color == '#64748b' else label_y + 5
-            draw.rounded_rectangle(
-                (label_x + 5, label_top,
-                 label_x + text_width + 17, label_top + 21),
-                radius=5, fill=color)
-            draw.text((label_x + 11, label_top + 1), label,
-                      font=note_font, fill='white')
-
-        projected = {'static': [], 'obstacle_candidates': []}
-        if scan is not None and laser_pose is not None:
-            projected = _project_scan_points(
-                scan, scan['map_base_pose'], laser_pose, occupancy,
-                resolution_m, origin)
-            for x_m, y_m in projected['static'][::2]:
-                x_point, y_point = _world_to_pixel(
-                    x_m, y_m, resolution_m=resolution_m, origin=origin,
-                    height=height, scale=scale, top_px=top_px)
-                draw.ellipse((x_point - 1, y_point - 1,
-                              x_point + 1, y_point + 1), fill='#06b6d4')
-            for x_m, y_m in projected['obstacle_candidates']:
-                x_point, y_point = _world_to_pixel(
-                    x_m, y_m, resolution_m=resolution_m, origin=origin,
-                    height=height, scale=scale, top_px=top_px)
-                draw.ellipse((x_point - 3, y_point - 3,
-                              x_point + 3, y_point + 3),
-                             fill='#e11d48', outline='#fff1f2', width=1)
-            lidar_clusters = [
-                cluster for cluster in _cluster_points(
-                    projected['obstacle_candidates'])
-                if (max(point[0] for point in cluster)
-                    - min(point[0] for point in cluster)) <= 1.5
-                and (max(point[1] for point in cluster)
-                     - min(point[1] for point in cluster)) <= 1.5
+            draw.ellipse((x_point - 3, y_point - 3,
+                          x_point + 3, y_point + 3),
+                         fill='#e11d48', outline='#fff1f2', width=1)
+        if selected_cluster:
+            cluster_pixels = [
+                _world_to_pixel(
+                    x_m, y_m, resolution_m=resolution_m,
+                    origin=origin, height=height, scale=scale,
+                    top_px=top_px)
+                for x_m, y_m in selected_cluster
             ]
-            blocking_clusters = (
-                _select_route_blocking_clusters(
-                    lidar_clusters,
-                    active_replan['old_plan']['points_xy_m'])
-                if active_replan is not None else []
-            )
-            stable_obstacle_tracks = _update_static_obstacle_tracks(
-                stable_obstacle_tracks, blocking_clusters,
-                evidence_stamp_ns, confirm_hits=1)
-            confirmed_tracks = [
-                track for track in stable_obstacle_tracks
-                if track['hits'] >= 1
-            ]
-            for track_number, track in enumerate(
-                    confirmed_tracks[:1], start=1):
-                left_m, top_m, right_m, bottom_m = track['bounds']
-                cluster_pixels = [
-                    _world_to_pixel(
-                        x_m, y_m, resolution_m=resolution_m,
-                        origin=origin, height=height, scale=scale,
-                        top_px=top_px)
-                    for x_m, y_m in (
-                        (left_m, top_m), (right_m, bottom_m))
-                ]
-                left = min(point[0] for point in cluster_pixels) - 5
-                top = min(point[1] for point in cluster_pixels) - 5
-                right = max(point[0] for point in cluster_pixels) + 5
-                bottom = max(point[1] for point in cluster_pixels) + 5
-                draw.rectangle(
-                    (left, top, right, bottom), outline='#be123c', width=3)
-                draw.text((left + 4, max(top_px + 2, top - 18)),
-                          f'경로 방해물 {track_number}', font=note_font,
-                          fill='#be123c', stroke_width=2,
-                          stroke_fill='#fff1f2')
-        else:
-            stable_obstacle_tracks = []
+            left = min(point[0] for point in cluster_pixels) - 5
+            top = min(point[1] for point in cluster_pixels) - 5
+            right = max(point[0] for point in cluster_pixels) + 5
+            bottom = max(point[1] for point in cluster_pixels) + 5
+            draw.rectangle(
+                (left, top, right, bottom), outline='#be123c', width=3)
+            draw.text((left + 4, max(top_px + 2, top - 18)),
+                      '기준 경로상 방해물', font=note_font,
+                      fill='#be123c', stroke_width=2,
+                      stroke_fill='#fff1f2')
 
-        stop = max(1, bisect.bisect_right(sample_stamps_ns,
-                                          evidence_stamp_ns))
         travelled = [
             _world_to_pixel(entry['x_m'], entry['y_m'],
                             resolution_m=resolution_m, origin=origin,
@@ -1501,11 +1357,27 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         if len(travelled) > 1:
             for index, (start, end) in enumerate(
                     zip(travelled, travelled[1:]), start=1):
+                in_active_detour = (
+                    active_episode is not None
+                    and active_episode['start_index'] <= index
+                    <= active_episode['end_index'])
                 color = (
                     '#9333ea'
-                    if route_deviations_m[index] >= DEVIATION_HIGHLIGHT_M
+                    if associated_deviation_flags[index] or in_active_detour
                     else '#16a34a')
                 draw.line((start, end), fill=color, width=5)
+        if active_episode is not None:
+            active_end_index = stop - 1
+            active_detour = [
+                _world_to_pixel(
+                    samples[index]['x_m'], samples[index]['y_m'],
+                    resolution_m=resolution_m, origin=origin,
+                    height=height, scale=scale, top_px=top_px)
+                for index in range(
+                    active_episode['start_index'], active_end_index + 1)
+            ]
+            if len(active_detour) > 1:
+                draw.line(active_detour, fill='#9333ea', width=5)
         x_px, y_px = travelled[-1]
         draw.ellipse((x_px - 8, y_px - 8, x_px + 8, y_px + 8),
                      fill='#fbbf24', outline='#111827', width=3)
@@ -1543,21 +1415,18 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         draw.text((canvas_size[0] - (run_box[2] - run_box[0]) - 18, 13),
                   run_text, font=note_font, fill='#94a3b8')
         current_deviation_m = route_deviations_m[stop - 1]
-        confirmed_count = min(1, sum(
-            track['hits'] >= 1 for track in stable_obstacle_tracks))
-        revision_count = bisect.bisect_right(
-            [entry['stamp_ns'] for entry in significant_plan_changes],
-            evidence_stamp_ns)
+        episode_text = (
+            f"{active_episode['sequence']:02d}/"
+            f'{len(associated_episodes):02d}'
+            if active_episode is not None else '—')
         cards = (
             ('주행 시간', f'{elapsed_s:5.1f}s  ·  {progress_pct:4.1f}%'),
-            ('주행 상태', plan_state),
+            ('주행 상태', drive_state),
             ('경로 이탈', f'{current_deviation_m:.2f} m'),
-            ('라이다 감지',
-             f'{len(projected["obstacle_candidates"])}점 · '
-             f'방해물 {confirmed_count}'),
-            ('계획 변경',
-             f'REV {revision_count:02d}' + (
-                 f' · {plan_change_m:.2f}m' if plan_change_m else '')),
+            ('라이다 근거',
+             f'선별 {len(selected_cluster)}점 · '
+             f'방해물 {int(bool(selected_cluster))}'),
+            ('회피 구간', episode_text),
         )
         card_gap = 8
         card_left = 18
@@ -1576,9 +1445,9 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
             draw.text((left + 10, 69), value, font=detail_font,
                       fill=value_color)
         draw.text((18, 119),
-                  '파랑 기준 경로  ·  초록 실측  ·  보라 0.12m 이상 이탈  ·  '
-                  '회색 점선 정지 전 계획  ·  주황 갱신 계획  ·  '
-                  '빨강 경로 변경 연관 방해물',
+                  '파랑 원래 주행 경로  ·  초록 실제 주행  ·  '
+                  '보라 장애물 연관 회피 선회  ·  '
+                  '빨강 기준 경로상 라이다 방해물',
                   font=note_font, fill='#cbd5e1')
         bar_left = 24
         bar_right = canvas_size[0] - 24
