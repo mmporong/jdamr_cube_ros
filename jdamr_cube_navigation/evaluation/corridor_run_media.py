@@ -6,14 +6,14 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
-from datetime import datetime
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
 import shutil
 import subprocess
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import matplotlib
@@ -27,7 +27,9 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402,I100,I201
 
 from compare_slam_runs import path_length  # noqa: E402,I100
 from inspect_mcap import inspect  # noqa: E402,I100,I201
-from navigation_mcap_reader import read_navigation_messages  # noqa: E402,I100,I201
+from navigation_mcap_reader import (  # noqa: E402,I100,I201
+    read_navigation_messages,
+)
 from render_route_map import extent_of, load_map  # noqa: E402,I100,I201
 from same_goal_resume_evidence import (  # noqa: E402,I100,I201
     goal_status_snapshot,
@@ -48,6 +50,7 @@ TOPICS = (
     '/scan',
     '/tf',
 )
+READ_TOPICS = (*TOPICS, '/tf_static')
 CONTINUITY_SERIES = {
     'scan': '/scan',
     'wheel odom': '/odom',
@@ -69,6 +72,15 @@ COLLISION_ACTION_NAMES = {
     2: 'SLOWDOWN',
     3: 'APPROACH',
     4: 'LIMIT',
+}
+ANIMATION_TOP_PX = 112
+ANIMATION_BOTTOM_PX = 76
+COLLISION_PRIORITY = {
+    'DO_NOTHING': 0,
+    'LIMIT': 1,
+    'APPROACH': 2,
+    'SLOWDOWN': 3,
+    'STOP': 4,
 }
 
 
@@ -193,6 +205,106 @@ def _vector_components(vector: Any) -> tuple[float, float, float]:
     return (float(vector.x), float(vector.y), float(vector.z))
 
 
+def _yaw_from_quaternion(quaternion: Any) -> float:
+    """Return planar yaw from a ROS quaternion."""
+    return math.atan2(
+        2.0 * (quaternion.w * quaternion.z
+               + quaternion.x * quaternion.y),
+        1.0 - 2.0 * (quaternion.y ** 2 + quaternion.z ** 2),
+    )
+
+
+def _compose_pose2d(parent_child: tuple[float, float, float],
+                    child_target: tuple[float, float, float]
+                    ) -> tuple[float, float, float]:
+    """Compose parent→child and child→target planar poses."""
+    px, py, pyaw = parent_child
+    cx, cy, cyaw = child_target
+    cosine = math.cos(pyaw)
+    sine = math.sin(pyaw)
+    return (
+        px + cosine * cx - sine * cy,
+        py + sine * cx + cosine * cy,
+        pyaw + cyaw,
+    )
+
+
+def _nearest_by_stamp(samples: list[dict[str, Any]], stamp_ns: int,
+                      *, max_gap_ns: int | None = None
+                      ) -> dict[str, Any] | None:
+    """Return the closest timestamped sample within an optional gap."""
+    if not samples:
+        return None
+    stamps = [entry['stamp_ns'] for entry in samples]
+    index = bisect.bisect_left(stamps, stamp_ns)
+    candidates = samples[max(0, index - 1):min(len(samples), index + 1)]
+    closest = min(
+        candidates, key=lambda entry: abs(entry['stamp_ns'] - stamp_ns))
+    if (max_gap_ns is not None
+            and abs(closest['stamp_ns'] - stamp_ns) > max_gap_ns):
+        return None
+    return closest
+
+
+def _project_scan_points(
+        scan: dict[str, Any], map_base_pose: tuple[float, float, float],
+        laser_pose: tuple[float, float, float], occupancy: np.ndarray,
+        resolution_m: float, origin: list[float],
+        *, wall_margin_cells: int = 4) -> dict[str, list[tuple[float, float]]]:
+    """
+    Project one scan into map coordinates and classify endpoint evidence.
+
+    Returns measured endpoints split into static-map matches and returns in
+    cells recorded as free space. Free-space returns are obstacle candidates,
+    not object-class labels.
+    """
+    map_laser_pose = _compose_pose2d(map_base_pose, laser_pose)
+    laser_x_m, laser_y_m, laser_yaw = map_laser_pose
+    height, width = occupancy.shape
+    static = []
+    obstacle_candidates = []
+    for index, range_m in enumerate(scan['ranges_m']):
+        if not math.isfinite(range_m):
+            continue
+        if not scan['range_min_m'] <= range_m <= scan['range_max_m']:
+            continue
+        angle = laser_yaw + scan['angle_min_rad'] + (
+            index * scan['angle_increment_rad'])
+        x_m = laser_x_m + range_m * math.cos(angle)
+        y_m = laser_y_m + range_m * math.sin(angle)
+        x_cell = round((x_m - origin[0]) / resolution_m)
+        y_cell = height - 1 - round((y_m - origin[1]) / resolution_m)
+        if not (0 <= x_cell < width and 0 <= y_cell < height):
+            continue
+        y0 = max(0, y_cell - wall_margin_cells)
+        y1 = min(height, y_cell + wall_margin_cells + 1)
+        x0 = max(0, x_cell - wall_margin_cells)
+        x1 = min(width, x_cell + wall_margin_cells + 1)
+        if np.any(occupancy[y0:y1, x0:x1] < 100):
+            static.append((x_m, y_m))
+        elif occupancy[y_cell, x_cell] > 240:
+            obstacle_candidates.append((x_m, y_m))
+    return {'static': static, 'obstacle_candidates': obstacle_candidates}
+
+
+def _select_frame_collision_event(
+        events: list[dict[str, Any]], frame_stamp_ns: int,
+        half_window_ns: int) -> dict[str, Any] | None:
+    """Select the strongest real collision event represented by a frame."""
+    candidates = [
+        event for event in events
+        if abs(event['stamp_ns'] - frame_stamp_ns) <= half_window_ns
+        and event['action_name'] != 'DO_NOTHING'
+        and event['polygon_name'] != 'invalid source'
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda event: (
+        COLLISION_PRIORITY.get(event['action_name'], -1),
+        -abs(event['stamp_ns'] - frame_stamp_ns),
+    ))
+
+
 def _command_state(command: Any) -> str:
     """Classify a command without treating non-finite values as motion."""
     components = (
@@ -246,6 +358,19 @@ def _plan_observation(stamp_ns: int, path_message: Any) -> dict[str, Any]:
             geometry_bytes).hexdigest(),
         'path_length_m': round(length_m, 6),
         'data_gap_reasons': data_gap_reasons,
+    }
+
+
+def _plan_series_entry(stamp_ns: int, path_message: Any) -> dict[str, Any]:
+    """Keep map-frame plan geometry for time-aligned media rendering."""
+    return {
+        'stamp_ns': stamp_ns,
+        'frame_id': str(path_message.header.frame_id),
+        'points_xy_m': [
+            (float(stamped_pose.pose.position.x),
+             float(stamped_pose.pose.position.y))
+            for stamped_pose in path_message.poses
+        ],
     }
 
 
@@ -466,11 +591,27 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     collision_states = []
     command_states = []
     plans = []
+    plan_series = []
+    scans = []
+    odom_poses = []
+    map_odom_poses = []
+    laser_pose = None
     status_snapshots = []
     pre_drive_status_snapshot = None
-    for message in read_navigation_messages(bag, topics=list(TOPICS)):
+    for message in read_navigation_messages(bag, topics=list(READ_TOPICS)):
         topic = message.channel.topic
         stamp_ns = message.log_time_ns
+        if topic == '/tf_static':
+            for transform in message.ros_msg.transforms:
+                parent = transform.header.frame_id.lstrip('/')
+                child = transform.child_frame_id.lstrip('/')
+                if parent == 'base_link' and child == 'laser_link':
+                    translation = transform.transform.translation
+                    laser_pose = (
+                        float(translation.x), float(translation.y),
+                        _yaw_from_quaternion(transform.transform.rotation),
+                    )
+            continue
         if topic == '/navigate_to_pose/_action/status':
             snapshot = goal_status_snapshot(stamp_ns, message.ros_msg)
             if stamp_ns < start_ns:
@@ -499,6 +640,13 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             pose = message.ros_msg.pose.pose
             odom.append((stamp_ns / 1e9, pose.position.x,
                          pose.position.y, 0.0))
+            odom_poses.append({
+                'stamp_ns': stamp_ns,
+                'pose': (
+                    float(pose.position.x), float(pose.position.y),
+                    _yaw_from_quaternion(pose.orientation),
+                ),
+            })
         elif topic == '/battery_state':
             batteries_v.append(message.ros_msg.voltage)
         elif topic == '/collision_monitor_state':
@@ -510,12 +658,34 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                 (stamp_ns, _command_state(message.ros_msg)))
         elif topic == '/plan':
             plans.append(_plan_observation(stamp_ns, message.ros_msg))
+            plan_series.append(_plan_series_entry(stamp_ns, message.ros_msg))
+        elif topic == '/scan':
+            scan = message.ros_msg
+            scans.append({
+                'stamp_ns': stamp_ns,
+                'angle_min_rad': float(scan.angle_min),
+                'angle_increment_rad': float(scan.angle_increment),
+                'range_min_m': float(scan.range_min),
+                'range_max_m': float(scan.range_max),
+                'ranges_m': np.asarray(scan.ranges, dtype=np.float32),
+            })
         elif topic == '/tf':
             for transform in message.ros_msg.transforms:
+                parent = transform.header.frame_id.lstrip('/')
                 child = transform.child_frame_id.lstrip('/')
                 key = f'tf_{child}'
                 if key in stamps:
                     stamps[key].append(stamp_ns)
+                if parent == 'map' and child == 'odom':
+                    translation = transform.transform.translation
+                    map_odom_poses.append({
+                        'stamp_ns': stamp_ns,
+                        'pose': (
+                            float(translation.x), float(translation.y),
+                            _yaw_from_quaternion(
+                                transform.transform.rotation),
+                        ),
+                    })
 
     if not amcl:
         raise ValueError('drive window contains no /amcl_pose samples')
@@ -538,6 +708,21 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
     if pre_drive_status_snapshot is not None:
         status_snapshots.insert(0, pre_drive_status_snapshot)
+
+    scan_series = []
+    if laser_pose is not None:
+        for scan in scans:
+            map_odom = _nearest_by_stamp(
+                map_odom_poses, scan['stamp_ns'], max_gap_ns=500_000_000)
+            odom_base = _nearest_by_stamp(
+                odom_poses, scan['stamp_ns'], max_gap_ns=100_000_000)
+            if map_odom is None or odom_base is None:
+                continue
+            scan_series.append({
+                **scan,
+                'map_base_pose': _compose_pose2d(
+                    map_odom['pose'], odom_base['pose']),
+            })
 
     metrics = {
         'schema_version': 1,
@@ -594,6 +779,24 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                 start_ns, end_ns, end_ns + 5_000_000_000),
             'goal_events': route['goal_events'],
             'goal_events_time_basis': 'ros_logger_time_ns',
+            'obstacle_evidence': {
+                'lidar_topic': '/scan',
+                'lidar_messages_in_drive_window': len(stamps['/scan']),
+                'projectable_scan_samples': len(scan_series),
+                'collision_monitor_topic': '/collision_monitor_state',
+                'collision_monitor_observation_source': '/scan',
+                'stopzone_episodes': sum(
+                    action_type == 1 and polygon_name == 'StopZone'
+                    for _stamp_ns, action_type, polygon_name
+                    in collision_states),
+                'object_classification': 'NOT_MEASURED',
+                'object_classification_reason': (
+                    'No camera image or person/object detector topic was '
+                    'recorded in this MCAP.'),
+                'interpretation': (
+                    'Free-space lidar endpoints are dynamic or unmapped '
+                    'obstacle candidates, not proof of a person.'),
+            },
         },
         'continuity': continuity,
         'resources': _read_process_metrics(
@@ -606,12 +809,24 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             'The full-capture resource gate missed one terminal sample; '
             'drive-window '
             'resource values remain descriptive evidence only.',
+            'No camera image or person/object detector topic was recorded; '
+            'obstacle class is UNKNOWN.',
         ],
     }
     series = {
         'amcl': amcl,
         'statuses': route['statuses'],
         'sends': route['sends'],
+        'collision_states': [{
+            'stamp_ns': stamp_ns,
+            'action_type': action_type,
+            'action_name': COLLISION_ACTION_NAMES.get(
+                action_type, 'UNKNOWN'),
+            'polygon_name': polygon_name,
+        } for stamp_ns, action_type, polygon_name in collision_states],
+        'plans': plan_series,
+        'scans': scan_series,
+        'laser_pose': laser_pose,
     }
     return metrics, series
 
@@ -835,12 +1050,12 @@ def _world_to_pixel(x_m: float, y_m: float, *, resolution_m: float,
 def render_animation(route_yaml: Path, metrics: dict[str, Any],
                      series: dict[str, Any], output: Path,
                      frames: int, fps: int) -> None:
-    """Render an evidence-backed animation from recorded AMCL timestamps."""
+    """Render time-aligned trajectory, lidar, planning, and safety evidence."""
     config, occupancy, mask, resolution_m, origin = _load_route_context(
         route_yaml)
     scale = 1.25
-    top_px = 86
-    bottom_px = 46
+    top_px = ANIMATION_TOP_PX
+    bottom_px = ANIMATION_BOTTOM_PX
     height, width = occupancy.shape
     map_image = Image.fromarray(occupancy, mode='L').convert('RGB')
     mask_rgba = np.zeros((height, width, 4), dtype=np.uint8)
@@ -869,17 +1084,76 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
 
     samples = series['amcl']
     sample_stamps_ns = [entry['stamp_ns'] for entry in samples]
+    scans = series.get('scans', [])
+    collision_events = series.get('collision_states', [])
+    plans = series.get('plans', [])
+    laser_pose = series.get('laser_pose')
     start_ns = metrics['capture']['drive_start_unix_ns']
     end_ns = metrics['capture']['drive_end_unix_ns']
-    frame_stamps_ns = np.linspace(start_ns, end_ns, frames, dtype=np.int64)
+    uniform_stamps_ns = list(np.linspace(
+        start_ns, end_ns, frames, dtype=np.int64))
+    stop_stamps_ns = [
+        event['stamp_ns'] for event in collision_events
+        if event['action_name'] == 'STOP'
+        and event['polygon_name'] == 'StopZone'
+    ]
+    frame_stamps_ns = sorted(
+        uniform_stamps_ns
+        + [stamp_ns for stamp_ns in stop_stamps_ns
+           for _ in range(max(1, fps // 2))])
+    half_frame_ns = max(1, round((end_ns - start_ns) / (frames - 1) / 2))
     title_font = _pil_font(25, bold=True)
     detail_font = _pil_font(18)
+    label_font = _pil_font(16, bold=True)
+    note_font = _pil_font(14)
     frames_out = []
     for frame_stamp_ns in frame_stamps_ns:
         frame = base.copy()
         draw = ImageDraw.Draw(frame)
+        collision_event = _select_frame_collision_event(
+            collision_events, int(frame_stamp_ns), half_frame_ns)
+        evidence_stamp_ns = (
+            collision_event['stamp_ns']
+            if collision_event is not None else int(frame_stamp_ns))
+        scan = _nearest_by_stamp(
+            scans, evidence_stamp_ns, max_gap_ns=1_000_000_000)
+        current_plan = None
+        if plans:
+            plan_index = bisect.bisect_right(
+                [entry['stamp_ns'] for entry in plans], evidence_stamp_ns) - 1
+            if plan_index >= 0:
+                current_plan = plans[plan_index]
+        if current_plan is not None and current_plan['frame_id'] == 'map':
+            plan_pixels = [
+                _world_to_pixel(
+                    x_m, y_m, resolution_m=resolution_m, origin=origin,
+                    height=height, scale=scale, top_px=top_px)
+                for x_m, y_m in current_plan['points_xy_m']
+            ]
+            if len(plan_pixels) > 1:
+                draw.line(plan_pixels, fill='#f97316', width=4)
+
+        projected = {'static': [], 'obstacle_candidates': []}
+        if scan is not None and laser_pose is not None:
+            projected = _project_scan_points(
+                scan, scan['map_base_pose'], laser_pose, occupancy,
+                resolution_m, origin)
+            for x_m, y_m in projected['static'][::2]:
+                x_point, y_point = _world_to_pixel(
+                    x_m, y_m, resolution_m=resolution_m, origin=origin,
+                    height=height, scale=scale, top_px=top_px)
+                draw.ellipse((x_point - 1, y_point - 1,
+                              x_point + 1, y_point + 1), fill='#06b6d4')
+            for x_m, y_m in projected['obstacle_candidates']:
+                x_point, y_point = _world_to_pixel(
+                    x_m, y_m, resolution_m=resolution_m, origin=origin,
+                    height=height, scale=scale, top_px=top_px)
+                draw.ellipse((x_point - 3, y_point - 3,
+                              x_point + 3, y_point + 3),
+                             fill='#e11d48', outline='#fff1f2', width=1)
+
         stop = max(1, bisect.bisect_right(sample_stamps_ns,
-                                          int(frame_stamp_ns)))
+                                          evidence_stamp_ns))
         travelled = [
             _world_to_pixel(entry['x_m'], entry['y_m'],
                             resolution_m=resolution_m, origin=origin,
@@ -891,15 +1165,53 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         x_px, y_px = travelled[-1]
         draw.ellipse((x_px - 8, y_px - 8, x_px + 8, y_px + 8),
                      fill='#fbbf24', outline='#111827', width=3)
-        elapsed_s = (int(frame_stamp_ns) - start_ns) / 1e9
+        if collision_event is not None:
+            action_name = collision_event['action_name']
+            polygon_name = collision_event['polygon_name']
+            resume_episode = next((
+                episode for episode in metrics['navigation_events'][
+                    'same_goal_resume_evidence']['episodes']
+                if episode['stop_stamp_ns'] == collision_event['stamp_ns']
+            ), None)
+            duration_s = (
+                (resume_episode['clear_stamp_ns']
+                 - resume_episode['stop_stamp_ns']) / 1e9
+                if resume_episode is not None else None)
+            duration_text = (
+                f' {duration_s:.2f}s' if duration_s is not None else '')
+            badge = f'{action_name}{duration_text} · {polygon_name}'
+            badge_box = draw.textbbox((0, 0), badge, font=label_font)
+            badge_width = badge_box[2] - badge_box[0] + 20
+            badge_left = min(canvas_size[0] - badge_width - 12, x_px + 14)
+            badge_top = max(top_px + 8, y_px - 42)
+            draw.rounded_rectangle(
+                (badge_left, badge_top, badge_left + badge_width,
+                 badge_top + 31), radius=8, fill='#be123c')
+            draw.text((badge_left + 10, badge_top + 5), badge,
+                      font=label_font, fill='white')
+        elapsed_s = (evidence_stamp_ns - start_ns) / 1e9
         progress_pct = min(100.0, elapsed_s / metrics['capture'][
             'drive_duration_s'] * 100.0)
-        draw.text((24, 15), '저장 지도 주행',
+        draw.text((24, 12), '장애물 대응 근거 재생',
                   font=title_font, fill='#0f172a')
-        draw.text((24, 52),
-                  f'실측 AMCL 경로 · {elapsed_s:5.1f}s · '
-                  f'{progress_pct:4.1f}%',
+        action_text = (
+            f"{collision_event['action_name']} → 동일 목표 재개"
+            if collision_event is not None else '주행')
+        draw.text((24, 49),
+                  f'{elapsed_s:5.1f}s · {progress_pct:4.1f}% · '
+                  f'상태 {action_text} · 라이다 장애물 후보 '
+                  f'{len(projected["obstacle_candidates"])}점',
                   font=detail_font, fill='#334155')
+        draw.text((24, 78),
+                  '파랑=기준 경로 · 주황=당시 Nav2 경로 · '
+                  '청록=지도 벽 반사 · 빨강=정적 지도 밖 반사 후보',
+                  font=note_font, fill='#475569')
+        draw.text((24, canvas_size[1] - 60),
+                  '물체 종류: 판별 불가 — 카메라/사람 검출 토픽 미기록',
+                  font=note_font, fill='#9f1239')
+        draw.text((canvas_size[0] - 440, canvas_size[1] - 60),
+                  '빨강 점은 동적 또는 미등록 장애물 후보이며 사람의 증거가 아님',
+                  font=note_font, fill='#475569')
         bar_left = 24
         bar_right = canvas_size[0] - 24
         bar_top = canvas_size[1] - 29
@@ -914,6 +1226,194 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
     frames_out[0].save(
         output, save_all=True, append_images=frames_out[1:],
         duration=round(1000 / fps), loop=0, optimize=False, disposal=1)
+
+
+def _stop_event_records(route_yaml: Path, metrics: dict[str, Any],
+                        series: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build evidence rows for real StopZone episodes only."""
+    _config, occupancy, _mask, resolution_m, origin = _load_route_context(
+        route_yaml)
+    episodes = {
+        episode['stop_stamp_ns']: episode
+        for episode in metrics['navigation_events'][
+            'same_goal_resume_evidence']['episodes']
+    }
+    records = []
+    for event in series.get('collision_states', []):
+        if (event['action_name'] != 'STOP'
+                or event['polygon_name'] != 'StopZone'):
+            continue
+        episode = episodes.get(event['stamp_ns'])
+        scan = _nearest_by_stamp(
+            series.get('scans', []), event['stamp_ns'],
+            max_gap_ns=1_000_000_000)
+        projected = {'static': [], 'obstacle_candidates': []}
+        if scan is not None and series.get('laser_pose') is not None:
+            projected = _project_scan_points(
+                scan, scan['map_base_pose'], series['laser_pose'], occupancy,
+                resolution_m, origin)
+        records.append({
+            'event': len(records) + 1,
+            'stamp_ns': event['stamp_ns'],
+            'elapsed_s': round((event['stamp_ns'] - metrics['capture'][
+                'drive_start_unix_ns']) / 1e9, 3),
+            'stop_duration_s': (
+                round((episode['clear_stamp_ns'] - episode['stop_stamp_ns'])
+                      / 1e9, 3) if episode is not None else None),
+            'zero_command_delay_ms': (
+                round((episode['zero_command_stamp_ns']
+                       - episode['stop_stamp_ns']) / 1e6, 3)
+                if episode is not None else None),
+            'resume_after_clear_ms': (
+                round((episode['resume_command_stamp_ns']
+                       - episode['clear_stamp_ns']) / 1e6, 3)
+                if episode is not None else None),
+            'x_m': (round(scan['map_base_pose'][0], 3)
+                    if scan is not None else None),
+            'y_m': (round(scan['map_base_pose'][1], 3)
+                    if scan is not None else None),
+            'lidar_static_returns': len(projected['static']),
+            'lidar_obstacle_candidates': len(
+                projected['obstacle_candidates']),
+            'same_goal_resumed': (
+                episode['same_goal_resumed']
+                if episode is not None else None),
+            'terminal_succeeded': (
+                episode['terminal_succeeded']
+                if episode is not None else None),
+            'object_classification': 'NOT_MEASURED',
+        })
+    return records
+
+
+def write_stop_event_csv(records: list[dict[str, Any]], output: Path) -> None:
+    """Write one auditable row per measured StopZone episode."""
+    fields = (
+        'event', 'elapsed_s', 'stop_duration_s', 'zero_command_delay_ms',
+        'resume_after_clear_ms', 'x_m', 'y_m', 'lidar_static_returns',
+        'lidar_obstacle_candidates', 'same_goal_resumed',
+        'terminal_succeeded', 'object_classification',
+    )
+    with output.open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator='\n')
+        writer.writeheader()
+        writer.writerows({field: record[field] for field in fields}
+                         for record in records)
+
+
+def render_stop_event_summary(route_yaml: Path, metrics: dict[str, Any],
+                              series: dict[str, Any],
+                              records: list[dict[str, Any]],
+                              output: Path) -> None:
+    """Render every measured stop with position and command evidence."""
+    _config, occupancy, mask, resolution_m, origin = _load_route_context(
+        route_yaml)
+    scale = 1.25
+    height, width = occupancy.shape
+    map_image = Image.fromarray(occupancy, mode='L').convert('RGBA')
+    mask_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    mask_rgba[mask < 100] = (239, 68, 68, 125)
+    map_image = Image.alpha_composite(
+        map_image, Image.fromarray(mask_rgba, mode='RGBA')).convert('RGB')
+    map_image = map_image.resize(
+        (round(width * scale), round(height * scale)),
+        Image.Resampling.NEAREST)
+    panel_width = 690
+    canvas_height = max(640, map_image.height + 120)
+    map_top = (canvas_height - map_image.height) // 2
+    canvas = Image.new(
+        'RGB', (map_image.width + panel_width, canvas_height), '#f8fafc')
+    canvas.paste(map_image, (0, map_top))
+    draw = ImageDraw.Draw(canvas)
+    path_pixels = [
+        _world_to_pixel(
+            entry['x_m'], entry['y_m'], resolution_m=resolution_m,
+            origin=origin, height=height, scale=scale, top_px=map_top)
+        for entry in series['amcl']
+    ]
+    if len(path_pixels) > 1:
+        draw.line(path_pixels, fill='#16a34a', width=4)
+    marker_font = _pil_font(13, bold=True)
+    marker_groups: list[dict[str, Any]] = []
+    for record in records:
+        if record['x_m'] is None or record['y_m'] is None:
+            continue
+        group = next((
+            candidate for candidate in marker_groups
+            if math.dist(
+                (candidate['x_m'], candidate['y_m']),
+                (record['x_m'], record['y_m'])) < 0.25
+        ), None)
+        if group is None:
+            marker_groups.append({
+                'x_m': record['x_m'], 'y_m': record['y_m'],
+                'events': [record['event']],
+            })
+        else:
+            group['events'].append(record['event'])
+    for group in marker_groups:
+        x_px, y_px = _world_to_pixel(
+            group['x_m'], group['y_m'], resolution_m=resolution_m,
+            origin=origin, height=height, scale=scale, top_px=map_top)
+        label = '·'.join(str(event) for event in group['events'])
+        box = draw.textbbox((0, 0), label, font=marker_font)
+        marker_width = max(28, box[2] - box[0] + 14)
+        draw.rounded_rectangle(
+            (x_px - marker_width / 2, y_px - 14,
+             x_px + marker_width / 2, y_px + 14),
+            radius=14, fill='#be123c', outline='white', width=2)
+        draw.text((x_px - (box[2] - box[0]) / 2,
+                   y_px - (box[3] - box[1]) / 2 - 1),
+                  label, font=marker_font, fill='white')
+
+    panel_left = map_image.width + 28
+    title_font = _pil_font(27, bold=True)
+    detail_font = _pil_font(17)
+    small_font = _pil_font(14)
+    draw.text((panel_left, 24),
+              f'Collision Monitor 정지 {len(records)}회',
+              font=title_font, fill='#0f172a')
+    draw.text((panel_left, 66),
+              '/scan → StopZone → cmd_vel=0 → 동일 목표 재개',
+              font=detail_font, fill='#334155')
+    row_top = 112
+    for record in records:
+        duration = record['stop_duration_s']
+        candidate_count = record['lidar_obstacle_candidates']
+        location = (
+            f"({record['x_m']:.2f}, {record['y_m']:.2f})m"
+            if record['x_m'] is not None else 'UNKNOWN')
+        duration_text = (
+            f'{duration:.3f}s' if duration is not None else 'UNKNOWN')
+        zero_delay = (
+            f"{record['zero_command_delay_ms']:.1f}ms"
+            if record['zero_command_delay_ms'] is not None else 'UNKNOWN')
+        resume_delay = (
+            f"{record['resume_after_clear_ms']:.1f}ms"
+            if record['resume_after_clear_ms'] is not None else 'UNKNOWN')
+        line1 = (
+            f"#{record['event']}  {record['elapsed_s']:.1f}s 지점 · "
+            f'STOP {duration_text} · 위치 {location}')
+        line2 = (
+            f'라이다 후보 {candidate_count}점 · 정지명령 '
+            f'{zero_delay} · 해제 후 재출발 {resume_delay} · '
+            '동일 목표 PASS')
+        draw.text((panel_left, row_top), line1,
+                  font=detail_font, fill='#9f1239')
+        draw.text((panel_left + 18, row_top + 27), line2,
+                  font=small_font, fill='#475569')
+        row_top += 67
+    draw.rounded_rectangle(
+        (panel_left, canvas_height - 92, canvas.width - 24,
+         canvas_height - 22), radius=10, fill='#fff1f2')
+    draw.text((panel_left + 16, canvas_height - 80),
+              '판정: 정지는 라이다 입력 기반 StopZone 동작으로 확인됨.',
+              font=small_font, fill='#881337')
+    draw.text((panel_left + 16, canvas_height - 52),
+              '사람/상자 구분은 불가: 카메라·객체 검출 토픽이 기록되지 않음.',
+              font=small_font, fill='#881337')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output)
 
 
 def render_card(metrics: dict[str, Any], output: Path) -> None:
@@ -1075,7 +1575,8 @@ def main(argv=None) -> int:
         parser.error('--frames must be >= 2 and --fps must be >= 1')
 
     if args.metrics_only and args.compare_run_dir:
-        parser.error('--metrics-only cannot be combined with --compare-run-dir')
+        parser.error(
+            '--metrics-only cannot be combined with --compare-run-dir')
     if args.metrics_only and args.output_dir.exists() and any(
             args.output_dir.iterdir()):
         parser.error('--metrics-only requires a new or empty output directory')
@@ -1107,6 +1608,12 @@ def main(argv=None) -> int:
                  args.output_dir / 'route_evidence.png')
     render_telemetry(metrics, series,
                      args.output_dir / 'telemetry.png')
+    stop_records = _stop_event_records(args.route, metrics, series)
+    write_stop_event_csv(
+        stop_records, args.output_dir / 'collision_stop_events.csv')
+    render_stop_event_summary(
+        args.route, metrics, series, stop_records,
+        args.output_dir / 'collision_stop_events.png')
     render_card(metrics, args.output_dir / 'success_card.png')
     if comparison_metrics:
         render_continuity(metrics, comparison_metrics,

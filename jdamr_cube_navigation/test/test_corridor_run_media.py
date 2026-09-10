@@ -1,11 +1,14 @@
 """Regression tests for corridor evidence extraction and media helpers."""
 
-from pathlib import Path
+import math
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from PIL import Image, ImageSequence
-import pytest
+
+import numpy as np
+import pytest  # noqa: I201
 import yaml  # noqa: I201
 
 
@@ -13,7 +16,12 @@ EVALUATION_ROOT = Path(__file__).resolve().parents[1] / 'evaluation'
 sys.path.insert(0, str(EVALUATION_ROOT))
 
 from corridor_run_media import (  # noqa: E402,I100,I201
+    ANIMATION_BOTTOM_PX,
+    ANIMATION_TOP_PX,
+    _compose_pose2d,
     _plan_observation,
+    _project_scan_points,
+    _select_frame_collision_event,
     analyse_run,
     gap_statistics,
     parse_route_log,
@@ -209,6 +217,49 @@ def test_navigation_events_rejects_pose_frame_mismatch_and_nonfinite_cmd():
         'data_gap_reasons']
 
 
+def test_scan_projection_distinguishes_map_wall_and_free_space_returns():
+    """Label only free-space endpoints as obstacle candidates."""
+    occupancy = np.full((20, 20), 254, dtype='uint8')
+    occupancy[:, 15] = 0
+    scan = {
+        'angle_min_rad': 0.0,
+        'angle_increment_rad': math.pi / 2,
+        'range_min_m': 0.1,
+        'range_max_m': 20.0,
+        'ranges_m': (5.0, 3.0),
+    }
+    result = _project_scan_points(
+        scan, (10.0, 10.0, 0.0), (0.0, 0.0, 0.0), occupancy,
+        1.0, [0.0, 0.0, 0.0], wall_margin_cells=0)
+
+    assert result['static'] == [(15.0, 10.0)]
+    assert result['obstacle_candidates'][0] == pytest.approx((10.0, 13.0))
+
+
+def test_frame_collision_event_prefers_stop_and_ignores_startup_fault():
+    """Make brief safety events visible without presenting startup faults."""
+    events = [
+        {'stamp_ns': 100, 'action_name': 'STOP',
+         'polygon_name': 'invalid source'},
+        {'stamp_ns': 102, 'action_name': 'SLOWDOWN',
+         'polygon_name': 'SlowdownZone'},
+        {'stamp_ns': 104, 'action_name': 'STOP',
+         'polygon_name': 'StopZone'},
+    ]
+
+    selected = _select_frame_collision_event(events, 103, 4)
+
+    assert selected['stamp_ns'] == 104
+
+
+def test_compose_pose2d_rotates_child_translation():
+    """Compose child translation in the parent's rotated frame."""
+    result = _compose_pose2d(
+        (1.0, 2.0, math.pi / 2), (3.0, 0.0, math.pi / 2))
+
+    assert result == pytest.approx((1.0, 5.0, math.pi))
+
+
 def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
         tmp_path, monkeypatch):
     """Integrate event extraction without a second bag read or ROS runtime."""
@@ -271,7 +322,8 @@ def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
         reads.append(topics)
         return iter(messages)
 
-    monkeypatch.setattr('corridor_run_media.read_navigation_messages', fake_read)
+    monkeypatch.setattr(
+        'corridor_run_media.read_navigation_messages', fake_read)
     monkeypatch.setattr(
         'corridor_run_media.inspect',
         lambda _bag: {
@@ -355,7 +407,9 @@ def test_animation_preserves_map_outline_across_gif_frames(tmp_path):
     gif = Image.open(output)
     wall_counts = []
     for frame in ImageSequence.Iterator(gif):
-        crop = frame.convert('RGB').crop((0, 86, gif.width, gif.height - 46))
+        crop = frame.convert('RGB').crop((
+            0, ANIMATION_TOP_PX, gif.width,
+            gif.height - ANIMATION_BOTTOM_PX))
         wall_counts.append(sum(
             1 for red, green, blue in crop.getdata()
             if red < 40 and green < 40 and blue < 40))
