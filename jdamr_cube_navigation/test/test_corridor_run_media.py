@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+from PIL import Image, ImageSequence
 import pytest
 import yaml  # noqa: I201
 
@@ -16,6 +17,7 @@ from corridor_run_media import (  # noqa: E402,I100,I201
     analyse_run,
     gap_statistics,
     parse_route_log,
+    render_animation,
     summarize_navigation_events,
     write_media_manifest,
 )
@@ -314,3 +316,48 @@ def test_media_manifest_hashes_generated_artifacts(tmp_path):
     assert manifest['files'][0]['file'] == 'sample.csv'
     assert manifest['files'][0]['size_bytes'] == artifact.stat().st_size
     assert len(manifest['files'][0]['sha256']) == 64
+
+
+def test_animation_preserves_map_outline_across_gif_frames(tmp_path):
+    """Static map walls must not vanish between optimized GIF frames."""
+    map_image = Image.new('L', (80, 50), 205)
+    for x in range(80):
+        map_image.putpixel((x, 10), 0)
+        map_image.putpixel((x, 40), 0)
+    map_image.save(tmp_path / 'map.pgm')
+    Image.new('L', (80, 50), 255).save(tmp_path / 'mask.pgm')
+    for name in ('map', 'mask'):
+        (tmp_path / f'{name}.yaml').write_text(
+            f'image: {name}.pgm\nresolution: 0.1\n'
+            'origin: [0.0, 0.0, 0.0]\nnegate: 0\n'
+            'occupied_thresh: 0.65\nfree_thresh: 0.196\n',
+            encoding='utf-8')
+    route = tmp_path / 'route.yaml'
+    route.write_text(
+        'map_yaml: ' + str(tmp_path / 'map.yaml') + '\n'
+        'keepout_mask_yaml: ' + str(tmp_path / 'mask.yaml') + '\n'
+        'start_pose: {x: 1.0, y: 2.0}\n'
+        'waypoints:\n  - {id: end, x: 6.0, y: 2.0}\n',
+        encoding='utf-8')
+    output = tmp_path / 'route.gif'
+    metrics = {'capture': {
+        'drive_start_unix_ns': 1_000_000_000,
+        'drive_end_unix_ns': 2_000_000_000,
+        'drive_duration_s': 1.0,
+    }}
+    series = {'amcl': [
+        {'stamp_ns': 1_000_000_000, 'x_m': 1.0, 'y_m': 2.0},
+        {'stamp_ns': 2_000_000_000, 'x_m': 6.0, 'y_m': 2.0},
+    ]}
+
+    render_animation(route, metrics, series, output, frames=4, fps=2)
+
+    gif = Image.open(output)
+    wall_counts = []
+    for frame in ImageSequence.Iterator(gif):
+        crop = frame.convert('RGB').crop((0, 86, gif.width, gif.height - 46))
+        wall_counts.append(sum(
+            1 for red, green, blue in crop.getdata()
+            if red < 40 and green < 40 and blue < 40))
+    assert min(wall_counts) > 0
+    assert len(set(wall_counts)) == 1

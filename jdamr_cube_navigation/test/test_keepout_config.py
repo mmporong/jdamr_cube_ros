@@ -852,6 +852,13 @@ def test_autorun_never_drives_without_passing_every_gate():
     assert '2>/dev/null) || n=0' in source
     assert '2>/dev/null || echo 0)' not in source
     assert 'jdamr_abort' in source
+    assert '--wait-for-start' in source
+    assert 'START_FILE="$HOME/jdamr_start"' in source
+    assert source.index('출발 신호 확인') < source.index('Nav2 와 기록 기동')
+    wait_block = source.split('출발 신호 대기', 1)[1].split(
+        '출발 신호 확인', 1)[0]
+    assert 'if [ -e "$ABORT_FILE" ]; then' in wait_block
+    assert 'rm -f -- "$START_FILE"' in source
     # The stack must come down even when a gate aborts the script.
     assert 'trap stop_stack EXIT' in source
     # Track the exact process groups started by this run.  Broad pkill patterns
@@ -865,7 +872,7 @@ def test_autorun_never_drives_without_passing_every_gate():
     assert '주행 중 중단 파일 발견' in source
     # The abort sentinel is checked once more immediately before process
     # creation so a request arriving after the delay loop cannot race launch.
-    assert source.count('if [ -e "$ABORT_FILE" ]; then') >= 3
+    assert source.count('if [ -e "$ABORT_FILE" ]; then') >= 5
     before_departure = source.split('say "출발"', 1)[0]
     assert before_departure.count('if [ -e "$ABORT_FILE" ]; then') >= 2
     assert source.index('배치 완료로 간주') < source.index('Nav2 와 기록 기동')

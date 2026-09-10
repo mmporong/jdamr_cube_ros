@@ -96,8 +96,17 @@ rm -f "$HOME/jdamr_abort"
 run_id="real_combined_obstacle_$(date +%Y%m%dT%H%M%S)"
 setsid nohup bash \
   "$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation/scripts/corridor_autorun.sh" \
-  --run-id "$run_id" --delay 0 --navigation-profile obstacle_base_candidate \
+  --run-id "$run_id" --delay 0 --wait-for-start \
+  --navigation-profile obstacle_base_candidate \
   > "$HOME/jdamr_artifacts/${run_id}.start.log" 2>&1 &
+```
+
+이 명령은 Nav2와 모터 명령을 시작하지 않고 `$HOME/jdamr_start` 신호를 기다린다. 로봇을
+home 위치와 방향에 맞춰 놓고 박스·카메라 배치를 마친 다음 아래 신호를 한 번 만든다.
+실행기는 신호 파일을 즉시 소비한 뒤 자동 점검과 기록을 시작한다.
+
+```bash
+touch "$HOME/jdamr_start"
 ```
 
 정상 중단 요청은 파이에서 다음 한 줄만 사용한다. 실행기는 현재 goal을 취소하고 자신이
@@ -147,6 +156,21 @@ touch "$HOME/jdamr_abort"
 파이의 실행 디렉터리를 노트북 `$HOME/jdamr_artifacts/` 아래로 한 번만 복사한 뒤 기존
 후처리기를 사용한다. 원본 MCAP과 현장 영상은 복제하지 않고, 지표·궤적·대표 미디어만
 별도 출력 디렉터리에 생성한다.
+
+### 기록과 미디어 관리
+
+- 파이는 제어와 같은 ROS 시간축으로 `/scan`, `/odom`, TF, AMCL, `/plan`, Collision
+  Monitor 상태, 제어 전·후 속도, 배터리와 goal status를 MCAP 하나에 기록한다.
+- 파이에는 RViz, 화면 녹화, 영상 인코딩을 띄우지 않는다. 제어 루프와 MCAP 기록을 먼저
+  보호하고 시각화는 주행이 끝난 뒤 노트북에서 만든다.
+- 현장 영상은 고정 카메라의 원본 한 벌만 보관한다. 카메라 추종이나 디지털 줌을 쓰지
+  않고 박스 우회 지점과 횡단 지점이 보이도록 촬영한다.
+- 원본 MCAP·현장 영상은 실행 디렉터리에 보존하고, GIF·MP4·PNG·CSV는 별도
+  `<run_id>_evidence` 디렉터리에 생성한다. 동일 원본의 중간 복사본은 만들지 않는다.
+- `media_manifest.yaml`에는 원본 MCAP·route log의 해시와 생성 파일별 크기·SHA-256을
+  기록한다. 포트폴리오에는 이 manifest에 포함된 산출물만 사용한다.
+- 경로 애니메이션의 표시 이름은 `저장 지도 주행`이다. 매 프레임에 저장 지도 전체를
+  다시 합성해 GIF 최적화 과정에서도 검은 지도 외곽선이 사라지지 않게 한다.
 
 ```bash
 cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"

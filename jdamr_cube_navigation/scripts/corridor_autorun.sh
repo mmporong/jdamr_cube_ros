@@ -22,6 +22,7 @@ RESOURCE_SOAK_S=75
 PREFLIGHT_TIMEOUT_S=180
 ROUTE_TIMEOUT_S=1800
 EXECUTE=1
+WAIT_FOR_START=0
 NAVIGATION_PROFILE=corridor
 RUN_ID="corridor_autorun_$(date +%Y%m%dT%H%M%S)"
 while [ $# -gt 0 ]; do
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
       case "$2" in --*) echo "--run-id 값이 필요하다" >&2; exit 2 ;; esac
       RUN_ID="$2"; shift 2 ;;
     --no-execute) EXECUTE=0; shift ;;
+    --wait-for-start) WAIT_FOR_START=1; shift ;;
     --navigation-profile)
       [ "$#" -ge 2 ] || { echo "--navigation-profile 값이 필요하다" >&2; exit 2; }
       case "$2" in
@@ -64,6 +66,7 @@ A="$HOME/jdamr_artifacts"
 mkdir -p "$A"
 LOG="$A/$RUN_ID.autorun.log"
 ABORT_FILE="$HOME/jdamr_abort"
+START_FILE="$HOME/jdamr_start"
 say() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1" | tee -a "$LOG"; }
 
 WIFI_PID=""
@@ -145,6 +148,22 @@ while [ "$remaining_s" -gt 0 ]; do
   sleep 5
   remaining_s=$(( remaining_s - 5 ))
 done
+if [ -e "$ABORT_FILE" ]; then
+  say "중단 파일 발견. 기동하지 않는다."
+  exit 6
+fi
+if [ "$WAIT_FOR_START" -eq 1 ]; then
+  say "출발 신호 대기: $START_FILE"
+  while [ ! -e "$START_FILE" ]; do
+    if [ -e "$ABORT_FILE" ]; then
+      say "중단 파일 발견. 기동하지 않는다."
+      exit 6
+    fi
+    sleep 1
+  done
+  rm -f -- "$START_FILE"
+  say "출발 신호 확인"
+fi
 if [ -e "$ABORT_FILE" ]; then
   say "중단 파일 발견. 기동하지 않는다."
   exit 6

@@ -894,7 +894,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         elapsed_s = (int(frame_stamp_ns) - start_ns) / 1e9
         progress_pct = min(100.0, elapsed_s / metrics['capture'][
             'drive_duration_s'] * 100.0)
-        draw.text((24, 15), 'JD-AMR 복도 자율주행 완주 기록',
+        draw.text((24, 15), '저장 지도 주행',
                   font=title_font, fill='#0f172a')
         draw.text((24, 52),
                   f'실측 AMCL 경로 · {elapsed_s:5.1f}s · '
@@ -913,7 +913,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
     output.parent.mkdir(parents=True, exist_ok=True)
     frames_out[0].save(
         output, save_all=True, append_images=frames_out[1:],
-        duration=round(1000 / fps), loop=0, optimize=True, disposal=2)
+        duration=round(1000 / fps), loop=0, optimize=False, disposal=1)
 
 
 def render_card(metrics: dict[str, Any], output: Path) -> None:
