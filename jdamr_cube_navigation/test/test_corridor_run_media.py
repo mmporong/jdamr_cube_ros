@@ -18,8 +18,10 @@ sys.path.insert(0, str(EVALUATION_ROOT))
 from corridor_run_media import (  # noqa: E402,I100,I201
     ANIMATION_BOTTOM_PX,
     ANIMATION_TOP_PX,
+    _cluster_points,
     _compose_pose2d,
     _plan_observation,
+    _point_to_polyline_distance,
     _project_scan_points,
     _select_frame_collision_event,
     analyse_run,
@@ -258,6 +260,25 @@ def test_compose_pose2d_rotates_child_translation():
         (1.0, 2.0, math.pi / 2), (3.0, 0.0, math.pi / 2))
 
     assert result == pytest.approx((1.0, 5.0, math.pi))
+
+
+def test_point_to_polyline_distance_measures_lateral_route_departure():
+    """Measure cross-track distance instead of distance to one waypoint."""
+    distance = _point_to_polyline_distance(
+        (2.0, 1.5), [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)])
+
+    assert distance == pytest.approx(1.5)
+
+
+def test_lidar_clustering_boxes_nearby_returns_without_object_label():
+    """Group measured endpoints while leaving object identity unknown."""
+    clusters = _cluster_points([
+        (0.0, 0.0), (0.1, 0.0), (0.05, 0.08),
+        (3.0, 3.0), (3.1, 3.0),
+    ], radius_m=0.2, min_points=3)
+
+    assert len(clusters) == 1
+    assert len(clusters[0]) == 3
 
 
 def test_analyse_run_collects_navigation_events_in_existing_reader_loop(

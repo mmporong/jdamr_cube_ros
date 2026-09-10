@@ -77,6 +77,7 @@ ANIMATION_TOP_PX = 112
 ANIMATION_BOTTOM_PX = 42
 DEFAULT_ANIMATION_FRAMES = 384
 DEFAULT_ANIMATION_FPS = 24
+DEVIATION_HIGHLIGHT_M = 0.12
 COLLISION_PRIORITY = {
     'DO_NOTHING': 0,
     'LIMIT': 1,
@@ -305,6 +306,61 @@ def _select_frame_collision_event(
         COLLISION_PRIORITY.get(event['action_name'], -1),
         -abs(event['stamp_ns'] - frame_stamp_ns),
     ))
+
+
+def _point_to_polyline_distance(
+        point: tuple[float, float],
+        polyline: list[tuple[float, float]]) -> float:
+    """Return the shortest planar distance to a route polyline."""
+    if not polyline:
+        raise ValueError('route polyline is empty')
+    if len(polyline) == 1:
+        return math.dist(point, polyline[0])
+    x_m, y_m = point
+    distances = []
+    for start, end in zip(polyline, polyline[1:]):
+        delta_x = end[0] - start[0]
+        delta_y = end[1] - start[1]
+        length_squared = delta_x ** 2 + delta_y ** 2
+        if length_squared == 0.0:
+            distances.append(math.dist(point, start))
+            continue
+        projection = max(0.0, min(1.0, (
+            (x_m - start[0]) * delta_x
+            + (y_m - start[1]) * delta_y
+        ) / length_squared))
+        nearest_x = start[0] + projection * delta_x
+        nearest_y = start[1] + projection * delta_y
+        distances.append(math.hypot(x_m - nearest_x, y_m - nearest_y))
+    return min(distances)
+
+
+def _cluster_points(points: list[tuple[float, float]],
+                    *, radius_m: float = 0.18,
+                    min_points: int = 3) -> list[list[tuple[float, float]]]:
+    """Group nearby lidar endpoints without assigning an object class."""
+    remaining = set(range(len(points)))
+    clusters = []
+    radius_squared = radius_m ** 2
+    while remaining:
+        seed = remaining.pop()
+        cluster_indexes = {seed}
+        frontier = [seed]
+        while frontier:
+            current = frontier.pop()
+            x_m, y_m = points[current]
+            neighbours = [
+                index for index in remaining
+                if ((points[index][0] - x_m) ** 2
+                    + (points[index][1] - y_m) ** 2) <= radius_squared
+            ]
+            for index in neighbours:
+                remaining.remove(index)
+                cluster_indexes.add(index)
+                frontier.append(index)
+        if len(cluster_indexes) >= min_points:
+            clusters.append([points[index] for index in cluster_indexes])
+    return clusters
 
 
 def _command_state(command: Any) -> str:
@@ -1079,6 +1135,11 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                         top_px=top_px)
         for x_m, y_m in planned
     ]
+    route_deviations_m = [
+        _point_to_polyline_distance(
+            (entry['x_m'], entry['y_m']), planned)
+        for entry in series['amcl']
+    ]
     base_draw.line(planned_pixels, fill='#2563eb', width=3)
     for point in planned_pixels[1:]:
         base_draw.ellipse((point[0] - 3, point[1] - 3,
@@ -1153,6 +1214,29 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                 draw.ellipse((x_point - 3, y_point - 3,
                               x_point + 3, y_point + 3),
                              fill='#e11d48', outline='#fff1f2', width=1)
+            lidar_clusters = [
+                cluster for cluster in _cluster_points(
+                    projected['obstacle_candidates'])
+                if (max(point[0] for point in cluster)
+                    - min(point[0] for point in cluster)) <= 1.5
+                and (max(point[1] for point in cluster)
+                     - min(point[1] for point in cluster)) <= 1.5
+            ]
+            for cluster in sorted(
+                    lidar_clusters, key=len, reverse=True)[:6]:
+                cluster_pixels = [
+                    _world_to_pixel(
+                        x_m, y_m, resolution_m=resolution_m,
+                        origin=origin, height=height, scale=scale,
+                        top_px=top_px)
+                    for x_m, y_m in cluster
+                ]
+                left = min(point[0] for point in cluster_pixels) - 5
+                top = min(point[1] for point in cluster_pixels) - 5
+                right = max(point[0] for point in cluster_pixels) + 5
+                bottom = max(point[1] for point in cluster_pixels) + 5
+                draw.rectangle(
+                    (left, top, right, bottom), outline='#be123c', width=2)
 
         stop = max(1, bisect.bisect_right(sample_stamps_ns,
                                           evidence_stamp_ns))
@@ -1163,7 +1247,13 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
             for entry in samples[:stop]
         ]
         if len(travelled) > 1:
-            draw.line(travelled, fill='#16a34a', width=5)
+            for index, (start, end) in enumerate(
+                    zip(travelled, travelled[1:]), start=1):
+                color = (
+                    '#7e22ce'
+                    if route_deviations_m[index] >= DEVIATION_HIGHLIGHT_M
+                    else '#16a34a')
+                draw.line((start, end), fill=color, width=5)
         x_px, y_px = travelled[-1]
         draw.ellipse((x_px - 8, y_px - 8, x_px + 8, y_px + 8),
                      fill='#fbbf24', outline='#111827', width=3)
@@ -1199,14 +1289,16 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         action_text = (
             f"{collision_event['action_name']} → 동일 목표 재개"
             if collision_event is not None else '주행')
+        current_deviation_m = route_deviations_m[stop - 1]
         draw.text((24, 49),
                   f'{elapsed_s:5.1f}s · {progress_pct:4.1f}% · '
-                  f'상태 {action_text} · 라이다 장애물 후보 '
+                  f'상태 {action_text} · 경로 이탈 '
+                  f'{current_deviation_m:.2f}m · 라이다 후보 '
                   f'{len(projected["obstacle_candidates"])}점',
                   font=detail_font, fill='#334155')
         draw.text((24, 78),
-                  '파랑=기준 경로 · 주황=당시 Nav2 경로 · '
-                  '청록=지도 벽 반사 · 빨강=정적 지도 밖 반사 후보',
+                  '파랑=기준 · 초록=실측 · 자주=0.12m+ 이탈 · '
+                  '주황=당시 Nav2 · 빨강 점/박스=라이다 장애물 후보',
                   font=note_font, fill='#475569')
         bar_left = 24
         bar_right = canvas_size[0] - 24
@@ -1491,6 +1583,30 @@ def write_csv(series: dict[str, Any], metrics: dict[str, Any],
             })
 
 
+def write_route_deviation_csv(route_yaml: Path, series: dict[str, Any],
+                              metrics: dict[str, Any], output: Path) -> None:
+    """Write measured cross-track distance from the waypoint polyline."""
+    config, _occupancy, _mask, _resolution_m, _origin = _load_route_context(
+        route_yaml)
+    planned = [(config['start_pose']['x'], config['start_pose']['y'])]
+    planned.extend((entry['x'], entry['y']) for entry in config['waypoints'])
+    start_ns = metrics['capture']['drive_start_unix_ns']
+    fields = ('elapsed_s', 'x_m', 'y_m', 'route_deviation_m', 'highlighted')
+    with output.open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator='\n')
+        writer.writeheader()
+        for entry in series['amcl']:
+            deviation_m = _point_to_polyline_distance(
+                (entry['x_m'], entry['y_m']), planned)
+            writer.writerow({
+                'elapsed_s': round((entry['stamp_ns'] - start_ns) / 1e9, 6),
+                'x_m': entry['x_m'],
+                'y_m': entry['y_m'],
+                'route_deviation_m': round(deviation_m, 6),
+                'highlighted': deviation_m >= DEVIATION_HIGHLIGHT_M,
+            })
+
+
 def write_comparison_csv(records: list[dict[str, Any]],
                          output: Path) -> None:
     """Write the plotted control-path continuity values as a table."""
@@ -1590,6 +1706,9 @@ def main(argv=None) -> int:
     (args.output_dir / 'metrics.json').write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')
     write_csv(series, metrics, args.output_dir)
+    write_route_deviation_csv(
+        args.route, series, metrics,
+        args.output_dir / 'route_deviation.csv')
     if args.metrics_only:
         write_media_manifest(args.output_dir, metrics)
         print(json.dumps({
