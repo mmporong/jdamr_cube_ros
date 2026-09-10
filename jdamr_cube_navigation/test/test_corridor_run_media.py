@@ -25,6 +25,7 @@ from corridor_run_media import (  # noqa: E402,I100,I201
     _point_to_polyline_distance,
     _project_scan_points,
     _select_frame_collision_event,
+    _select_route_blocking_clusters,
     _stop_replan_events,
     _update_static_obstacle_tracks,
     analyse_run,
@@ -297,6 +298,19 @@ def test_lidar_tracking_keeps_confirmed_static_object_fixed():
 
     assert tracks[0]['hits'] == 3
     assert tracks[0]['bounds'] == fixed_bounds
+
+
+def test_route_blocking_selection_keeps_only_closest_cluster_on_old_plan():
+    """Exclude persistent lidar clusters unrelated to a plan change."""
+    blocking = [(1.0, 0.1), (1.1, 0.1), (1.05, 0.2)]
+    nearby_but_not_closest = [(2.0, 0.3), (2.1, 0.3), (2.05, 0.4)]
+    unrelated = [(3.0, 1.0), (3.1, 1.0), (3.05, 1.1)]
+
+    selected = _select_route_blocking_clusters(
+        [unrelated, nearby_but_not_closest, blocking],
+        [(0.0, 0.0), (4.0, 0.0)], max_distance_m=0.4, limit=1)
+
+    assert selected == [blocking]
 
 
 def test_stop_replan_pairs_stop_with_material_plan_update():

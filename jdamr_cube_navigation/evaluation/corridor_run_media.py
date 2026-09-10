@@ -454,6 +454,28 @@ def _update_static_obstacle_tracks(
     return active
 
 
+def _select_route_blocking_clusters(
+        clusters: list[list[tuple[float, float]]],
+        old_plan: list[tuple[float, float]],
+        *, max_distance_m: float = 0.4,
+        limit: int = 1) -> list[list[tuple[float, float]]]:
+    """Select only clusters closest enough to obstruct a superseded plan."""
+    if not old_plan or limit < 1:
+        return []
+    ranked = sorted(
+        (
+            min(_point_to_polyline_distance(point, old_plan)
+                for point in cluster),
+            cluster,
+        )
+        for cluster in clusters if cluster
+    )
+    return [
+        cluster for distance_m, cluster in ranked[:limit]
+        if distance_m <= max_distance_m
+    ]
+
+
 def _command_state(command: Any) -> str:
     """Classify a command without treating non-finite values as motion."""
     components = (
@@ -1431,16 +1453,21 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                 and (max(point[1] for point in cluster)
                      - min(point[1] for point in cluster)) <= 1.5
             ]
+            blocking_clusters = (
+                _select_route_blocking_clusters(
+                    lidar_clusters,
+                    active_replan['old_plan']['points_xy_m'])
+                if active_replan is not None else []
+            )
             stable_obstacle_tracks = _update_static_obstacle_tracks(
-                stable_obstacle_tracks,
-                sorted(lidar_clusters, key=len, reverse=True)[:6],
-                evidence_stamp_ns)
+                stable_obstacle_tracks, blocking_clusters,
+                evidence_stamp_ns, confirm_hits=1)
             confirmed_tracks = [
                 track for track in stable_obstacle_tracks
-                if track['hits'] >= 2
+                if track['hits'] >= 1
             ]
             for track_number, track in enumerate(
-                    confirmed_tracks[:6], start=1):
+                    confirmed_tracks[:1], start=1):
                 left_m, top_m, right_m, bottom_m = track['bounds']
                 cluster_pixels = [
                     _world_to_pixel(
@@ -1457,7 +1484,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                 draw.rectangle(
                     (left, top, right, bottom), outline='#be123c', width=3)
                 draw.text((left + 4, max(top_px + 2, top - 18)),
-                          f'고정 물체 {track_number}', font=note_font,
+                          f'경로 방해물 {track_number}', font=note_font,
                           fill='#be123c', stroke_width=2,
                           stroke_fill='#fff1f2')
         else:
@@ -1516,8 +1543,8 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         draw.text((canvas_size[0] - (run_box[2] - run_box[0]) - 18, 13),
                   run_text, font=note_font, fill='#94a3b8')
         current_deviation_m = route_deviations_m[stop - 1]
-        confirmed_count = min(6, sum(
-            track['hits'] >= 2 for track in stable_obstacle_tracks))
+        confirmed_count = min(1, sum(
+            track['hits'] >= 1 for track in stable_obstacle_tracks))
         revision_count = bisect.bisect_right(
             [entry['stamp_ns'] for entry in significant_plan_changes],
             evidence_stamp_ns)
@@ -1527,7 +1554,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
             ('경로 이탈', f'{current_deviation_m:.2f} m'),
             ('라이다 감지',
              f'{len(projected["obstacle_candidates"])}점 · '
-             f'물체 {confirmed_count}'),
+             f'방해물 {confirmed_count}'),
             ('계획 변경',
              f'REV {revision_count:02d}' + (
                  f' · {plan_change_m:.2f}m' if plan_change_m else '')),
@@ -1551,7 +1578,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         draw.text((18, 119),
                   '파랑 기준 경로  ·  초록 실측  ·  보라 0.12m 이상 이탈  ·  '
                   '회색 점선 정지 전 계획  ·  주황 갱신 계획  ·  '
-                  '빨강 고정 추적 물체',
+                  '빨강 경로 변경 연관 방해물',
                   font=note_font, fill='#cbd5e1')
         bar_left = 24
         bar_right = canvas_size[0] - 24
