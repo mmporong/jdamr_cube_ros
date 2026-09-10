@@ -20,10 +20,13 @@ from corridor_run_media import (  # noqa: E402,I100,I201
     ANIMATION_TOP_PX,
     _cluster_points,
     _compose_pose2d,
+    _plan_lateral_change_m,
     _plan_observation,
     _point_to_polyline_distance,
     _project_scan_points,
     _select_frame_collision_event,
+    _stop_replan_events,
+    _update_static_obstacle_tracks,
     analyse_run,
     gap_statistics,
     parse_route_log,
@@ -279,6 +282,47 @@ def test_lidar_clustering_boxes_nearby_returns_without_object_label():
 
     assert len(clusters) == 1
     assert len(clusters[0]) == 3
+
+
+def test_lidar_tracking_keeps_confirmed_static_object_fixed():
+    """Anchor a persistent lidar object instead of letting its box jitter."""
+    tracks = _update_static_obstacle_tracks(
+        [], [[(0.0, 0.0), (0.2, 0.0), (0.1, 0.2)]], 1)
+    tracks = _update_static_obstacle_tracks(
+        tracks, [[(0.05, 0.02), (0.25, 0.02), (0.15, 0.22)]], 2)
+    fixed_bounds = tracks[0]['bounds']
+
+    tracks = _update_static_obstacle_tracks(
+        tracks, [[(0.08, 0.04), (0.28, 0.04), (0.18, 0.24)]], 3)
+
+    assert tracks[0]['hits'] == 3
+    assert tracks[0]['bounds'] == fixed_bounds
+
+
+def test_stop_replan_pairs_stop_with_material_plan_update():
+    """Preserve the old plan and identify the recorded post-stop update."""
+    plans = [
+        {'stamp_ns': 100, 'frame_id': 'map',
+         'points_xy_m': [(0.0, 0.0), (4.0, 0.0)]},
+        {'stamp_ns': 200, 'frame_id': 'map',
+         'points_xy_m': [(1.0, 0.0), (4.0, 0.0)]},
+        {'stamp_ns': 300, 'frame_id': 'map',
+         'points_xy_m': [(1.0, 1.0), (4.0, 1.0)]},
+    ]
+    collisions = [{
+        'stamp_ns': 250,
+        'action_name': 'STOP',
+        'polygon_name': 'StopZone',
+    }]
+
+    events = _stop_replan_events(
+        collisions, plans, threshold_m=0.25, search_window_ns=100)
+
+    assert _plan_lateral_change_m(
+        plans[0]['points_xy_m'], plans[1]['points_xy_m']) == 0.0
+    assert events[0]['old_plan'] == plans[1]
+    assert events[0]['new_plan'] == plans[2]
+    assert events[0]['lateral_change_m'] == pytest.approx(1.0)
 
 
 def test_analyse_run_collects_navigation_events_in_existing_reader_loop(
