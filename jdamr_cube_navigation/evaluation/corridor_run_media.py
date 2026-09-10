@@ -74,7 +74,9 @@ COLLISION_ACTION_NAMES = {
     4: 'LIMIT',
 }
 ANIMATION_TOP_PX = 112
-ANIMATION_BOTTOM_PX = 76
+ANIMATION_BOTTOM_PX = 42
+DEFAULT_ANIMATION_FRAMES = 384
+DEFAULT_ANIMATION_FPS = 24
 COLLISION_PRIORITY = {
     'DO_NOTHING': 0,
     'LIMIT': 1,
@@ -1100,7 +1102,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
     frame_stamps_ns = sorted(
         uniform_stamps_ns
         + [stamp_ns for stamp_ns in stop_stamps_ns
-           for _ in range(max(1, fps // 2))])
+           for _ in range(max(1, fps))])
     half_frame_ns = max(1, round((end_ns - start_ns) / (frames - 1) / 2))
     title_font = _pil_font(25, bold=True)
     detail_font = _pil_font(18)
@@ -1205,12 +1207,6 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         draw.text((24, 78),
                   '파랑=기준 경로 · 주황=당시 Nav2 경로 · '
                   '청록=지도 벽 반사 · 빨강=정적 지도 밖 반사 후보',
-                  font=note_font, fill='#475569')
-        draw.text((24, canvas_size[1] - 60),
-                  '물체 종류: 판별 불가 — 카메라/사람 검출 토픽 미기록',
-                  font=note_font, fill='#9f1239')
-        draw.text((canvas_size[0] - 440, canvas_size[1] - 60),
-                  '빨강 점은 동적 또는 미등록 장애물 후보이며 사람의 증거가 아님',
                   font=note_font, fill='#475569')
         bar_left = 24
         bar_right = canvas_size[0] - 24
@@ -1568,8 +1564,9 @@ def main(argv=None) -> int:
     parser.add_argument(
         '--metrics-only', action='store_true',
         help='Write metrics and CSV only, without rendering images or videos')
-    parser.add_argument('--frames', type=int, default=96)
-    parser.add_argument('--fps', type=int, default=12)
+    parser.add_argument(
+        '--frames', type=int, default=DEFAULT_ANIMATION_FRAMES)
+    parser.add_argument('--fps', type=int, default=DEFAULT_ANIMATION_FPS)
     args = parser.parse_args(argv)
     if args.frames < 2 or args.fps < 1:
         parser.error('--frames must be >= 2 and --fps must be >= 1')
