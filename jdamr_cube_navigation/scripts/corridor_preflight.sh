@@ -86,10 +86,23 @@ if [ "${c:-0}" -eq 1 ]; then ok "/cmd_vel 발행자 1 (Collision Monitor)"
 else bad "/cmd_vel 발행자 ${c:-0} (1이어야 한다)"; fi
 
 echo "== 6. 코스트맵 초기화 =="
-if timeout 20 ros2 service call /global_costmap/clear_entirely_global_costmap \
-     nav2_msgs/srv/ClearEntireCostmap >/dev/null 2>&1 \
-   && timeout 20 ros2 service call /local_costmap/clear_entirely_local_costmap \
-     nav2_msgs/srv/ClearEntireCostmap >/dev/null 2>&1; then
+clear_costmap() {
+  local service="$1" label="$2" attempt
+  for attempt in 1 2 3; do
+    if timeout 20 ros2 service call "$service" \
+         nav2_msgs/srv/ClearEntireCostmap >/dev/null 2>&1; then
+      return 0
+    fi
+    [ "$attempt" -eq 3 ] || {
+      warn "$label 응답 지연 - 재시도 $((attempt + 1))/3"
+      sleep 2
+    }
+  done
+  return 1
+}
+
+if clear_costmap /global_costmap/clear_entirely_global_costmap "전역 코스트맵" \
+   && clear_costmap /local_costmap/clear_entirely_local_costmap "지역 코스트맵"; then
   # 비운 직후에는 전역 코스트맵이 아직 미지 상태다. planner 는
   # allow_unknown:false 라 그 상태에서 계획하면 크게 우회한다. 2026-09-03에
   # 같은 경로가 비운 직후 214.863m, 3초 기다린 뒤 78.032m 로 나왔다.
