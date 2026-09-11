@@ -226,10 +226,12 @@ SHA-256은 `8f793abb17003eb38f4993dbc564551d99df3a6303c080dfaf5ebf1f5a1ac802`다
 2.4 m로 유지하되 화면 표시용 벽만 0.65 m 절개형 메시로 분리했다. 전체 지도 카메라는 더
 높은 사선 시점으로 옮겼고, 베이스 뒤 1.8 m·위 1.8 m의 후상방 추적 카메라를 추가해 차체와
 주변 장애물을 함께 표시한다. 동일 seed 42 재생에서 waypoint 20/20, 박스 회피 2건과 사람
-긴급정지 1건을 포함한 장면 3/3, 저마찰 복구 1회를 통과했다. 최종 2배속 영상은 267.800초,
-1,280×480, H.264이며 경로는
-`$HOME/jdamr_artifacts/restaurant_actual_map_visible_vehicle_v3/gazebo_actual_map_2x.mp4`,
-SHA-256은 `5e91f71e4515ff63a5dbd8d399dcd2bdbad4c4a3f013bfa4eaa0b7bd93cfa7e4`다.
+긴급정지 1건을 포함한 장면 3/3, 저마찰 복구 1회를 통과했다. 포트폴리오 영상은 전체 지도
+프레임의 빈 상·하단을 잘라내고 두 카메라를 같은 높이로 정렬했다. 상태 자막은 굵은 고정
+폰트와 고대비 불투명 배너를 적용했다. 최종 4배속 영상은 133.867초, 1,760×360, 15 fps,
+H.264/yuv420p이며 경로는
+`$HOME/jdamr_artifacts/restaurant_actual_map_visible_vehicle_v3/gazebo_actual_map_4x.mp4`,
+SHA-256은 `0c9a5aac41a136239365d82f51233954c93ed705eb0036955639ff0c530a7678`다.
 
 이 결과는 실제 점유격자·Keepout·주행 구간·관측 장면을 연결한 데이터 기반 기능 재현형
 디지털 트윈이다. 저장 지도에 없는 벽 재질·문·가구·실측 장애물 치수까지 복원한

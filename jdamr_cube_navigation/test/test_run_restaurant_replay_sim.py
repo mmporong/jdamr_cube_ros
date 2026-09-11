@@ -62,7 +62,7 @@ def test_actual_map_start_pose_replaces_corridor_fixture_pose(tmp_path):
     assert stop_points[1][0] == 0.35
 
 
-def test_two_camera_encoder_builds_wide_and_robot_front_composite(
+def test_two_camera_encoder_builds_aligned_map_and_chase_composite(
         tmp_path, monkeypatch):
     """The published 3D video retains both synchronized Gazebo views."""
     captured = {}
@@ -73,21 +73,23 @@ def test_two_camera_encoder_builds_wide_and_robot_front_composite(
 
     monkeypatch.setattr('run_restaurant_replay_sim.subprocess.run', run)
     encode_camera_video(
-        [tmp_path / 'wide.mp4', tmp_path / 'front.mp4'],
+        [tmp_path / 'wide.mp4', tmp_path / 'chase.mp4'],
         tmp_path / 'final.mp4', 15.0, timing_scales=[1.2, 1.6],
-        timing_offsets_s=[0.0, 4.3], canvas_duration_s=530.0)
+        timing_offsets_s=[0.0, 4.3])
 
     command = captured['command']
     assert command.count('-i') == 2
     assert 'hstack=inputs=2' in command[command.index('-filter_complex') + 1]
-    assert 'setpts=0.5*PTS' in command[command.index('-filter_complex') + 1]
+    graph = command[command.index('-filter_complex') + 1]
+    assert 'setpts=0.250000000*PTS' in graph
+    assert 'crop=1280:300:0:220,scale=1280:360' in graph
+    assert 'scale=480:360' in graph
+    assert 'boxcolor=black@0.90' in graph
     assert 'setpts=1.200000000*PTS' in command[
         command.index('-filter_complex') + 1]
     assert 'setpts=1.600000000*PTS' in command[
         command.index('-filter_complex') + 1]
     assert '4.300000000/TB' in command[command.index('-filter_complex') + 1]
-    assert 'eof_action=pass:repeatlast=0' in command[
-        command.index('-filter_complex') + 1]
     assert 'libx264' in command
     assert 'ultrafast' in command
     assert 'yuv420p' in command
@@ -143,12 +145,21 @@ def test_scene_annotations_distinguish_detour_person_stop_and_traction():
     labels = [item['text'] for item in annotations]
 
     assert 'STATIC BOX - LOCAL PLAN DETOUR' in labels
-    assert 'EMERGENCY STOP - PERSON IN STOP ZONE' in labels
+    assert 'PERSON DETECTED - EMERGENCY STOP' in labels
     assert 'LOW TRACTION - RELOCALIZING' in labels
     protective_stop = next(
         item for item in annotations
         if item['text'] == 'LOW TRACTION - PROTECTIVE STOP')
-    assert protective_stop['start_s'] == 19.0
+    assert protective_stop['start_s'] == 9.5
+    person_states = [
+        item for item in annotations if item['text'].startswith('PERSON')]
+    assert person_states[0]['end_s'] <= person_states[1]['start_s']
+    traction_states = [
+        item for item in annotations
+        if item['text'].startswith('LOW TRACTION')]
+    assert all(
+        current['end_s'] <= following['start_s']
+        for current, following in zip(traction_states, traction_states[1:]))
 
 
 def test_two_camera_encoder_supports_verified_nvidia_path(
@@ -162,7 +173,7 @@ def test_two_camera_encoder_supports_verified_nvidia_path(
 
     monkeypatch.setattr('run_restaurant_replay_sim.subprocess.run', run)
     encode_camera_video(
-        [tmp_path / 'wide.mp4', tmp_path / 'front.mp4'],
+        [tmp_path / 'wide.mp4', tmp_path / 'chase.mp4'],
         tmp_path / 'final.mp4', 15.0, 'h264_nvenc',
         annotations=[{
             'text': '80% SPEED', 'start_s': 1.0, 'end_s': 2.0,
@@ -174,6 +185,8 @@ def test_two_camera_encoder_supports_verified_nvidia_path(
     assert command[command.index('-preset') + 1] == 'p1'
     assert command[command.index('-cq') + 1] == '23'
     assert '80 percent SPEED' in command[
+        command.index('-filter_complex') + 1]
+    assert 'boxcolor=lime@0.92' in command[
         command.index('-filter_complex') + 1]
     assert captured['check'] is True
 

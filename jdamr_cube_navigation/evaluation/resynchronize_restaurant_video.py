@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from run_restaurant_replay_sim import (
+    PLAYBACK_SPEED,
     _sha256,
     camera_sim_timing,
     encode_camera_video,
@@ -50,7 +51,7 @@ def main() -> int:
     parser.add_argument(
         '--encoder', choices=('h264_nvenc', 'libx264'), default=None)
     parser.add_argument(
-        '--output-name', default='gazebo_actual_map_2x_synced.mp4')
+        '--output-name', default='gazebo_actual_map_4x_synced.mp4')
     args = parser.parse_args()
     summary_path = args.run_dir / 'summary.json'
     summary = json.loads(summary_path.read_text(encoding='utf-8'))
@@ -94,9 +95,9 @@ def main() -> int:
         aligned_paths.append(aligned)
     encode_camera_video(
         aligned_paths, output, fps, encoder, [1.0, 1.0], [0.0, 0.0],
-        common_end_s - common_start_s,
         annotations)
     video['encoder'] = encoder
+    video['playback_speed'] = PLAYBACK_SPEED
     video['timing_alignment'] = {
         'basis': 'per_frame_gazebo_timestamp_resampling',
         'prior_linear_input_pts_scales': scales,
@@ -110,7 +111,7 @@ def main() -> int:
             'bytes': aligned.stat().st_size,
         }
     video['annotations'] = annotations
-    video['video_2x'] = {
+    video['video_4x'] = {
         'path': str(output.resolve()), 'sha256': _sha256(output),
         'bytes': output.stat().st_size,
     }
@@ -129,7 +130,7 @@ def main() -> int:
         encoding='utf-8')
     temporary.replace(summary_path)
     print(json.dumps({
-        'status': 'PASS', 'video': video['video_2x'],
+        'status': 'PASS', 'video': video['video_4x'],
         'timing_alignment': video['timing_alignment'],
     }, ensure_ascii=False))
     return 0

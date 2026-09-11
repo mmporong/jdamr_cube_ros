@@ -31,6 +31,8 @@ from run_sim_nav_obstacle_eval import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PLAYBACK_SPEED = 4.0
+FONT_FILE = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 ASSETS = (ROOT / 'jdamr_cube_navigation' / 'evaluation' / 'assets'
           / 'nav_obstacle')
 BT = (ROOT / 'jdamr_cube_navigation' / 'behavior_trees'
@@ -187,16 +189,23 @@ def scene_video_annotations(
         scenario: dict[str, Any] | None,
         guard: dict[str, Any] | None,
         common_start_s: float) -> list[dict[str, Any]]:
-    """Build concise 2x-video state banners from sealed simulation times."""
+    """Build concise 4x-video state banners from sealed simulation times."""
     annotations = []
 
     def append(text: str, start_sim_s: float, end_sim_s: float,
-               color: str) -> None:
-        start_s = max(0.0, (start_sim_s - common_start_s) / 2.0)
-        end_s = max(start_s + 0.6, (end_sim_s - common_start_s) / 2.0)
+               color: str, *, not_before_s: float = 0.0,
+               minimum_duration_s: float = 0.6) -> float:
+        start_s = max(
+            not_before_s,
+            (start_sim_s - common_start_s) / PLAYBACK_SPEED,
+            0.0)
+        end_s = max(
+            start_s + minimum_duration_s,
+            (end_sim_s - common_start_s) / PLAYBACK_SPEED)
         annotations.append({
             'text': text, 'start_s': start_s, 'end_s': end_s,
             'color': color})
+        return end_s
 
     for scene in (scenario or {}).get('interventions', []):
         if scene.get('kind') == 'static_avoidance':
@@ -205,20 +214,18 @@ def scene_video_annotations(
                 float(scene['trigger_sim_s']), float(scene['result_sim_s']),
                 'orange')
         elif scene.get('kind') == 'person_crossing_emergency_stop':
-            append(
-                'PERSON CROSSING DETECTED',
-                float(scene['trigger_sim_s']), float(scene['stop_sim_s']),
-                'yellow')
-            append(
-                'EMERGENCY STOP - PERSON IN STOP ZONE',
-                float(scene['stop_sim_s']), float(scene['clear_sim_s']),
-                'red')
+            stop_banner_end_s = append(
+                'PERSON DETECTED - EMERGENCY STOP',
+                float(scene['trigger_sim_s']), float(scene['clear_sim_s']),
+                'red', minimum_duration_s=1.2)
             append(
                 'PERSON CLEAR - SAME GOAL RESUME',
                 float(scene['clear_sim_s']),
                 float(scene['resume_sim_s']) + 2.0,
-                'lime')
+                'lime', not_before_s=stop_banner_end_s,
+                minimum_duration_s=1.0)
     events = (guard or {}).get('events', [])
+    guard_banner_end_s = 0.0
     for event, following in zip(events, events[1:] + [None]):
         labels = {
             'PROTECTIVE_STOP': ('LOW TRACTION - PROTECTIVE STOP', 'red'),
@@ -233,7 +240,9 @@ def scene_video_annotations(
             end_sim_s = (
                 float(following.get('sim_s', following['at_s']))
                 if following is not None else start_sim_s + 2.0)
-            append(label, start_sim_s, end_sim_s, color)
+            guard_banner_end_s = append(
+                label, start_sim_s, end_sim_s, color,
+                not_before_s=guard_banner_end_s)
     return annotations
 
 
@@ -241,10 +250,9 @@ def encode_camera_video(raws: list[Path], output: Path, fps: float,
                         encoder: str = 'libx264',
                         timing_scales: list[float] | None = None,
                         timing_offsets_s: list[float] | None = None,
-                        canvas_duration_s: float | None = None,
                         annotations: list[dict[str, Any]] | None = None
                         ) -> None:
-    """Encode one or two Gazebo views as a 2x browser-compatible MP4."""
+    """Encode one or two Gazebo views as a 4x browser-compatible MP4."""
     if len(raws) not in (1, 2):
         raise ValueError('camera encoding requires one or two views')
     scales = timing_scales or [1.0] * len(raws)
@@ -258,26 +266,23 @@ def encode_camera_video(raws: list[Path], output: Path, fps: float,
         command.extend(['-i', str(raw)])
     if len(raws) == 1:
         command.extend([
-            '-vf', f'setpts={0.5 * scales[0]:.9f}*PTS,fps={fps:g}'])
+            '-vf',
+            f'setpts={scales[0] / PLAYBACK_SPEED:.9f}*PTS,fps={fps:g}'])
     else:
         command.extend([
             '-filter_complex',
             (f'[0:v]setpts={scales[0]:.9f}*PTS+'
-             f'{offsets[0]:.9f}/TB,scale=854:480,'
+             f'{offsets[0]:.9f}/TB,crop=1280:300:0:220,scale=1280:360,'
              'drawtext=text=ACTUAL MAP 2.5D  ORANGE KEEPOUT  AMBER TRACTION:'
-             'x=20:y=20:fontsize=20:fontcolor=white:'
-             'box=1:boxcolor=black@0.55[wide];'
+             f'fontfile={FONT_FILE}:x=20:y=16:fontsize=22:fontcolor=white:'
+             'box=1:boxcolor=black@0.90:boxborderw=10[wide];'
              f'[1:v]setpts={scales[1]:.9f}*PTS+'
-             f'{offsets[1]:.9f}/TB,scale=426:320,'
+             f'{offsets[1]:.9f}/TB,scale=480:360,'
              'drawtext=text=ROBOT CHASE CAMERA  BASE ONLY:'
-             'x=14:y=14:fontsize=18:fontcolor=white:'
-             'box=1:boxcolor=black@0.55[front];'
-             f'color=c=black:s=426x480:d={canvas_duration_s or 1.0:.9f}'
-             '[right];'
-             '[right][front]overlay=0:80:eof_action=pass:repeatlast=0'
-             '[right_view];'
-             '[wide][right_view]hstack=inputs=2:shortest=1,'
-             'setpts=0.5*PTS[base]'),
+             f'fontfile={FONT_FILE}:x=18:y=16:fontsize=20:fontcolor=white:'
+             'box=1:boxcolor=black@0.90:boxborderw=10[chase];'
+             '[wide][chase]hstack=inputs=2:shortest=1,'
+             f'setpts={1.0 / PLAYBACK_SPEED:.9f}*PTS[base]'),
         ])
         filter_graph = command[-1]
         current = 'base'
@@ -285,11 +290,13 @@ def encode_camera_video(raws: list[Path], output: Path, fps: float,
             target = f'ann{index}'
             safe_text = str(annotation['text']).replace("'", '')
             safe_text = safe_text.replace('%', ' percent')
+            text_color = (
+                'white' if annotation['color'] == 'red' else 'black')
             filter_graph += (
                 f';[{current}]drawtext=text={safe_text}:'
-                'x=(w-text_w)/2:y=h-52:fontsize=25:'
-                f'fontcolor={annotation["color"]}:box=1:'
-                'boxcolor=black@0.78:'
+                f'fontfile={FONT_FILE}:x=(w-text_w)/2:y=h-54:fontsize=26:'
+                f'fontcolor={text_color}:box=1:'
+                f'boxcolor={annotation["color"]}@0.92:boxborderw=12:'
                 f"enable='between(t,{float(annotation['start_s']):.3f},"
                 f"{float(annotation['end_s']):.3f})'[{target}]")
             current = target
@@ -372,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         'metadata': run_dir / f'gazebo_{view["name"]}_capture.json',
         'ready': run_dir / f'.gazebo_{view["name"]}_ready',
     } for view in camera_views]
-    camera_video = run_dir / 'gazebo_actual_map_2x.mp4'
+    camera_video = run_dir / 'gazebo_actual_map_4x.mp4'
     camera_encoder = select_video_encoder() if camera is not None else None
     environment = _environment(args.run_id, args.domain_id)
     processes: list[tuple[str, subprocess.Popen, Any]] = []
@@ -488,17 +495,15 @@ def main(argv: list[str] | None = None) -> int:
         for item in camera_records)
     timing_scales: list[float] = []
     timing_offsets_s: list[float] = []
-    canvas_duration_s = 0.0
     common_start_s = 0.0
     common_end_s = 0.0
     if camera is not None and camera_complete:
-        (timing_scales, timing_offsets_s, canvas_duration_s,
+        (timing_scales, timing_offsets_s, _camera_duration_s,
          common_start_s) = camera_sim_timing(
             camera_records, float(camera['fps']))
         common_end_s = min(
             float(item['capture']['frame_timestamps'][-1]['sim_ns']) / 1e9
             for item in camera_records)
-        canvas_duration_s = common_end_s - common_start_s
     annotations = scene_video_annotations(
         scenario_evidence, guard_evidence, common_start_s)
     if camera is not None and camera_complete:
@@ -513,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
                 [item['clock_aligned'] for item in camera_records],
                 camera_video, float(camera['fps']), str(camera_encoder),
                 [1.0] * len(camera_records),
-                [0.0] * len(camera_records), canvas_duration_s, annotations)
+                [0.0] * len(camera_records), annotations)
         except Exception as error:
             failure = f'camera_encode_{type(error).__name__}: {error}'
     mcap = one_mcap(bag_dir)
@@ -558,6 +563,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 'source': 'gazebo_camera_sensor',
                 'encoder': camera_encoder,
+                'playback_speed': PLAYBACK_SPEED,
                 'timing_alignment': {
                     'basis': 'per_frame_gazebo_timestamp_resampling',
                     'prior_linear_input_pts_scales': timing_scales,
@@ -577,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
                         'bytes': item['clock_aligned'].stat().st_size},
                     'capture': item['capture'],
                 } for item in camera_records],
-                'video_2x': {'path': str(camera_video.resolve()),
+                'video_4x': {'path': str(camera_video.resolve()),
                              'sha256': _sha256(camera_video),
                              'bytes': camera_video.stat().st_size},
             }
