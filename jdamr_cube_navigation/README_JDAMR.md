@@ -200,9 +200,10 @@ summary CRC와 인덱스 검사를 통과했다.
 
 프로세스별 CPU의 과거 표는 구버전 계측기의 오분류 때문에 소급 검증할 수 없다. 수정된
 `soak_metrics`는 전체 시스템 CPU로 자원 여유를 판정하고 프로세스별 CPU는 원인 귀속에
-쓴다. recorder와 `nav2_container` 또는 독립 Nav2 필수 집합이 워밍업 뒤 60초 동안 함께
+쓴다. recorder와 `nav2_container` 또는 독립 Nav2 필수 집합이 최신 60초 동안 함께
 측정되고 인접 샘플 간격이 10초 이하여야 통과하며, 빈 시점도 sentinel로 기록한다.
-`corridor_autorun.sh`는 이 정적 자원 게이트를 실제 출발 전에 실행한다. 로컬 DDS
+`corridor_autorun.sh`는 Nav2 기동·사전점검·계획 중 쌓인 최신 표본으로 이 자원 게이트를
+실제 출발 전에 실행하며 별도의 고정 대기를 추가하지 않는다. 로컬 DDS
 비주행 소크와 복도 전체 왕복을 모두 마쳤다. 다음 분석은 성공 bag을 Cartographer와
 SLAM Toolbox에 격리 재생하고, 센서 노이즈와 timestamp jitter 분포를 구하는 작업이다.
 반복 실주행은 성공률 수치가 필요할 때만 추가한다. 실제 출발 시 작업자가 로봇 옆에서
@@ -211,7 +212,10 @@ SLAM Toolbox에 격리 재생하고, 센서 노이즈와 timestamp jitter 분포
 자율 매핑은 항상 `autonomous_mapping.launch.py`로 실행한다. `ros2 run jdamr_cube_navigation frontier_explorer` 단독 실행은 explorer 오류 시 전체 Nav2 종료를 보장하지 않으므로 금지한다.
 
 파이 저장지도 주행은 현재 필요한 Nav2 서버를 `component_container_isolated` 하나에
-합성하고 lifecycle manager와 graph liveness guard를 별도 프로세스로 둔다. 이 구성에서
+합성하고 lifecycle manager와 graph liveness guard를 별도 프로세스로 둔다. isolated
+container는 구성요소마다 전용 single-thread executor와 OS thread를 두므로 여러 Nav2
+구성요소는 병렬 실행된다. 구성요소 내부에 스레드를 추가하는 것은 정지 판단의 callback
+queue 지연이 계측된 경우에만 A/B 시험한다. 이 구성에서
 intra-process 통신을 명시적으로 켜지는 않았으므로 composition과 zero-copy를 같은 뜻으로
 설명하지 않는다. 베이스 센서·TF 발행 주기와 자율 매핑의 explorer 종료 처리는 별도
 launch 계약을 따른다.

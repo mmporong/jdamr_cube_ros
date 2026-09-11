@@ -841,6 +841,7 @@ def test_autorun_never_drives_without_passing_every_gate():
     assert source.index('--delay 값이 필요하다') < first_source
     assert source.index('--delay는 0~3600 범위의 정수여야 한다') < first_source
     assert source.index('--run-id 값이 필요하다') < first_source
+    assert source.index('자동 실행기 bootstrap 시작') < first_source
     for gate in (
             'lifecycle 매니저', '사전점검 FAIL', '전체 경로 계획 실패',
             '자원 게이트 FAIL'):
@@ -881,6 +882,15 @@ def test_autorun_never_drives_without_passing_every_gate():
     assert '--evaluate "$A/$RUN_ID.per_process.tsv"' in source
     assert source.count('ros2 run jdamr_cube_navigation soak_metrics') == 2
     assert source.count('--cores "$(nproc)"') == 2
+    assert 'RESOURCE_WINDOW_S=60' in source
+    assert '--window-seconds "$RESOURCE_WINDOW_S"' in source
+    assert 'RESOURCE_SOAK_S' not in source
+    assert 'sleep "$RESOURCE_WINDOW_S"' not in source
+    assert 'group_alive "$METRICS_PID"' in source
+    assert 'METRICS_MAX_AGE_S=12' in source
+    assert 'stat -c %Y "$A/$RUN_ID.per_process.tsv"' in source
+    assert source.index('group_alive "$METRICS_PID"') < source.index(
+        '--evaluate "$A/$RUN_ID.per_process.tsv"')
     resource_gate = source.index('자원 게이트 PASS')
     assert resource_gate < source.index('if [ "$EXECUTE" -eq 0 ]')
     assert resource_gate < source.index('say "출발"')

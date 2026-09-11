@@ -125,9 +125,9 @@ touch "$HOME/jdamr_abort"
 ## 실행 전 자동 확인과 예상 대기
 
 자동 실행기는 이동 전에 lifecycle, Keepout 발행, `/cmd_vel` 단일 소유권, costmap 초기화,
-배터리, 전체 경로 planning-only와 온보드 자원 게이트를 확인한다. 이 과정에는 기존 계약상
-75초 자원 계측이 포함된다. 이 대기를 장애물 시나리오마다 반복하지 않고 통합 주행 앞에서
-한 번만 수행한다.
+배터리, 전체 경로 planning-only와 온보드 자원 게이트를 확인한다. 당시 계약에는 고정 75초
+자원 계측이 포함됐다. 2026-09-11부터는 같은 실행의 기동·점검 중 누적한 최신 60초 표본을
+판정하고 별도의 고정 대기를 추가하지 않는다.
 
 이 절차는 팔이 없는 실차용 `obstacle_base_candidate`를 선택한다. 팔 장착용
 `obstacle_candidate`의 수납 자세 게이트를 비활성화하거나 가짜 `/joint_states`로
@@ -184,9 +184,25 @@ python3 jdamr_cube_navigation/evaluation/corridor_run_media.py \
   --metrics-only
 ```
 
-실차 실행 전까지의 현재 범위는 `READY_FOR_REAL_TRIAL`이다. 시뮬레이션 통합 PASS와 파이
-배포 이력은 실차 결과를 대신하지 않으며, 위 주행의 원본이 생긴 뒤에만 포트폴리오의
-실차 장애물 대응 문구와 미디어를 갱신한다.
+## 2026-09-10 실차 결과
+
+`real_combined_obstacle_retry_20260910T122006`이 20/20 waypoint를 완주했다. 계획 경로는
+77.290 m, AMCL 누적 경로는 78.498 m, 주행 명령 구간은 609.968초였다. 주행 구간에서
+Collision Monitor StopZone 6회를 관측했고, 같은 goal UUID에서 정지 명령 뒤 비영 속도
+명령이 다시 나온 command-space 재개를 확인했다. 고정 장애물을 지난 뒤 `/plan` 형상도
+바뀌었지만 경로 메시지 변화만으로 장애물 인과를 단정하지 않고, LiDAR 관측·영상 정렬과
+함께 제시한다.
+
+MCAP 119,474개 메시지를 끝까지 읽었고 96/96 chunk CRC, data-section CRC, summary CRC와
+인덱스를 확인했다. 주행 중 `/scan` 5,891개, 평균 9.658 Hz, 최대 공백 0.165초였으며
+`/odom`과 IMU는 약 50 Hz였다. recorder transport-loss counter는 기록되지 않아 손실률은
+`UNKNOWN`이다. LiDAR에는 객체 분류가 없으므로 박스·사람 자동 인식 결과로 설명하지
+않는다. 카메라 영상은 파일 생성 시각으로 정렬했으며 공통 hardware timecode가 없어
+시각적 보조 증거다.
+
+따라서 이 절차의 상태는 `REAL_INTEGRATION_COMPLETED_WITH_LIMITS`로 닫는다. 저장 지도
+주행 결과이며, 빈 상태에서 시작하는 Cartographer 실차 매핑 3회 재현성 게이트를 대신하지
+않는다.
 
 ## 2026-09-09 출발 직전 점검
 
