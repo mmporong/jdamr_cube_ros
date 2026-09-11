@@ -90,6 +90,27 @@ p95가 baseline 분산보다 줄 때만 승격한다.
 route, Nav2 container와 recorder 잔존 프로세스는 0개였다. 이 결과는 비주행 기동 게이트를
 검증한 것이며 장애물 대응이나 경로 수행 성능 표본은 아니다.
 
+## 2026-09-10 기록의 정지 판단시간 재분석
+
+새 실차 주행 대신 `real_combined_obstacle_retry_20260910T122006` MCAP을 다시 읽어 실제
+StopZone 6개를 분석했다. 기록상 직전 scan과 STOP 상태 사이의 시간 간격은 p95·최대
+56.543 ms, STOP부터 최종 0 속도 명령은 p95·최대 1.025 ms였다. 100 ms 연속 정지를 요구한
+wheel odom 기준에서는 6개 중 4개가 정지로 확인됐고 STOP부터 정지까지 p95·최대
+256.444 ms, 직전 scan부터 wheel odom 정지까지의 기록 간격은 최대 305.961 ms였다. 어떤
+scan이 STOP을 유발했는지 연결하는 trace ID가 없으므로 이를 end-to-end 판단시간으로
+간주하거나 목표 상한 400 ms 통과로 판정하지 않는다. wheel odom 정지도 외부 센서로 측정한
+실제 차체 정지가 아니다.
+
+두 사건은 보호영역이 각각 138.538 ms, 300.276 ms 만에 해제돼 100 ms 연속 wheel odom
+정지를 확인하지 못했다. 특히 후자는 해제 직전에도 wheel odom 선속도가 약 0.085 m/s여서
+`정지 6회`가 아니라 `StopZone 개입 6회, wheel odom 정지 확인 4회`로 표현한다. 장애물 해제
+뒤 비영 명령 재개는 6개 모두 확인됐고 최대 69.480 ms였다. STOP 뒤 다른 `/plan` 형상은
+6개 모두 0.896초 안에 관측됐지만 주기적 재계획과 장애물 인과를 구분하는 trace ID가 없어
+시간적 연관으로만 기록한다.
+
+재현 출력은 `$HOME/jdamr_artifacts/real_combined_obstacle_retry_20260910T122006_latency/`
+아래 `stop_latency.json`과 `stop_latency.csv`다.
+
 ## 설계 근거
 
 - [ISO 3691-4:2023](https://www.iso.org/standard/83545.html): AMR 운용 구역과 안전 요구·검증
