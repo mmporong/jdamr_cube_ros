@@ -77,6 +77,19 @@ OS thread를 둔다. 베이스와 LiDAR도 I/O thread가 분리돼 있으며 성
 0.40초, scan gap 비증가, 자원 게이트 PASS, lifecycle·종료 survivor 0을 모두 만족하고 latency
 p95가 baseline 분산보다 줄 때만 승격한다.
 
+## 2026-09-11 파이 비주행 검증
+
+`slam_advance_noexecute_20260911T1110`으로 Raspberry Pi 배포본을 `--delay 0
+--no-execute --navigation-profile obstacle_base_candidate` 조건에서 실행했다. lifecycle 3/3,
+사전점검, 전체 경로 계획과 최신 60초 자원 게이트가 모두 PASS했고, 계획 완료 뒤 자원 판정은
+약 2초 만에 끝났다. 고정 75초 sleep은 실행되지 않았다.
+
+자원 표본은 13/13, 62.0초, 최대 간격 5.3초였고 system CPU p90 291%, peak 304%, 최고
+온도 69.6°C, throttle clean이었다. MCAP은 97.282초 동안 13,649개 메시지를 기록했고
+`/cmd_vel`과 `/cmd_vel_nav`는 모두 0건이었다. metadata가 생성됐고 종료 뒤 autorun,
+route, Nav2 container와 recorder 잔존 프로세스는 0개였다. 이 결과는 비주행 기동 게이트를
+검증한 것이며 장애물 대응이나 경로 수행 성능 표본은 아니다.
+
 ## 설계 근거
 
 - [ISO 3691-4:2023](https://www.iso.org/standard/83545.html): AMR 운용 구역과 안전 요구·검증

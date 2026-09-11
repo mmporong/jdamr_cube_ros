@@ -471,6 +471,60 @@ datasets:
   exclusion_reasons:
   - recorder transport-loss counters were not captured
   - LiDAR object class and person identity were not measured
+- dataset_id: slam_advance_noexecute_20260911T1110
+  role: onboard_static_soak
+  qualification: DIAGNOSTIC_ONLY
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/slam_advance_noexecute_20260911T1110
+  storage:
+    identifier: mcap
+    relative_file: slam_advance_noexecute_20260911T1110_0.mcap
+    size_bytes: 13382269
+    sha256: 02b0bf8634fc60236bd41a8bb0b6dca7e2809cc52a8d79bc122d2b19ff6b6fa4
+    metadata_sha256: bb245081fdc7161992efd158c4bc473c633f4b2fa1cdc3c591f57a0b395282a0
+  capture:
+    started_at_unix_ns: 1789092567369692806
+    duration_ns: 97282335252
+    message_count: 13649
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 고정 75초 대기 제거 뒤 비주행 lifecycle·사전점검·전체 경로·최신 60초 자원 게이트 PASS, /cmd_vel 0건
+  topics:
+  - {name: /amcl_pose, type: geometry_msgs/msg/PoseWithCovarianceStamped, messages: 1, reliability: reliable, durability: transient_local}
+  - {name: /battery_state, type: sensor_msgs/msg/BatteryState, messages: 97, reliability: reliable, durability: volatile}
+  - {name: /cmd_vel, type: geometry_msgs/msg/Twist, messages: 0, reliability: reliable, durability: volatile}
+  - {name: /cmd_vel_nav, type: geometry_msgs/msg/Twist, messages: 0, reliability: reliable, durability: volatile}
+  - {name: /collision_monitor_state, type: nav2_msgs/msg/CollisionMonitorState, messages: 0, reliability: reliable, durability: volatile}
+  - {name: /imu/data_raw, type: sensor_msgs/msg/Imu, messages: 4861, reliability: best_effort, durability: volatile}
+  - {name: /navigate_to_pose/_action/status, type: action_msgs/msg/GoalStatusArray, messages: 0, reliability: reliable, durability: transient_local}
+  - {name: /odom, type: nav_msgs/msg/Odometry, messages: 4865, reliability: reliable, durability: volatile}
+  - {name: /plan, type: nav_msgs/msg/Path, messages: 1, reliability: reliable, durability: volatile}
+  - {name: /scan, type: sensor_msgs/msg/LaserScan, messages: 939, reliability: reliable, durability: volatile}
+  - {name: /tf, type: tf2_msgs/msg/TFMessage, messages: 2884, reliability: reliable, durability: volatile}
+  - {name: /tf_static, type: tf2_msgs/msg/TFMessage, messages: 1, reliability: reliable, durability: transient_local}
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 13649
+    chunk_crc: {chunks_with_crc: 13, total_chunks: 13}
+    data_section_crc: 849471158
+    summary_crc: 3162649745
+    message_index: {records: 68}
+    chunk_index: {records: 13}
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - 비주행 검증이므로 경로 성능 표본이 아님
+  - recorder transport-loss counter 미수집
 - dataset_id: corridor_localdds_armed_20260904T152036
   role: corridor_roundtrip
   qualification: PARTIAL_SUCCESS
