@@ -195,6 +195,37 @@ python3 jdamr_cube_navigation/evaluation/run_restaurant_replay_sim.py \
   --seed 42
 ```
 
+## 실제 장애물 형상과 사람 횡단을 포함한 3D 재현
+
+최종 실행 `restaurant_actual_map_enhanced_v5`는 실차 영상과 정지 기록을 세 장면으로
+묶었다. `IMG_7861.mov`에 대응하는 첫 박스와 `IMG_7862.mov`의 두 번째 박스는 각각
+5→6번, 8→9번 waypoint 사이에 고정 골판지 상자로 배치했다. 로봇은 상자 표면에서
+최소 0.599 m와 0.615 m를 유지했고 최대 각속도 0.2 rad/s와 0.5 rad/s로 선회한 뒤 같은
+goal을 완료했다. 나머지 두 정지 기록은 `IMG_7862.mov`의 사람·박스 동시 등장 장면으로
+묶어, 사람 형상 모델이 경로를 횡단할 때 StopZone 긴급정지 후 사람이 빠져나가면 같은
+goal을 재개하도록 했다. 20개 waypoint와 세 장면은 모두 PASS했다.
+
+실차 베이스에 없던 SO-101 링크·조인트·제어 플러그인은 생성 URDF에서 제거했고, Gazebo
+launch도 베이스 전용 실행에서는 팔 컨트롤러 spawner를 시작하지 않는다. 주황색 바닥은
+원본 Keepout PGM의 검은 셀 9,406개를 같은 5 cm 격자 좌표에 올린 마스킹 영역이며,
+황색 바닥은 실측 마찰계수가 아닌 저마찰 합성 스트레스 구역이다. 저마찰 판단은
+시뮬레이터 주입 활성 신호를 시작 조건으로 사용하고, 정지·재위치화·제한속도 재개·복구는
+별도 상태기계가 수행한다. 이는 실차 검출기 성능 증거가 아니라, 마찰 이상이 검출됐다고
+가정한 이후의 대응 로직 검증이다. 상태는 `PROTECTIVE_STOP → RELOCALIZE →
+LOW_SPEED_RESUME → RECOVERED`로 한 번 전이했다.
+
+최종 영상은 고정 3D 지도 시점과 베이스 전방 카메라를 함께 표시한다. 첫·마지막 프레임만
+맞추는 선형 보정 대신 모든 수신 프레임의 Gazebo 타임스탬프로 두 카메라를 15 fps 공통
+시간축에 재표본화했다. 이 때문에 카메라별 프레임 누락률이 달라도 박스 선회와 사람
+긴급정지 자막이 같은 장면에 놓인다. 결과는 268.200초, 1,280×480, H.264이며 경로는
+`$HOME/jdamr_artifacts/restaurant_actual_map_enhanced_v5/gazebo_actual_map_2x_frame_synced.mp4`,
+SHA-256은 `8f793abb17003eb38f4993dbc564551d99df3a6303c080dfaf5ebf1f5a1ac802`다.
+검증 요약은 같은 디렉터리의 `summary.json`에 있으며 종료 뒤 잔존 프로세스는 0개다.
+
+이 결과는 실제 점유격자·Keepout·주행 구간·관측 장면을 연결한 데이터 기반 기능 재현형
+디지털 트윈이다. 저장 지도에 없는 벽 재질·문·가구·실측 장애물 치수까지 복원한
+사진측량형 3D 복제본은 아니다.
+
 ## 설계 근거
 
 - [ISO 3691-4:2023](https://www.iso.org/standard/83545.html): AMR 운용 구역과 안전 요구·검증

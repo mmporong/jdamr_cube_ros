@@ -1,8 +1,8 @@
 """Validate the independent Gazebo ground-truth pose path."""
 
 import importlib.util
-from pathlib import Path
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import yaml
 
@@ -56,7 +56,7 @@ def test_ground_truth_bridge_is_one_way_and_not_tf():
     }]
 
 
-def test_launch_accepts_a_generated_urdf_and_resolves_controller_path(tmp_path):
+def test_launch_accepts_generated_urdf_and_resolves_controller_path(tmp_path):
     """Sensor variants must retain the gz_ros2_control configuration."""
     spec = importlib.util.spec_from_file_location('gazebo_launch', LAUNCH)
     module = importlib.util.module_from_spec(spec)
@@ -89,6 +89,14 @@ def test_robot_state_publisher_respawn_bool_is_strict():
 
     source = LAUNCH.read_text(encoding='utf-8')
     assert "'robot_state_publisher_respawn', default_value='true'" in source
+
+
+def test_launch_skips_arm_spawners_for_base_only_runs():
+    """Base-only replays must not wait for absent arm controllers."""
+    source = LAUNCH.read_text(encoding='utf-8')
+
+    assert "'enable_arm_controllers', default_value='true'" in source
+    assert "'enable_arm_controllers'" in source
 
 
 def test_launch_exposes_gazebo_set_pose_as_a_ros_service():

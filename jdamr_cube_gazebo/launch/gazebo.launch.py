@@ -33,7 +33,8 @@ def _strict_bool(value, name):
 
 
 def _robot_actions(context, urdf_file, controllers_yaml, use_sim_time,
-                   x_pose, y_pose, z_pose, robot_state_publisher_respawn):
+                   x_pose, y_pose, z_pose, robot_state_publisher_respawn,
+                   enable_arm_controllers):
     robot_description_content = _load_robot_description(
         urdf_file.perform(context), controllers_yaml)
     robot_state_publisher_node = Node(
@@ -60,6 +61,12 @@ def _robot_actions(context, urdf_file, controllers_yaml, use_sim_time,
             '-z', z_pose,
         ],
         output='screen')
+    actions = [robot_state_publisher_node, spawn_entity_node]
+    if not _strict_bool(
+            enable_arm_controllers.perform(context),
+            'enable_arm_controllers'):
+        return actions
+
     load_joint_state_broadcaster = Node(
         package='controller_manager',
         executable='spawner',
@@ -75,9 +82,7 @@ def _robot_actions(context, urdf_file, controllers_yaml, use_sim_time,
         executable='spawner',
         arguments=['gripper_controller'],
         output='screen')
-    return [
-        robot_state_publisher_node,
-        spawn_entity_node,
+    return actions + [
         RegisterEventHandler(OnProcessExit(
             target_action=spawn_entity_node,
             on_exit=[load_joint_state_broadcaster])),
@@ -110,6 +115,7 @@ def generate_launch_description():
     enable_image_bridges = LaunchConfiguration('enable_image_bridges')
     robot_state_publisher_respawn = LaunchConfiguration(
         'robot_state_publisher_respawn')
+    enable_arm_controllers = LaunchConfiguration('enable_arm_controllers')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
     z_pose = LaunchConfiguration('z_pose')
@@ -152,6 +158,10 @@ def generate_launch_description():
     declare_robot_state_publisher_respawn_cmd = DeclareLaunchArgument(
         'robot_state_publisher_respawn', default_value='true',
         description='Respawn robot_state_publisher after an unexpected exit')
+
+    declare_enable_arm_controllers_cmd = DeclareLaunchArgument(
+        'enable_arm_controllers', default_value='true',
+        description='Spawn SO-101 controllers after creating the robot')
 
     declare_x_pose_cmd = DeclareLaunchArgument(
         'x_pose', default_value='0.0',
@@ -203,7 +213,8 @@ def generate_launch_description():
     robot_actions = OpaqueFunction(
         function=_robot_actions,
         args=[urdf_file, so101_controllers_yaml, use_sim_time,
-              x_pose, y_pose, z_pose, robot_state_publisher_respawn])
+              x_pose, y_pose, z_pose, robot_state_publisher_respawn,
+              enable_arm_controllers])
 
     bridge_node = Node(
         package='ros_gz_bridge',
@@ -242,6 +253,7 @@ def generate_launch_description():
     ld.add_action(declare_gui_cmd)
     ld.add_action(declare_enable_image_bridges_cmd)
     ld.add_action(declare_robot_state_publisher_respawn_cmd)
+    ld.add_action(declare_enable_arm_controllers_cmd)
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
     ld.add_action(declare_z_pose_cmd)

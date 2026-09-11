@@ -21,6 +21,8 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
+from std_msgs.msg import Bool
+
 try:
     from ros_gz_interfaces.msg import Entity
     from ros_gz_interfaces.srv import SetEntityPose
@@ -33,20 +35,26 @@ SUCCESS = 4
 SET_POSE_SERVICE = '/world/slam_corridor/set_pose'
 
 
-def event_schedule(contract: dict[str, Any]) -> dict[int, list[dict]]:
-    """Group the six ordered real events by their active waypoint."""
+def scene_schedule(contract: dict[str, Any]) -> dict[int, list[dict]]:
+    """Group the three video-grounded scenes by active waypoint."""
     events = contract['obstacle_interventions']['events']
+    scenes = contract['obstacle_interventions']['scenes']
     if (contract['route']['simulation_waypoint_count'] != 20
-            or len(events) != 6):
-        raise ValueError('restaurant replay requires 20 goals and six events')
+            or len(events) != 6 or len(scenes) != 3):
+        raise ValueError(
+            'restaurant replay requires 20 goals, six records, three scenes')
+    if [item['event'] for item in events] != list(range(1, 7)):
+        raise ValueError('source stop records must retain order')
     schedule: dict[int, list[dict]] = {}
-    for expected, event in enumerate(events, start=1):
-        if event['event'] != expected:
-            raise ValueError('obstacle events must retain source order')
-        index = int(event['trigger']['waypoint_index'])
+    covered_events = []
+    for scene in scenes:
+        index = int(scene['trigger_waypoint_index'])
         if not 1 <= index <= 20:
-            raise ValueError('event waypoint index is outside the route')
-        schedule.setdefault(index, []).append(event)
+            raise ValueError('scene waypoint index is outside the route')
+        covered_events.extend(scene['source_event_ids'])
+        schedule.setdefault(index, []).append(scene)
+    if covered_events != list(range(1, 7)):
+        raise ValueError('scene grouping must cover source records once')
     return schedule
 
 
@@ -73,7 +81,7 @@ def wheel_slip_commands(
 
 
 class RestaurantReplayScenario(Node):
-    """Sequence goals and inject six noncontact obstacle interventions."""
+    """Sequence goals through two box detours and one person stop."""
 
     def __init__(self, args: argparse.Namespace, contract: dict[str, Any]):
         """Bind action, obstacle control, and evidence subscriptions."""
@@ -83,10 +91,12 @@ class RestaurantReplayScenario(Node):
                 'ros_gz_interfaces SetEntityPose is unavailable')
         self.args = args
         self.contract = contract
-        self.schedule = event_schedule(contract)
+        self.schedule = scene_schedule(contract)
         self.action = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.pose_client = self.create_client(
             SetEntityPose, SET_POSE_SERVICE)
+        self.traction_fault_publisher = self.create_publisher(
+            Bool, '/sim/traction_fault_active', 10)
         self.world_pose: tuple[float, float, float] | None = None
         self.latest_command = Twist()
         self.latest_guarded_command = Twist()
@@ -114,7 +124,10 @@ class RestaurantReplayScenario(Node):
         return time.monotonic() - self.started_s
 
     def _event(self, name: str, **fields: Any) -> dict[str, Any]:
-        event = {'name': name, 'elapsed_s': self._elapsed_s(), **fields}
+        event = {
+            'name': name, 'elapsed_s': self._elapsed_s(),
+            'sim_s': self.get_clock().now().nanoseconds / 1e9,
+            **fields}
         self.events.append(event)
         return event
 
@@ -154,9 +167,11 @@ class RestaurantReplayScenario(Node):
             and self.action.wait_for_server(timeout_sec=30.0)
             and self.pose_client.wait_for_service(timeout_sec=10.0))
 
-    def _set_obstacle(self, x_m: float, y_m: float, z_m: float) -> bool:
+    def _set_entity(
+            self, entity_name: str, x_m: float, y_m: float,
+            z_m: float) -> bool:
         request = SetEntityPose.Request()
-        request.entity.name = self.args.obstacle_entity
+        request.entity.name = entity_name
         request.entity.type = Entity.MODEL
         request.pose.position.x = x_m
         request.pose.position.y = y_m
@@ -181,30 +196,52 @@ class RestaurantReplayScenario(Node):
         self.slip_active = longitudinal > 0.0
         self.slip_enabled_s = (
             time.monotonic() if self.slip_active else None)
+        state = Bool()
+        state.data = self.slip_active
+        self.traction_fault_publisher.publish(state)
         return True
 
     @staticmethod
     def _goal_uuid(handle: Any) -> str:
         return bytes(handle.goal_id.uuid).hex()
 
-    def _inject(self, source_event: dict[str, Any], goal_uuid: str) -> bool:
+    def _cross_person(self, scene: dict[str, Any], goal_uuid: str) -> bool:
         if self.world_pose is None:
-            self.error = 'ground_truth_missing_at_obstacle_trigger'
+            self.error = 'ground_truth_missing_at_person_trigger'
             return False
         x_m, y_m, yaw = self.world_pose
         center_x_m = x_m + self.args.obstacle_ahead_m * math.cos(yaw)
         center_y_m = y_m + self.args.obstacle_ahead_m * math.sin(yaw)
+        lateral_x = -math.sin(yaw)
+        lateral_y = math.cos(yaw)
+        entity = scene['object_entity']
         record = {
-            'source_event': source_event['event'],
-            'waypoint_index': source_event['trigger']['waypoint_index'],
-            'waypoint_id': source_event['trigger']['waypoint_id'],
+            'scene_id': scene['scene_id'], 'kind': scene['kind'],
+            'source_event_ids': scene['source_event_ids'],
+            'waypoint_index': scene['trigger_waypoint_index'],
             'goal_uuid': goal_uuid,
-            'obstacle_pose_m': [center_x_m, center_y_m, 0.5],
+            'crossing_center_m': [center_x_m, center_y_m],
             'trigger_elapsed_s': self._elapsed_s(),
+            'trigger_sim_s': self.get_clock().now().nanoseconds / 1e9,
+            'person_track_m': [],
         }
-        if not self._set_obstacle(center_x_m, center_y_m, 0.5):
-            self.error = 'obstacle_activation_failed'
+        support_pose = scene['supporting_box_pose_m']
+        if not self._set_entity(
+                scene['supporting_box_entity'], float(support_pose[0]),
+                float(support_pose[1]), float(support_pose[2])):
+            self.error = 'supporting_box_activation_failed'
             return False
+        record['supporting_box_pose_m'] = support_pose
+        for step in range(9):
+            lateral = 0.90 - step * 0.1125
+            pose = (
+                center_x_m + lateral_x * lateral,
+                center_y_m + lateral_y * lateral)
+            if not self._set_entity(entity, pose[0], pose[1], 0.0):
+                self.error = 'person_crossing_activation_failed'
+                return False
+            record['person_track_m'].append([*pose, self._elapsed_s()])
+            rclpy.spin_once(self, timeout_sec=0.06)
         stopped = self._spin_until(lambda: (
             self.monitor_action == CollisionMonitorState.STOP
             and self.monitor_polygon == 'StopZone'
@@ -213,13 +250,27 @@ class RestaurantReplayScenario(Node):
         ), self.args.stop_timeout_s)
         record['stop_observed'] = stopped
         record['stop_elapsed_s'] = self._elapsed_s() if stopped else None
+        record['stop_sim_s'] = (
+            self.get_clock().now().nanoseconds / 1e9 if stopped else None)
         if stopped:
-            hold_deadline_s = time.monotonic() + self.args.obstacle_hold_s
+            hold_deadline_s = time.monotonic() + max(
+                1.2, self.args.obstacle_hold_s)
             while rclpy.ok() and time.monotonic() < hold_deadline_s:
                 rclpy.spin_once(self, timeout_sec=0.02)
-        cleared = self._set_obstacle(
-            self.args.park_x_m, self.args.park_y_m, self.args.park_z_m)
+        for step in range(1, 9):
+            lateral = -step * 0.1125
+            pose = (
+                center_x_m + lateral_x * lateral,
+                center_y_m + lateral_y * lateral)
+            if not self._set_entity(entity, pose[0], pose[1], 0.0):
+                self.error = 'person_crossing_clear_failed'
+                return False
+            record['person_track_m'].append([*pose, self._elapsed_s()])
+            rclpy.spin_once(self, timeout_sec=0.06)
+        cleared = self._set_entity(
+            entity, self.args.park_x_m, self.args.park_y_m, 0.0)
         record['clear_acknowledged'] = cleared
+        record['clear_sim_s'] = self.get_clock().now().nanoseconds / 1e9
         resumed = cleared and self._spin_until(lambda: (
             self.monitor_action == CollisionMonitorState.DO_NOTHING
             and (abs(float(self.latest_command.linear.x)) > 1e-3
@@ -227,6 +278,9 @@ class RestaurantReplayScenario(Node):
         ), self.args.resume_timeout_s)
         record['same_goal_resumed'] = resumed
         record['resume_elapsed_s'] = self._elapsed_s() if resumed else None
+        record['resume_sim_s'] = (
+            self.get_clock().now().nanoseconds / 1e9 if resumed else None)
+        record['success'] = stopped and cleared and resumed
         self.interventions.append(record)
         if not (stopped and cleared and resumed):
             self.error = 'obstacle_stop_or_resume_gate_failed'
@@ -269,7 +323,8 @@ class RestaurantReplayScenario(Node):
         }
         self.goals.append(goal_record)
         result_future = handle.get_result_async()
-        pending_events = list(self.schedule.get(index, ()))
+        pending_scenes = list(self.schedule.get(index, ()))
+        avoidance_records: list[dict[str, Any]] = []
         deadline_s = time.monotonic() + self.args.goal_timeout_s
         while rclpy.ok() and not result_future.done():
             rclpy.spin_once(self, timeout_sec=0.02)
@@ -297,10 +352,42 @@ class RestaurantReplayScenario(Node):
                         waypoint_index=index)
             else:
                 self.guarded_zero_since_s = None
-            if pending_events and moving:
-                source_event = pending_events.pop(0)
-                if not self._inject(source_event, goal_uuid):
-                    return False
+            if pending_scenes and moving:
+                scene = pending_scenes[0]
+                if scene['kind'] == 'person_crossing_emergency_stop':
+                    pending_scenes.pop(0)
+                    if not self._cross_person(scene, goal_uuid):
+                        return False
+                elif scene['kind'] == 'static_avoidance':
+                    object_x_m, object_y_m = scene['object_pose_m']
+                    distance_m = math.hypot(
+                        self.world_pose[0] - object_x_m,
+                        self.world_pose[1] - object_y_m)
+                    if distance_m <= 3.0:
+                        pending_scenes.pop(0)
+                        avoidance_records.append({
+                            'scene_id': scene['scene_id'],
+                            'kind': scene['kind'],
+                            'source_event_ids': scene['source_event_ids'],
+                            'waypoint_index': index,
+                            'goal_uuid': goal_uuid,
+                            'object_pose_m': scene['object_pose_m'],
+                            'trigger_elapsed_s': self._elapsed_s(),
+                            'trigger_sim_s': (
+                                self.get_clock().now().nanoseconds / 1e9),
+                            'minimum_distance_m': distance_m,
+                            'maximum_abs_angular_z': abs(float(
+                                self.latest_command.angular.z)),
+                        })
+            for record in avoidance_records:
+                object_x_m, object_y_m = record['object_pose_m']
+                record['minimum_distance_m'] = min(
+                    record['minimum_distance_m'], math.hypot(
+                        self.world_pose[0] - object_x_m,
+                        self.world_pose[1] - object_y_m))
+                record['maximum_abs_angular_z'] = max(
+                    record['maximum_abs_angular_z'],
+                    abs(float(self.latest_command.angular.z)))
             if time.monotonic() >= deadline_s:
                 self.error = f'goal_{index}_result_timeout'
                 return False
@@ -314,10 +401,20 @@ class RestaurantReplayScenario(Node):
         goal_record.update({
             'status': status,
             'result_elapsed_s': self._elapsed_s(),
-            'pending_event_count': len(pending_events),
+            'pending_scene_count': len(pending_scenes),
         })
-        if status != SUCCESS or pending_events:
-            self.error = f'goal_{index}_failed_or_events_missing'
+        for record in avoidance_records:
+            record['result_sim_s'] = self.get_clock().now().nanoseconds / 1e9
+            record['same_goal_continued'] = status == SUCCESS
+            record['steering_observed'] = (
+                record['maximum_abs_angular_z'] >= 0.03)
+            record['success'] = (
+                record['same_goal_continued']
+                and record['steering_observed'])
+            self.interventions.append(record)
+        if (status != SUCCESS or pending_scenes
+                or any(not item['success'] for item in avoidance_records)):
+            self.error = f'goal_{index}_failed_or_scenes_missing'
             return False
         return True
 
@@ -351,9 +448,7 @@ class RestaurantReplayScenario(Node):
                 item.get('status') == SUCCESS for item in self.goals),
             'intervention_count': len(self.interventions),
             'successful_intervention_count': sum(
-                item.get('stop_observed')
-                and item.get('clear_acknowledged')
-                and item.get('same_goal_resumed')
+                item.get('success')
                 for item in self.interventions),
             'goals': self.goals,
             'interventions': self.interventions,
@@ -369,7 +464,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--obstacle-entity', required=True)
     parser.add_argument('--park-x-m', type=float, default=0.0)
-    parser.add_argument('--park-y-m', type=float, default=20.0)
+    parser.add_argument('--park-y-m', type=float, default=50.0)
     parser.add_argument('--park-z-m', type=float, default=0.5)
     parser.add_argument('--obstacle-ahead-m', type=float, default=0.55)
     parser.add_argument('--obstacle-hold-s', type=float, default=0.40)
@@ -378,7 +473,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--goal-timeout-s', type=float, default=90.0)
     parser.add_argument(
         '--minimum-trigger-speed-mps', type=float, default=0.03)
-    args, _ = parser.parse_known_args(argv)
+    args, ros_args = parser.parse_known_args(argv)
+    args.ros_args = ros_args
     return args
 
 
@@ -390,7 +486,7 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE') != 'LOCALHOST':
         raise RuntimeError('simulation replay requires LOCALHOST discovery')
     contract = json.loads(args.contract.read_text(encoding='utf-8'))
-    rclpy.init(args=[])
+    rclpy.init(args=args.ros_args)
     node = RestaurantReplayScenario(args, contract)
     success = False
     try:

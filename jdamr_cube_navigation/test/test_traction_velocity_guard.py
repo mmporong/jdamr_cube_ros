@@ -11,6 +11,7 @@ from jdamr_cube_navigation.traction_velocity_guard import (
     RECOVERED,
     RELOCALIZE,
     TractionRecoveryState,
+    injected_fault_requires_stop,
     motion_ratio,
     traction_observation_allowed,
 )
@@ -113,3 +114,16 @@ def test_obstacle_stop_is_not_reclassified_as_traction_loss():
         CollisionMonitorState.DO_NOTHING, 4.5, 4.0, 1.0)
     assert traction_observation_allowed(
         CollisionMonitorState.DO_NOTHING, 5.0, 4.0, 1.0)
+
+
+def test_injected_fault_trigger_requires_motion_and_clear_collision_monitor():
+    """The simulator trigger is deterministic without masking obstacles."""
+    assert injected_fault_requires_stop(
+        True, 0.1, 0.1, CollisionMonitorState.DO_NOTHING,
+        5.0, None, 1.0)
+    assert not injected_fault_requires_stop(
+        True, 0.1, 0.1, CollisionMonitorState.STOP,
+        5.0, 5.0, 1.0)
+    assert not injected_fault_requires_stop(
+        False, 0.2, 0.1, CollisionMonitorState.DO_NOTHING,
+        5.0, None, 1.0)

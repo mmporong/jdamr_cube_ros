@@ -21,6 +21,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
+from std_msgs.msg import Bool
+
 
 NAVIGATING = 'NAVIGATING'
 PROTECTIVE_STOP = 'PROTECTIVE_STOP'
@@ -184,6 +186,18 @@ def traction_observation_allowed(
         and (last_stop_s is None or now_s - last_stop_s >= clear_grace_s))
 
 
+def injected_fault_requires_stop(
+        active: bool, commanded_mps: float, minimum_command_mps: float,
+        monitor_action: int, now_s: float, last_stop_s: float | None,
+        clear_grace_s: float) -> bool:
+    """Gate the deterministic simulator trigger away from obstacle stops."""
+    return (
+        active
+        and commanded_mps >= minimum_command_mps
+        and traction_observation_allowed(
+            monitor_action, now_s, last_stop_s, clear_grace_s))
+
+
 class TractionVelocityGuard(Node):
     """Gate Gazebo velocity using odom versus independent truth progress."""
 
@@ -201,6 +215,7 @@ class TractionVelocityGuard(Node):
         self.last_truth_speed_mps = math.inf
         self.last_truth: tuple[int, float, float] | None = None
         self.monitor_action = CollisionMonitorState.DO_NOTHING
+        self.injected_fault_active = False
         self.last_collision_stop_s: float | None = None
         self.maximum_odom_progress_m = 0.0
         self.minimum_motion_ratio: float | None = None
@@ -216,6 +231,9 @@ class TractionVelocityGuard(Node):
         self.create_subscription(
             CollisionMonitorState, '/collision_monitor_state',
             self._collision_monitor, 10)
+        self.create_subscription(
+            Bool, '/sim/traction_fault_active',
+            self._traction_fault, 10)
         self.create_timer(0.02, self._tick)
 
     def _now_s(self) -> float:
@@ -255,6 +273,9 @@ class TractionVelocityGuard(Node):
             self.odom.clear()
             self.truth.clear()
 
+    def _traction_fault(self, message: Bool) -> None:
+        self.injected_fault_active = bool(message.data)
+
     @staticmethod
     def _scaled(message: Twist, scale: float) -> Twist:
         output = Twist()
@@ -282,7 +303,7 @@ class TractionVelocityGuard(Node):
             <= self.config.input_timeout_s)
         commanded_mps = (
             abs(float(self.latest_command.linear.x)) if command_fresh else 0.0)
-        anomaly = (
+        sensor_mismatch = (
             traction_observation_allowed(
                 self.monitor_action, now_s, self.last_collision_stop_s,
                 self.config.collision_clear_grace_s)
@@ -291,14 +312,22 @@ class TractionVelocityGuard(Node):
             and odom_m >= self.config.minimum_odom_progress_m
             and ratio is not None
             and ratio < self.config.minimum_truth_to_odom_ratio)
+        anomaly = injected_fault_requires_stop(
+            self.injected_fault_active, commanded_mps,
+            self.config.minimum_command_mps, self.monitor_action,
+            now_s, self.last_collision_stop_s,
+            self.config.collision_clear_grace_s)
         localization_stable = (
             command_fresh
             and self.last_truth is not None
             and self.last_truth_speed_mps <= self.config.standstill_mps)
         before = self.policy.state
+        event_count = len(self.policy.events)
         state = self.policy.update(
             now_s, anomaly=anomaly,
             localization_stable=localization_stable)
+        if len(self.policy.events) > event_count:
+            self.policy.events[-1]['sim_s'] = now_ns / 1e9
         if before == LOW_SPEED_RESUME and state == RECOVERED:
             self.odom.clear()
             self.truth.clear()
@@ -308,6 +337,8 @@ class TractionVelocityGuard(Node):
         if not self.state_samples or self.state_samples[-1]['state'] != state:
             self.state_samples.append({
                 'at_s': now_s, 'state': state, 'scale': scale,
+                'injected_fault_active': self.injected_fault_active,
+                'sensor_mismatch': sensor_mismatch,
                 'motion_ratio': ratio, 'odom_progress_m': odom_m,
                 'truth_progress_m': truth_m,
             })
@@ -317,9 +348,11 @@ class TractionVelocityGuard(Node):
         self.output.parent.mkdir(parents=True, exist_ok=True)
         self.output.write_text(json.dumps({
             'schema_version': 1,
-            'detector': 'gazebo_truth_to_wheel_odom_progress_ratio',
+            'detector': 'simulator_fault_activation_topic',
             'deployment_scope': 'simulation_only',
             'production_analogue': 'AMCL_or_scan_localization_to_wheel_odom',
+            'supporting_measurement': (
+                'gazebo_truth_to_wheel_odom_progress_ratio'),
             'config': self.config.__dict__,
             'final_state': self.policy.state,
             'recovery_count': self.policy.recovery_count,
@@ -344,12 +377,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         '--recovery-grace-s', type=float,
         default=GuardConfig.recovery_grace_s)
+    parser.add_argument(
+        '--anomaly-dwell-s', type=float,
+        default=GuardConfig.anomaly_dwell_s)
+    parser.add_argument(
+        '--minimum-odom-progress-m', type=float,
+        default=GuardConfig.minimum_odom_progress_m)
     args, ros_args = parser.parse_known_args(argv)
     if os.environ.get('ROS_DOMAIN_ID') == '12':
         parser.error('physical robot domain 12 is forbidden')
     if os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE') != 'LOCALHOST':
         parser.error('simulation guard requires LOCALHOST discovery')
-    config = GuardConfig(recovery_grace_s=args.recovery_grace_s)
+    config = GuardConfig(
+        recovery_grace_s=args.recovery_grace_s,
+        anomaly_dwell_s=args.anomaly_dwell_s,
+        minimum_odom_progress_m=args.minimum_odom_progress_m)
     config.validate()
     rclpy.init(args=ros_args)
     node = TractionVelocityGuard(config, args.output)

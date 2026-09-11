@@ -15,7 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'evaluation'))
 
 from prepare_actual_map_restaurant_sim import (  # noqa: E402,I100,I201
     _rectangles,
+    _remove_so101,
     _world,
+    _write_floor_mask_obj,
     _write_obj,
     prepare,
 )
@@ -58,6 +60,8 @@ def test_world_splits_floor_around_actual_route_traction_zone(tmp_path):
     """The actual-map world must retain the physical low-friction patch."""
     mesh = tmp_path / 'walls.obj'
     mesh.write_text('v 0 0 0\n', encoding='utf-8')
+    keepout_mesh = tmp_path / 'keepout.obj'
+    keepout_mesh.write_text('v 0 0 0\n', encoding='utf-8')
     world = tmp_path / 'world.sdf'
     zone = {
         'center_x_m': 5.0, 'center_y_m': 5.0,
@@ -66,7 +70,8 @@ def test_world_splits_floor_around_actual_route_traction_zone(tmp_path):
     }
 
     _world(
-        world, mesh, {'resolution': 0.5, 'origin': [0.0, 0.0, 0.0]},
+        world, mesh, keepout_mesh,
+        {'resolution': 0.5, 'origin': [0.0, 0.0, 0.0]},
         (20, 20), 2.4, zone)
     root = ET.parse(world).getroot()
     patch = root.find(
@@ -82,8 +87,43 @@ def test_world_splits_floor_around_actual_route_traction_zone(tmp_path):
         "./world/model[@name='actual_map_walls']/link/visual/"
         'visibility_flags') == '4'
     assert root.findtext(
-        "./world/model[@name='g003_preloaded_route_obstacle']/link/visual/"
-        'visibility_flags') == '4'
+        "./world/model[@name='recorded_box_outbound_1']/link/visual/"
+        'visibility_flags') == '5'
+    assert root.find("./world/model[@name='crossing_person']") is not None
+    assert root.find(
+        "./world/model[@name='keepout_mask_overlay']") is not None
+
+
+def test_keepout_floor_mesh_preserves_mask_rectangles(tmp_path):
+    """The colored overlay uses the same map coordinates as the mask."""
+    output = tmp_path / 'mask.obj'
+    _write_floor_mask_obj(
+        output, [(0, 1, 0, 0)], height=2, resolution_m=0.5,
+        origin_x_m=-1.0, origin_y_m=-2.0)
+    lines = output.read_text(encoding='utf-8').splitlines()
+
+    assert 'v -1.000000 -1.500000 0.004' in lines
+    assert 'v 0.000000 -1.000000 0.004' in lines
+    assert len([line for line in lines if line.startswith('f ')]) == 2
+
+
+def test_so101_removal_retains_sensor_mast():
+    """The simulation robot matches the base-only real driving platform."""
+    root = ET.fromstring(
+        '<robot><material name="so101_color"/>'
+        '<joint name="arm_riser_joint"/><link name="arm_riser_link"/>'
+        '<joint name="rgbd_mast_joint"/><link name="rgbd_mast_link"/>'
+        '<ros2_control name="jdamr_cube_arm"/>'
+        '<gazebo reference="arm_riser_link"/>'
+        '<gazebo><plugin filename="gz_ros2_control-system"/></gazebo>'
+        '</robot>')
+
+    removed = _remove_so101(root)
+
+    assert removed
+    assert root.find("./link[@name='arm_riser_link']") is None
+    assert root.find("./link[@name='rgbd_mast_link']") is not None
+    assert root.find("./joint[@name='rgbd_mast_joint']") is not None
 
 
 def test_actual_map_contract_removes_transformed_corridor_claims(tmp_path):
@@ -101,6 +141,14 @@ def test_actual_map_contract_removes_transformed_corridor_claims(tmp_path):
         'origin': [0.0, 0.0, 0.0], 'occupied_thresh': 0.65,
         'free_thresh': 0.196, 'negate': 0,
     }), encoding='utf-8')
+    keepout_image = np.full_like(image, 254)
+    keepout_image[8:11, 12:15] = 0
+    cv2.imwrite(str(source / 'keepout.pgm'), keepout_image)
+    (source / 'keepout.yaml').write_text(yaml.safe_dump({
+        'image': 'keepout.pgm', 'resolution': 0.5,
+        'origin': [0.0, 0.0, 0.0], 'occupied_thresh': 0.65,
+        'free_thresh': 0.196, 'negate': 0,
+    }), encoding='utf-8')
     waypoints = [
         {'id': f'w{index}', 'x': 2.0 + index * 0.01, 'y': 2.0}
         for index in range(20)]
@@ -108,7 +156,10 @@ def test_actual_map_contract_removes_transformed_corridor_claims(tmp_path):
         'start_pose': {'x': 2.0, 'y': 2.0}, 'waypoints': waypoints,
     }), encoding='utf-8')
     (source / 'robot.urdf').write_text(
-        '<robot name="r"><gazebo><sensor type="gpu_lidar">'
+        '<robot name="r"><link name="base_link"/>'
+        '<joint name="arm_riser_joint"/><link name="arm_riser_link"/>'
+        '<joint name="rgbd_mast_joint"/><link name="rgbd_mast_link"/>'
+        '<gazebo><sensor type="gpu_lidar">'
         '<update_rate>2</update_rate><lidar><range><min>0.28</min>'
         '</range></lidar></sensor></gazebo></robot>', encoding='utf-8')
     (source / 'bridge.yaml').write_text('[]\n', encoding='utf-8')
@@ -127,6 +178,7 @@ def test_actual_map_contract_removes_transformed_corridor_claims(tmp_path):
     contract = prepare(Namespace(
         output_dir=output, base_contract=source / 'base.json',
         route=source / 'route.yaml', map_yaml=source / 'map.yaml',
+        keepout_yaml=source / 'keepout.yaml',
         robot_urdf=source / 'robot.urdf', wall_height_m=2.4))
 
     assert contract['route']['longitudinal_scale'] == 1.0
@@ -136,3 +188,13 @@ def test_actual_map_contract_removes_transformed_corridor_claims(tmp_path):
         contract['fidelity']['not_identical'])
     assert 'source occupancy cells, resolution, origin, and metric extent' in (
         contract['fidelity']['preserved'])
+    assert contract['navigation_map']['keepout_cell_count'] == 9
+    assert contract['world_reconstruction'][
+        'robot_configuration']['base_only'] is True
+    assert len(contract['obstacle_interventions']['scenes']) == 3
+    assert contract['traction_fault']['guard_overrides'] == {
+        'recovery_grace_s': 15.0,
+        'anomaly_dwell_s': 0.20,
+        'minimum_odom_progress_m': 0.05,
+        'reason': 'low_speed_exit_from_actual_route_traction_zone',
+    }

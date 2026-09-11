@@ -3,7 +3,7 @@
 import math
 
 from jdamr_cube_navigation.sim_restaurant_replay_scenario import (
-    event_schedule,
+    scene_schedule,
     waypoint_yaw,
     wheel_slip_commands,
 )
@@ -14,23 +14,34 @@ import pytest
 def _contract():
     return {
         'route': {'simulation_waypoint_count': 20},
-        'obstacle_interventions': {'events': [
-            {'event': index, 'trigger': {
-                'waypoint_index': waypoint,
-                'waypoint_id': f'wp_{waypoint}',
-            }}
-            for index, waypoint in enumerate((6, 6, 9, 9, 18, 18), start=1)
-        ]},
+        'obstacle_interventions': {
+            'events': [
+                {'event': index, 'trigger': {
+                    'waypoint_index': waypoint,
+                    'waypoint_id': f'wp_{waypoint}',
+                }}
+                for index, waypoint in enumerate(
+                    (6, 6, 9, 9, 18, 18), start=1)
+            ],
+            'scenes': [
+                {'scene_id': 'box_1', 'trigger_waypoint_index': 6,
+                 'source_event_ids': [1, 2]},
+                {'scene_id': 'box_2', 'trigger_waypoint_index': 9,
+                 'source_event_ids': [3, 4]},
+                {'scene_id': 'person', 'trigger_waypoint_index': 18,
+                 'source_event_ids': [5, 6]},
+            ],
+        },
     }
 
 
 def test_real_event_pairs_are_grouped_without_losing_source_order():
     """Two interventions remain attached to each measured route phase."""
-    schedule = event_schedule(_contract())
+    schedule = scene_schedule(_contract())
 
     assert list(schedule) == [6, 9, 18]
-    assert [[item['event'] for item in schedule[index]]
-            for index in schedule] == [[1, 2], [3, 4], [5, 6]]
+    assert [[item['scene_id'] for item in schedule[index]]
+            for index in schedule] == [['box_1'], ['box_2'], ['person']]
 
 
 def test_invalid_event_count_is_rejected():
@@ -38,8 +49,8 @@ def test_invalid_event_count_is_rejected():
     contract = _contract()
     contract['obstacle_interventions']['events'].pop()
 
-    with pytest.raises(ValueError, match='20 goals and six events'):
-        event_schedule(contract)
+    with pytest.raises(ValueError, match='six records, three scenes'):
+        scene_schedule(contract)
 
 
 def test_waypoint_heading_matches_outbound_and_return_direction():

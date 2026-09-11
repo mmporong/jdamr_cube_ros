@@ -9,7 +9,10 @@ from pathlib import Path
 
 from run_restaurant_replay_sim import (
     _sha256,
+    camera_sim_timing,
     encode_camera_video,
+    resample_camera_on_sim_clock,
+    scene_video_annotations,
     select_video_encoder,
 )
 
@@ -46,6 +49,8 @@ def main() -> int:
     parser.add_argument('--run-dir', required=True, type=Path)
     parser.add_argument(
         '--encoder', choices=('h264_nvenc', 'libx264'), default=None)
+    parser.add_argument(
+        '--output-name', default='gazebo_actual_map_2x_synced.mp4')
     args = parser.parse_args()
     summary_path = args.run_dir / 'summary.json'
     summary = json.loads(summary_path.read_text(encoding='utf-8'))
@@ -64,21 +69,47 @@ def main() -> int:
     except (KeyError, TypeError, ValueError) as error:
         parser.error(str(error))
     fps = float(views[0]['capture']['requested_fps'])
-    scales = [
-        float(view['capture']['capture_duration_s']) * fps
-        / max(1, int(view['capture']['frames']))
-        for view in views]
-    output = args.run_dir / 'gazebo_actual_map_2x_synced.mp4'
+    scales, offsets, _duration_s, common_start_s = camera_sim_timing(
+        views, fps)
+    common_end_s = min(
+        float(view['capture']['frame_timestamps'][-1]['sim_ns']) / 1e9
+        for view in views)
+    annotations = scene_video_annotations(
+        summary.get('scenario'), summary.get('traction_guard'),
+        common_start_s)
+    output = args.run_dir / args.output_name
+    if output.name != args.output_name or output.suffix.lower() != '.mp4':
+        parser.error('--output-name must be a plain MP4 filename')
     if output.exists():
         parser.error(f'output already exists: {output}')
     encoder = args.encoder or select_video_encoder()
+    aligned_paths = []
+    for view, raw_path in zip(views, raw_paths):
+        aligned = args.run_dir / f'gazebo_{view["name"]}_clock_aligned.mp4'
+        if aligned.exists():
+            parser.error(f'aligned view already exists: {aligned}')
+        resample_camera_on_sim_clock(
+            raw_path, view['capture'], aligned, fps,
+            common_start_s, common_end_s)
+        aligned_paths.append(aligned)
     encode_camera_video(
-        raw_paths, output, fps, encoder, scales)
+        aligned_paths, output, fps, encoder, [1.0, 1.0], [0.0, 0.0],
+        common_end_s - common_start_s,
+        annotations)
     video['encoder'] = encoder
     video['timing_alignment'] = {
-        'basis': 'capture_steady_duration_per_frame',
-        'input_pts_scales': scales,
+        'basis': 'per_frame_gazebo_timestamp_resampling',
+        'prior_linear_input_pts_scales': scales,
+        'prior_linear_input_start_offsets_s': offsets,
+        'common_start_sim_s': common_start_s,
+        'common_end_sim_s': common_end_s,
     }
+    for view, aligned in zip(views, aligned_paths):
+        view['clock_aligned'] = {
+            'path': str(aligned.resolve()), 'sha256': _sha256(aligned),
+            'bytes': aligned.stat().st_size,
+        }
+    video['annotations'] = annotations
     video['video_2x'] = {
         'path': str(output.resolve()), 'sha256': _sha256(output),
         'bytes': output.stat().st_size,
