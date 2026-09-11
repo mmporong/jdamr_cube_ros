@@ -1,7 +1,7 @@
-"""Exercise schema-less recordings and source-type rejection without ROS replay."""
+"""Exercise schema-less recordings and reject mismatched source types."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from mcap.writer import Writer
 import pytest  # noqa: I201
@@ -10,6 +10,7 @@ import pytest  # noqa: I201
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'evaluation'))
 
 from navigation_mcap_reader import (  # noqa: E402,I100,I201
+    TOPIC_TYPES,
     read_navigation_messages,
 )
 
@@ -29,7 +30,7 @@ def _write_bag(path, *, topic='/cmd_vel', type_name='geometry_msgs/msg/Twist',
 
 def test_empty_schema_uses_known_installed_type_in_recorder_order(
         tmp_path, monkeypatch):
-    """Keep normal empty-schema rosbag messages instead of silently omitting them."""
+    """Keep normal empty-schema rosbag messages in recorder order."""
     path = tmp_path / 'source.mcap'
     _write_bag(path)
     types = []
@@ -62,11 +63,17 @@ def test_wrong_types_or_encodings_fail_closed(tmp_path, changes):
 def test_unknown_topic_is_rejected_before_reading(tmp_path):
     """Do not let a recording select arbitrary local message imports."""
     with pytest.raises(ValueError, match='unsupported navigation topic'):
-        list(read_navigation_messages(tmp_path / 'absent.mcap', ['/arbitrary']))
+        list(read_navigation_messages(
+            tmp_path / 'absent.mcap', ['/arbitrary']))
+
+
+def test_guarded_velocity_topic_has_an_explicit_message_contract():
+    """The replay renderer may decode post-guard velocity evidence."""
+    assert TOPIC_TYPES['/guarded_cmd_vel'] == 'geometry_msgs/msg/Twist'
 
 
 def test_embedded_schema_does_not_require_installed_ros(tmp_path, monkeypatch):
-    """Retain standalone decoding for the existing self-describing recordings."""
+    """Retain standalone decoding for self-describing recordings."""
     path = tmp_path / 'source.mcap'
     _write_bag(path, schema_encoding='ros2msg', schema_data=b'float64 value')
     expected = object()
@@ -75,7 +82,8 @@ def test_embedded_schema_does_not_require_installed_ros(tmp_path, monkeypatch):
         lambda _self, _encoding, _schema: lambda _data: expected)
 
     def unexpected_import(_type):
-        pytest.fail('installed ROS types must not be loaded for embedded schema')
+        pytest.fail(
+            'installed ROS types must not be loaded for embedded schema')
 
     monkeypatch.setattr(
         'navigation_mcap_reader._installed_decoder', unexpected_import)

@@ -178,6 +178,12 @@ RECOVERED`로 전이했고, 0 속도 유지 0.75초, 위치 안정 유지 0.75�
 `$HOME/jdamr_artifacts/restaurant_replay_integrated_v12_20260911/run_seed_42_attempt_1/summary.json`에
 있다.
 
+MCAP 기반 관제 영상은 2배속, 1,920×720, 15fps, H.264/yuv420p로 생성했다. 114.333초 동안
+파란 Nav2 계획, 초록 AMCL 궤적, LiDAR 관측, 보라색 경로 장애물, 빨간 저마찰 복구 상태를
+동시에 표시한다. 최종 파일은
+`$HOME/jdamr_artifacts/restaurant_replay_integrated_v12_20260911/media_control_v3/restaurant_replay_control_2x.mp4`이고
+SHA-256은 `9c1a35eeae26bd83500ec2a442147356420c723b62d9b3d51a58a4c58f83f484`다.
+
 ```bash
 cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
 source /opt/ros/jazzy/setup.bash

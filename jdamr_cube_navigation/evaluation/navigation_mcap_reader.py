@@ -1,4 +1,4 @@
-"""Read navigation MCAPs, including rosbag channels without message definitions."""
+"""Read navigation MCAPs, including channels without message definitions."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +9,7 @@ TOPIC_TYPES = {
     '/battery_state': 'sensor_msgs/msg/BatteryState',
     '/collision_monitor_state': 'nav2_msgs/msg/CollisionMonitorState',
     '/cmd_vel': 'geometry_msgs/msg/Twist',
+    '/guarded_cmd_vel': 'geometry_msgs/msg/Twist',
     '/cmd_vel_nav': 'geometry_msgs/msg/Twist',
     '/imu/data_raw': 'sensor_msgs/msg/Imu',
     '/navigate_to_pose/_action/status': 'action_msgs/msg/GoalStatusArray',
@@ -22,7 +23,7 @@ TOPIC_TYPES = {
 
 
 def _installed_decoder(type_name):
-    """Use the installed ROS type only for an explicitly allowed empty schema."""
+    """Use the installed type only for an allowed empty schema."""
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
 
@@ -31,7 +32,7 @@ def _installed_decoder(type_name):
 
 
 def read_navigation_messages(path, topics):
-    """Yield decoded messages in recorder order without replaying the ROS graph."""
+    """Yield decoded messages in recorder order without ROS graph replay."""
     from mcap.reader import make_reader
     from mcap_ros2.decoder import DecoderFactory
 
