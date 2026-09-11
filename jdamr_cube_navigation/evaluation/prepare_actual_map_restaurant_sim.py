@@ -17,6 +17,7 @@ import yaml  # noqa: I201
 
 CAMERA_TOPIC = '/actual_map_scene/image_raw'
 CAMERA_RATE_HZ = 15.0
+VISUAL_WALL_HEIGHT_M = 0.65
 SCENE_OBJECTS = (
     {
         'name': 'recorded_box_outbound_1', 'kind': 'cardboard_box',
@@ -166,6 +167,41 @@ def _remove_so101(root: ET.Element) -> list[str]:
     return removed
 
 
+def _add_chase_camera(root: ET.Element) -> None:
+    """Attach a high rear three-quarter camera that keeps the base in view."""
+    link = ET.SubElement(root, 'link', {'name': 'digital_twin_chase_link'})
+    inertial = ET.SubElement(link, 'inertial')
+    ET.SubElement(inertial, 'mass', {'value': '0.001'})
+    ET.SubElement(inertial, 'origin', {'xyz': '0 0 0'})
+    ET.SubElement(inertial, 'inertia', {
+        'ixx': '1e-8', 'ixy': '0', 'ixz': '0',
+        'iyy': '1e-8', 'iyz': '0', 'izz': '1e-8'})
+    joint = ET.SubElement(
+        root, 'joint', {'name': 'digital_twin_chase_joint', 'type': 'fixed'})
+    ET.SubElement(joint, 'parent', {'link': 'base_link'})
+    ET.SubElement(joint, 'child', {'link': 'digital_twin_chase_link'})
+    ET.SubElement(joint, 'origin', {
+        'xyz': '-1.8 0 1.8', 'rpy': '0 0 0'})
+    gazebo = ET.SubElement(
+        root, 'gazebo', {'reference': 'digital_twin_chase_link'})
+    sensor = ET.SubElement(
+        gazebo, 'sensor', {'name': 'digital_twin_chase', 'type': 'camera'})
+    ET.SubElement(sensor, 'pose').text = '0 0 0 0 0.78 0'
+    ET.SubElement(sensor, 'update_rate').text = str(CAMERA_RATE_HZ)
+    ET.SubElement(sensor, 'always_on').text = 'true'
+    ET.SubElement(sensor, 'topic').text = 'digital_twin_chase/image'
+    ET.SubElement(sensor, 'gz_frame_id').text = 'digital_twin_chase_link'
+    camera = ET.SubElement(sensor, 'camera')
+    ET.SubElement(camera, 'horizontal_fov').text = '1.2'
+    image = ET.SubElement(camera, 'image')
+    ET.SubElement(image, 'width').text = '640'
+    ET.SubElement(image, 'height').text = '480'
+    ET.SubElement(image, 'format').text = 'R8G8B8'
+    clip = ET.SubElement(camera, 'clip')
+    ET.SubElement(clip, 'near').text = '0.1'
+    ET.SubElement(clip, 'far').text = '30.0'
+
+
 def _add_cardboard_box(world: ET.Element, spec: dict) -> None:
     model = ET.SubElement(world, 'model', {'name': spec['name']})
     ET.SubElement(model, 'static').text = 'true'
@@ -221,8 +257,8 @@ def _add_person(world: ET.Element, park_x_m: float) -> None:
         ET.SubElement(material, 'diffuse').text = color
 
 
-def _world(world_path: Path, mesh_path: Path, keepout_mesh_path: Path,
-           metadata: dict,
+def _world(world_path: Path, collision_mesh_path: Path,
+           visual_mesh_path: Path, keepout_mesh_path: Path, metadata: dict,
            image_shape: tuple[int, int], wall_height_m: float,
            traction_zone: dict) -> None:
     """Create the physical world, parked obstacle, and fixed camera."""
@@ -310,10 +346,12 @@ def _world(world_path: Path, mesh_path: Path, keepout_mesh_path: Path,
     walls = ET.SubElement(world, 'model', {'name': 'actual_map_walls'})
     ET.SubElement(walls, 'static').text = 'true'
     wall_link = ET.SubElement(walls, 'link', {'name': 'walls'})
-    for tag in ('collision', 'visual'):
+    for tag, wall_mesh_path in (
+            ('collision', collision_mesh_path),
+            ('visual', visual_mesh_path)):
         element = ET.SubElement(wall_link, tag, {'name': tag})
         mesh = ET.SubElement(ET.SubElement(element, 'geometry'), 'mesh')
-        ET.SubElement(mesh, 'uri').text = mesh_path.resolve().as_uri()
+        ET.SubElement(mesh, 'uri').text = wall_mesh_path.resolve().as_uri()
         if tag == 'visual':
             ET.SubElement(element, 'visibility_flags').text = '4'
             material = ET.SubElement(element, 'material')
@@ -340,12 +378,12 @@ def _world(world_path: Path, mesh_path: Path, keepout_mesh_path: Path,
         world, 'model', {'name': 'actual_map_scene_camera'})
     ET.SubElement(camera_model, 'static').text = 'true'
     ET.SubElement(camera_model, 'pose').text = (
-        f'{center_x_m} {center_y_m - 20.0} 18 0 0 0')
+        f'{center_x_m} {center_y_m - 14.0} 22 0 0 0')
     camera_link = ET.SubElement(camera_model, 'link', {'name': 'mount'})
     camera = ET.SubElement(
         camera_link, 'sensor', {'name': 'actual_map_camera', 'type': 'camera'})
     ET.SubElement(camera, 'pose').text = (
-        '0 0 0 0 0.733 1.57079632679')
+        '0 0 0 0 1.004 1.57079632679')
     ET.SubElement(camera, 'always_on').text = 'true'
     ET.SubElement(camera, 'update_rate').text = str(CAMERA_RATE_HZ)
     ET.SubElement(camera, 'topic').text = CAMERA_TOPIC
@@ -414,6 +452,15 @@ def prepare(args: argparse.Namespace) -> dict:
         origin_x_m=float(map_metadata['origin'][0]),
         origin_y_m=float(map_metadata['origin'][1]),
         wall_height_m=args.wall_height_m)
+    visual_wall_obj = output / 'actual_map_walls_cutaway.obj'
+    visual_wall_height_m = min(VISUAL_WALL_HEIGHT_M, args.wall_height_m)
+    _write_obj(
+        visual_wall_obj, rectangles, width=image.shape[1],
+        height=image.shape[0],
+        resolution_m=float(map_metadata['resolution']),
+        origin_x_m=float(map_metadata['origin'][0]),
+        origin_y_m=float(map_metadata['origin'][1]),
+        wall_height_m=visual_wall_height_m)
     keepout_limit = round(
         (1.0 - float(keepout_metadata['occupied_thresh'])) * 255)
     keepout_cells = keepout_image < keepout_limit
@@ -438,7 +485,8 @@ def prepare(args: argparse.Namespace) -> dict:
         'provenance': 'synthetic_stress_not_real_measurement',
     }
     _world(
-        world, wall_obj, keepout_obj, map_metadata, image.shape,
+        world, wall_obj, visual_wall_obj, keepout_obj,
+        map_metadata, image.shape,
         args.wall_height_m, traction_zone)
     map_pgm = output / map_image_source.name
     map_yaml = output / args.map_yaml.name
@@ -460,6 +508,7 @@ def prepare(args: argparse.Namespace) -> dict:
     removed_so101_elements = _remove_so101(robot_tree.getroot())
     if not removed_so101_elements:
         raise ValueError('source robot URDF did not contain an SO-101 subtree')
+    _add_chase_camera(robot_tree.getroot())
     ET.indent(robot_tree, space='  ')
     robot_tree.write(robot_urdf, encoding='utf-8', xml_declaration=True)
     base_bridge = Path(base['traction_fault']['guarded_bridge']['path'])
@@ -562,7 +611,8 @@ def prepare(args: argparse.Namespace) -> dict:
         'views': [
             {'name': 'actual_map_wide', 'topic': CAMERA_TOPIC,
              'width': 1280, 'height': 720},
-            {'name': 'robot_front', 'topic': '/rgbd_camera/image',
+            {'name': 'robot_chase',
+             'topic': '/digital_twin_chase/image',
              'width': 640, 'height': 480},
         ],
     }
@@ -574,6 +624,12 @@ def prepare(args: argparse.Namespace) -> dict:
         'wall_height_provenance': 'explicit_visualization_assumption',
         'wall_mesh': {'path': str(wall_obj.resolve()),
                       'sha256': _sha256(wall_obj)},
+        'visual_wall_mesh': {
+            'path': str(visual_wall_obj.resolve()),
+            'sha256': _sha256(visual_wall_obj),
+            'height_m': visual_wall_height_m,
+            'style': 'cutaway_for_robot_visibility',
+        },
         'keepout_mask_mesh': {
             'path': str(keepout_obj.resolve()),
             'sha256': _sha256(keepout_obj),
@@ -590,6 +646,7 @@ def prepare(args: argparse.Namespace) -> dict:
             'base_only': True,
             'removed_so101_elements': removed_so101_elements,
             'retained_sensor_mast': 'rgbd_mast_link',
+            'chase_camera': 'digital_twin_chase_link',
         },
     }
     base['fidelity'] = {
@@ -599,7 +656,7 @@ def prepare(args: argparse.Namespace) -> dict:
                 'identity-coordinate 20-waypoint route',
                 'two fixed-box detours and one person-crossing stop',
                 'physical low-traction patch and recovery supervisor',
-                'simultaneous overhead and robot-front Gazebo cameras',
+                'simultaneous overhead and high rear chase Gazebo cameras',
             ],
             'runtime_validation_required': [
                 '20-waypoint Nav2 completion',

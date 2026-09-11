@@ -222,6 +222,15 @@ LOW_SPEED_RESUME → RECOVERED`로 한 번 전이했다.
 SHA-256은 `8f793abb17003eb38f4993dbc564551d99df3a6303c080dfaf5ebf1f5a1ac802`다.
 검증 요약은 같은 디렉터리의 `summary.json`에 있으며 종료 뒤 잔존 프로세스는 0개다.
 
+차량 가림을 개선한 `restaurant_actual_map_visible_vehicle_v3`에서는 충돌 판정용 벽을 원래
+2.4 m로 유지하되 화면 표시용 벽만 0.65 m 절개형 메시로 분리했다. 전체 지도 카메라는 더
+높은 사선 시점으로 옮겼고, 베이스 뒤 1.8 m·위 1.8 m의 후상방 추적 카메라를 추가해 차체와
+주변 장애물을 함께 표시한다. 동일 seed 42 재생에서 waypoint 20/20, 박스 회피 2건과 사람
+긴급정지 1건을 포함한 장면 3/3, 저마찰 복구 1회를 통과했다. 최종 2배속 영상은 267.800초,
+1,280×480, H.264이며 경로는
+`$HOME/jdamr_artifacts/restaurant_actual_map_visible_vehicle_v3/gazebo_actual_map_2x.mp4`,
+SHA-256은 `5e91f71e4515ff63a5dbd8d399dcd2bdbad4c4a3f013bfa4eaa0b7bd93cfa7e4`다.
+
 이 결과는 실제 점유격자·Keepout·주행 구간·관측 장면을 연결한 데이터 기반 기능 재현형
 디지털 트윈이다. 저장 지도에 없는 벽 재질·문·가구·실측 장애물 치수까지 복원한
 사진측량형 3D 복제본은 아니다.

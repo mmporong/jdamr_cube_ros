@@ -14,6 +14,7 @@ import yaml  # noqa: I201
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'evaluation'))
 
 from prepare_actual_map_restaurant_sim import (  # noqa: E402,I100,I201
+    _add_chase_camera,
     _rectangles,
     _remove_so101,
     _world,
@@ -70,7 +71,7 @@ def test_world_splits_floor_around_actual_route_traction_zone(tmp_path):
     }
 
     _world(
-        world, mesh, keepout_mesh,
+        world, mesh, mesh, keepout_mesh,
         {'resolution': 0.5, 'origin': [0.0, 0.0, 0.0]},
         (20, 20), 2.4, zone)
     root = ET.parse(world).getroot()
@@ -86,6 +87,9 @@ def test_world_splits_floor_around_actual_route_traction_zone(tmp_path):
     assert root.findtext(
         "./world/model[@name='actual_map_walls']/link/visual/"
         'visibility_flags') == '4'
+    assert root.findtext(
+        "./world/model[@name='actual_map_walls']/link/collision/"
+        'geometry/mesh/uri') == mesh.resolve().as_uri()
     assert root.findtext(
         "./world/model[@name='recorded_box_outbound_1']/link/visual/"
         'visibility_flags') == '5'
@@ -124,6 +128,23 @@ def test_so101_removal_retains_sensor_mast():
     assert root.find("./link[@name='arm_riser_link']") is None
     assert root.find("./link[@name='rgbd_mast_link']") is not None
     assert root.find("./joint[@name='rgbd_mast_joint']") is not None
+
+
+def test_chase_camera_is_fixed_behind_the_mobile_base():
+    """The supervisory view must show the vehicle, not look from inside it."""
+    root = ET.fromstring('<robot><link name="base_link"/></robot>')
+
+    _add_chase_camera(root)
+
+    joint = root.find("./joint[@name='digital_twin_chase_joint']")
+    sensor = root.find(
+        "./gazebo[@reference='digital_twin_chase_link']/sensor")
+    assert joint is not None
+    assert joint.find('./parent').get('link') == 'base_link'
+    assert joint.find('./origin').get('xyz') == '-1.8 0 1.8'
+    assert sensor is not None
+    assert sensor.findtext('pose') == '0 0 0 0 0.78 0'
+    assert sensor.findtext('topic') == 'digital_twin_chase/image'
 
 
 def test_actual_map_contract_removes_transformed_corridor_claims(tmp_path):
@@ -191,6 +212,9 @@ def test_actual_map_contract_removes_transformed_corridor_claims(tmp_path):
     assert contract['navigation_map']['keepout_cell_count'] == 9
     assert contract['world_reconstruction'][
         'robot_configuration']['base_only'] is True
+    assert contract['simulator_camera']['views'][1]['name'] == 'robot_chase'
+    assert contract['world_reconstruction']['visual_wall_mesh'][
+        'height_m'] == 0.65
     assert len(contract['obstacle_interventions']['scenes']) == 3
     assert contract['traction_fault']['guard_overrides'] == {
         'recovery_grace_s': 15.0,

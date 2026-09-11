@@ -269,7 +269,7 @@ def encode_camera_video(raws: list[Path], output: Path, fps: float,
              'box=1:boxcolor=black@0.55[wide];'
              f'[1:v]setpts={scales[1]:.9f}*PTS+'
              f'{offsets[1]:.9f}/TB,scale=426:320,'
-             'drawtext=text=BASE FRONT CAMERA  SO-101 REMOVED:'
+             'drawtext=text=ROBOT CHASE CAMERA  BASE ONLY:'
              'x=14:y=14:fontsize=18:fontcolor=white:'
              'box=1:boxcolor=black@0.55[front];'
              f'color=c=black:s=426x480:d={canvas_duration_s or 1.0:.9f}'
