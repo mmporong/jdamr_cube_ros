@@ -109,26 +109,26 @@ scan이 STOP을 유발했는지 연결하는 trace ID가 없으므로 이를 end
 재현 출력은 `$HOME/jdamr_artifacts/real_combined_obstacle_retry_20260910T122006_latency/`
 아래 `stop_latency.json`과 `stop_latency.csv`다.
 
-## 마지막 실차 주행의 시뮬레이션 재현 범위
+## 마지막 실차 주행의 실제 지도 3D 재현 범위
 
-마지막 실차 기록을 디지털 트윈처럼 똑같이 복제할 수는 없다. MCAP에는 실제 건물의 충돌
-형상, 바닥 마찰계수, 장애물의 의미 분류와 공통 hardware timecode가 없다. 대신 실차의 20개
-waypoint 왕복 순서, StopZone 개입 6회의 활성 waypoint, 동일 goal 재개 조건을 보존한 기능
-재현은 가능하다. 실차 좌표는 통제된 Gazebo 복도의 왕복 차선으로 변환하고, 장애물 이벤트는
-불안정한 벽시계 시간이 아니라 활성 waypoint에 결합한다.
+직선 복도 시험 월드로 좌표를 축소하는 방식은 최종 재현에서 제외했다. 실제 저장 지도
+`autonomous_20260826T161908.pgm`의 점유 셀을 5 cm 해상도와 원점
+`(-2.527, -8.975)` 그대로 Gazebo 충돌·시각 메시로 돌출하고, 20개 waypoint도 축척이나
+좌표 변환 없이 사용한다. 원본 PGM의 SHA-256은
+`ee9b0911f41a7da31a92eca67d261b2a96c286f6f49d65b3d6c884fb5937fc6e`이며, 894×212
+격자에서 점유 셀 6,312개를 누락 없이 757개 직육면체 묶음으로 변환했다.
 
-`prepare_restaurant_traction_sim.py`는 실차 route·route log·정지 CSV의 SHA-256을 묶은
-`scenario_contract.json`, `slam_corridor_traction.world`, 단일 속도 권한을 보장하는 Gazebo
-bridge를 만든다. 경로 위 ODE `mu/mu2` 구간은 시각 표식과 보조 stress이고, 재현 가능한 주
-고장은 Gazebo WheelSlip 시스템의 종방향 compliance를 두 구동륜에 동시에 주입하는 방식이다.
-이는 실차 바닥에서 측정한 마찰값이 아니며, 이물질 탐지나 물체 회피 결과로 사용하지 않는다.
-재현 등급은 `functional_scenario_contract_not_digital_twin`으로 고정한다.
+이 결과는 실제 평면 형상을 쓰는 Gazebo 2.5D 기능 재현이다. 저장 지도에는 벽 높이·재질·문·
+가구 형상이 없으므로 벽 높이 2.4 m는 명시적인 시각화 가정이다. 일시 장애물의 실제 치수와
+사람·박스 의미 분류, 실측 바닥 마찰계수, 실제 센서·네트워크 노이즈도 복원하지 않는다.
+따라서 결과 등급은
+`actual_occupancy_extrusion_functional_replay_not_3d_digital_twin`으로 고정한다.
 
-지도 파일과 Keepout mask는 원본 occupancy grid를 그대로 로드할 수 있다. 그러나 해당 2D
-grid에는 벽 높이·재질·문·가구의 3D 형상이 없다. 점유 셀을 일정 높이로 돌출한 2.5D 충돌
-월드는 만들 수 있지만 높이는 가정값이다. 일시적으로 등장한 장애물은 저장 지도에 없으며
-LiDAR와 AMCL로 위치·2D 외곽을 근사할 수 있을 뿐, 박스나 사람의 실제 가로·세로·높이를
-동일하게 복원할 수 없다.
+경로 위 2.0×1.2 m 구간에 ODE `mu=mu2=0.05`를 적용해 이미 이물질을 밟아 마찰이
+떨어진 상황을 물리적으로 재현한다. 이 수치는 실측값이 아닌 합성 스트레스 조건이다. 장애물은
+로봇 전방 0.75 m에 배치해 0.28 m LiDAR 최소 거리 밖이면서 0.65 m StopZone 안으로
+진입시킨다. 2 Hz LiDAR에서도 비접촉 긴급정지가 관측되도록 장애물 표면은 베이스에서 약
+0.50 m 떨어진다.
 
 ```bash
 cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
@@ -141,6 +141,12 @@ python3 jdamr_cube_navigation/evaluation/prepare_restaurant_traction_sim.py \
   --source-world jdamr_cube_gazebo/worlds/slam_corridor.world \
   --base-bridge jdamr_cube_gazebo/params/bridge.yaml \
   --output-dir "$HOME/jdamr_artifacts/restaurant_traction_sim_20260911"
+python3 jdamr_cube_navigation/evaluation/prepare_actual_map_restaurant_sim.py \
+  --base-contract "$HOME/jdamr_artifacts/restaurant_traction_sim_20260911/scenario_contract.json" \
+  --route jdamr_cube_navigation/config/corridor_roundtrip.autonomous_20260826.yaml \
+  --map-yaml "$HOME/maps/autonomous_20260826T161908.yaml" \
+  --robot-urdf jdamr_cube_navigation/evaluation/assets/nav_obstacle/jdamr_cube_nav_eval.urdf \
+  --output-dir "$HOME/jdamr_artifacts/restaurant_actual_map_3d_v11"
 ```
 
 ### 저마찰 월드 1회 smoke 대조
@@ -153,45 +159,38 @@ python3 jdamr_cube_navigation/evaluation/prepare_restaurant_traction_sim.py \
 주행 차이를 만들었다는 smoke 증거이며, 복구 제어 성공이나 실차 마찰계수 재현 증거는
 아니다.
 
-## 통합 기능 재현 결과
+## 실제 지도 3D 통합 기능 재현 결과
 
-`restaurant_replay_integrated_v12_seed42_attempt1`은 Nav2를
-`component_container_isolated` 구성으로 기동하고, 실차 기록에서 보존한 20개 왕복 목표와
-StopZone 개입 6회를 순서대로 실행했다. 결과는 목표 20/20, 장애물 개입 6/6, 동일 goal 재개
-6/6, 저마찰 복구 1/1로 PASS였다. 전체 경로 완료 시각은 시나리오 기준 228.383초다.
+`restaurant_actual_map_integrated_v7_seed42_attempt1`은 실제 점유격자 월드에서 Nav2 20개
+목표를 20/20 완료했고, 실차 기록에 대응하는 6개 장애물 개입도 6/6 긴급정지·장애물 제거·
+동일 goal 재개까지 통과했다. 마지막 home 목표 완료 시각은 시나리오 기준 511.699초다.
 
-다섯 번째 목표에서 양쪽 바퀴의 종방향 slip compliance를 100.0으로 올렸다. 1초 관측창에서
-wheel odom 진행 0.124m에 대해 Gazebo 정답 진행이 0.064m로 줄어 이동비 0.518이 관측됐다.
-0.4초 지속 조건 뒤 `NAVIGATING → PROTECTIVE_STOP → RELOCALIZE → LOW_SPEED_RESUME →
-RECOVERED`로 전이했고, 0 속도 유지 0.75초, 위치 안정 유지 0.75초, 속도 80%의 제한 재개
-5초를 적용했다. 동일 이상이 다시 지속되면 두 번째 자동 재개 없이 `FAULT_LATCHED`로 가는
-회귀 테스트도 고정했다.
+저마찰 상태는 `NAVIGATING → PROTECTIVE_STOP → RELOCALIZE → LOW_SPEED_RESUME →
+RECOVERED`로 한 번 복구됐다. 전이는 각각 129.12초, 129.88초, 130.66초, 135.66초에
+기록됐다. 제한 재개 속도는 80%, 제한 재개 시간은 5초다. 15초 grace는 고정 대기가 아니라
+저속으로 2 m 저마찰 구간을 빠져나가는 동안 재검출을 억제하며 상태를 계속 감시하는 시간이다.
+두 번째 지속 이상은 자동 재개하지 않고 `FAULT_LATCHED`로 전환한다.
 
-장애물 개입 중 Collision Monitor가 STOP인 표본과 해제 후 1초는 마찰 판정에서 제외했다.
-따라서 장애물 때문에 멈춘 사건을 저마찰 고장으로 중복 분류하지 않는다. 각 장애물은 주행
-중인 목표 UUID를 유지한 채 전방 0.55m에 투입됐고, StopZone·0 명령을 확인한 다음 치워서
-같은 목표의 재개를 검증했다.
-
-결과 MCAP은 33,310,491바이트이며 SHA-256은
-`dbab04a155c3acbd57bd71370ee93467b74b4cff43b8b9b5f280345c725eb2e0`이다. 종료 뒤 실행한
-프로세스 그룹과 실행 식별자에 해당하는 잔존 프로세스는 모두 0개였다. 전체 판정 파일은
-`$HOME/jdamr_artifacts/restaurant_replay_integrated_v12_20260911/run_seed_42_attempt_1/summary.json`에
-있다.
-
-MCAP 기반 관제 영상은 2배속, 1,920×720, 15fps, H.264/yuv420p로 생성했다. 114.333초 동안
-파란 Nav2 계획, 초록 AMCL 궤적, LiDAR 관측, 보라색 경로 장애물, 빨간 저마찰 복구 상태를
-동시에 표시한다. 최종 파일은
-`$HOME/jdamr_artifacts/restaurant_replay_integrated_v12_20260911/media_control_v3/restaurant_replay_control_2x.mp4`이고
-SHA-256은 `9c1a35eeae26bd83500ec2a442147356420c723b62d9b3d51a58a4c58f83f484`다.
+장애물 개입 중 Collision Monitor가 STOP인 표본과 해제 후 1초는 마찰 판정에서 제외한다.
+따라서 장애물 정지와 마찰 이상 정지를 중복 분류하지 않는다. 최종 판정·MCAP·동시 카메라
+원본·2배속 합성 영상은
+`$HOME/jdamr_artifacts/restaurant_actual_map_integrated_v7/run_seed_42_attempt_1/`에 묶는다.
+영상은 실제 지도 전체를 보는 Gazebo 고정 카메라와 로봇 전방 카메라를 동시에 보여주며,
+각 카메라의 실제 수신 프레임 수와 steady-clock 기록 시간으로 시간축을 맞춘다. 최종 영상은
+267.867초, 1,280×480, 15 fps, H.264/yuv420p이며 SHA-256은
+`dca98eab99695b9ea272a9c341b48abe53258260d481e4a8872ddbf8f90d33a8`이다. MCAP은
+75,442,779바이트이며 SHA-256은
+`00207813eac979108c4c4829cf66dfa1677d9c650d278ac504661d6035ee4785`다. 종료 뒤 잔존
+프로세스 그룹과 실행 식별자 일치 프로세스는 모두 0개다.
 
 ```bash
 cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
 source /opt/ros/jazzy/setup.bash
 source "$HOME/jdamr_cube_ws/install/setup.bash"
 python3 jdamr_cube_navigation/evaluation/run_restaurant_replay_sim.py \
-  --scenario-contract "$HOME/jdamr_artifacts/restaurant_replay_integrated_v12_20260911/scenario_contract.json" \
-  --output-dir "$HOME/jdamr_artifacts/restaurant_replay_integrated_next/run_seed_42_attempt_1" \
-  --run-id restaurant_replay_integrated_next_seed42_attempt1 \
+  --scenario-contract "$HOME/jdamr_artifacts/restaurant_actual_map_3d_v11/scenario_contract.json" \
+  --output-dir "$HOME/jdamr_artifacts/restaurant_actual_map_integrated_next/run_seed_42_attempt_1" \
+  --run-id restaurant_actual_map_integrated_next_seed42_attempt1 \
   --domain-id 198 \
   --seed 42
 ```

@@ -58,17 +58,23 @@ def archive_existing_attempt(run_dir: Path) -> Path | None:
 
 def prepare(
         output_dir: Path,
-        movement_time_allowance_s: float | None = None) -> dict[str, Path]:
+        movement_time_allowance_s: float | None = None,
+        initial_pose_xy: tuple[float, float] | None = None,
+        stop_zone_front_m: float | None = None) -> dict[str, Path]:
     """Write evaluation-only config derived from production config."""
     output_dir.mkdir(parents=True, exist_ok=True)
     params = yaml.safe_load(PRODUCTION_PARAMS.read_text(encoding='utf-8'))
     if (movement_time_allowance_s is not None
             and movement_time_allowance_s <= 0.0):
         raise ValueError('movement_time_allowance_s must be positive')
+    if stop_zone_front_m is not None and stop_zone_front_m <= 0.0:
+        raise ValueError('stop_zone_front_m must be positive')
     initial = params['amcl']['ros__parameters']['initial_pose']
+    start_x_m, start_y_m = initial_pose_xy or (
+        START_POSE['x_m'], START_POSE['y_m'])
     initial.update({
-        'x': START_POSE['x_m'],
-        'y': START_POSE['y_m'],
+        'x': start_x_m,
+        'y': start_y_m,
         'z': 0.0,
         'yaw': START_POSE['yaw_rad'],
     })
@@ -77,6 +83,12 @@ def prepare(
     if movement_time_allowance_s is not None:
         params['controller_server']['ros__parameters']['progress_checker'][
             'movement_time_allowance'] = movement_time_allowance_s
+    if stop_zone_front_m is not None:
+        stop_zone = params['collision_monitor']['ros__parameters']['StopZone']
+        points = yaml.safe_load(stop_zone['points'])
+        points[0][0] = stop_zone_front_m
+        points[1][0] = stop_zone_front_m
+        stop_zone['points'] = str(points)
     for name in ('local_costmap', 'global_costmap'):
         scan = params[name][name]['ros__parameters'][
             'obstacle_layer']['scan']

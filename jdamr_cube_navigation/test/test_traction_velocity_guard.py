@@ -60,6 +60,26 @@ def test_second_sustained_fault_latches_without_another_resume():
     assert policy.recovery_count == 1
 
 
+def test_extended_recovery_grace_allows_low_speed_hazard_exit():
+    """A configured exit window suppresses only immediate reclassification."""
+    policy = TractionRecoveryState(GuardConfig(recovery_grace_s=15.0))
+    policy.update(0.0, anomaly=True, localization_stable=False)
+    policy.update(0.4, anomaly=True, localization_stable=False)
+    policy.update(1.16, anomaly=False, localization_stable=False)
+    policy.update(1.20, anomaly=False, localization_stable=True)
+    policy.update(1.96, anomaly=False, localization_stable=True)
+    policy.update(6.96, anomaly=False, localization_stable=True)
+
+    assert policy.update(
+        12.0, anomaly=True, localization_stable=False) == RECOVERED
+    assert policy.update(
+        21.95, anomaly=True, localization_stable=False) == RECOVERED
+    assert policy.update(
+        22.0, anomaly=True, localization_stable=False) == RECOVERED
+    assert policy.update(
+        22.41, anomaly=True, localization_stable=False) == FAULT_LATCHED
+
+
 def test_relocalization_timeout_latches_fail_closed():
     """An unstable localization never advances to low-speed motion."""
     policy = TractionRecoveryState(GuardConfig())

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,8 @@ ASSETS = (ROOT / 'jdamr_cube_navigation' / 'evaluation' / 'assets'
           / 'nav_obstacle')
 BT = (ROOT / 'jdamr_cube_navigation' / 'behavior_trees'
       / 'navigate_to_pose_dynamic_obstacle_eval.xml')
+CAMERA_RECORDER = (ROOT / 'jdamr_cube_navigation' / 'evaluation'
+                   / 'record_simulator_camera.py')
 RECORDED_TOPICS = (
     '/tf', '/tf_static', '/scan', '/odom', '/ground_truth_pose',
     '/amcl_pose', '/plan', '/cmd_vel_nav', '/cmd_vel_smoothed', '/cmd_vel',
@@ -80,6 +84,71 @@ def load_if_present(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+def wait_file_ready(process: subprocess.Popen, path: Path,
+                    timeout_s: float = 30.0) -> None:
+    """Require a producer's first-frame marker before starting the route."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if path.is_file() and path.stat().st_size > 0:
+            return
+        if process.poll() is not None:
+            raise RuntimeError(
+                f'camera recorder exited before ready: {path}')
+        time.sleep(0.1)
+    raise TimeoutError(f'camera recorder did not become ready: {path}')
+
+
+def select_video_encoder() -> str:
+    """Use the locally verified hardware path when NVIDIA is available."""
+    return ('h264_nvenc' if Path('/dev/nvidia0').exists()
+            and shutil.which('nvidia-smi') else 'libx264')
+
+
+def encode_camera_video(raws: list[Path], output: Path, fps: float,
+                        encoder: str = 'libx264',
+                        timing_scales: list[float] | None = None) -> None:
+    """Encode one or two Gazebo views as a 2x browser-compatible MP4."""
+    if len(raws) not in (1, 2):
+        raise ValueError('camera encoding requires one or two views')
+    scales = timing_scales or [1.0] * len(raws)
+    if len(scales) != len(raws) or any(scale <= 0.0 for scale in scales):
+        raise ValueError('camera timing scales must match every input')
+    command = ['ffmpeg', '-y', '-loglevel', 'error']
+    for raw in raws:
+        command.extend(['-i', str(raw)])
+    if len(raws) == 1:
+        command.extend([
+            '-vf', f'setpts={0.5 * scales[0]:.9f}*PTS,fps={fps:g}'])
+    else:
+        command.extend([
+            '-filter_complex',
+            (f'[0:v]setpts={scales[0]:.9f}*PTS,scale=854:480,'
+             'drawtext=text=ACTUAL MAP 3D:'
+             'x=20:y=20:fontsize=20:fontcolor=white:'
+             'box=1:boxcolor=black@0.55[wide];'
+             f'[1:v]setpts={scales[1]:.9f}*PTS,scale=426:320,'
+             'drawtext=text=ROBOT FRONT CAMERA:'
+             'x=14:y=14:fontsize=18:fontcolor=white:'
+             'box=1:boxcolor=black@0.55[front];'
+             'color=c=black:s=426x480[right];'
+             '[right][front]overlay=0:80:shortest=1[right_view];'
+             '[wide][right_view]hstack=inputs=2:shortest=1,'
+             'setpts=0.5*PTS,'
+             f'fps={fps:g}[out]'),
+            '-map', '[out]', '-shortest',
+        ])
+    command.extend(['-an', '-c:v', encoder])
+    if encoder == 'h264_nvenc':
+        command.extend(['-preset', 'p1', '-cq', '23'])
+    elif encoder == 'libx264':
+        command.extend(['-preset', 'ultrafast', '-crf', '20'])
+    else:
+        raise ValueError(f'unsupported video encoder: {encoder}')
+    command.extend([
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(output)])
+    subprocess.run(command, check=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Launch the isolated stack, run the replay, and seal its evidence."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -101,11 +170,21 @@ def main(argv: list[str] | None = None) -> int:
     world = Path(contract['traction_fault']['world']['path'])
     robot_urdf = Path(contract['traction_fault']['robot_urdf']['path'])
     bridge_record = contract['traction_fault'].get('guarded_bridge')
+    guard_overrides = contract['traction_fault'].get('guard_overrides', {})
     bridge = Path(bridge_record['path']) if bridge_record else None
+    map_record = contract.get('navigation_map', {}).get('yaml')
+    navigation_map = (
+        Path(map_record['path']) if map_record
+        else ASSETS / 'slam_corridor_eval.yaml')
+    start_pose = contract['route'].get(
+        'start_pose', {'x': -8.0, 'y': 0.0})
+    camera = contract.get('simulator_camera')
+    obstacle_injection = contract['obstacle_interventions'].get(
+        'injection', {})
     for label, path in (
             ('traction world', world), ('guarded bridge', bridge),
             ('evaluation URDF', robot_urdf),
-            ('evaluation map', ASSETS / 'slam_corridor_eval.yaml'),
+            ('evaluation map', navigation_map),
             ('behavior tree', BT)):
         if path is None or not path.is_file():
             parser.error(f'{label} does not exist: {path}')
@@ -113,10 +192,23 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = args.output_dir
     run_dir.mkdir(parents=True)
     nav_inputs = prepare_navigation(
-        run_dir / 'navigation_inputs', movement_time_allowance_s=25.0)
+        run_dir / 'navigation_inputs', movement_time_allowance_s=25.0,
+        initial_pose_xy=(float(start_pose['x']), float(start_pose['y'])),
+        stop_zone_front_m=obstacle_injection.get('stop_zone_front_m'))
     scenario_path = run_dir / 'scenario_evidence.json'
     guard_path = run_dir / 'traction_guard_evidence.json'
     bag_dir = run_dir / 'bag'
+    camera_views = (camera.get('views', []) if camera is not None else [])
+    if camera is not None and not camera_views:
+        camera_views = [{'name': 'scene', 'topic': camera['topic']}]
+    camera_outputs = [{
+        **view,
+        'raw': run_dir / f'gazebo_{view["name"]}_raw.mp4',
+        'metadata': run_dir / f'gazebo_{view["name"]}_capture.json',
+        'ready': run_dir / f'.gazebo_{view["name"]}_ready',
+    } for view in camera_views]
+    camera_video = run_dir / 'gazebo_actual_map_2x.mp4'
+    camera_encoder = select_video_encoder() if camera is not None else None
     environment = _environment(args.run_id, args.domain_id)
     processes: list[tuple[str, subprocess.Popen, Any]] = []
     failure: str | None = None
@@ -135,15 +227,32 @@ def main(argv: list[str] | None = None) -> int:
             f'urdf_file:={robot_urdf}',
             f'bridge_config:={bridge}', 'gui:=false',
             'enable_image_bridges:=false', f'seed:={args.seed}',
-            'x_pose:=-8.0', 'y_pose:=0.0', 'z_pose:=0.01',
+            f'x_pose:={float(start_pose["x"])}',
+            f'y_pose:={float(start_pose["y"])}', 'z_pose:=0.01',
         ])
         _wait_topics(
             {'/scan', '/odom', '/ground_truth_pose'}, environment, 60.0,
             run_dir / 'gazebo.log')
+        if camera is not None:
+            for view in camera_outputs:
+                launch(f'camera_bridge_{view["name"]}', [
+                    'ros2', 'run', 'ros_gz_image', 'image_bridge',
+                    str(view['topic']).lstrip('/'),
+                ])
+                _wait_topics({str(view['topic'])}, environment, 30.0)
+                recorder = launch(f'camera_recorder_{view["name"]}', [
+                    'python3', str(CAMERA_RECORDER),
+                    '--topic', str(view['topic']),
+                    '--output', str(view['raw']),
+                    '--metadata', str(view['metadata']),
+                    '--ready-file', str(view['ready']),
+                    '--fps', f'{float(camera["fps"]):g}',
+                ])
+                wait_file_ready(recorder, view['ready'])
         launch('navigation', [
             'ros2', 'launch', 'jdamr_cube_navigation',
             'navigation.launch.py',
-            f'map:={ASSETS / "slam_corridor_eval.yaml"}',
+            f'map:={navigation_map}',
             f'params_file:={nav_inputs["params"]}',
             'use_keepout:=false', 'use_sim_time:=true',
             'use_composition:=True',
@@ -161,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         launch('traction_guard', [
             'ros2', 'run', 'jdamr_cube_navigation',
             'traction_velocity_guard', '--output', str(guard_path),
+            '--recovery-grace-s',
+            str(guard_overrides.get('recovery_grace_s', 5.0)),
             '--ros-args', '-p', 'use_sim_time:=true',
         ])
         _wait_topics({'/guarded_cmd_vel'}, environment, 30.0)
@@ -174,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
             '--contract', str(args.scenario_contract.resolve()),
             '--behavior-tree', str(BT), '--output', str(scenario_path),
             '--obstacle-entity', 'g003_preloaded_route_obstacle',
+            '--obstacle-ahead-m',
+            str(obstacle_injection.get('obstacle_ahead_m', 0.55)),
             '--goal-timeout-s', '120.0',
             '--ros-args', '-p', 'use_sim_time:=true',
         ])
@@ -194,6 +307,25 @@ def main(argv: list[str] | None = None) -> int:
 
     scenario_evidence = load_if_present(scenario_path)
     guard_evidence = load_if_present(guard_path)
+    camera_records = [{
+        **view, 'capture': load_if_present(view['metadata'])}
+        for view in camera_outputs]
+    camera_complete = bool(camera_records) and all(
+        item['raw'].is_file() and item['capture'] is not None
+        and item['capture'].get('frames', 0) > 0
+        for item in camera_records)
+    timing_scales = [
+        float(item['capture']['capture_duration_s']) * float(camera['fps'])
+        / max(1, int(item['capture']['frames']))
+        for item in camera_records
+    ] if camera is not None and camera_complete else []
+    if camera is not None and camera_complete:
+        try:
+            encode_camera_video(
+                [item['raw'] for item in camera_records], camera_video,
+                float(camera['fps']), str(camera_encoder), timing_scales)
+        except Exception as error:
+            failure = f'camera_encode_{type(error).__name__}: {error}'
     mcap = one_mcap(bag_dir)
     outcome, gate_failures = classify_result(
         scenario_evidence, guard_evidence, mcap, survivors)
@@ -203,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
     if failure is not None:
         outcome = 'FAIL'
         gate_failures.append('runner_failure')
+    if camera is not None and not camera_video.is_file():
+        outcome = 'FAIL'
+        gate_failures.append('simulator_camera_video_missing')
     summary = {
         'schema_version': 1,
         'run_id': args.run_id,
@@ -219,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
             'robot_urdf': {
                 'path': str(robot_urdf), 'sha256': _sha256(robot_urdf)},
             'bridge': {'path': str(bridge), 'sha256': _sha256(bridge)},
+            'navigation_map': {
+                'path': str(navigation_map),
+                'sha256': _sha256(navigation_map)},
         },
         'scenario': scenario_evidence,
         'traction_guard': guard_evidence,
@@ -226,6 +364,26 @@ def main(argv: list[str] | None = None) -> int:
             {'path': str(mcap.resolve()), 'sha256': _sha256(mcap),
              'bytes': mcap.stat().st_size}
             if mcap is not None else None),
+        'simulator_video': (
+            {
+                'source': 'gazebo_camera_sensor',
+                'encoder': camera_encoder,
+                'timing_alignment': {
+                    'basis': 'capture_steady_duration_per_frame',
+                    'input_pts_scales': timing_scales,
+                },
+                'views': [{
+                    'name': item['name'], 'topic': item['topic'],
+                    'raw': {'path': str(item['raw'].resolve()),
+                            'sha256': _sha256(item['raw']),
+                            'bytes': item['raw'].stat().st_size},
+                    'capture': item['capture'],
+                } for item in camera_records],
+                'video_2x': {'path': str(camera_video.resolve()),
+                             'sha256': _sha256(camera_video),
+                             'bytes': camera_video.stat().st_size},
+            }
+            if camera is not None and camera_video.is_file() else None),
         'teardown': {
             'launched_process_groups': launched_groups,
             'remaining_process_groups': remaining_groups,

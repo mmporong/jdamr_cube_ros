@@ -341,12 +341,16 @@ def main(argv: list[str] | None = None) -> int:
     """Run the simulation-only velocity guard."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument(
+        '--recovery-grace-s', type=float,
+        default=GuardConfig.recovery_grace_s)
     args, ros_args = parser.parse_known_args(argv)
     if os.environ.get('ROS_DOMAIN_ID') == '12':
         parser.error('physical robot domain 12 is forbidden')
     if os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE') != 'LOCALHOST':
         parser.error('simulation guard requires LOCALHOST discovery')
-    config = GuardConfig()
+    config = GuardConfig(recovery_grace_s=args.recovery_grace_s)
+    config.validate()
     rclpy.init(args=ros_args)
     node = TractionVelocityGuard(config, args.output)
     try:
