@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from sim_nav_obstacle_contract import (
-    derive_contract, GOAL_POSE, scenario_matrix, SCENARIOS, START_POSE)
+    GOAL_POSE, SCENARIOS, START_POSE, derive_contract, scenario_matrix)
 
 import yaml
 
@@ -56,10 +56,15 @@ def archive_existing_attempt(run_dir: Path) -> Path | None:
     return archived
 
 
-def prepare(output_dir: Path) -> dict[str, Path]:
+def prepare(
+        output_dir: Path,
+        movement_time_allowance_s: float | None = None) -> dict[str, Path]:
     """Write evaluation-only config derived from production config."""
     output_dir.mkdir(parents=True, exist_ok=True)
     params = yaml.safe_load(PRODUCTION_PARAMS.read_text(encoding='utf-8'))
+    if (movement_time_allowance_s is not None
+            and movement_time_allowance_s <= 0.0):
+        raise ValueError('movement_time_allowance_s must be positive')
     initial = params['amcl']['ros__parameters']['initial_pose']
     initial.update({
         'x': START_POSE['x_m'],
@@ -69,6 +74,9 @@ def prepare(output_dir: Path) -> dict[str, Path]:
     })
     params['bt_navigator']['ros__parameters'][
         'default_nav_to_pose_bt_xml'] = str(EVALUATION_BT.resolve())
+    if movement_time_allowance_s is not None:
+        params['controller_server']['ros__parameters']['progress_checker'][
+            'movement_time_allowance'] = movement_time_allowance_s
     for name in ('local_costmap', 'global_costmap'):
         scan = params[name][name]['ros__parameters'][
             'obstacle_layer']['scan']
@@ -92,6 +100,9 @@ def prepare(output_dir: Path) -> dict[str, Path]:
         'run_count': len(scenario_matrix()),
         'seeds': sorted({item['seed'] for item in scenario_matrix()}),
         'observation_persistence_s': 0.0,
+        'movement_time_allowance_s': params['controller_server'][
+            'ros__parameters']['progress_checker'][
+                'movement_time_allowance'],
         'simulation_support_plane_correction': asset_manifest[
             'simulation_support_plane_correction'],
         'preloaded_obstacles': asset_manifest['preloaded_obstacles'],

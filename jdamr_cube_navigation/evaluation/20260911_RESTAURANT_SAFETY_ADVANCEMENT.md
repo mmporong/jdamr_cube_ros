@@ -118,13 +118,11 @@ waypoint 왕복 순서, StopZone 개입 6회의 활성 waypoint, 동일 goal 재
 불안정한 벽시계 시간이 아니라 활성 waypoint에 결합한다.
 
 `prepare_restaurant_traction_sim.py`는 실차 route·route log·정지 CSV의 SHA-256을 묶은
-`scenario_contract.json`과 `slam_corridor_traction.world`를 만든다. 저마찰 구간은 경로 위의
-실제 접촉면이며 ODE `mu/mu2`를 낮춘 합성 stress다. 이는 실차 바닥에서 측정한 마찰값이
-아니며, 이물질 탐지나 물체 회피 결과로 사용하지 않는다. 재현 등급은
-`functional_scenario_contract_not_digital_twin`으로 고정한다. 현재 구현 범위는 20개 waypoint
-좌표 변환, 실차 StopZone 6회의 활성 waypoint 결합, 물리 저마찰 접촉면 생성까지다. 변환된
-20개 waypoint의 Nav2 실행, 장애물 6개 자동 투입, `TRACTION_FAULT` 정지·재위치추정·1회
-저속 재개 supervisor는 후속 통합 대상이며 현재 완료로 간주하지 않는다.
+`scenario_contract.json`, `slam_corridor_traction.world`, 단일 속도 권한을 보장하는 Gazebo
+bridge를 만든다. 경로 위 ODE `mu/mu2` 구간은 시각 표식과 보조 stress이고, 재현 가능한 주
+고장은 Gazebo WheelSlip 시스템의 종방향 compliance를 두 구동륜에 동시에 주입하는 방식이다.
+이는 실차 바닥에서 측정한 마찰값이 아니며, 이물질 탐지나 물체 회피 결과로 사용하지 않는다.
+재현 등급은 `functional_scenario_contract_not_digital_twin`으로 고정한다.
 
 지도 파일과 Keepout mask는 원본 occupancy grid를 그대로 로드할 수 있다. 그러나 해당 2D
 grid에는 벽 높이·재질·문·가구의 3D 형상이 없다. 점유 셀을 일정 높이로 돌출한 2.5D 충돌
@@ -134,11 +132,14 @@ LiDAR와 AMCL로 위치·2D 외곽을 근사할 수 있을 뿐, 박스나 사람
 
 ```bash
 cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+python3 jdamr_cube_navigation/evaluation/generate_sim_nav_obstacle_assets.py \
+  --output jdamr_cube_navigation/evaluation/assets/nav_obstacle
 python3 jdamr_cube_navigation/evaluation/prepare_restaurant_traction_sim.py \
   --route jdamr_cube_navigation/config/corridor_roundtrip.autonomous_20260826.yaml \
   --route-log "$HOME/jdamr_artifacts/real_combined_obstacle_retry_20260910T122006.route.log" \
   --stop-events "$HOME/jdamr_artifacts/real_combined_obstacle_retry_20260910T122006_latency/stop_latency.csv" \
   --source-world jdamr_cube_gazebo/worlds/slam_corridor.world \
+  --base-bridge jdamr_cube_gazebo/params/bridge.yaml \
   --output-dir "$HOME/jdamr_artifacts/restaurant_traction_sim_20260911"
 ```
 
@@ -151,6 +152,43 @@ python3 jdamr_cube_navigation/evaluation/prepare_restaurant_traction_sim.py \
 게이트를 통과하지 못했고 ATE RMS는 1.010 m였다. 이 단일 seed 결과는 저마찰 패치가 물리
 주행 차이를 만들었다는 smoke 증거이며, 복구 제어 성공이나 실차 마찰계수 재현 증거는
 아니다.
+
+## 통합 기능 재현 결과
+
+`restaurant_replay_integrated_v12_seed42_attempt1`은 Nav2를
+`component_container_isolated` 구성으로 기동하고, 실차 기록에서 보존한 20개 왕복 목표와
+StopZone 개입 6회를 순서대로 실행했다. 결과는 목표 20/20, 장애물 개입 6/6, 동일 goal 재개
+6/6, 저마찰 복구 1/1로 PASS였다. 전체 경로 완료 시각은 시나리오 기준 228.383초다.
+
+다섯 번째 목표에서 양쪽 바퀴의 종방향 slip compliance를 100.0으로 올렸다. 1초 관측창에서
+wheel odom 진행 0.124m에 대해 Gazebo 정답 진행이 0.064m로 줄어 이동비 0.518이 관측됐다.
+0.4초 지속 조건 뒤 `NAVIGATING → PROTECTIVE_STOP → RELOCALIZE → LOW_SPEED_RESUME →
+RECOVERED`로 전이했고, 0 속도 유지 0.75초, 위치 안정 유지 0.75초, 속도 80%의 제한 재개
+5초를 적용했다. 동일 이상이 다시 지속되면 두 번째 자동 재개 없이 `FAULT_LATCHED`로 가는
+회귀 테스트도 고정했다.
+
+장애물 개입 중 Collision Monitor가 STOP인 표본과 해제 후 1초는 마찰 판정에서 제외했다.
+따라서 장애물 때문에 멈춘 사건을 저마찰 고장으로 중복 분류하지 않는다. 각 장애물은 주행
+중인 목표 UUID를 유지한 채 전방 0.55m에 투입됐고, StopZone·0 명령을 확인한 다음 치워서
+같은 목표의 재개를 검증했다.
+
+결과 MCAP은 33,310,491바이트이며 SHA-256은
+`dbab04a155c3acbd57bd71370ee93467b74b4cff43b8b9b5f280345c725eb2e0`이다. 종료 뒤 실행한
+프로세스 그룹과 실행 식별자에 해당하는 잔존 프로세스는 모두 0개였다. 전체 판정 파일은
+`$HOME/jdamr_artifacts/restaurant_replay_integrated_v12_20260911/run_seed_42_attempt_1/summary.json`에
+있다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_cube_ws/install/setup.bash"
+python3 jdamr_cube_navigation/evaluation/run_restaurant_replay_sim.py \
+  --scenario-contract "$HOME/jdamr_artifacts/restaurant_replay_integrated_v12_20260911/scenario_contract.json" \
+  --output-dir "$HOME/jdamr_artifacts/restaurant_replay_integrated_next/run_seed_42_attempt_1" \
+  --run-id restaurant_replay_integrated_next_seed42_attempt1 \
+  --domain-id 198 \
+  --seed 42
+```
 
 ## 설계 근거
 

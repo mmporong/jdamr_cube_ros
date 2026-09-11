@@ -1,5 +1,7 @@
-from glob import glob
+"""Package and console-entry configuration for jdamr_cube_navigation."""
+
 import os
+from glob import glob
 
 from setuptools import setup
 
@@ -52,12 +54,16 @@ setup(
             'jdamr_cube_navigation.sim_slam_route:main',
             'sim_fault_injector = '
             'jdamr_cube_navigation.sim_fault_injector:main',
+            'traction_velocity_guard = '
+            'jdamr_cube_navigation.traction_velocity_guard:main',
             'sim_nav_obstacle_scenario = '
             'jdamr_cube_navigation.sim_nav_obstacle_scenario:main',
             'sim_scan_gate = '
             'jdamr_cube_navigation.sim_scan_gate:main',
             'sim_collision_monitor_scenario = '
             'jdamr_cube_navigation.sim_collision_monitor_scenario:main',
+            'sim_restaurant_replay_scenario = '
+            'jdamr_cube_navigation.sim_restaurant_replay_scenario:main',
             'g005_ground_truth_localization = '
             'jdamr_cube_navigation.g005_ground_truth_localization:main',
             'g005_frontier_observer = '

@@ -488,6 +488,17 @@ def test_generated_assets_are_deterministic_and_preserve_source_world(
     assert generated_collisions == source_collisions
     assert first['source_robot']['removed_collision_elements'] == []
     assert first['source_robot']['collision_elements'] == source_collisions
+    wheel_slip = robot.getroot().find(
+        ".//plugin[@filename='gz-sim-wheel-slip-system']")
+    assert wheel_slip is not None
+    wheels = wheel_slip.findall('wheel')
+    assert [wheel.get('link_name') for wheel in wheels] == [
+        'left_wheel_link', 'right_wheel_link']
+    assert [wheel.findtext('slip_compliance_longitudinal')
+            for wheel in wheels] == ['0.0', '0.0']
+    assert first['simulation_support_plane_correction'][
+        'support_plane_correction'][
+            'wheel_slip_runtime_fault']['wheel_normal_force_n'] == 70.0
     assert module._visual_records(robot.getroot()) == module._visual_records(
         source_robot.getroot())
     changed = first['source_robot']['allowed_joint_deltas']

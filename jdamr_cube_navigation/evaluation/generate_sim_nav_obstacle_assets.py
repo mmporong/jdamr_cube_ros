@@ -32,6 +32,9 @@ HEIGHT_CELLS = 88
 LIDAR_VISIBILITY_MASK = 4
 ROBOT_VISIBILITY_FLAGS = 11
 WALL_BEAM_FAMILYWISE_ALPHA = 0.01
+DRIVE_WHEEL_LINKS = ('left_wheel_link', 'right_wheel_link')
+DRIVE_WHEEL_RADIUS_M = 0.075
+DRIVE_WHEEL_NORMAL_FORCE_N = 70.0
 
 
 def sha256_file(path: Path) -> str:
@@ -682,6 +685,20 @@ def _evaluation_urdf(source: Path) -> tuple[bytes, dict]:
         visibility_mask = ET.Element('visibility_mask')
         lidar.insert(0, visibility_mask)
     visibility_mask.text = str(LIDAR_VISIBILITY_MASK)
+    wheel_slip = ET.Element('gazebo')
+    plugin = ET.SubElement(wheel_slip, 'plugin', {
+        'filename': 'gz-sim-wheel-slip-system',
+        'name': 'gz::sim::systems::WheelSlip',
+    })
+    for link_name in DRIVE_WHEEL_LINKS:
+        wheel = ET.SubElement(plugin, 'wheel', {'link_name': link_name})
+        ET.SubElement(wheel, 'wheel_radius').text = str(
+            DRIVE_WHEEL_RADIUS_M)
+        ET.SubElement(wheel, 'slip_compliance_lateral').text = '0.0'
+        ET.SubElement(wheel, 'slip_compliance_longitudinal').text = '0.0'
+        ET.SubElement(wheel, 'wheel_normal_force').text = str(
+            DRIVE_WHEEL_NORMAL_FORCE_N)
+    root.append(wheel_slip)
     visual_links = [
         link.attrib['name'] for link in root.findall('link')
         if link.findall('visual')]
@@ -719,6 +736,14 @@ def _evaluation_urdf(source: Path) -> tuple[bytes, dict]:
             'visual_link_count': len(visual_links),
             'visual_links': visual_links,
             'selection': 'all source URDF links containing visual elements',
+        },
+        'wheel_slip_runtime_fault': {
+            'plugin': 'gz-sim-wheel-slip-system',
+            'wheel_links': list(DRIVE_WHEEL_LINKS),
+            'wheel_radius_m': DRIVE_WHEEL_RADIUS_M,
+            'wheel_normal_force_n': DRIVE_WHEEL_NORMAL_FORCE_N,
+            'nominal_slip_compliance_lateral': 0.0,
+            'nominal_slip_compliance_longitudinal': 0.0,
         },
     }
     return (ET.tostring(
