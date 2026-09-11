@@ -2,22 +2,17 @@
 
 ## 결론
 
-식당 상황은 유의미하다. 다만 현재 2D LiDAR로 검증 가능한 `통로 장애물 정지·재계획`,
-wheel odom·IMU·localization 불일치로 판정하는 `마찰 이상 의심`, 접촉 센서가 있어야 하는
-`충돌 사건`을 서로 다른 상태와 주장으로 분리한다. 고인 물이나 얇은 이물질을 G4로 직접
-식별·회피했다고 주장하지 않는다.
+식당 상황은 유의미하다. 현재 2D LiDAR로 검증 가능한 `통로 장애물 정지·재계획`, wheel
+odom·IMU·localization 불일치로 판정하는 `마찰 이상 의심`, 접촉 센서가 있어야 하는 `충돌
+사건`을 서로 다른 상태와 주장으로 분리한다. 낮은 이물질을 찾고 피하는 시나리오는 제외한다.
+바닥 오염 구간을 이미 밟아 구동 마찰이 떨어진 상황으로 통합하고, 오염물 종류는 판정하지
+않는다.
 
 ## 먼저 닫을 기준선
 
-Phase 1은 같은 출발 표시·방향·P-loop를 빈 mapping state에서 Cartographer로 3회 수집한다.
-각 실행은 설정을 바꾸지 않고 map 저장 또는 SLAM 정지를 마친 뒤 로봇을 들어 올린다.
-세 실행 모두 odom 폐루프 0.30 m 이하, SLAM 폐루프 0.10 m 이하, yaw 3도 이하, double wall
-0건, scan overlap·역전·drop 0건을 요구한다. 이 세 실행의 scan·TF·CPU·위치 보정 분포를
-식당 fault와 executor A/B의 기준선으로 쓴다. 저장 지도 장애물 주행은 이 매핑 재현성
-게이트를 대신하지 않는다.
-
-실차 이동은 작업자가 로봇 옆에서 물리 전원을 즉시 차단할 수 있을 때만 수행한다. 실행마다
-raw MCAP, pbstream, map YAML/PGM, config hash, 종료 상태를 1:1로 연결한다.
+실차 SLAM 3회 반복은 수행하지 않는다. 기준선은 2026-09-10 저장 지도 장애물 주행과 기존
+Gazebo Cartographer 강건성 결과를 사용한다. 새 시나리오는 먼저 Gazebo에서 같은 설정의
+정상 바닥과 저마찰 바닥을 비교하고, 실제 이동이 필요한 검증은 별도 승인 범위로 남긴다.
 
 ## 출발 실패 판정
 
@@ -43,8 +38,7 @@ raw MCAP, pbstream, map YAML/PGM, config hash, 종료 상태를 1:1로 연결한
 | P0 | 의자·박스·카트 부분 차단, 사람 대역물 횡단 | scan 관측, StopZone, 0 명령, 새 경로, 동일 goal 재개 | 객체 종류는 영상 주석으로만 구분 |
 | P0 | 좁은 통로, 열린 문, 완전 차단, goal occupied | 보호 정지와 재계획 불가의 fault 전환 | 자동 spin·후진 금지 |
 | P0 | scan 가림·freeze, timestamp jitter, stale TF | watchdog 감속·정지와 기록 보존 | 실차 fault 주입은 비주행 또는 replay 우선 |
-| P1 | 마찰 저하·wheel slip | command↔odom, encoder yaw↔IMU, map→odom correction으로 `TRACTION_FAULT` 의심 | Gazebo 마찰 패치 우선, 실차는 건식 매트·최저속 |
-| P2 | 낮은 음식물·케이블·액체 | 현재 센서로 검출 보장 불가 | 하향 depth/3D 또는 낮은 safety scanner 필요 |
+| P1 | 바닥 오염 구간 통과 뒤 마찰 저하·wheel slip | command↔odom, encoder yaw↔IMU, map→odom correction으로 `TRACTION_FAULT` 의심 | Gazebo 물리 마찰 패치 우선, 물체 탐지·회피 주장은 제외 |
 | P2 | 실제 접촉 | 현재 센서로 확정 불가 | bumper/contact 또는 모터 전류·토크 입력 필요 |
 
 ```text
@@ -52,9 +46,13 @@ READY → NAVIGATING
   ├─ 보호영역 침입/입력 무효 → PROTECTIVE_STOP
   │    ├─ 입력 정상 + 유효 새 경로 → 동일 goal 저속 재개
   │    └─ 제한시간 초과/경로 없음 → FAULT_LATCHED
-  ├─ 지속적인 센서 불일치 → TRACTION_FAULT → 정지·재위치추정 → 1회 저속 재개 또는 래치
+  ├─ 지속적인 구동·관측 불일치 → TRACTION_FAULT → 정지·재위치추정 → 1회 저속 재개 또는 래치
   └─ 인증된 접촉 입력 → COLLISION_LATCHED → 구동 금지·목표 취소·수동 점검/리셋
 ```
+
+저마찰 구간은 장애물로 회피하지 않는다. 바퀴 구동량과 실제 이동 추정의 불일치가 지속되면
+정지하고 위치를 다시 확인한 뒤 한 번만 저속으로 재개한다. 같은 불일치가 다시 발생하거나
+재위치추정이 불안정하면 `FAULT_LATCHED`로 전환한다.
 
 접촉 뒤에는 자동 BackUp, Spin, costmap clear 후 재출발을 호출하지 않는다. 접촉은 복구
 행동이 아니라 안전사건으로 기록하며, 사람·물체 확인과 운영자 승인 전에는 motion을
@@ -110,6 +108,49 @@ scan이 STOP을 유발했는지 연결하는 trace ID가 없으므로 이를 end
 
 재현 출력은 `$HOME/jdamr_artifacts/real_combined_obstacle_retry_20260910T122006_latency/`
 아래 `stop_latency.json`과 `stop_latency.csv`다.
+
+## 마지막 실차 주행의 시뮬레이션 재현 범위
+
+마지막 실차 기록을 디지털 트윈처럼 똑같이 복제할 수는 없다. MCAP에는 실제 건물의 충돌
+형상, 바닥 마찰계수, 장애물의 의미 분류와 공통 hardware timecode가 없다. 대신 실차의 20개
+waypoint 왕복 순서, StopZone 개입 6회의 활성 waypoint, 동일 goal 재개 조건을 보존한 기능
+재현은 가능하다. 실차 좌표는 통제된 Gazebo 복도의 왕복 차선으로 변환하고, 장애물 이벤트는
+불안정한 벽시계 시간이 아니라 활성 waypoint에 결합한다.
+
+`prepare_restaurant_traction_sim.py`는 실차 route·route log·정지 CSV의 SHA-256을 묶은
+`scenario_contract.json`과 `slam_corridor_traction.world`를 만든다. 저마찰 구간은 경로 위의
+실제 접촉면이며 ODE `mu/mu2`를 낮춘 합성 stress다. 이는 실차 바닥에서 측정한 마찰값이
+아니며, 이물질 탐지나 물체 회피 결과로 사용하지 않는다. 재현 등급은
+`functional_scenario_contract_not_digital_twin`으로 고정한다. 현재 구현 범위는 20개 waypoint
+좌표 변환, 실차 StopZone 6회의 활성 waypoint 결합, 물리 저마찰 접촉면 생성까지다. 변환된
+20개 waypoint의 Nav2 실행, 장애물 6개 자동 투입, `TRACTION_FAULT` 정지·재위치추정·1회
+저속 재개 supervisor는 후속 통합 대상이며 현재 완료로 간주하지 않는다.
+
+지도 파일과 Keepout mask는 원본 occupancy grid를 그대로 로드할 수 있다. 그러나 해당 2D
+grid에는 벽 높이·재질·문·가구의 3D 형상이 없다. 점유 셀을 일정 높이로 돌출한 2.5D 충돌
+월드는 만들 수 있지만 높이는 가정값이다. 일시적으로 등장한 장애물은 저장 지도에 없으며
+LiDAR와 AMCL로 위치·2D 외곽을 근사할 수 있을 뿐, 박스나 사람의 실제 가로·세로·높이를
+동일하게 복원할 수 없다.
+
+```bash
+cd "$HOME/jdamr_cube_ws/src/jdamr_cube_ros"
+python3 jdamr_cube_navigation/evaluation/prepare_restaurant_traction_sim.py \
+  --route jdamr_cube_navigation/config/corridor_roundtrip.autonomous_20260826.yaml \
+  --route-log "$HOME/jdamr_artifacts/real_combined_obstacle_retry_20260910T122006.route.log" \
+  --stop-events "$HOME/jdamr_artifacts/real_combined_obstacle_retry_20260910T122006_latency/stop_latency.csv" \
+  --source-world jdamr_cube_gazebo/worlds/slam_corridor.world \
+  --output-dir "$HOME/jdamr_artifacts/restaurant_traction_sim_20260911"
+```
+
+### 저마찰 월드 1회 smoke 대조
+
+동일한 Cartographer 설정, seed 42, 14 m 왕복 명령으로 정상 바닥과 저마찰 바닥을 각각 한
+번 실행했다. 두 실행 모두 MCAP, pbstream, map YAML/PGM을 생성했고 프로세스 잔존 없이
+종료했다. 정상 바닥은 정답 궤적 비율 99.54%, 왕복 완료 PASS, ATE RMS 0.578 m였다. ODE
+`mu=mu2=0.05` 접촉면을 넣은 경우 정답 궤적 비율 92.83%, 복귀 진행 10.837/14 m로 완료
+게이트를 통과하지 못했고 ATE RMS는 1.010 m였다. 이 단일 seed 결과는 저마찰 패치가 물리
+주행 차이를 만들었다는 smoke 증거이며, 복구 제어 성공이나 실차 마찰계수 재현 증거는
+아니다.
 
 ## 설계 근거
 
