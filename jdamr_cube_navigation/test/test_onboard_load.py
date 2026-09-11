@@ -29,6 +29,7 @@ from jdamr_cube_navigation.soak_metrics import (
     process_coverage,
     process_mode,
     read_loadavg,
+    select_recent_window,
     summarize,
     system_cpu_percent,
     TSV_HEADER,
@@ -412,6 +413,58 @@ def test_the_gate_scores_sustained_load_not_the_startup_spike():
     assert verdict['peak_cpu_pct'] == 296.0
     assert verdict['gates']['cpu_headroom'] == 'PASS'
     assert verdict['verdict'] == 'PASS'
+
+
+def test_recent_window_excludes_startup_samples_and_keeps_full_duration():
+    """Use the settled suffix while retaining at least sixty seconds."""
+    samples = _resource_samples([380.0, 370.0] + [203.0] * 13)
+    rows = _composed_process_rows(len(samples))
+    for index, sample in enumerate(samples):
+        sample['elapsed_s'] = 5.0 * index
+    for row in rows:
+        row['elapsed_s'] = 5.0 * (int(row['sample']) - 1)
+
+    recent_rows, recent_samples = select_recent_window(
+        rows, samples, window_seconds=60.0)
+    verdict = evaluate_resource_gate(
+        recent_rows, recent_samples, core_count=4)
+
+    assert len(recent_samples) == 13
+    assert verdict['coverage_duration_s'] == 60.0
+    assert verdict['sustained_cpu_pct'] == 203.0
+    assert verdict['verdict'] == 'PASS'
+
+
+def test_recent_window_remains_incomplete_when_less_than_sixty_seconds_exist():
+    """A short startup trace must not become valid by window selection."""
+    samples = _resource_samples([203.0] * 10)
+    rows = _composed_process_rows(len(samples))
+    for index, sample in enumerate(samples):
+        sample['elapsed_s'] = 5.0 * index
+    for row in rows:
+        row['elapsed_s'] = 5.0 * (int(row['sample']) - 1)
+
+    recent_rows, recent_samples = select_recent_window(
+        rows, samples, window_seconds=60.0)
+    verdict = evaluate_resource_gate(
+        recent_rows, recent_samples, core_count=4)
+
+    assert verdict['coverage_duration_s'] == 45.0
+    assert verdict['gates']['process_coverage'] == 'FAIL'
+    assert verdict['verdict'] == 'FAIL'
+
+
+def test_window_seconds_requires_evaluation_mode(tmp_path):
+    """Reject a window option that cannot affect sampling mode."""
+    try:
+        soak_metrics.main([
+            '--output', str(tmp_path / 'samples.tsv'),
+            '--window-seconds', '60',
+        ])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError('window option was accepted without --evaluate')
 
 
 def test_a_genuinely_saturated_pi_still_fails():

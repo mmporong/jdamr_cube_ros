@@ -18,7 +18,8 @@ STOP_GRACE_S=25
 ROUTE_STOP_GRACE_S=7
 METRICS_DURATION_S=2400
 METRICS_INTERVAL_S=5
-RESOURCE_SOAK_S=75
+RESOURCE_WINDOW_S=60
+METRICS_MAX_AGE_S=12
 PREFLIGHT_TIMEOUT_S=180
 ROUTE_TIMEOUT_S=1800
 EXECUTE=1
@@ -68,6 +69,7 @@ LOG="$A/$RUN_ID.autorun.log"
 ABORT_FILE="$HOME/jdamr_abort"
 START_FILE="$HOME/jdamr_start"
 say() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$1" | tee -a "$LOG"; }
+say "자동 실행기 bootstrap 시작"
 
 WIFI_PID=""
 METRICS_PID=""
@@ -222,10 +224,24 @@ else
   exit 5
 fi
 
-say "정적 자원 계측 (${RESOURCE_SOAK_S}초, 이동 없음)"
-sleep "$RESOURCE_SOAK_S"
+if ! group_alive "$METRICS_PID"; then
+  say "실패: 자원 계측기가 종료됨. 주행하지 않는다."
+  exit 7
+fi
+METRICS_MTIME=$(stat -c %Y "$A/$RUN_ID.per_process.tsv" 2>/dev/null) || {
+  say "실패: 자원 계측 파일이 없음. 주행하지 않는다."
+  exit 7
+}
+METRICS_AGE_S=$(( $(date +%s) - METRICS_MTIME ))
+if [ "$METRICS_AGE_S" -lt 0 ] || [ "$METRICS_AGE_S" -gt "$METRICS_MAX_AGE_S" ]; then
+  say "실패: 자원 계측 표본이 ${METRICS_AGE_S}초 전 값임. 주행하지 않는다."
+  exit 7
+fi
+say "기동 중 누적한 최신 ${RESOURCE_WINDOW_S}초 자원 계측 확인"
 if ros2 run jdamr_cube_navigation soak_metrics \
-  --evaluate "$A/$RUN_ID.per_process.tsv" --cores "$(nproc)" >> "$LOG" 2>&1; then
+  --evaluate "$A/$RUN_ID.per_process.tsv" \
+  --window-seconds "$RESOURCE_WINDOW_S" \
+  --cores "$(nproc)" >> "$LOG" 2>&1; then
   say "자원 게이트 PASS"
 else
   say "실패: 자원 게이트 FAIL. 주행하지 않는다."

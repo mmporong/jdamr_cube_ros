@@ -493,6 +493,37 @@ def read_samples(path):
     return rows, list(totals.values())
 
 
+def select_recent_window(rows, samples, window_seconds):
+    """Keep only the newest measured window without inventing samples."""
+    if window_seconds is None:
+        return rows, samples
+    elapsed = [
+        float(sample['elapsed_s']) for sample in samples
+        if sample.get('elapsed_s') is not None
+    ]
+    if not elapsed:
+        return rows, samples
+    cutoff_s = max(elapsed) - window_seconds
+    measured = [
+        sample for sample in samples if sample.get('elapsed_s') is not None
+    ]
+    # Include the sample immediately before the cutoff. With a 5 s sampler,
+    # filtering only timestamps >= cutoff can leave 57--59 s after cadence
+    # jitter and falsely reject an otherwise complete 60 s observation.
+    start = 0
+    for index, sample in enumerate(measured):
+        if float(sample['elapsed_s']) <= cutoff_s:
+            start = index
+        else:
+            break
+    selected_samples = measured[start:]
+    sample_ids = {str(sample['sample']) for sample in selected_samples}
+    selected_rows = [
+        row for row in rows if str(row.get('sample')) in sample_ids
+    ]
+    return selected_rows, selected_samples
+
+
 def main(argv=None):
     """Sample the onboard process set for the requested duration."""
     parser = argparse.ArgumentParser(
@@ -505,6 +536,8 @@ def main(argv=None):
                         help='seconds between samples')
     parser.add_argument('--evaluate',
                         help='score an existing TSV instead of sampling')
+    parser.add_argument('--window-seconds', type=float, default=None,
+                        help='with --evaluate, score only the newest window')
     parser.add_argument('--cores', type=int, default=None,
                         help='core count of the machine that produced the '
                              'samples; defaults to this machine')
@@ -515,9 +548,16 @@ def main(argv=None):
         parser.error('--duration must be non-negative')
     if args.interval <= 0:
         parser.error('--interval must be positive')
+    if args.window_seconds is not None and args.window_seconds <= 0:
+        parser.error('--window-seconds must be positive')
+    if args.window_seconds is not None and not args.evaluate:
+        parser.error('--window-seconds requires --evaluate')
 
     if args.evaluate:
-        return _report(*read_samples(args.evaluate), cores=args.cores)
+        rows, samples = read_samples(args.evaluate)
+        rows, samples = select_recent_window(
+            rows, samples, args.window_seconds)
+        return _report(rows, samples, cores=args.cores)
 
     output = Path(args.output or '.').expanduser()
     if not args.output:
