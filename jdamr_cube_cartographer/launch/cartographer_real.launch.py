@@ -26,7 +26,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
         Node(
             package='cartographer_ros',
             executable='cartographer_node',
