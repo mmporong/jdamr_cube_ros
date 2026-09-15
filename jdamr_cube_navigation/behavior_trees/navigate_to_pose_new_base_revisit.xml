@@ -1,0 +1,19 @@
+<!-- 새 차체 재방문: FollowPath가 진행 실패하면 같은 경로를 재사용하지 않는다.
+     코스트맵을 한 번 비우고 다시 계획하며, 두 번째 실패에는 중단한다. -->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="1" name="NavigateRecovery">
+      <Sequence name="NavigateRevisitForwardOnly">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <GoalCheckerSelector selected_goal_checker="{selected_goal_checker}" default_goal_checker="position_goal_checker" topic_name="goal_checker_selector"/>
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+        <FollowPath path="{path}" controller_id="{selected_controller}" goal_checker_id="{selected_goal_checker}" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+      </Sequence>
+      <Sequence name="ReplanAfterFailure">
+        <ClearEntireCostmap name="ClearGlobalBeforeReplan" service_name="global_costmap/clear_entirely_global_costmap"/>
+        <ClearEntireCostmap name="ClearLocalBeforeReplan" service_name="local_costmap/clear_entirely_local_costmap"/>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

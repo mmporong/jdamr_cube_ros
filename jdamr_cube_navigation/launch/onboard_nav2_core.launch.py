@@ -132,11 +132,19 @@ def _validate_revisit_isolation(context):
     if topics.returncode != 0:
         raise RuntimeError('new-base revisit cannot read ROS topics')
     if '/cmd_vel' in topics.stdout.splitlines():
-        command = subprocess.run(['ros2', 'topic', 'info', '--no-daemon',
-                                  '--spin-time', '2', '/cmd_vel'],
-                                 check=False, capture_output=True, text=True,
-                                 timeout=12)
-        if command.returncode != 0 or 'Publisher count: 0' not in command.stdout:
+        command = None
+        for _ in range(3):
+            try:
+                command = subprocess.run(
+                    ['ros2', 'topic', 'info', '--no-daemon', '--spin-time',
+                     '3', '/cmd_vel'], check=False, capture_output=True,
+                    text=True, timeout=20)
+            except subprocess.TimeoutExpired:
+                continue
+            if command.returncode == 0 and 'Publisher count:' in command.stdout:
+                break
+        if command is None or command.returncode != 0 or (
+                'Publisher count: 0' not in command.stdout):
             raise RuntimeError('new-base revisit rejects existing cmd_vel publisher')
     return []
 
@@ -258,7 +266,7 @@ def _launch_navigation(context):
             'navigate_to_pose_dynamic_obstacle_eval.xml'),
         'new_base_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
         'new_base_revisit_candidate': (
-            'navigate_to_pose_dynamic_obstacle_eval.xml'),
+            'navigate_to_pose_new_base_revisit.xml'),
     }[profile]
     if profile in ('new_base_candidate', 'new_base_revisit_candidate'):
         _validate_new_base_params(
@@ -287,12 +295,15 @@ def _launch_navigation(context):
         'use_sim_time': use_sim_time,
     }
     if profile == 'new_base_revisit_candidate':
-        # The runner starts only after the robot is placed at the old home.
+        # Resume starts at the observed physical pose, not the old home.
         param_rewrites.update({
             'amcl.ros__parameters.set_initial_pose': 'true',
-            'amcl.ros__parameters.initial_pose.x': '0.0',
-            'amcl.ros__parameters.initial_pose.y': '-0.1',
-            'amcl.ros__parameters.initial_pose.yaw': '0.0',
+            'amcl.ros__parameters.initial_pose.x':
+                LaunchConfiguration('revisit_initial_x'),
+            'amcl.ros__parameters.initial_pose.y':
+                LaunchConfiguration('revisit_initial_y'),
+            'amcl.ros__parameters.initial_pose.yaw':
+                LaunchConfiguration('revisit_initial_yaw'),
         })
     configured_params = ParameterFile(
         RewrittenYaml(
@@ -490,8 +501,8 @@ def generate_launch_description():
             'discovery_range', default_value='LOCALHOST',
             choices=['LOCALHOST', 'SUBNET'],
             description=(
-                'Keep simulation isolated; the physical wrapper selects '
-                'SUBNET to consume LOCALHOST sensor publishers on this host')),
+                'The physical wrapper selects SUBNET to consume LOCALHOST '
+                'sensor publishers on this host')),
         DeclareLaunchArgument(
             'map',
             default_value=os.path.expanduser(
@@ -506,6 +517,9 @@ def generate_launch_description():
                 package_share, 'config', 'nav2_params.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('revisit_initial_x', default_value='0.0'),
+        DeclareLaunchArgument('revisit_initial_y', default_value='-0.1'),
+        DeclareLaunchArgument('revisit_initial_yaw', default_value='0.0'),
         DeclareLaunchArgument(
             'navigation_profile', default_value='corridor',
             choices=[

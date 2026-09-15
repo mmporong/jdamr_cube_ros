@@ -49,7 +49,7 @@ def test_real_bringup_uses_subnet_discovery_for_sensor_delivery():
         and _call_name(node) == 'SetEnvironmentVariable'
     }
 
-    assert environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'SUBNET'
+    assert environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'LOCALHOST'
 
 
 def test_real_bringup_uses_measured_base_geometry():

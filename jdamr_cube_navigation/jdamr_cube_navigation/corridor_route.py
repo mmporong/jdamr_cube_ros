@@ -43,7 +43,7 @@ NAVIGATION_BEHAVIOR_TREES = {
     'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
     'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
     'obstacle_base_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
-    'new_base_revisit_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
+    'new_base_revisit_candidate': 'navigate_to_pose_new_base_revisit.xml',
 }
 GOAL_STATUS_NAMES = {
     GoalStatus.STATUS_UNKNOWN: 'STATUS_UNKNOWN',
@@ -75,6 +75,13 @@ def revisit_plan_length_ok(actual_m, declared_m):
     """Reject a detour that no longer resembles the recorded corridor route."""
     return (math.isfinite(actual_m) and math.isfinite(declared_m)
             and declared_m > 0 and actual_m <= declared_m * 1.3)
+
+
+def _positive_finite_config(config, name, default):
+    value = float(config.get(name, default))
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f'{name} must be finite and positive')
+    return value
 
 
 def load_route(route_yaml):
@@ -185,6 +192,12 @@ class CorridorRoute(Node):
         )
         self.amcl_freshness_s = float(
             config.get('amcl_freshness_s', 15.0))
+        self.revisit_motion_amcl_freshness_s = _positive_finite_config(
+            config, 'revisit_motion_amcl_freshness_s', 25.0)
+        self.revisit_motion_min_distance_m = _positive_finite_config(
+            config, 'revisit_motion_min_distance_m', 0.25)
+        self.revisit_motion_min_rotation_rad = _positive_finite_config(
+            config, 'revisit_motion_min_rotation_rad', 0.5)
         self.max_resume_start_distance_m = float(
             config.get('max_resume_start_distance_m', 6.0))
         if start_index > 0:
@@ -205,6 +218,9 @@ class CorridorRoute(Node):
         self.amcl_seen = None
         self.amcl_covariance = None
         self.amcl_position = None
+        self.odom_last_pose = None
+        self.amcl_motion_distance_m = 0.0
+        self.amcl_motion_rotation_rad = 0.0
         self.navigate = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.compute = ActionClient(
             self, ComputePathThroughPoses, 'compute_path_through_poses')
@@ -285,6 +301,17 @@ class CorridorRoute(Node):
 
     def _odom_callback(self, _message):
         self.samples['odom'] = time.monotonic()
+        position = _message.pose.pose.position
+        yaw = _quaternion_yaw(_message.pose.pose.orientation)
+        odom_pose = (position.x, position.y, yaw)
+        if self.odom_last_pose is not None:
+            previous_x, previous_y, previous_yaw = self.odom_last_pose
+            self.amcl_motion_distance_m += math.hypot(
+                position.x - previous_x, position.y - previous_y)
+            self.amcl_motion_rotation_rad += abs(math.atan2(
+                math.sin(yaw - previous_yaw),
+                math.cos(yaw - previous_yaw)))
+        self.odom_last_pose = odom_pose
         if getattr(self, 'parking_contract', None) is not None:
             self.parking_odom = (
                 self.samples['odom'], _message.header.stamp,
@@ -326,6 +353,8 @@ class CorridorRoute(Node):
 
     def _amcl_callback(self, message):
         self.amcl_seen = time.monotonic()
+        self.amcl_motion_distance_m = 0.0
+        self.amcl_motion_rotation_rad = 0.0
         covariance = message.pose.covariance
         self.amcl_covariance = (float(covariance[0]), float(covariance[7]))
         self.amcl_position = (
@@ -368,10 +397,21 @@ class CorridorRoute(Node):
         if self.amcl_seen is None or self.amcl_covariance is None:
             return 'AMCL pose missing'
         amcl_age_s = now - self.amcl_seen
-        if require_fresh_amcl and amcl_age_s > self.amcl_freshness_s:
+        motion_amcl_required = (
+            getattr(self, 'navigation_profile', None) ==
+            'new_base_revisit_candidate' and
+            (getattr(self, 'amcl_motion_distance_m', 0.0) >=
+             self.revisit_motion_min_distance_m or
+             getattr(self, 'amcl_motion_rotation_rad', 0.0) >=
+             self.revisit_motion_min_rotation_rad))
+        amcl_limit_s = (self.revisit_motion_amcl_freshness_s
+                        if motion_amcl_required
+                        else self.amcl_freshness_s)
+        if (require_fresh_amcl or motion_amcl_required) and \
+                amcl_age_s > amcl_limit_s:
             return (
                 f'AMCL pose stale: age={amcl_age_s:.3f}s '
-                f'limit={self.amcl_freshness_s:.3f}s')
+                f'limit={amcl_limit_s:.3f}s')
         for axis, covariance, limit in zip(
                 ('x', 'y'), self.amcl_covariance,
                 self.max_amcl_covariance):
@@ -405,12 +445,31 @@ class CorridorRoute(Node):
     def _navigation_ready(self, require_fresh_amcl=True):
         return self._guard_failure(require_fresh_amcl) is None
 
+    def _revisit_protection_ready(self):
+        """Check only the three publishers that make a revisit safe."""
+        expected = {
+            '/cmd_vel': 'collision_monitor',
+            '/keepout_filter_mask': 'keepout_filter_mask_server',
+            '/keepout_costmap_filter_info':
+                'keepout_costmap_filter_info_server',
+        }
+        for topic, node_name in expected.items():
+            publishers = self.get_publishers_info_by_topic(topic)
+            if len(publishers) != 1 or publishers[0].node_name != node_name:
+                return f'{topic} publisher must be {node_name} only'
+        return None
+
     def wait_until_ready(self, timeout=15.0):
         """Require current sensors, battery, and a bounded AMCL estimate."""
         deadline = time.monotonic() + timeout
+        protection_failure = None
         while time.monotonic() < deadline and not self.stop_requested:
             rclpy.spin_once(self, timeout_sec=0.1)
-            if self._navigation_ready():
+            protection_failure = (
+                self._revisit_protection_ready()
+                if self.navigation_profile == 'new_base_revisit_candidate'
+                else None)
+            if self._navigation_ready() and protection_failure is None:
                 self.start_check_pending = False
                 if self.travel_pose_status is not None:
                     maximum_error_rad = self.travel_pose_status[
@@ -421,7 +480,7 @@ class CorridorRoute(Node):
                 return True
         self.get_logger().error(
             'navigation readiness timeout: '
-            f'{self._guard_failure() or "operator stop"}')
+            f'{self._guard_failure() or protection_failure or "operator stop"}')
         return False
 
     def _pose(self, index, waypoint):
@@ -673,10 +732,8 @@ class CorridorRoute(Node):
             self.get_logger().error('navigate_to_pose unavailable')
             return False
         # wait_until_ready() already proved that localization produced a
-        # current pose.  AMCL's pose topic may remain quiet while a correctly
-        # localized robot is stationary.  Runtime
-        # safety continues to require fresh scan/odom, valid battery data, and
-        # bounded covariance, but silence on /amcl_pose alone is not a fault.
+        # current pose.  AMCL's pose topic may remain quiet while stationary.
+        # New-base movement without an AMCL update eventually cancels the goal.
         for index, waypoint in enumerate(self.waypoints):
             if (
                     self.stop_requested or

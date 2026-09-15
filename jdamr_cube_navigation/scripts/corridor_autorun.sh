@@ -25,6 +25,13 @@ ROUTE_TIMEOUT_S=1800
 EXECUTE=1
 WAIT_FOR_START=0
 NAVIGATION_PROFILE=corridor
+START_INDEX=0
+REVISIT_INITIAL_X=0.0
+REVISIT_INITIAL_Y=-0.1
+REVISIT_INITIAL_YAW=0.0
+REVISIT_INITIAL_X_SET=0
+REVISIT_INITIAL_Y_SET=0
+REVISIT_INITIAL_YAW_SET=0
 RUN_ID="corridor_autorun_$(date +%Y%m%dT%H%M%S)"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +45,22 @@ while [ $# -gt 0 ]; do
       RUN_ID="$2"; shift 2 ;;
     --no-execute) EXECUTE=0; shift ;;
     --wait-for-start) WAIT_FOR_START=1; shift ;;
+    --start-index)
+      [ "$#" -ge 2 ] || { echo "--start-index 값이 필요하다" >&2; exit 2; }
+      case "$2" in
+        ''|*[!0-9]*) echo "재주행 시작 구간은 0~19여야 한다" >&2; exit 2 ;;
+      esac
+      [ "$2" -le 19 ] || { echo "재주행 시작 구간은 0~19여야 한다" >&2; exit 2; }
+      START_INDEX="$2"; shift 2 ;;
+    --revisit-initial-x)
+      [ "$#" -ge 2 ] || { echo "--revisit-initial-x 값이 필요하다" >&2; exit 2; }
+      REVISIT_INITIAL_X="$2"; REVISIT_INITIAL_X_SET=1; shift 2 ;;
+    --revisit-initial-y)
+      [ "$#" -ge 2 ] || { echo "--revisit-initial-y 값이 필요하다" >&2; exit 2; }
+      REVISIT_INITIAL_Y="$2"; REVISIT_INITIAL_Y_SET=1; shift 2 ;;
+    --revisit-initial-yaw)
+      [ "$#" -ge 2 ] || { echo "--revisit-initial-yaw 값이 필요하다" >&2; exit 2; }
+      REVISIT_INITIAL_YAW="$2"; REVISIT_INITIAL_YAW_SET=1; shift 2 ;;
     --navigation-profile)
       [ "$#" -ge 2 ] || { echo "--navigation-profile 값이 필요하다" >&2; exit 2; }
       case "$2" in
@@ -47,6 +70,23 @@ while [ $# -gt 0 ]; do
       esac ;;
     *) echo "알 수 없는 인자: $1" >&2; exit 2 ;;
   esac
+done
+if [ "$START_INDEX" -ne 0 ] && [ "$NAVIGATION_PROFILE" != new_base_revisit_candidate ]; then
+  echo "중간 구간 재개는 새 차체 재주행 프로필에서만 허용한다" >&2
+  exit 2
+fi
+if [ "$START_INDEX" -ne 0 ] && {
+     [ "$REVISIT_INITIAL_X_SET" -ne 1 ] ||
+     [ "$REVISIT_INITIAL_Y_SET" -ne 1 ] ||
+     [ "$REVISIT_INITIAL_YAW_SET" -ne 1 ]; }; then
+  echo "중간 재개에는 관측한 x·y·yaw 초기 위치를 모두 지정해야 한다" >&2
+  exit 2
+fi
+for value in "$REVISIT_INITIAL_X" "$REVISIT_INITIAL_Y" "$REVISIT_INITIAL_YAW"; do
+  if ! [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+    echo "초기 위치는 유한한 십진수여야 한다" >&2
+    exit 2
+  fi
 done
 case "$DELAY_S" in
   ''|*[!0-9]*|?????*)
@@ -99,9 +139,8 @@ set -u
 export ROS_DOMAIN_ID=12
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
-# bringup의 원시 센서 publisher는 LOCALHOST로 유지한다. 이 호스트의 Nav2와
-# 기록기만 SUBNET participant로 만들어 현재 Fast DDS의 local user-data 경로를
-# 사용한다. 이전 discovery 범위의 CLI daemon은 재사용하지 않는다.
+# 센서는 LOCALHOST, 실행기·Nav2·기록은 SUBNET으로 9월 10일 완주처럼 둔다.
+# 이전 discovery 범위의 CLI daemon은 재사용하지 않는다.
 ros2 daemon stop >/dev/null 2>&1 || true
 SHARE="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation"
 ROUTE="$SHARE/config/corridor_roundtrip.autonomous_20260826.yaml"
@@ -137,9 +176,15 @@ check_revisit_isolation() {
   fi
   publishers=0
   if grep -qx /cmd_vel <<<"$topics"; then
-    if ! publishers=$(timeout 12 ros2 topic info --no-daemon \
-      --spin-time 2 /cmd_vel 2>/dev/null |
-      awk '/Publisher count/{print $3}'); then
+    publishers=""
+    for _ in 1 2 3; do
+      publishers=$(timeout 20 ros2 topic info --no-daemon \
+        --spin-time 3 /cmd_vel 2>/dev/null |
+        awk '/Publisher count/{print $3}') || publishers=""
+      [[ "$publishers" =~ ^[0-9]+$ ]] && break
+      sleep 1
+    done
+    if ! [[ "$publishers" =~ ^[0-9]+$ ]]; then
       say "실패: 기존 /cmd_vel 발행자 정보를 읽지 못했다."
       return 4
     fi
@@ -250,7 +295,6 @@ setsid nohup ros2 run jdamr_cube_navigation soak_metrics \
 METRICS_PID=$!
 
 say "Nav2 와 기록 기동"
-check_revisit_isolation || exit 4
 if [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
   if ! sha256sum \
       "$HOME/maps/autonomous_20260826T161908.yaml" \
@@ -262,14 +306,19 @@ if [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
     say "실패: 재방문 입력 파일 해시 기록 실패"
     exit 4
   fi
-  printf 'run_id=%s\nprofile=%s\nstart_utc=%s\n' \
-    "$RUN_ID" "$NAVIGATION_PROFILE" "$(date -u --iso-8601=seconds)" \
+  printf 'run_id=%s\nprofile=%s\nstart_index=%s\ninitial_x=%s\ninitial_y=%s\ninitial_yaw=%s\nstart_utc=%s\n' \
+    "$RUN_ID" "$NAVIGATION_PROFILE" "$START_INDEX" \
+    "$REVISIT_INITIAL_X" "$REVISIT_INITIAL_Y" "$REVISIT_INITIAL_YAW" \
+    "$(date -u --iso-8601=seconds)" \
     > "$A/$RUN_ID.provenance.txt"
   setsid nohup ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
     navigation_profile:=new_base_revisit_candidate \
     map:="$HOME/maps/autonomous_20260826T161908.yaml" \
     keepout_mask:="$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml" \
     params_file:="$SHARE/config/new_base_nav2_params.yaml" \
+    revisit_initial_x:="$REVISIT_INITIAL_X" \
+    revisit_initial_y:="$REVISIT_INITIAL_Y" \
+    revisit_initial_yaw:="$REVISIT_INITIAL_YAW" \
     autostart:=true bag_output:="$A/$RUN_ID" \
     > "$A/$RUN_ID.launch.log" 2>&1 &
 else
@@ -291,28 +340,37 @@ if [ "${n:-0}" -lt 3 ]; then
 fi
 say "lifecycle 3/3 활성화"
 
-say "사전점검"
-if bash "$SHARE/scripts/corridor_preflight.sh" >> "$LOG" 2>&1; then
-  say "사전점검 PASS"
-else
-  say "실패: 사전점검 FAIL. 주행하지 않는다."
-  exit 4
+if [ "$NAVIGATION_PROFILE" != new_base_revisit_candidate ]; then
+  say "사전점검"
+  if bash "$SHARE/scripts/corridor_preflight.sh" >> "$LOG" 2>&1; then
+    say "사전점검 PASS"
+  else
+    say "실패: 사전점검 FAIL. 주행하지 않는다."
+    exit 4
+  fi
 fi
 
-say "전체 경로 계획 확인 (이동 없음)"
-if timeout "$PREFLIGHT_TIMEOUT_S" ros2 run jdamr_cube_navigation \
-  corridor_route --route "$ROUTE" \
-  --navigation-profile "$NAVIGATION_PROFILE" >> "$LOG" 2>&1; then
-  say "계획 PASS"
-else
-  say "실패: 전체 경로 계획 실패. 주행하지 않는다."
-  exit 5
+if [ "$NAVIGATION_PROFILE" != new_base_revisit_candidate ] ||
+   [ "$EXECUTE" -eq 0 ]; then
+  say "전체 경로 계획 확인 (이동 없음)"
+  if timeout "$PREFLIGHT_TIMEOUT_S" ros2 run jdamr_cube_navigation \
+    corridor_route --route "$ROUTE" \
+    --start-index "$START_INDEX" \
+    --navigation-profile "$NAVIGATION_PROFILE" >> "$LOG" 2>&1; then
+    say "계획 PASS"
+  else
+    say "실패: 전체 경로 계획 실패. 주행하지 않는다."
+    exit 5
+  fi
 fi
 
-if ! group_alive "$METRICS_PID"; then
+if [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
+  say "재주행: 자원 soak 게이트 생략 (계측 파일은 계속 기록)"
+elif ! group_alive "$METRICS_PID"; then
   say "실패: 자원 계측기가 종료됨. 주행하지 않는다."
   exit 7
 fi
+if [ "$NAVIGATION_PROFILE" != new_base_revisit_candidate ]; then
 METRICS_MTIME=$(stat -c %Y "$A/$RUN_ID.per_process.tsv" 2>/dev/null) || {
   say "실패: 자원 계측 파일이 없음. 주행하지 않는다."
   exit 7
@@ -332,6 +390,7 @@ else
   say "실패: 자원 게이트 FAIL. 주행하지 않는다."
   exit 7
 fi
+fi
 
 if [ "$EXECUTE" -eq 0 ]; then
   say "--no-execute 지정. 여기서 멈춘다."
@@ -349,7 +408,8 @@ if [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
 fi
 setsid timeout --kill-after="${ROUTE_STOP_GRACE_S}s" "$ROUTE_TIMEOUT_S" \
   ros2 run jdamr_cube_navigation corridor_route \
-  --route "$ROUTE" --navigation-profile "$NAVIGATION_PROFILE" \
+  --route "$ROUTE" --start-index "$START_INDEX" \
+  --navigation-profile "$NAVIGATION_PROFILE" \
   --execute >> "$A/$RUN_ID.route.log" 2>&1 &
 ROUTE_PID=$!
 while group_alive "$ROUTE_PID"; do

@@ -2,12 +2,22 @@
 
 import hashlib
 import importlib.util
+import math
 from pathlib import Path
+import time
 from types import SimpleNamespace
+from xml.etree import ElementTree as ET
 
-from jdamr_cube_navigation.corridor_route import revisit_plan_length_ok
+from jdamr_cube_navigation.corridor_route import (
+    CorridorRoute, NAVIGATION_BEHAVIOR_TREES, _positive_finite_config,
+    revisit_plan_length_ok,
+)
 from launch import LaunchContext
+from launch_ros.actions import ComposableNodeContainer
+from launch_ros.utilities import evaluate_parameters
 from nav2_common.launch import RewrittenYaml
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 import pytest
 import yaml
 
@@ -18,6 +28,8 @@ PARAMS = ROOT / 'jdamr_cube_navigation/config/new_base_nav2_params.yaml'
 OLD_PARAMS = ROOT / 'jdamr_cube_navigation/config/nav2_params.yaml'
 WRAPPER = ROOT / 'jdamr_cube_navigation/launch/onboard_keepout_navigation.launch.py'
 LEGACY_AUTORUN = ROOT / 'jdamr_cube_navigation/scripts/corridor_autorun.sh'
+REVISIT_BT = (ROOT / 'jdamr_cube_navigation/behavior_trees/'
+              'navigate_to_pose_new_base_revisit.xml')
 
 
 def _load_validator(path, map_name='new_base_live_20260915T1407.yaml',
@@ -48,11 +60,125 @@ def test_physical_candidate_is_accepted():
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     assert document['amcl']['ros__parameters']['set_initial_pose'] is False
     assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.08
+    controller = document['controller_server']['ros__parameters']
+    assert controller['progress_checker']['plugin'] == (
+        'nav2_controller::SimpleProgressChecker')
+    assert controller['progress_checker']['required_movement_radius'] == 0.05
+    assert controller['progress_checker']['movement_time_allowance'] == 15.0
+    assert controller['FollowPath']['rotate_to_heading_min_angle'] >= 1.57
 
 
 def test_revisit_rejects_long_detour_outside_recorded_corridor():
     assert revisit_plan_length_ok(78.0, 76.42)
     assert not revisit_plan_length_ok(120.0, 76.42)
+
+
+@pytest.mark.parametrize('invalid', [float('nan'), float('inf'), 0.0, -1.0])
+@pytest.mark.parametrize('name', [
+    'revisit_motion_amcl_freshness_s',
+    'revisit_motion_min_distance_m',
+    'revisit_motion_min_rotation_rad',
+])
+def test_revisit_motion_guard_rejects_invalid_thresholds(name, invalid):
+    with pytest.raises(ValueError, match=name):
+        _positive_finite_config({name: invalid}, name, 1.0)
+
+
+def test_revisit_stall_replans_once_instead_of_retrying_the_same_path():
+    root = ET.parse(REVISIT_BT).getroot()
+    recoveries = list(root.iter('RecoveryNode'))
+    assert len(recoveries) == 1
+    assert recoveries[0].attrib['number_of_retries'] == '1'
+    assert len(list(root.iter('ComputePathToPose'))) == 1
+    assert len(list(root.iter('FollowPath'))) == 1
+    assert root.find('.//Sequence[@name="NavigateRevisitForwardOnly"]') is not None
+    assert root.find('.//Sequence[@name="ReplanAfterFailure"]') is not None
+    assert not any(node.tag in {'Spin', 'BackUp', 'Wait'}
+                   for node in root.iter())
+    assert NAVIGATION_BEHAVIOR_TREES['new_base_revisit_candidate'] == (
+        REVISIT_BT.name)
+    assert 'navigate_to_pose_new_base_revisit.xml' in LAUNCH.read_text(
+        encoding='utf-8')
+
+
+def test_revisit_cancels_stale_amcl_only_after_accumulated_odometry_motion():
+    route = object.__new__(CorridorRoute)
+    now = time.monotonic()
+    route.samples = {name: now for name in ('battery', 'odom', 'scan')}
+    route.freshness_s = 10.0
+    route.battery_freshness_s = 30.0
+    route.battery_voltage = 12.0
+    route.minimum_battery_v = 10.5
+    route.amcl_seen = now - 26.0
+    route.amcl_covariance = (0.25, 0.25)
+    route.amcl_position = (0.0, 0.0)
+    route.max_amcl_covariance = (50.0, 50.0)
+    route.amcl_freshness_s = 60.0
+    route.revisit_motion_amcl_freshness_s = 25.0
+    route.revisit_motion_min_distance_m = 0.25
+    route.revisit_motion_min_rotation_rad = 0.5
+    route.navigation_profile = 'new_base_revisit_candidate'
+    route.start_check_pending = False
+    route.amcl_motion_distance_m = 0.0
+    route.amcl_motion_rotation_rad = 0.0
+    assert route._guard_failure(require_fresh_amcl=False) is None
+    route.amcl_motion_rotation_rad = 0.49
+    assert route._guard_failure(require_fresh_amcl=False) is None
+    route.amcl_motion_rotation_rad = 0.5
+    assert route._guard_failure(require_fresh_amcl=False).startswith(
+        'AMCL pose stale:')
+    route.amcl_seen = now - 17.38
+    assert route._guard_failure(require_fresh_amcl=False) is None
+    route.amcl_seen = now - 26.0
+    route.amcl_motion_rotation_rad = 0.0
+    route.amcl_motion_distance_m = 0.25
+    assert route._guard_failure(require_fresh_amcl=False).startswith(
+        'AMCL pose stale:')
+
+
+def test_revisit_odom_counts_alternating_yaw_across_wrap_and_amcl_resets():
+    route = object.__new__(CorridorRoute)
+    route.samples = {'odom': None}
+    route.odom_last_pose = None
+    route.amcl_motion_distance_m = 0.0
+    route.amcl_motion_rotation_rad = 0.0
+    route.parking_contract = None
+    for yaw in (3.0, -3.0, 3.0):
+        odom = Odometry()
+        odom.pose.pose.orientation.z = math.sin(yaw / 2.0)
+        odom.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        route._odom_callback(odom)
+    assert 0.55 < route.amcl_motion_rotation_rad < 0.58
+    assert route.amcl_motion_distance_m == 0.0
+    route._amcl_callback(PoseWithCovarianceStamped())
+    assert route.amcl_motion_rotation_rad == 0.0
+    assert route.amcl_motion_distance_m == 0.0
+
+
+def test_revisit_requires_collision_monitor_and_both_keepout_publishers():
+    expected = {
+        '/cmd_vel': 'collision_monitor',
+        '/keepout_filter_mask': 'keepout_filter_mask_server',
+        '/keepout_costmap_filter_info':
+            'keepout_costmap_filter_info_server',
+    }
+
+    class Graph:
+        def __init__(self, publishers):
+            self.publishers = publishers
+
+        def get_publishers_info_by_topic(self, topic):
+            return [SimpleNamespace(node_name=name)
+                    for name in self.publishers.get(topic, [])]
+
+    graph = Graph({topic: [node] for topic, node in expected.items()})
+    assert CorridorRoute._revisit_protection_ready(graph) is None
+    graph.publishers['/cmd_vel'] = ['collision_monitor', 'web_teleop']
+    assert '/cmd_vel' in CorridorRoute._revisit_protection_ready(graph)
+    graph.publishers['/cmd_vel'] = ['collision_monitor']
+    graph.publishers['/keepout_filter_mask'] = []
+    assert '/keepout_filter_mask' in CorridorRoute._revisit_protection_ready(
+        graph)
 
 
 def test_jazzy_rewrite_seeds_only_the_revisit_home_pose():
@@ -71,6 +197,40 @@ def test_jazzy_rewrite_seeds_only_the_revisit_home_pose():
     assert amcl['initial_pose']['y'] == -0.1
     assert yaml.safe_load(PARAMS.read_text(encoding='utf-8'))[
         'amcl']['ros__parameters']['set_initial_pose'] is False
+
+
+def test_revisit_uses_proven_fail_fast_tree_without_wait_server(
+        monkeypatch):
+    spec = importlib.util.spec_from_file_location('new_base_launch', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, '_validate_new_base_params',
+                        lambda _context, revisit=False: [])
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _name: str(ROOT / 'jdamr_cube_navigation'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_revisit_candidate',
+        'map': '/tmp/reference-map.yaml',
+        'keepout_mask': '/tmp/reference-mask.yaml',
+        'params_file': str(PARAMS),
+        'use_sim_time': 'false',
+        'autostart': 'false',
+    })
+    actions = module._launch_navigation(context)
+    container = next(action for action in actions if
+                     isinstance(action, ComposableNodeContainer))
+    descriptions = container._ComposableNodeContainer__composable_node_descriptions
+    names = [''.join(part.perform(context) for part in node.node_name)
+             for node in descriptions]
+    assert 'behavior_server' not in names
+    lifecycle_names = [
+        evaluate_parameters(context, action._Node__parameters)[0]['node_names']
+        for action in actions
+        if getattr(action, '_Node__node_name', None) ==
+        'lifecycle_manager_navigation'
+    ]
+    assert 'behavior_server' not in lifecycle_names[0]
 
 
 def test_revisit_accepts_only_verified_legacy_map_with_new_base_geometry():
@@ -111,10 +271,12 @@ def test_revisit_runner_records_inputs_and_checks_graph_before_nav2():
     assert '.inputs.sha256' in source
     assert 'motion_start_utc=' in source
     assert 'motion_end_utc=' in source
-    assert source.index('check_revisit_isolation || exit 4',
-                        source.index('say "Nav2 와 기록 기동"')) < source.index(
-                            'setsid nohup ros2 launch',
-                            source.index('say "Nav2 와 기록 기동"'))
+    assert source.count('check_revisit_isolation || exit 4') == 1
+    assert source.index('check_revisit_isolation || exit 4') < source.index(
+        'setsid nohup ros2 launch')
+    assert 'REVISIT_INITIAL_X_SET=1' in source
+    assert 'REVISIT_INITIAL_Y_SET=1' in source
+    assert 'REVISIT_INITIAL_YAW_SET=1' in source
 
 
 def test_preflight_requires_collision_monitor_not_only_one_publisher():

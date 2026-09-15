@@ -878,8 +878,11 @@ def test_autorun_never_drives_without_passing_every_gate():
     before_departure = source.split('say "출발"', 1)[0]
     assert before_departure.count('if [ -e "$ABORT_FILE" ]; then') >= 2
     assert source.index('배치 완료로 간주') < source.index('Nav2 와 기록 기동')
-    # Resource evidence must be scored before either no-execute success or a
-    # real route launch can be reported.
+    # The corridor baseline retains the soak gate.  New-base revisit records
+    # metrics but does not block a physical run on an optional soak criterion.
+    assert '재주행: 자원 soak 게이트 생략' in source
+    assert 'if [ "$NAVIGATION_PROFILE" != new_base_revisit_candidate ]; then' \
+        in source
     assert '--evaluate "$A/$RUN_ID.per_process.tsv"' in source
     assert source.count('ros2 run jdamr_cube_navigation soak_metrics') == 2
     assert source.count('--cores "$(nproc)"') == 2
