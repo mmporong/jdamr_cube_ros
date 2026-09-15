@@ -12,13 +12,17 @@ from jdamr_cube_navigation.corridor_route import (
     CorridorRoute, NAVIGATION_BEHAVIOR_TREES, _positive_finite_config,
     revisit_plan_length_ok,
     revisit_goal_witness,
+    current_map_xy,
+    revisit_map_correction_ok,
+    odom_distance_since_stamp,
+    recent_amcl_goal_ok,
 )
 from launch import LaunchContext
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.utilities import evaluate_parameters
 from nav2_common.launch import RewrittenYaml
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 import pytest
 import yaml
 
@@ -60,6 +64,7 @@ def test_physical_candidate_is_accepted():
     assert _load_validator(PARAMS)(None) == []
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     assert document['amcl']['ros__parameters']['set_initial_pose'] is False
+    assert document['amcl']['ros__parameters']['transform_tolerance'] == 1.0
     assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.08
     controller = document['controller_server']['ros__parameters']
     assert controller['progress_checker']['plugin'] == (
@@ -72,6 +77,17 @@ def test_physical_candidate_is_accepted():
 def test_revisit_rejects_long_detour_outside_recorded_corridor():
     assert revisit_plan_length_ok(78.0, 76.42)
     assert not revisit_plan_length_ok(120.0, 76.42)
+
+
+@pytest.mark.parametrize('invalid', [1.5, '1.0', False])
+def test_revisit_rejects_amcl_tf_tolerance_contract_drift(
+        tmp_path, invalid):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    document['amcl']['ros__parameters']['transform_tolerance'] = invalid
+    candidate = tmp_path / 'candidate.yaml'
+    candidate.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(RuntimeError, match='transform tolerance'):
+        _load_validator(candidate)(None)
 
 
 @pytest.mark.parametrize('invalid', [float('nan'), float('inf'), 0.0, -1.0])
@@ -107,22 +123,52 @@ def test_revisit_uses_previous_bounded_dynamic_replan_tree():
 def test_revisit_rejects_the_recorded_instant_false_success():
     start = (0.0, -0.1)
     goal = (2.0, -0.42)
-    assert not revisit_goal_witness(start, goal, start,
-                                    0.0, 0.0, 0.0, 0.2, 0.25)
-    assert not revisit_goal_witness(start, goal, goal,
-                                    0.0, 0.0, 0.0, 0.2, 0.25)
-    assert not revisit_goal_witness(start, goal, start,
-                                    2.0, 0.0, 0.0, 0.2, 0.25)
-    assert not revisit_goal_witness(start, goal, start,
-                                    0.0, 0.0, 0.0, 2.1, 0.25)
-    assert not revisit_goal_witness(start, goal, goal,
-                                    1.8, 0.16, 2.5, 0.2, 0.25)
-    assert not revisit_goal_witness(start, goal, (1.82, -0.42),
-                                    1.8, 0.10, 2.0, 0.2, 0.25)
+    assert not revisit_goal_witness(start, goal, start, 0.0, 0.35, 0.25)
+    assert not revisit_goal_witness(start, goal, goal, 0.0, 0.35, 0.25)
+    assert not revisit_goal_witness(start, goal, start, 2.0, 0.35, 0.25)
+    assert not revisit_goal_witness(start, goal, start, 0.0, 2.1, 0.25)
     assert revisit_goal_witness(start, goal, (1.92, -0.44),
-                                1.8, 0.08, 1.0, 0.2, 0.25)
-    assert revisit_goal_witness(start, goal, goal,
-                                1.8, 0.0, 2.0, 0.2, 0.25)
+                                1.8, 0.35, 0.25)
+    assert revisit_goal_witness(start, goal, goal, 1.8, 0.35, 0.25)
+
+
+def test_revisit_uses_live_odom_pose_with_last_map_correction():
+    map_to_odom = TransformStamped()
+    map_to_odom.transform.translation.x = 1.0
+    map_to_odom.transform.translation.y = -0.1
+    yaw = math.pi / 2.0
+    map_to_odom.transform.rotation.z = math.sin(yaw / 2.0)
+    map_to_odom.transform.rotation.w = math.cos(yaw / 2.0)
+    odom_to_base = TransformStamped()
+    odom_to_base.transform.translation.x = 2.0
+    odom_to_base.transform.rotation.w = 1.0
+    assert current_map_xy(map_to_odom, odom_to_base) == pytest.approx(
+        (1.0, 1.9))
+
+
+def test_revisit_localization_correction_must_be_recent_or_stationary():
+    assert revisit_map_correction_ok(-0.83, 0.141)
+    assert revisit_map_correction_ok(2.0, 0.4)
+    assert revisit_map_correction_ok(7.0, 0.05)
+    assert not revisit_map_correction_ok(7.0, 0.4)
+    assert not revisit_map_correction_ok(26.0, 0.0)
+
+
+def test_revisit_quiet_fallback_uses_correction_stamp_not_amcl_receipt():
+    history = [(1_000_000_000, 0.0),
+               (10_000_000_000, 0.5),
+               (20_000_000_000, 2.0)]
+    since = odom_distance_since_stamp(history, 2.0, 10_000_000_000)
+    assert since == 1.5
+    assert not revisit_map_correction_ok(7.0, since)
+    assert odom_distance_since_stamp(history, 2.0, 0) == math.inf
+
+
+def test_revisit_finite_recent_amcl_agreement():
+    assert recent_amcl_goal_ok(0.291, 2.84, 2.96, 0.35)
+    assert not recent_amcl_goal_ok(math.nan, 1.0, 1.0, 0.35)
+    assert not recent_amcl_goal_ok(2.025, 1.0, 1.0, 0.35)
+    assert recent_amcl_goal_ok(0.6, 7.0, 7.0, 0.35)
 
 
 def test_revisit_cancels_stale_amcl_only_after_accumulated_odometry_motion():

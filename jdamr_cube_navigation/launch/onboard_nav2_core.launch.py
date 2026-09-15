@@ -242,6 +242,11 @@ def _validate_new_base_params(context, revisit=False):
         raise RuntimeError('new-base SlowdownZone does not contain StopZone')
     if params['amcl']['ros__parameters']['set_initial_pose']:
         raise RuntimeError('new-base AMCL cannot force the old map origin')
+    amcl_tf_tolerance_s = params['amcl']['ros__parameters'][
+        'transform_tolerance']
+    if (type(amcl_tf_tolerance_s) not in (int, float) or
+            amcl_tf_tolerance_s != 1.0):
+        raise RuntimeError('new-base AMCL transform tolerance must be 1.0s')
     if params['velocity_smoother']['ros__parameters']['max_velocity'][0] > 0.08:
         raise RuntimeError('new-base forward speed exceeds uncalibrated limit')
     if params['controller_server']['ros__parameters']['FollowPath'][
