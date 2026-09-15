@@ -39,7 +39,7 @@ echo "== 2. 원격 시각화 =="
 # map_server 의 change_state 응답을 막아 기동 자체가 실패한다.
 # 이 시점에는 이미 Nav2 가 떠 있으므로 상태만 알린다. 조회가 실패하면
 # 안전한 쪽(모름)으로 보고한다.
-nodes=$(timeout 25 ros2 node list 2>/dev/null)
+nodes=$(timeout 25 ros2 node list --no-daemon --spin-time 2 2>/dev/null)
 if [ -z "$nodes" ]; then
   bad "노드 목록 조회 실패 - DDS 연결을 먼저 확인할 것"
 elif grep -q rviz <<<"$nodes"; then
@@ -47,6 +47,11 @@ elif grep -q rviz <<<"$nodes"; then
   warn "주행 중 TF 지연이 보이면(controller 오류 102) RViz 를 닫고 재시도"
 else
   ok "RViz 미연결"
+fi
+if grep -q -E 'cartographer|web_teleop' <<<"$nodes"; then
+  bad "Cartographer 또는 웹 조종기 실행 중 — 실차 Nav2 와 동시 사용 금지"
+else
+  ok "Cartographer·웹 조종기 미실행"
 fi
 
 echo "== 3. Nav2 lifecycle =="
@@ -81,11 +86,31 @@ for t in /keepout_filter_mask /keepout_costmap_filter_info; do
 done
 
 echo "== 5. 속도 명령 소유권 =="
-c=$(timeout 12 ros2 topic info /cmd_vel 2>/dev/null | awk '/Publisher count/{print $3}')
-if [ "${c:-0}" -eq 1 ]; then ok "/cmd_vel 발행자 1 (Collision Monitor)"
-else bad "/cmd_vel 발행자 ${c:-0} (1이어야 한다)"; fi
+command_info=$(timeout 12 ros2 topic info /cmd_vel --verbose \
+  --no-daemon --spin-time 2 2>/dev/null)
+c=$(awk '/Publisher count/{print $3}' <<<"$command_info")
+publisher=$(awk '/Node name:/{node=$3} /Endpoint type: PUBLISHER/{print node}' \
+  <<<"$command_info")
+if [ "${c:-0}" -eq 1 ] && [ "$publisher" = collision_monitor ]; then
+  ok "/cmd_vel 유일한 발행자: Collision Monitor"
+else
+  bad "/cmd_vel 발행자 ${c:-0}개, 노드=${publisher:-없음} (Collision Monitor 하나여야 한다)"
+fi
 
-echo "== 6. 코스트맵 초기화 =="
+echo "== 6. 출발 전 정지 상태 =="
+linear=$(timeout 12 ros2 topic echo /odom --once \
+  --field twist.twist.linear.x 2>/dev/null | head -1)
+angular=$(timeout 12 ros2 topic echo /odom --once \
+  --field twist.twist.angular.z 2>/dev/null | head -1)
+if [ -n "$linear" ] && [ -n "$angular" ] && \
+   awk "BEGIN{exit !(($linear >= -0.01 && $linear <= 0.01) &&
+                       ($angular >= -0.02 && $angular <= 0.02))}"; then
+  ok "로봇 정지 확인 (v=${linear}m/s, w=${angular}rad/s)"
+else
+  bad "출발 전 정지 확인 실패 (v=${linear:-없음}, w=${angular:-없음})"
+fi
+
+echo "== 7. 코스트맵 초기화 =="
 clear_costmap() {
   local service="$1" label="$2" attempt
   for attempt in 1 2 3; do
@@ -112,7 +137,7 @@ else
   bad "코스트맵 초기화 실패"
 fi
 
-echo "== 7. 배터리 =="
+echo "== 8. 배터리 =="
 v=$(timeout 12 ros2 topic echo /battery_state --once 2>/dev/null \
     | awk '/^voltage/{print $2; exit}')
 if [ -n "${v:-}" ] && awk "BEGIN{exit !($v >= 10.5)}"; then

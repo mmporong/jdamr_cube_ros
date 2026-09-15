@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do
     --navigation-profile)
       [ "$#" -ge 2 ] || { echo "--navigation-profile 값이 필요하다" >&2; exit 2; }
       case "$2" in
-        corridor|obstacle_candidate|obstacle_base_candidate)
+        corridor|obstacle_candidate|obstacle_base_candidate|new_base_revisit_candidate)
           NAVIGATION_PROFILE="$2"; shift 2 ;;
         *) echo "주행 프로필이 올바르지 않다" >&2; exit 2 ;;
       esac ;;
@@ -63,10 +63,19 @@ case "$RUN_ID" in
     exit 2 ;;
 esac
 
-# 이 실행기는 구차체의 고정 복도 경로·보호영역만 사용한다.
-# 새 차체 모델이 설치된 파이에서는 로그·예약·주행을 시작하기 전에 거부한다.
-if [ -f "$HOME/jdamr_ws/install/jdamr_cube_description/share/jdamr_cube_description/urdf/new_base_real.urdf" ]; then
-  echo "새 차체에서는 기존 복도 자동 실행기를 사용할 수 없다" >&2
+# 새 차체는 해시로 고정한 기존 지도 재방문 프로필로만 이 실행기를 사용한다.
+NEW_BASE_MODEL="$HOME/jdamr_ws/install/jdamr_cube_description/share/jdamr_cube_description/urdf/new_base_real.urdf"
+if [ -f "$NEW_BASE_MODEL" ]; then
+  if [ "$NAVIGATION_PROFILE" != new_base_revisit_candidate ]; then
+    echo "새 차체에서는 고정 지도 재방문 프로필만 허용한다" >&2
+    exit 2
+  fi
+elif [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
+  echo "새 차체 모델이 설치되지 않았다" >&2
+  exit 2
+fi
+if [ "$WAIT_FOR_START" -eq 1 ] && [ -e "$HOME/jdamr_start" ]; then
+  echo "오래된 출발 신호가 남아 있어 예약하지 않는다" >&2
   exit 2
 fi
 
@@ -96,6 +105,51 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 ros2 daemon stop >/dev/null 2>&1 || true
 SHARE="$(ros2 pkg prefix jdamr_cube_navigation)/share/jdamr_cube_navigation"
 ROUTE="$SHARE/config/corridor_roundtrip.autonomous_20260826.yaml"
+
+check_revisit_isolation() {
+  [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ] || return 0
+  # 지도·마스크를 옛 지도 좌표계에서 고정하고 새 차체 보호영역만 적용한다.
+  # Nav2 기동 전 두 위치추정자와 두 속도 발행자가 생길 조건을 거부한다.
+  for service in jdamr-cartographer-session.service jdamr-webteleop.service; do
+    if systemctl is-active --quiet "$service"; then
+      say "실패: $service 실행 중. 새 차체 재방문을 시작하지 않는다."
+      return 4
+    fi
+  done
+  if ! nodes=$(timeout 15 ros2 node list --no-daemon --spin-time 2 \
+      2>/dev/null); then
+    say "실패: Nav2 기동 전 ROS 노드 목록을 읽지 못했다."
+    return 4
+  fi
+  if grep -q -E 'cartographer|web_teleop' <<<"$nodes"; then
+    say "실패: Cartographer 또는 웹 조종기 ROS 노드가 남아 있다."
+    return 4
+  fi
+  if grep -q -E '^/(amcl|map_server|collision_monitor|bt_navigator)$' \
+      <<<"$nodes"; then
+    say "실패: 기존 Nav2 또는 AMCL 노드가 남아 있다."
+    return 4
+  fi
+  if ! topics=$(timeout 15 ros2 topic list --no-daemon --spin-time 2 \
+      2>/dev/null); then
+    say "실패: Nav2 기동 전 ROS 토픽 목록을 읽지 못했다."
+    return 4
+  fi
+  publishers=0
+  if grep -qx /cmd_vel <<<"$topics"; then
+    if ! publishers=$(timeout 12 ros2 topic info --no-daemon \
+      --spin-time 2 /cmd_vel 2>/dev/null |
+      awk '/Publisher count/{print $3}'); then
+      say "실패: 기존 /cmd_vel 발행자 정보를 읽지 못했다."
+      return 4
+    fi
+  fi
+  if [ "${publishers:-0}" -ne 0 ]; then
+    say "실패: Nav2 기동 전 /cmd_vel 발행자 ${publishers:-0}개"
+    return 4
+  fi
+}
+check_revisit_isolation || exit 4
 
 group_alive() {
   local pgid="$1"
@@ -196,9 +250,33 @@ setsid nohup ros2 run jdamr_cube_navigation soak_metrics \
 METRICS_PID=$!
 
 say "Nav2 와 기록 기동"
-setsid nohup ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
-  navigation_profile:="$NAVIGATION_PROFILE" \
-  bag_output:="$A/$RUN_ID" > "$A/$RUN_ID.launch.log" 2>&1 &
+check_revisit_isolation || exit 4
+if [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
+  if ! sha256sum \
+      "$HOME/maps/autonomous_20260826T161908.yaml" \
+      "$HOME/maps/autonomous_20260826T161908.pgm" \
+      "$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml" \
+      "$HOME/maps/autonomous_20260826T161908_keepout_multi.pgm" \
+      "$SHARE/config/new_base_nav2_params.yaml" "$ROUTE" "$NEW_BASE_MODEL" \
+      > "$A/$RUN_ID.inputs.sha256"; then
+    say "실패: 재방문 입력 파일 해시 기록 실패"
+    exit 4
+  fi
+  printf 'run_id=%s\nprofile=%s\nstart_utc=%s\n' \
+    "$RUN_ID" "$NAVIGATION_PROFILE" "$(date -u --iso-8601=seconds)" \
+    > "$A/$RUN_ID.provenance.txt"
+  setsid nohup ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
+    navigation_profile:=new_base_revisit_candidate \
+    map:="$HOME/maps/autonomous_20260826T161908.yaml" \
+    keepout_mask:="$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml" \
+    params_file:="$SHARE/config/new_base_nav2_params.yaml" \
+    autostart:=true bag_output:="$A/$RUN_ID" \
+    > "$A/$RUN_ID.launch.log" 2>&1 &
+else
+  setsid nohup ros2 launch jdamr_cube_navigation onboard_keepout_navigation.launch.py \
+    navigation_profile:="$NAVIGATION_PROFILE" \
+    bag_output:="$A/$RUN_ID" > "$A/$RUN_ID.launch.log" 2>&1 &
+fi
 NAV_PID=$!
 
 say "lifecycle 활성화 대기 (최대 180초)"
@@ -265,6 +343,10 @@ if [ -e "$ABORT_FILE" ]; then
   exit 6
 fi
 say "출발"
+if [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
+  printf 'motion_start_utc=%s\n' "$(date -u --iso-8601=seconds)" \
+    >> "$A/$RUN_ID.provenance.txt"
+fi
 setsid timeout --kill-after="${ROUTE_STOP_GRACE_S}s" "$ROUTE_TIMEOUT_S" \
   ros2 run jdamr_cube_navigation corridor_route \
   --route "$ROUTE" --navigation-profile "$NAVIGATION_PROFILE" \
@@ -286,5 +368,10 @@ if [ -n "$ROUTE_PID" ]; then
 fi
 ROUTE_PID=""
 say "주행 종료코드=$RC"
+if [ "$NAVIGATION_PROFILE" = new_base_revisit_candidate ]; then
+  printf 'motion_end_utc=%s\nroute_exit=%s\n' \
+    "$(date -u --iso-8601=seconds)" "$RC" \
+    >> "$A/$RUN_ID.provenance.txt"
+fi
 say "기록: $A/$RUN_ID"
 exit "$RC"

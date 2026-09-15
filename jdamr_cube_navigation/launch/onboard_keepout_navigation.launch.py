@@ -138,8 +138,8 @@ def generate_launch_description():
         DeclareLaunchArgument('autostart', default_value='false'),
         DeclareLaunchArgument(
             'navigation_profile', default_value='new_base_candidate',
-            choices=['new_base_candidate'],
-            description='현재 실차에서는 새 차체 검증 프로필만 허용한다'),
+            choices=['new_base_candidate', 'new_base_revisit_candidate'],
+            description='새 차체 지도 또는 고정된 기존 지도 재방문만 허용한다'),
         DeclareLaunchArgument(
             'record_bag', default_value='true',
             description='Record essential full-rate evidence on the robot'),

@@ -43,6 +43,7 @@ NAVIGATION_BEHAVIOR_TREES = {
     'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
     'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
     'obstacle_base_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
+    'new_base_revisit_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
 }
 GOAL_STATUS_NAMES = {
     GoalStatus.STATUS_UNKNOWN: 'STATUS_UNKNOWN',
@@ -68,6 +69,12 @@ def _sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def revisit_plan_length_ok(actual_m, declared_m):
+    """Reject a detour that no longer resembles the recorded corridor route."""
+    return (math.isfinite(actual_m) and math.isfinite(declared_m)
+            and declared_m > 0 and actual_m <= declared_m * 1.3)
 
 
 def load_route(route_yaml):
@@ -476,6 +483,14 @@ class CorridorRoute(Node):
                 current.pose.position.y - previous.pose.position.y)
             for previous, current in zip(
                 result.path.poses, result.path.poses[1:]))
+        if (self.navigation_profile == 'new_base_revisit_candidate'
+                and not revisit_plan_length_ok(
+                    length, float(self.config['planned_length_m']))):
+            self.get_logger().error(
+                'new-base revisit planned detour exceeds corridor bound: '
+                f'length={length:.3f}m '
+                f'reference={self.config["planned_length_m"]}m')
+            return False
         self.get_logger().info(
             f'route preflight passed: poses={len(result.path.poses)} '
             f'length={length:.3f}m')
