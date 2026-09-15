@@ -127,16 +127,10 @@ def odom_distance_since_stamp(history, total_m, stamp_ns):
     return total_m - latest[1] if latest is not None else math.inf
 
 
-def recent_amcl_goal_ok(error_m, receipt_age_s, header_age_s,
-                        tolerance_m):
-    """Do not treat delayed or non-finite AMCL coordinates as fresh proof."""
-    if not all(math.isfinite(value) for value in (
-            error_m, receipt_age_s, header_age_s, tolerance_m)):
-        return False
-    if receipt_age_s < 0.0 or header_age_s < 0.0:
-        return False
-    return (error_m <= tolerance_m if
-            receipt_age_s <= 5.0 and header_age_s <= 5.0 else True)
+def finite_localization_xy(position):
+    """Reject invalid AMCL coordinates without using delayed pose as a goal."""
+    return (position is not None and len(position) == 2 and
+            all(math.isfinite(value) for value in position))
 
 
 def _positive_finite_config(config, name, default):
@@ -432,9 +426,6 @@ class CorridorRoute(Node):
 
     def _amcl_callback(self, message):
         self.amcl_seen = time.monotonic()
-        self.amcl_header_stamp_ns = (
-            message.header.stamp.sec * 1_000_000_000 +
-            message.header.stamp.nanosec)
         self.amcl_motion_distance_m = 0.0
         self.amcl_motion_rotation_rad = 0.0
         covariance = message.pose.covariance
@@ -883,17 +874,7 @@ class CorridorRoute(Node):
             if getattr(self, 'navigation_profile', None) == (
                     'new_base_revisit_candidate'):
                 motion_m = self.odom_total_distance_m - goal_start_odom_m
-                amcl_age_s = (time.monotonic() - self.amcl_seen
-                              if self.amcl_seen is not None else math.inf)
                 ros_now_ns = self.get_clock().now().nanoseconds
-                amcl_header_age_s = (
-                    (ros_now_ns - self.amcl_header_stamp_ns) / 1e9
-                    if getattr(self, 'amcl_header_stamp_ns', 0) > 0
-                    else math.inf)
-                raw_amcl_error_m = (
-                    math.dist(self.amcl_position,
-                              (waypoint['x'], waypoint['y']))
-                    if self.amcl_position is not None else math.inf)
                 try:
                     map_to_odom = self.revisit_tf.lookup_transform(
                         'map', 'odom', rclpy.time.Time())
@@ -919,10 +900,7 @@ class CorridorRoute(Node):
                 if (not 0.0 <= odom_tf_age_s <= 0.5 or
                         not revisit_map_correction_ok(
                             map_tf_age_s, odom_since_correction_m) or
-                        not recent_amcl_goal_ok(
-                            raw_amcl_error_m, amcl_age_s,
-                            amcl_header_age_s,
-                            self.revisit_goal_amcl_tolerance_m) or
+                        not finite_localization_xy(self.amcl_position) or
                         not revisit_goal_witness(
                             goal_start_amcl,
                             (waypoint['x'], waypoint['y']),
@@ -936,9 +914,6 @@ class CorridorRoute(Node):
                         f'map_tf_age={map_tf_age_s:.3f}s '
                         f'odom_since_correction='
                         f'{odom_since_correction_m:.3f}m '
-                        f'amcl_age={amcl_age_s:.3f}s '
-                        f'amcl_header_age={amcl_header_age_s:.3f}s '
-                        f'amcl_error={raw_amcl_error_m:.3f}m '
                         f'current_map_xy={final_xy}')
                     return False
             if is_parking and not self._verify_parking_stop(

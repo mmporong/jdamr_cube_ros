@@ -15,7 +15,7 @@ from jdamr_cube_navigation.corridor_route import (
     current_map_xy,
     revisit_map_correction_ok,
     odom_distance_since_stamp,
-    recent_amcl_goal_ok,
+    finite_localization_xy,
 )
 from launch import LaunchContext
 from launch_ros.actions import ComposableNodeContainer
@@ -164,11 +164,9 @@ def test_revisit_quiet_fallback_uses_correction_stamp_not_amcl_receipt():
     assert odom_distance_since_stamp(history, 2.0, 0) == math.inf
 
 
-def test_revisit_finite_recent_amcl_agreement():
-    assert recent_amcl_goal_ok(0.291, 2.84, 2.96, 0.35)
-    assert not recent_amcl_goal_ok(math.nan, 1.0, 1.0, 0.35)
-    assert not recent_amcl_goal_ok(2.025, 1.0, 1.0, 0.35)
-    assert recent_amcl_goal_ok(0.6, 7.0, 7.0, 0.35)
+def test_revisit_amcl_sanity_does_not_reject_delayed_valid_pose():
+    assert finite_localization_xy((1.746, -0.279))
+    assert not finite_localization_xy((math.nan, -0.279))
 
 
 def test_revisit_cancels_stale_amcl_only_after_accumulated_odometry_motion():
