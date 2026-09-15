@@ -12,7 +12,7 @@ ALIAS_LAUNCH_PATH = (
     / 'launch' / 'jdamr_cube_bringup.launch.py')
 URDF_PATH = (
     Path(__file__).resolve().parents[2]
-    / 'jdamr_cube_description' / 'urdf' / 'jdamr_cube.urdf')
+    / 'jdamr_cube_description' / 'urdf' / 'new_base_real.urdf')
 
 
 def _call_name(call):
@@ -64,7 +64,7 @@ def test_real_bringup_uses_measured_base_geometry():
         if joint.attrib['name'] == 'laser_joint')
     origin = laser_joint.find('origin')
 
-    assert origin.attrib['xyz'] == '-0.010 0 0.075'
+    assert origin.attrib['xyz'] == '-0.010 0 0.150'
     assert origin.attrib['rpy'] == '0 0 3.141592653589793'
 
 

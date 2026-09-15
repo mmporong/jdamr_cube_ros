@@ -7,9 +7,9 @@
 laser_joint 가 서로 다른 값으로 이중 발행되던 것(조사기록 E7)을,
 라이다 노드를 직접 띄우고 frame_id 를 URDF 링크(laser_link)로 맞춰 없앤다.
 
-바퀴 제원은 실측 후 런치 인자로 넘긴다 (안 넘기면 드라이버가 경고):
+바퀴 제원은 런치 인자로 넘긴다:
   ros2 launch jdamr_cube_bringup real_bringup.launch.py \
-      wheel_radius:=0.0XX wheel_separation:=0.3XX
+      wheel_radius:=0.0329 wheel_separation:=0.510
 
 연결 구성 (2026-08-14 실물 확정):
   ESP32 ↔ 파이 = 40핀 헤더 UART(/dev/ttyS0) — USB 케이블 불필요.
@@ -28,7 +28,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     urdf_file = os.path.join(
-        get_package_share_directory('jdamr_cube_description'), 'urdf', 'jdamr_cube.urdf')
+        get_package_share_directory('jdamr_cube_description'), 'urdf', 'new_base_real.urdf')
     with open(urdf_file, 'r') as f:
         robot_description = f.read()
 

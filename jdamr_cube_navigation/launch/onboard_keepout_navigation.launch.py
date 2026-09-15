@@ -124,24 +124,22 @@ def generate_launch_description():
             'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
         DeclareLaunchArgument(
             'map',
-            default_value=os.path.expanduser(
-                '~/maps/autonomous_20260826T161908.yaml')),
+            default_value='',
+            description='새 차체 지도 YAML을 반드시 명시한다'),
         DeclareLaunchArgument(
             'keepout_mask',
-            default_value=os.path.expanduser(
-                '~/maps/autonomous_20260826T161908_keepout_multi.yaml')),
+            default_value='',
+            description='새 지도와 정합한 Keepout 마스크 YAML을 반드시 명시한다'),
         DeclareLaunchArgument(
             'params_file',
             default_value=os.path.join(
-                package_share, 'config', 'nav2_params.yaml')),
+                package_share, 'config', 'new_base_nav2_params.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
-        DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('autostart', default_value='false'),
         DeclareLaunchArgument(
-            'navigation_profile', default_value='corridor',
-            choices=[
-                'corridor', 'obstacle_candidate',
-                'obstacle_base_candidate'],
-            description='Select the same navigation profile for the route runner'),
+            'navigation_profile', default_value='new_base_candidate',
+            choices=['new_base_candidate'],
+            description='현재 실차에서는 새 차체 검증 프로필만 허용한다'),
         DeclareLaunchArgument(
             'record_bag', default_value='true',
             description='Record essential full-rate evidence on the robot'),

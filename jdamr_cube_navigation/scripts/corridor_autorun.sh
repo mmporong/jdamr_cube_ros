@@ -63,6 +63,13 @@ case "$RUN_ID" in
     exit 2 ;;
 esac
 
+# 이 실행기는 구차체의 고정 복도 경로·보호영역만 사용한다.
+# 새 차체 모델이 설치된 파이에서는 로그·예약·주행을 시작하기 전에 거부한다.
+if [ -f "$HOME/jdamr_ws/install/jdamr_cube_description/share/jdamr_cube_description/urdf/new_base_real.urdf" ]; then
+  echo "새 차체에서는 기존 복도 자동 실행기를 사용할 수 없다" >&2
+  exit 2
+fi
+
 A="$HOME/jdamr_artifacts"
 mkdir -p "$A"
 LOG="$A/$RUN_ID.autorun.log"

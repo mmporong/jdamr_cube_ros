@@ -7,7 +7,9 @@
 # and remaining causal uncertainty live in evaluation/20260904_HANDOFF.md.
 
 import os
+import json
 from pathlib import Path
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.keepout_mask import validate_mask
@@ -41,6 +43,21 @@ def _validate_keepout(context):
     return []
 
 
+def _reject_legacy_profile_on_new_base(context):
+    """Do not let the direct core launch bypass the physical wrapper."""
+    if LaunchConfiguration('use_sim_time').perform(context).lower() in (
+            '1', 'true', 'yes', 'on'):
+        return []
+    description_share = Path(get_package_share_directory(
+        'jdamr_cube_description'))
+    new_base_model = description_share / 'urdf' / 'new_base_real.urdf'
+    if (new_base_model.is_file()
+            and LaunchConfiguration('navigation_profile').perform(context)
+            != 'new_base_candidate'):
+        raise RuntimeError('new physical base rejects legacy navigation profiles')
+    return []
+
+
 def _shutdown_unless_already_stopping(reason):
     """Fail closed on a required process exit without duplicate shutdowns."""
     def handler(_event, context):
@@ -49,6 +66,100 @@ def _shutdown_unless_already_stopping(reason):
         return [Shutdown(reason=reason)]
 
     return handler
+
+
+def _validate_new_base_params(context):
+    """Reject old footprint/StopZone parameters for the new physical base."""
+    map_name = Path(LaunchConfiguration('map').perform(context)).name
+    mask_name = Path(LaunchConfiguration('keepout_mask').perform(context)).name
+    if not (map_name.startswith('new_base_')
+            and mask_name.startswith('new_base_')):
+        raise RuntimeError('new-base profile requires a new-base map and mask')
+    params_path = Path(os.path.expanduser(
+        LaunchConfiguration('params_file').perform(context)))
+    params = yaml.safe_load(params_path.read_text(encoding='utf-8'))
+    geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))
+                     / 'config' / 'new_base_geometry.yaml')
+    geometry = yaml.safe_load(geometry_path.read_text(encoding='utf-8'))
+    front = geometry['front_to_wheel_axis']['value']
+    rear = front - geometry['frame_length']['value']
+    half_width = geometry['wheel_outer_width']['value'] / 2.0
+
+    def bounds(points):
+        polygon = json.loads(points) if isinstance(points, str) else points
+        if len(polygon) != 4:
+            raise RuntimeError('new-base polygon must have four corners')
+        xs = sorted({point[0] for point in polygon})
+        ys = sorted({point[1] for point in polygon})
+        if (len(xs) != 2 or len(ys) != 2 or ys[0] != -ys[1]
+                or {tuple(point) for point in polygon} !=
+                {(x, y) for x in xs for y in ys}):
+            raise RuntimeError('new-base polygon must cover both sides as a rectangle')
+        ordered_corners = [
+            (xs[1], ys[1]), (xs[1], ys[0]),
+            (xs[0], ys[0]), (xs[0], ys[1]),
+        ]
+        if [tuple(point) for point in polygon] != ordered_corners:
+            raise RuntimeError('new-base polygon corners must follow the perimeter')
+        return (xs[1], xs[0], ys[1])
+
+    costmaps = [params[key][key]['ros__parameters']
+                for key in ('local_costmap', 'global_costmap')]
+    footprints = [bounds(costmap['footprint']) for costmap in costmaps]
+    if footprints[0] != footprints[1]:
+        raise RuntimeError('new-base costmap footprints differ')
+    footprint = footprints[0]
+    if not (footprint[0] > front and footprint[1] < rear
+            and footprint[2] > half_width):
+        raise RuntimeError('new-base footprint is smaller than measured base')
+    if any(costmap['robot_base_frame'] != 'base_footprint'
+           for costmap in costmaps):
+        raise RuntimeError('new-base costmaps need base_footprint')
+    for costmap in costmaps:
+        layer = costmap['obstacle_layer']
+        scan = layer['scan']
+        if (not layer['enabled'] or 'scan' not in layer['observation_sources']
+                or scan['topic'] != '/scan' or not scan['marking']):
+            raise RuntimeError('new-base costmap scan layer is not active')
+
+    monitor = params['collision_monitor']['ros__parameters']
+    if not {'StopZone', 'SlowdownZone', 'FootprintApproach'} <= set(
+            monitor['polygons']):
+        raise RuntimeError('new-base collision polygons are incomplete')
+    for name, action in (('StopZone', 'stop'), ('SlowdownZone', 'slowdown')):
+        zone = monitor[name]
+        if (zone['type'] != 'polygon' or zone['action_type'] != action
+                or not zone['enabled'] or zone['min_points'] < 3):
+            raise RuntimeError(f'new-base {name} is not active')
+    if (monitor['FootprintApproach']['action_type'] != 'approach'
+            or not monitor['FootprintApproach']['enabled']):
+        raise RuntimeError('new-base approach monitor is not active')
+    if ('scan' not in monitor['observation_sources']
+            or not monitor['scan']['enabled']
+            or monitor['scan']['type'] != 'scan'
+            or monitor['scan']['topic'] != '/scan'):
+        raise RuntimeError('new-base scan collision source is not active')
+    stop = bounds(monitor['StopZone']['points'])
+    slow = bounds(monitor['SlowdownZone']['points'])
+    if not (stop[0] > footprint[0] and stop[1] < footprint[1]
+            and stop[2] > footprint[2]):
+        raise RuntimeError('new-base StopZone does not contain footprint')
+    if not (slow[0] > stop[0] and slow[1] < stop[1]
+            and slow[2] > stop[2]):
+        raise RuntimeError('new-base SlowdownZone does not contain StopZone')
+    if params['amcl']['ros__parameters']['set_initial_pose']:
+        raise RuntimeError('new-base AMCL cannot force the old map origin')
+    if params['velocity_smoother']['ros__parameters']['max_velocity'][0] > 0.08:
+        raise RuntimeError('new-base forward speed exceeds uncalibrated limit')
+    if params['controller_server']['ros__parameters']['FollowPath'][
+            'desired_linear_vel'] > 0.08:
+        raise RuntimeError('new-base controller speed exceeds uncalibrated limit')
+    if monitor['source_timeout'] > 0.30:
+        raise RuntimeError('new-base scan source timeout exceeds candidate bound')
+    if params['bt_navigator']['ros__parameters'][
+            'robot_base_frame'] != 'base_footprint':
+        raise RuntimeError('new-base BT needs base_footprint')
+    return []
 
 
 def _launch_navigation(context):
@@ -60,7 +171,10 @@ def _launch_navigation(context):
         'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
         'obstacle_base_candidate': (
             'navigate_to_pose_dynamic_obstacle_eval.xml'),
+        'new_base_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
     }[profile]
+    if profile == 'new_base_candidate':
+        _validate_new_base_params(context)
     map_yaml = LaunchConfiguration('map')
     keepout_mask = LaunchConfiguration('keepout_mask')
     params_file = LaunchConfiguration('params_file')
@@ -165,7 +279,8 @@ def _launch_navigation(context):
         'collision_monitor', 'bt_navigator',
     ]
     required_nodes = list(DEFAULT_REQUIRED)
-    if profile in {'obstacle_candidate', 'obstacle_base_candidate'}:
+    if profile in {'obstacle_candidate', 'obstacle_base_candidate',
+                   'new_base_candidate'}:
         # The candidate BT calls Wait during bounded recovery.  Load only
         # that plugin; selecting this profile must not enable spin or backup.
         nav2_components.insert(-1, ComposableNode(
@@ -298,8 +413,9 @@ def generate_launch_description():
             'navigation_profile', default_value='corridor',
             choices=[
                 'corridor', 'obstacle_candidate',
-                'obstacle_base_candidate'],
+                'obstacle_base_candidate', 'new_base_candidate'],
             description='Candidate enables online replanning and Wait recovery'),
+        OpaqueFunction(function=_reject_legacy_profile_on_new_base),
         OpaqueFunction(function=_validate_keepout),
         OpaqueFunction(function=_launch_navigation),
     ])

@@ -291,8 +291,9 @@ def test_onboard_core_loads_only_corridor_required_nav2_processes():
         assert omitted not in source
     # Wait is an explicit candidate-only dependency, not a baseline server.
     assert "'navigation_profile', default_value='corridor'" in source
-    assert "if profile in {'obstacle_candidate', 'obstacle_base_candidate'}:" \
+    assert "if profile in {'obstacle_candidate', 'obstacle_base_candidate'," \
         in source
+    assert "'new_base_candidate'}:" in source
     assert "'obstacle_base_candidate'" in source
     assert "'behavior_plugins': ['wait']" in source
     assert "'navigate_to_pose_corridor_fail_fast.xml'" in source
