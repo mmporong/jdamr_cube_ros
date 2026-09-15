@@ -41,10 +41,10 @@ def generate_launch_description():
         # 이 파이의 Fast DDS SHM user-data 경로는 discovery 후 데이터가
         # 전달되지 않는다. 노드를 띄우기 전에 UDP-only로 고정한다.
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
-        # 실차 제어 토픽은 파이 내부에서만 교환한다. 시각 검토는 주행 뒤
-        # bag을 재생해 무선 상태가 센서·제어 콜백을 막지 않게 한다.
+        # 이 파이에서는 LOCALHOST discovery가 그래프만 보이고 센서 데이터는
+        # 전달하지 못했다. 도메인 12를 유지하고 UDPv4 SUBNET으로 통일한다.
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ydlidar_g4',
@@ -53,10 +53,10 @@ def generate_launch_description():
                               description=(
                                   '바퀴 반지름 [m] — 2026-08-14 주행 캘리브레이션 확정'
                                   '(자 실측 지름 65mm와 일치)')),
-        DeclareLaunchArgument('wheel_separation', default_value='0.1836',
+        DeclareLaunchArgument('wheel_separation', default_value='0.510',
                               description=(
-                                  '유효 트레드 [m] — 주행 캘리브레이션 확정. '
-                                  '기하 중심거리는 0.20m이나 접지면 효과로 유효값이 작다')),
+                                  '새 차체 바퀴 중심 간 실측 기하 거리 [m]. '
+                                  '회전 시험 뒤 유효 트레드를 별도 보정한다')),
 
         # URDF 가 모든 고정 TF(base_footprint→base_link→laser_link…)의 단일 출처
         Node(

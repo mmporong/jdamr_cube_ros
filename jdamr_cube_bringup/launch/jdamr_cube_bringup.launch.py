@@ -21,7 +21,7 @@ def generate_launch_description():
         'base_port': '/dev/ttyS0',
         'lidar_port': '/dev/ydlidar_g4',
         'wheel_radius': '0.0329',
-        'wheel_separation': '0.1836',
+        'wheel_separation': '0.510',
     }
     declarations = [
         DeclareLaunchArgument(name, default_value=value)
