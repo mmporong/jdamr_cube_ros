@@ -266,7 +266,7 @@ def _launch_navigation(context):
             'navigate_to_pose_dynamic_obstacle_eval.xml'),
         'new_base_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
         'new_base_revisit_candidate': (
-            'navigate_to_pose_new_base_revisit.xml'),
+            'navigate_to_pose_dynamic_obstacle_eval.xml'),
     }[profile]
     if profile in ('new_base_candidate', 'new_base_revisit_candidate'):
         _validate_new_base_params(
@@ -388,7 +388,7 @@ def _launch_navigation(context):
     ]
     required_nodes = list(DEFAULT_REQUIRED)
     if profile in {'obstacle_candidate', 'obstacle_base_candidate',
-                   'new_base_candidate'}:
+                   'new_base_candidate', 'new_base_revisit_candidate'}:
         # The candidate BT calls Wait during bounded recovery.  Load only
         # that plugin; selecting this profile must not enable spin or backup.
         nav2_components.insert(-1, ComposableNode(

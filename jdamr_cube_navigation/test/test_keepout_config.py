@@ -293,7 +293,7 @@ def test_onboard_core_loads_only_corridor_required_nav2_processes():
     assert "'navigation_profile', default_value='corridor'" in source
     assert "if profile in {'obstacle_candidate', 'obstacle_base_candidate'," \
         in source
-    assert "'new_base_candidate'}:" in source
+    assert "'new_base_candidate', 'new_base_revisit_candidate'}:" in source
     assert "'obstacle_base_candidate'" in source
     assert "'behavior_plugins': ['wait']" in source
     assert "'navigate_to_pose_corridor_fail_fast.xml'" in source

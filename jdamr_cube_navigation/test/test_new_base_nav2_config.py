@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 from jdamr_cube_navigation.corridor_route import (
     CorridorRoute, NAVIGATION_BEHAVIOR_TREES, _positive_finite_config,
     revisit_plan_length_ok,
+    revisit_goal_witness,
 )
 from launch import LaunchContext
 from launch_ros.actions import ComposableNodeContainer
@@ -29,7 +30,7 @@ OLD_PARAMS = ROOT / 'jdamr_cube_navigation/config/nav2_params.yaml'
 WRAPPER = ROOT / 'jdamr_cube_navigation/launch/onboard_keepout_navigation.launch.py'
 LEGACY_AUTORUN = ROOT / 'jdamr_cube_navigation/scripts/corridor_autorun.sh'
 REVISIT_BT = (ROOT / 'jdamr_cube_navigation/behavior_trees/'
-              'navigate_to_pose_new_base_revisit.xml')
+              'navigate_to_pose_dynamic_obstacle_eval.xml')
 
 
 def _load_validator(path, map_name='new_base_live_20260915T1407.yaml',
@@ -84,21 +85,44 @@ def test_revisit_motion_guard_rejects_invalid_thresholds(name, invalid):
         _positive_finite_config({name: invalid}, name, 1.0)
 
 
-def test_revisit_stall_replans_once_instead_of_retrying_the_same_path():
+def test_revisit_uses_previous_bounded_dynamic_replan_tree():
     root = ET.parse(REVISIT_BT).getroot()
     recoveries = list(root.iter('RecoveryNode'))
     assert len(recoveries) == 1
     assert recoveries[0].attrib['number_of_retries'] == '1'
     assert len(list(root.iter('ComputePathToPose'))) == 1
     assert len(list(root.iter('FollowPath'))) == 1
-    assert root.find('.//Sequence[@name="NavigateRevisitForwardOnly"]') is not None
-    assert root.find('.//Sequence[@name="ReplanAfterFailure"]') is not None
-    assert not any(node.tag in {'Spin', 'BackUp', 'Wait'}
+    assert root.find('.//PipelineSequence[@name="ReplanWhileDriving"]') is not None
+    assert root.find('.//RateController[@hz="1.0"]') is not None
+    assert root.find('.//Sequence[@name="OneBoundedCostmapRecovery"]') is not None
+    assert len(list(root.iter('Wait'))) == 1
+    assert not any(node.tag in {'Spin', 'BackUp'}
                    for node in root.iter())
     assert NAVIGATION_BEHAVIOR_TREES['new_base_revisit_candidate'] == (
         REVISIT_BT.name)
-    assert 'navigate_to_pose_new_base_revisit.xml' in LAUNCH.read_text(
+    assert REVISIT_BT.name in LAUNCH.read_text(
         encoding='utf-8')
+
+
+def test_revisit_rejects_the_recorded_instant_false_success():
+    start = (0.0, -0.1)
+    goal = (2.0, -0.42)
+    assert not revisit_goal_witness(start, goal, start,
+                                    0.0, 0.0, 0.0, 0.2, 0.25)
+    assert not revisit_goal_witness(start, goal, goal,
+                                    0.0, 0.0, 0.0, 0.2, 0.25)
+    assert not revisit_goal_witness(start, goal, start,
+                                    2.0, 0.0, 0.0, 0.2, 0.25)
+    assert not revisit_goal_witness(start, goal, start,
+                                    0.0, 0.0, 0.0, 2.1, 0.25)
+    assert not revisit_goal_witness(start, goal, goal,
+                                    1.8, 0.16, 2.5, 0.2, 0.25)
+    assert not revisit_goal_witness(start, goal, (1.82, -0.42),
+                                    1.8, 0.10, 2.0, 0.2, 0.25)
+    assert revisit_goal_witness(start, goal, (1.92, -0.44),
+                                1.8, 0.08, 1.0, 0.2, 0.25)
+    assert revisit_goal_witness(start, goal, goal,
+                                1.8, 0.0, 2.0, 0.2, 0.25)
 
 
 def test_revisit_cancels_stale_amcl_only_after_accumulated_odometry_motion():
@@ -140,6 +164,7 @@ def test_revisit_odom_counts_alternating_yaw_across_wrap_and_amcl_resets():
     route = object.__new__(CorridorRoute)
     route.samples = {'odom': None}
     route.odom_last_pose = None
+    route.odom_total_distance_m = 0.0
     route.amcl_motion_distance_m = 0.0
     route.amcl_motion_rotation_rad = 0.0
     route.parking_contract = None
@@ -199,7 +224,7 @@ def test_jazzy_rewrite_seeds_only_the_revisit_home_pose():
         'amcl']['ros__parameters']['set_initial_pose'] is False
 
 
-def test_revisit_uses_proven_fail_fast_tree_without_wait_server(
+def test_revisit_loads_previous_wait_only_recovery_server(
         monkeypatch):
     spec = importlib.util.spec_from_file_location('new_base_launch', LAUNCH)
     module = importlib.util.module_from_spec(spec)
@@ -223,14 +248,14 @@ def test_revisit_uses_proven_fail_fast_tree_without_wait_server(
     descriptions = container._ComposableNodeContainer__composable_node_descriptions
     names = [''.join(part.perform(context) for part in node.node_name)
              for node in descriptions]
-    assert 'behavior_server' not in names
+    assert 'behavior_server' in names
     lifecycle_names = [
         evaluate_parameters(context, action._Node__parameters)[0]['node_names']
         for action in actions
         if getattr(action, '_Node__node_name', None) ==
         'lifecycle_manager_navigation'
     ]
-    assert 'behavior_server' not in lifecycle_names[0]
+    assert 'behavior_server' in lifecycle_names[0]
 
 
 def test_revisit_accepts_only_verified_legacy_map_with_new_base_geometry():

@@ -20,6 +20,7 @@ amcl_freshness_s: 60.0
 revisit_motion_amcl_freshness_s: 25.0
 revisit_motion_min_distance_m: 0.25
 revisit_motion_min_rotation_rad: 0.5
+revisit_goal_amcl_tolerance_m: 0.20
 # 전체 경로는 지도상의 home 근처에서만 시작한다. 중간 재개는 첫 잔여
 # waypoint를 별도 한도로 확인한다.
 start_pose: {x: 0.00, y: -0.10}

@@ -39,11 +39,12 @@ AMCL_QOS = QoSProfile(
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 ODOM_QOS = QoSProfile(depth=1)
+MAX_REVISIT_SPEED_MPS = 0.08
 NAVIGATION_BEHAVIOR_TREES = {
     'corridor': 'navigate_to_pose_corridor_fail_fast.xml',
     'obstacle_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
     'obstacle_base_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
-    'new_base_revisit_candidate': 'navigate_to_pose_new_base_revisit.xml',
+    'new_base_revisit_candidate': 'navigate_to_pose_dynamic_obstacle_eval.xml',
 }
 GOAL_STATUS_NAMES = {
     GoalStatus.STATUS_UNKNOWN: 'STATUS_UNKNOWN',
@@ -75,6 +76,31 @@ def revisit_plan_length_ok(actual_m, declared_m):
     """Reject a detour that no longer resembles the recorded corridor route."""
     return (math.isfinite(actual_m) and math.isfinite(declared_m)
             and declared_m > 0 and actual_m <= declared_m * 1.3)
+
+
+def revisit_goal_witness(start_xy, goal_xy, final_xy, odom_delta_m,
+                         odom_since_amcl_m, amcl_header_age_s,
+                         goal_tolerance_m, min_motion_m):
+    """Require independent motion and a localized final pose for a goal."""
+    if start_xy is None or final_xy is None:
+        return False
+    values = (*start_xy, *goal_xy, *final_xy, odom_delta_m,
+              odom_since_amcl_m, amcl_header_age_s,
+              goal_tolerance_m, min_motion_m)
+    if (not all(math.isfinite(value) for value in values) or
+            not 0.0 < goal_tolerance_m <= 0.2 or
+            min_motion_m <= 0.0 or odom_delta_m < 0.0 or
+            odom_since_amcl_m < 0.0 or amcl_header_age_s < 0.0):
+        return False
+    expected_m = math.dist(start_xy, goal_xy)
+    remaining_m = math.dist(final_xy, goal_xy)
+    # The pose predates receipt: bound unobserved travel at controller cap.
+    worst_case_remaining_m = (remaining_m + odom_since_amcl_m +
+                              MAX_REVISIT_SPEED_MPS * amcl_header_age_s)
+    return (worst_case_remaining_m <= 0.35 and
+            remaining_m <= goal_tolerance_m and
+            (expected_m <= goal_tolerance_m or
+             odom_delta_m >= min(min_motion_m, expected_m * 0.1)))
 
 
 def _positive_finite_config(config, name, default):
@@ -198,6 +224,10 @@ class CorridorRoute(Node):
             config, 'revisit_motion_min_distance_m', 0.25)
         self.revisit_motion_min_rotation_rad = _positive_finite_config(
             config, 'revisit_motion_min_rotation_rad', 0.5)
+        self.revisit_goal_amcl_tolerance_m = _positive_finite_config(
+            config, 'revisit_goal_amcl_tolerance_m', 0.2)
+        if self.revisit_goal_amcl_tolerance_m > 0.2:
+            raise ValueError('revisit_goal_amcl_tolerance_m exceeds bound')
         self.max_resume_start_distance_m = float(
             config.get('max_resume_start_distance_m', 6.0))
         if start_index > 0:
@@ -219,6 +249,7 @@ class CorridorRoute(Node):
         self.amcl_covariance = None
         self.amcl_position = None
         self.odom_last_pose = None
+        self.odom_total_distance_m = 0.0
         self.amcl_motion_distance_m = 0.0
         self.amcl_motion_rotation_rad = 0.0
         self.navigate = ActionClient(self, NavigateToPose, 'navigate_to_pose')
@@ -306,8 +337,10 @@ class CorridorRoute(Node):
         odom_pose = (position.x, position.y, yaw)
         if self.odom_last_pose is not None:
             previous_x, previous_y, previous_yaw = self.odom_last_pose
-            self.amcl_motion_distance_m += math.hypot(
+            step_m = math.hypot(
                 position.x - previous_x, position.y - previous_y)
+            self.amcl_motion_distance_m += step_m
+            self.odom_total_distance_m += step_m
             self.amcl_motion_rotation_rad += abs(math.atan2(
                 math.sin(yaw - previous_yaw),
                 math.cos(yaw - previous_yaw)))
@@ -353,6 +386,10 @@ class CorridorRoute(Node):
 
     def _amcl_callback(self, message):
         self.amcl_seen = time.monotonic()
+        self.odom_distance_at_amcl_m = self.odom_total_distance_m
+        self.amcl_header_stamp_ns = (
+            message.header.stamp.sec * 1_000_000_000 +
+            message.header.stamp.nanosec)
         self.amcl_motion_distance_m = 0.0
         self.amcl_motion_rotation_rad = 0.0
         covariance = message.pose.covariance
@@ -743,6 +780,10 @@ class CorridorRoute(Node):
                     f'{self._guard_failure(False) or "operator stop"}')
                 return False
             goal = NavigateToPose.Goal()
+            if getattr(self, 'navigation_profile', None) == (
+                    'new_base_revisit_candidate'):
+                goal_start_amcl = self.amcl_position
+                goal_start_odom_m = self.odom_total_distance_m
             goal.pose = self._pose(index, waypoint)
             is_parking = (
                 getattr(self, 'parking_contract', None) is not None and
@@ -794,6 +835,35 @@ class CorridorRoute(Node):
                     f'error={wrapped.result.error_code} '
                     f'{wrapped.result.error_msg}')
                 return False
+            if getattr(self, 'navigation_profile', None) == (
+                    'new_base_revisit_candidate'):
+                amcl_age_s = (time.monotonic() - self.amcl_seen
+                              if self.amcl_seen is not None else math.inf)
+                stamp_ns = getattr(self, 'amcl_header_stamp_ns', 0)
+                amcl_header_age_s = (
+                    (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+                    if stamp_ns > 0 else math.inf)
+                motion_m = self.odom_total_distance_m - goal_start_odom_m
+                odom_since_amcl_m = (self.odom_total_distance_m -
+                                     self.odom_distance_at_amcl_m)
+                if (amcl_age_s > self.revisit_motion_amcl_freshness_s or
+                        not 0.0 <= amcl_header_age_s <= min(
+                            self.freshness_s, 2.5) or
+                        not revisit_goal_witness(
+                            goal_start_amcl,
+                            (waypoint['x'], waypoint['y']),
+                            self.amcl_position, motion_m,
+                            odom_since_amcl_m, amcl_header_age_s,
+                            self.revisit_goal_amcl_tolerance_m,
+                            self.revisit_motion_min_distance_m)):
+                    self.get_logger().error(
+                        f'Nav2 success lacks physical goal witness: '
+                        f'waypoint={waypoint["id"]} odom={motion_m:.3f}m '
+                        f'amcl_age={amcl_age_s:.3f}s '
+                        f'amcl_header_age={amcl_header_age_s:.3f}s '
+                        f'odom_since_amcl={odom_since_amcl_m:.3f}m '
+                        f'amcl={self.amcl_position}')
+                    return False
             if is_parking and not self._verify_parking_stop(
                     index, waypoint, handle):
                 return False

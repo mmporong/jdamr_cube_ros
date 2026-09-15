@@ -205,6 +205,10 @@ def test_odometry_excursion_is_not_erased_by_a_later_stopped_sample():
     route = _route()
     route.parking_motion_revision = 0
     route.samples = {}
+    route.odom_last_pose = None
+    route.odom_total_distance_m = 0.0
+    route.amcl_motion_distance_m = 0.0
+    route.amcl_motion_rotation_rad = 0.0
     message = Odometry()
     message.twist.twist.linear.x = 0.1
     route._odom_callback(message)
