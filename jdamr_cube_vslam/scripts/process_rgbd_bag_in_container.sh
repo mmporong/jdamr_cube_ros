@@ -10,6 +10,26 @@ export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 database_path=/output/jdamr_rgbd.db
 rtabmap_log=/output/rtabmap.log
 trajectory_log=/output/trajectory_recorder.log
+rtabmap_profile="${RTABMAP_PROFILE:-baseline}"
+rtabmap_extra_args=''
+rtabmap_odom_extra_args=''
+case "$rtabmap_profile" in
+  baseline) ;;
+  low-texture)
+    rtabmap_extra_args='--Vis/MaxFeatures 2000 --Vis/MinInliers 10 --Vis/GridRows 3 --Vis/GridCols 4 --GFTT/QualityLevel 0.0001 --GFTT/MinDistance 3'
+    rtabmap_odom_extra_args='--Odom/ResetCountdown 5 --OdomF2M/MaxSize 3000'
+    ;;
+  *)
+    echo "unknown RTAB-Map profile: ${rtabmap_profile}" >&2
+    exit 2
+    ;;
+esac
+odom_guess_launch_arg=()
+if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]]; then
+  odom_guess_launch_arg=(
+    "odom_guess_frame_id:=${ODOM_GUESS_FRAME_ID}"
+  )
+fi
 
 cleanup() {
   set +e
@@ -32,9 +52,12 @@ setsid ros2 launch rtabmap_launch rtabmap.launch.py \
     --Reg/Force3DoF true \
     --Vis/MinInliers 15 --RGBD/NeighborLinkRefining true \
     --RGBD/ProximityBySpace true --Grid/Sensor 1 \
-    --Grid/3D true --Grid/RangeMax 5.0 --Rtabmap/DetectionRate 2.0" \
+    --Grid/3D true --Grid/RangeMax 5.0 --Rtabmap/DetectionRate 2.0 \
+    ${rtabmap_extra_args}" \
+  odom_args:="${rtabmap_odom_extra_args}" \
   database_path:="$database_path" \
   frame_id:=camera_link \
+  "${odom_guess_launch_arg[@]}" \
   map_frame_id:=map \
   rgb_topic:=/camera/color/image_raw \
   depth_topic:=/camera/depth/image_raw \
@@ -71,6 +94,12 @@ sleep 5
 
 cleanup
 trap - EXIT
+
+if grep -Eq 'ParameterNotDeclaredException|\[ERROR\].*process has died.*rtabmap' \
+    "$rtabmap_log"; then
+  echo "RTAB-Map node failed; see ${rtabmap_log}" >&2
+  exit 1
+fi
 
 if [[ ! -s "$database_path" ]]; then
   echo "RTAB-Map database was not created; see ${rtabmap_log}" >&2

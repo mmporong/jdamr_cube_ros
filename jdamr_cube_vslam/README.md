@@ -35,6 +35,20 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabma
 이 명령은 실제 assembled 3D cloud가 생성되지 않으면 실패한다. 센서 연결만 확인하는
 정적 smoke bag에는 `--allow-static`을 추가한다.
 
+회색 벽처럼 특징이 적은 구간을 포함한 기록은 동기 RGB-D bag과 보수적인
+저텍스처 프로파일을 사용한다.
+
+```bash
+bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabmap_docker.sh" \
+  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/bag_paired_10fps" \
+  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/rtabmap_low_texture" \
+  --profile low-texture
+```
+
+`low-texture`는 최소 inlier를 10으로 유지하고 5회 연속 추적 실패 시 새 map으로
+재초기화한다. 최소 inlier를 더 낮추면 로그상 추적 손실은 줄어도 잘못된 대응으로
+점군이 찢어질 수 있으므로 기본 설정으로 사용하지 않는다.
+
 ## 거리·각도 검증
 
 ```bash
@@ -59,6 +73,8 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/export_3d_
 ```
 
 포트폴리오용 출력은 1 cm voxel 컬러 cloud와 4096 px texture mesh를 함께 만든다.
+내보내기는 데이터베이스의 마지막 저장 pose만 재사용하지 않고 graph를 다시
+최적화한다.
 
 ```bash
 bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/export_3d_assets.sh" \
@@ -75,3 +91,5 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/export_3d_
 
 실행 데이터, database, PLY/OBJ는 대용량 산출물이므로 저장소에 커밋하지 않는다.
 정적 연결 검증 수치는 `evaluation/20260916_RGBD_VSLAM_SMOKE.md`에 분리했다.
+P턴 실주행 A/B와 3D 산출물 판정은
+`evaluation/20260916_RGBD_VSLAM_PTURN.md`에 기록했다.

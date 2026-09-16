@@ -63,7 +63,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 sudo -n systemctl stop jdamr-astra-camera.service
-setsid bash -lc "source /opt/ros/jazzy/setup.bash; \
+setsid nice -n 5 bash -lc "source /opt/ros/jazzy/setup.bash; \
   source '${HOME}/astra_ws/install/setup.bash'; \
   export ROS_DOMAIN_ID='${ROS_DOMAIN_ID}'; \
   export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST; \
@@ -124,7 +124,8 @@ record_command=(
 
 echo "RGB-D capture: ${bag_dir}"
 if ((duration_s > 0)); then
-  setsid stdbuf -oL -eL "${record_command[@]}" >"$recorder_log" 2>&1 &
+  setsid nice -n 10 ionice -c 2 -n 7 stdbuf -oL -eL \
+    "${record_command[@]}" >"$recorder_log" 2>&1 &
   recorder_pid=$!
   subscribed=false
   for _ in $(seq 1 30); do

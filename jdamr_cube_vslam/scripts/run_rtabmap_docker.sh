@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 BAG_DIR OUTPUT_DIR [--allow-static] [--image IMAGE]"
+  echo "usage: $0 BAG_DIR OUTPUT_DIR [--allow-static] [--profile baseline|low-texture] [--odom-guess-frame FRAME] [--image IMAGE]"
 }
 
 if (($# < 2)); then
@@ -15,11 +15,21 @@ output_dir="$(realpath -m "$2")"
 shift 2
 image="introlab3it/rtabmap_ros:jazzy"
 require_assembled_map=1
+odom_guess_frame_id=''
+rtabmap_profile='baseline'
 while (($#)); do
   case "$1" in
     --allow-static)
       require_assembled_map=0
       shift
+      ;;
+    --odom-guess-frame)
+      odom_guess_frame_id="$2"
+      shift 2
+      ;;
+    --profile)
+      rtabmap_profile="$2"
+      shift 2
       ;;
     --image)
       image="$2"
@@ -48,6 +58,8 @@ docker run --rm \
   -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
   -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
   -e REQUIRE_ASSEMBLED_MAP="$require_assembled_map" \
+  -e ODOM_GUESS_FRAME_ID="$odom_guess_frame_id" \
+  -e RTABMAP_PROFILE="$rtabmap_profile" \
   -v "${bag_dir}:/data:ro" \
   -v "${output_dir}:/output" \
   -v "${package_dir}:/workspace/jdamr_cube_vslam:ro" \

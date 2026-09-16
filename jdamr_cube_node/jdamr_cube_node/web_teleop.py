@@ -1,4 +1,5 @@
-"""웹 텔레옵 — 브라우저(WASD)와 핸드폰(터치)에서 cmd_vel 을 낸다.
+"""
+웹 텔레옵 — 브라우저(WASD)와 핸드폰(터치)에서 cmd_vel 을 낸다.
 
 같은 LAN 에서 http://<파이IP>:8080 접속:
   노트북: W/S 전후 · A/D 회전 · 스페이스 정지 (키를 누르는 동안만 주행)
@@ -10,13 +11,14 @@
 
 Nav2 도입 후에는 cmd_vel 경합이 생기므로 twist_mux 로 중재 예정.
 """
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import rclpy
 from geometry_msgs.msg import Twist
+import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Empty
 
@@ -56,7 +58,10 @@ PAGE = """<!DOCTYPE html>
 <div class="hint">PC: W/A/S/D 키 (누르는 동안 주행) · 폰: 버튼 홀드<br>STOP·스페이스는 자동주행(프로브)도 중단시켜요</div>
 <script>
 const held = new Set();
-let lastSend = 0;
+const clientId = (globalThis.crypto && crypto.randomUUID)
+  ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+let sequence = 0;
+let pendingRequest = null;
 function scale() { return document.getElementById("spd").value / 100; }
 function target() {
   let vx = 0, wz = 0;
@@ -74,8 +79,22 @@ function paint() {
     (t.vx || t.wz) ? `v=${t.vx.toFixed(2)} w=${t.wz.toFixed(2)}` : "정지";
 }
 function send() {
-  lastSend = Date.now();
-  fetch("/cmd", { method:"POST", body: JSON.stringify(target()) }).catch(()=>{});
+  if (pendingRequest) pendingRequest.abort();
+  const controller = new AbortController();
+  pendingRequest = controller;
+  const command = {...target(), client_id: clientId, sequence: ++sequence};
+  fetch("/cmd", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(command),
+    cache:"no-store",
+    signal:controller.signal,
+  }).catch(error => {
+    if (error.name !== "AbortError")
+      document.getElementById("stat").textContent = "조종기 연결 지연";
+  }).finally(() => {
+    if (pendingRequest === controller) pendingRequest = null;
+  });
 }
 function press(k){ if(!held.has(k)){ held.add(k); paint(); send(); } }
 function release(k){ if(held.delete(k)){ paint(); send(); } }
@@ -94,8 +113,12 @@ document.addEventListener("keyup", e => {
 });
 for (const k of ["w","a","s","d"]) {
   const b = document.getElementById(k);
-  b.addEventListener("pointerdown", e => { e.preventDefault(); press(k); });
-  for (const ev of ["pointerup","pointerleave","pointercancel"])
+  b.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    b.setPointerCapture(e.pointerId);
+    press(k);
+  });
+  for (const ev of ["pointerup","pointercancel"])
     b.addEventListener(ev, () => release(k));
 }
 document.getElementById("stop").addEventListener("pointerdown", () => {
@@ -104,7 +127,32 @@ document.getElementById("stop").addEventListener("pointerdown", () => {
   document.getElementById("stat").textContent = "정지 · 자동주행 중단 요청";
 });
 window.addEventListener("blur", () => { held.clear(); paint(); send(); });
+window.addEventListener("contextmenu", e => e.preventDefault());
 </script></body></html>"""
+
+
+class CommandOrder:
+    """Reject delayed commands that arrive after a newer browser request."""
+
+    def __init__(self):
+        self.client_id = ''
+        self.sequence = -1
+        self.accepted_at = 0.0
+
+    def accept(self, client_id, sequence, now):
+        """Accept increasing sequence numbers from one active browser."""
+        if not client_id:
+            return True
+        if client_id != self.client_id:
+            if now - self.accepted_at < FRESH_SEC:
+                return False
+            self.client_id = client_id
+            self.sequence = -1
+        if sequence <= self.sequence:
+            return False
+        self.sequence = sequence
+        self.accepted_at = now
+        return True
 
 
 class TeleopNode(Node):
@@ -115,20 +163,41 @@ class TeleopNode(Node):
         # 프로브가 15Hz 로 지령을 계속 밀면 우리 0 을 덮어쓰기 때문에, 프로브 자신에게
         # 멈추라고 알려야 한다.
         self.abort_pub = self.create_publisher(Empty, 'probe_abort', 10)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._vx = 0.0
         self._wz = 0.0
         self._stamp = 0.0
+        self._command_order = CommandOrder()
+        self._publish_guard = self.create_guard_condition(
+            self._publish_latest)
         self.create_timer(1.0 / PUB_HZ, self._tick)
 
     def abort(self):
+        self._set_command(0.0, 0.0)
         self.abort_pub.publish(Empty())
 
-    def set_cmd(self, vx, wz):
+    def _set_command(self, vx, wz):
         with self._lock:
             self._vx = max(-1.0, min(1.0, float(vx))) * MAX_LIN
             self._wz = max(-1.0, min(1.0, float(wz))) * MAX_ANG
             self._stamp = time.monotonic()
+        self._publish_guard.trigger()
+
+    def set_cmd(self, vx, wz, client_id='', sequence=0):
+        now = time.monotonic()
+        with self._lock:
+            if not self._command_order.accept(client_id, sequence, now):
+                return False
+            self._set_command(vx, wz)
+        return True
+
+    def _publish_latest(self):
+        with self._lock:
+            vx, wz = self._vx, self._wz
+        msg = Twist()
+        msg.linear.x = vx
+        msg.angular.z = wz
+        self.pub.publish(msg)
 
     def _tick(self):
         with self._lock:
@@ -156,6 +225,7 @@ def main():
             body = PAGE.encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store, max-age=0')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -169,8 +239,11 @@ def main():
             try:
                 n = int(self.headers.get('Content-Length', 0))
                 d = json.loads(self.rfile.read(n) or b'{}')
-                node.set_cmd(d.get('vx', 0), d.get('wz', 0))
-                self.send_response(204)
+                accepted = node.set_cmd(
+                    d.get('vx', 0), d.get('wz', 0),
+                    str(d.get('client_id', '')),
+                    int(d.get('sequence', 0)))
+                self.send_response(204 if accepted else 409)
                 self.end_headers()
             except Exception:
                 self.send_response(400)
@@ -181,9 +254,13 @@ def main():
     node.get_logger().info(f'웹 텔레옵: http://<파이IP>:{PORT} (WASD/터치)')
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         srv.shutdown()
-        rclpy.shutdown()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

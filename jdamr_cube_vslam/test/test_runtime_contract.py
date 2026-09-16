@@ -83,3 +83,27 @@ def test_visual_odometry_subscription_uses_best_effort_qos():
         PACKAGE_ROOT / 'jdamr_cube_vslam' / 'trajectory_csv_recorder.py'
     ).read_text(encoding='utf-8')
     assert 'ReliabilityPolicy.BEST_EFFORT' in source
+
+
+def test_low_texture_profile_keeps_odometry_only_arguments_separate():
+    script = (
+        PACKAGE_ROOT / 'scripts' / 'process_rgbd_bag_in_container.sh'
+    ).read_text(encoding='utf-8')
+    assert "rtabmap_odom_extra_args='--Odom/ResetCountdown 5 " \
+        "--OdomF2M/MaxSize 3000'" in script
+    assert 'odom_args:="${rtabmap_odom_extra_args}"' in script
+    slam_argument_lines = [
+        line for line in script.splitlines()
+        if 'rtabmap_extra_args=' in line
+        and 'rtabmap_odom_extra_args=' not in line
+    ]
+    assert slam_argument_lines
+    assert all('--Odom/' not in line for line in slam_argument_lines)
+
+
+def test_asset_export_reoptimizes_graph_instead_of_reusing_last_map():
+    script = (
+        PACKAGE_ROOT / 'scripts' / 'export_3d_assets.sh'
+    ).read_text(encoding='utf-8')
+    assert script.count('--opt 0') == 2
+    assert '--opt 2' not in script

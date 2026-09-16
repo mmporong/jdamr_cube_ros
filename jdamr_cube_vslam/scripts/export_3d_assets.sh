@@ -47,7 +47,7 @@ if [[ "$quality" == preview ]]; then
   export_command=(
     rtabmap-export
     --cloud
-    --opt 2
+    --opt 0
     --poses
     --poses_camera
     --poses_format 10
@@ -65,7 +65,7 @@ else
     --cloud
     --mesh
     --texture
-    --opt 2
+    --opt 0
     --poses
     --poses_camera
     --poses_format 10

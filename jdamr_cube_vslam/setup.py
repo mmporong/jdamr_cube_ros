@@ -43,6 +43,8 @@ setup(
             'jdamr_cube_vslam.rgbd_snapshot_ply:main',
             'vslam_accuracy = '
             'jdamr_cube_vslam.trajectory_accuracy:main',
+            'downsample_rgbd_bag = '
+            'jdamr_cube_vslam.downsample_rgbd_bag:main',
         ],
     },
 )
