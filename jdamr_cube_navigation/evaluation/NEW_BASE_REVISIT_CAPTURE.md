@@ -52,8 +52,48 @@ bag에 `/map`이 없더라도 지도 생성이 빠진 것은 아니다. 기존 �
    `map` 좌표에 다시 그린다. 새 Keepout 마스크의 크기·origin·해상도·연결성,
    새 차체 footprint 여유를 검증한다.
 
-2026-09-16 기록은 1~3단계만 완료했다. 새 Keepout 마스크는 만들지 않았고 새 지도를
-운영 지도에 적용하지 않았다.
+2026-09-16 초기 기록 처리에서는 1~3단계만 완료했다. 이후 별도 후보 마스크를
+재투영했지만 새 지도와 마스크를 운영 Nav2에 적용하지 않았다.
+
+## 오도메트리 보정 후보
+
+`estimate_wheel_calibration.py`는 같은 MCAP의 `/amcl_pose`와 `/odom`을 0.1초
+이내 최근접 시각으로 묶는다. AMCL 회전량이 작은 직진 구간에서 거리 배율과
+좌우 누적 헤딩 편향을 계산하고, 회전 구간은 축간거리의 교차 확인값으로만 쓴다.
+
+```bash
+python3 jdamr_cube_navigation/evaluation/estimate_wheel_calibration.py \
+  --bag "$HOME/jdamr_artifacts/new_base_revisit_20260916_wide_start/new_base_revisit_20260916_wide_start_0.mcap" \
+  --current-radius-m 0.0329 --current-separation-m 0.510 \
+  --output "$HOME/jdamr_artifacts/new_base_revisit_20260916_analysis_v01/wheel_calibration_candidate.yaml"
+```
+
+결과는 `CANDIDATE_REQUIRES_MEASURED_DRIVE`로 기록한다. AMCL은 저장 지도 기준
+추정값이지 외부 정답이 아니므로 짧은 줄자 직진과 제자리 회전 검산 전에는 파이의
+브링업 인자나 systemd 설정을 바꾸지 않는다.
+
+## Keepout 후보 재투영
+
+후보 지도와 기존 운영 지도의 occupied wall을 양방향 절단 Chamfer 거리로 정합한 뒤
+기존 마스크를 후보 격자에 역매핑한다. 출력 마스크는 운영 파일과 다른 폴더에 만들고,
+정합 그림과 해시 보고서를 함께 남긴다.
+
+```bash
+python3 jdamr_cube_navigation/evaluation/reproject_keepout_mask.py \
+  --source-map "$HOME/maps/autonomous_20260826T161908.yaml" \
+  --source-mask "$HOME/maps/autonomous_20260826T161908_keepout_multi.yaml" \
+  --target-map "$HOME/jdamr_artifacts/new_base_revisit_20260916_candidate_map_v01/new_base_revisit_20260916_wide_start__cartographer_map.yaml" \
+  --output-dir "$HOME/jdamr_artifacts/new_base_revisit_20260916_keepout_candidate_v01"
+```
+
+이 정합은 측량 기준점이 아니라 지도 벽 형상을 사용한다. 정합 그림의 주요 벽과 두
+금지구역을 검토한 뒤 파이의 격리 ROS 도메인에서 후보 지도와 마스크를 각각 Map
+Server로 활성화했다. 두 입력 모두 900×202셀·0.05m·동일 원점으로 로딩됐고 테스트
+프로세스는 종료했다. 이는 정적 파일 로딩 검증일 뿐 전체 Nav2·AMCL·costmap 검증은
+아니다. `candidate` 상태를 유지하고 전체 Nav2 무이동 로딩과 실차 회피를 통과하기
+전에는 운영 마스크를 교체하지 않는다. 실행 근거는 후보 마스크 폴더의
+`pi_map_server_load_evidence.yaml`, `pi_map_server_load_transcript.txt`, 두 서버
+로그에 남긴다.
 
 ## 영상·포트폴리오 근거
 

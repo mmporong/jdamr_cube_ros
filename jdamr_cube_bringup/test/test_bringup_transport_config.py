@@ -68,6 +68,29 @@ def test_real_bringup_uses_measured_base_geometry():
     assert origin.attrib['rpy'] == '0 0 3.141592653589793'
 
 
+def test_real_bringup_exposes_radius_ratio_without_changing_default():
+    for path in (LAUNCH_PATH, ALIAS_LAUNCH_PATH):
+        source = path.read_text(encoding='utf-8')
+        assert 'wheel_radius_ratio' in source
+        assert "default_value='1.0'" in source or \
+            "'wheel_radius_ratio': '1.0'" in source
+
+    syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
+    base_node = next(
+        node for node in ast.walk(syntax)
+        if isinstance(node, ast.Call) and _call_name(node) == 'Node'
+        and any(
+            keyword.arg == 'package'
+            and ast.literal_eval(keyword.value) == 'jdamr_base_driver'
+            for keyword in node.keywords))
+    parameters = next(
+        keyword.value for keyword in base_node.keywords
+        if keyword.arg == 'parameters').elts[0]
+    keys = {ast.literal_eval(key) for key in parameters.keys}
+
+    assert 'wheel_radius_ratio' in keys
+
+
 def test_real_bringup_keeps_odom_fast_but_limits_dynamic_tf_to_20_hz():
     syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
     base_node = next(

@@ -28,6 +28,7 @@
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "jdamr_base_driver/geometry.hpp"
 #include "jdamr_base_driver/protocol.hpp"
 #include "jdamr_base_driver/serial_port.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -60,6 +61,8 @@ public:
     // 구조적으로 못 잡는다(UMBmark 가 사각형을 양방향으로 도는 이유).
     // 측정: 직진 L m 에 자이로 대비 헤딩 오차 dtheta 면 ratio ~= 1 + dtheta*b/L.
     wheel_radius_ratio_ = declare_parameter<double>("wheel_radius_ratio", 1.0);
+    validate_drivetrain_geometry(
+      wheel_radius_, wheel_separation_, wheel_radius_ratio_, counts_per_rev_);
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_footprint");
     imu_frame_ = declare_parameter<std::string>("imu_frame", "imu_link");

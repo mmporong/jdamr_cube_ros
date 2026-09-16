@@ -22,6 +22,7 @@ def generate_launch_description():
         'lidar_port': '/dev/ydlidar_g4',
         'wheel_radius': '0.0329',
         'wheel_separation': '0.510',
+        'wheel_radius_ratio': '1.0',
     }
     declarations = [
         DeclareLaunchArgument(name, default_value=value)

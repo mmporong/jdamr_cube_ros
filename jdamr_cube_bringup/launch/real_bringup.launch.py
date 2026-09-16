@@ -36,6 +36,7 @@ def generate_launch_description():
     lidar_port = LaunchConfiguration('lidar_port')
     wheel_radius = LaunchConfiguration('wheel_radius')
     wheel_separation = LaunchConfiguration('wheel_separation')
+    wheel_radius_ratio = LaunchConfiguration('wheel_radius_ratio')
 
     return LaunchDescription([
         # 이 파이의 Fast DDS SHM user-data 경로는 discovery 후 데이터가
@@ -57,6 +58,10 @@ def generate_launch_description():
                               description=(
                                   '새 차체 바퀴 중심 간 실측 기하 거리 [m]. '
                                   '회전 시험 뒤 유효 트레드를 별도 보정한다')),
+        DeclareLaunchArgument('wheel_radius_ratio', default_value='1.0',
+                              description=(
+                                  '오른쪽/왼쪽 유효 바퀴 반지름 비. '
+                                  '측정 주행 전에는 1.0 유지')),
 
         # URDF 가 모든 고정 TF(base_footprint→base_link→laser_link…)의 단일 출처
         Node(
@@ -86,6 +91,7 @@ def generate_launch_description():
                 'port': base_port,
                 'wheel_radius': wheel_radius,
                 'wheel_separation': wheel_separation,
+                'wheel_radius_ratio': wheel_radius_ratio,
                 'base_frame': 'base_footprint',
                 'imu_frame': 'base_link',   # 보드가 base_link 에 장착 — 전용 imu_link 추가 전까지
                 # /odom은 50Hz 유지, TF만 20Hz로 제한해 Pi의 Nav2 fan-out 부하를 줄인다.
