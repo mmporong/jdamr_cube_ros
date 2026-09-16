@@ -204,6 +204,7 @@ def map_statistics(map_yaml: Path):
     return {
         'width_cells': width,
         'height_cells': height,
+        'resolution_m': resolution,
         'extent_m': [round(width * resolution, 2),
                      round(height * resolution, 2)],
         'occupied_cells': occupied,
@@ -385,6 +386,24 @@ def comparison_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     closure_winner = min(complete, key=lambda record: record['start_to_end_m'])
     reference_winner = min(
         complete, key=lambda record: record['deviation_from_amcl']['rms_m'])
+    closure_ordered = sorted(
+        complete, key=lambda record: record['start_to_end_m'])
+    resolution_m = max(
+        (record.get('map') or {}).get('resolution_m', 0.05)
+        for record in complete)
+    closure_gap_m = (
+        closure_ordered[1]['start_to_end_m'] -
+        closure_ordered[0]['start_to_end_m'])
+    if closure_gap_m <= 2 * resolution_m:
+        return {
+            'selected_backend': None,
+            'reason': 'closure_near_tie',
+            'closed_loop_consistency_winner': None,
+            'saved_map_reference_consistency_winner': reference_winner['backend'],
+            'closure_gap_m': round(closure_gap_m, 3),
+            'closure_reporting_floor_m': round(2 * resolution_m, 3),
+            'ground_truth_available': False,
+        }
     selected_backend = (
         closure_winner['backend']
         if closure_winner['backend'] == reference_winner['backend'] else None)
@@ -442,6 +461,10 @@ def comparison_precondition_errors(
         errors.append('all results must use one identical source bag hash')
     if None in source_names or len(source_names) != 1:
         errors.append('all results must use one identical source bag name')
+    trajectory_hashes = {
+        record.get('trajectory_timestamp_sha256') for record in records}
+    if None not in trajectory_hashes and len(trajectory_hashes) != 1:
+        errors.append('trajectory timestamp sample sets differ')
     for record in records:
         backend = record.get('backend') or '<unknown>'
         required = {
@@ -472,7 +495,7 @@ def _configure_plot_font() -> None:
 
 
 def render_comparison(records: list[dict[str, Any]], results: Path,
-                      output: Path) -> None:
+                      output: Path, comparison_kind: str = 'backend') -> None:
     """Render maps and observable same-bag consistency metrics."""
     import matplotlib
     matplotlib.use('Agg')
@@ -534,7 +557,8 @@ def render_comparison(records: list[dict[str, Any]], results: Path,
                        if selection['selected_backend'] is not None
                        else 'DEFERRED')
     lines = [
-        'BACKEND SELECTION',
+        ('CONFIG COMPARISON' if comparison_kind == 'config'
+         else 'BACKEND SELECTION'),
         '',
         f'Selected  {selection_label}',
         '',
@@ -558,7 +582,9 @@ def render_comparison(records: list[dict[str, Any]], results: Path,
         bbox={'boxstyle': 'round,pad=0.8', 'facecolor': '#f8fafc',
               'edgecolor': '#cbd5e1'})
     figure.suptitle(
-        'JD-AMR offline 2D SLAM comparison — identical recorded input',
+        ('JD-AMR Cartographer configuration comparison — identical input'
+         if comparison_kind == 'config'
+         else 'JD-AMR offline 2D SLAM comparison — identical recorded input'),
         y=0.995)
     figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.975))
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -566,25 +592,44 @@ def render_comparison(records: list[dict[str, Any]], results: Path,
     plt.close(figure)
 
 
-def render_report(records: list[dict[str, Any]]) -> str:
+def render_report(records: list[dict[str, Any]],
+                  comparison_kind: str = 'backend') -> str:
     """Return a concise Korean evidence report for portfolio synthesis."""
     ordered = sorted(records, key=lambda record: record['backend'])
     selection = comparison_summary(records)
     lines = [
-        '# 동일 MCAP 2D SLAM 백엔드 비교',
+        ('# 동일 MCAP Cartographer 설정 비교'
+         if comparison_kind == 'config'
+         else '# 동일 MCAP 2D SLAM 백엔드 비교'),
         '',
         '## 실험 조건',
         '',
         '- 동일한 실물 복도 주행 MCAP을 격리된 ROS domain에서 재생했다.',
         '- 저장 지도와 이동 명령은 재생하지 않았고, 기록된 AMCL `map→odom`은 제거했다.',
-        '- 각 실행에서는 mapping backend 하나만 `map→odom` 권한을 가졌다.',
+        ('- 각 실행에서는 Cartographer 인스턴스 하나만 `map→odom` 권한을 가졌다.'
+         if comparison_kind == 'config' else
+         '- 각 실행에서는 mapping backend 하나만 `map→odom` 권한을 가졌다.'),
         '- 외부 ground truth가 없으므로 아래 값은 ATE/RPE가 아니다.',
+    ]
+    if comparison_kind == 'config':
+        lines.append('- 두 실행은 모두 Cartographer이며 설정만 달리했다.')
+    common_hashes = {
+        record['deviation_from_amcl'].get('timestamp_sha256')
+        for record in ordered}
+    if (None not in common_hashes and len(common_hashes) == 1 and
+            all('independent_pairing_diagnostic' in record
+                for record in ordered)):
+        samples = ordered[0]['deviation_from_amcl']['samples']
+        lines.append(f'- AMCL 비교는 두 후보에 공통인 동일 시각 표본 {samples}개만 사용했다.')
+    lines.extend([
         '',
         '## 결과',
         '',
-        '| 백엔드/조건 | 추정 경로 | 시작–종료 | AMCL 기준 정렬 RMS | AMCL 기준 최대 편차 | 지도 범위 |',
+        ('| 설정/조건 | 추정 경로 | 시작–종료 | AMCL 기준 정렬 RMS | AMCL 기준 최대 편차 | 지도 범위 |'
+         if comparison_kind == 'config' else
+         '| 백엔드/조건 | 추정 경로 | 시작–종료 | AMCL 기준 정렬 RMS | AMCL 기준 최대 편차 | 지도 범위 |'),
         '|---|---:|---:|---:|---:|---:|',
-    ]
+    ])
     for record in ordered:
         extent_m = record['map']['extent_m']
         lines.append(
@@ -595,15 +640,28 @@ def render_report(records: list[dict[str, Any]]) -> str:
             f'{extent_m[0]}×{extent_m[1]}m |')
     lines.extend(['', '## 선택', ''])
     if selection['selected_backend'] is None:
-        lines.append(
-            '두 일관성 기준의 우승 백엔드가 달라 선택을 보류한다. 추가 기준과 '
-            'ground truth 실험 없이 기본 백엔드를 정하지 않는다.')
+        if selection['reason'] == 'closure_near_tie':
+            closure_values = ', '.join(
+                f"{record['backend']} {record['start_to_end_m']:.3f}m"
+                for record in ordered)
+            lines.append(
+                f'시작–종료 값은 {closure_values}로 수치상 유사하다. '
+                '폐루프 지표가 승자를 가리지 못하므로 자동 선택을 보류한다. '
+                '지도 형상과 AMCL 일관성은 별도 후보 검토 근거다.')
+        else:
+            subject = '설정' if comparison_kind == 'config' else '백엔드'
+            lines.append(
+                f'두 일관성 기준의 우승 {subject}이 달라 선택을 보류한다. '
+                f'추가 기준과 ground truth 실험 없이 기본 {subject}를 정하지 않는다.')
     else:
         ratios = selection['relative_to_closest_alternative']
-        if ratios['start_to_end_ratio'] <= 1.05:
+        base_phrase = ('기본 설정으로' if comparison_kind == 'config'
+                       else '기본 백엔드로')
+        if (ratios['start_to_end_ratio'] <= 1.05 or
+                ratios['start_to_end_difference_m'] <= 0.1):
             lines.append(
                 f'`{selection["selected_backend"]}`를 현재 복도 데이터의 '
-                f'기본 백엔드로 선택한다. 시작–종료 불일치는 '
+                f'{base_phrase} 선택한다. 시작–종료 불일치는 '
                 f'{ratios["selected_start_to_end_m"]:.3f}m와 '
                 f'{ratios["alternative_start_to_end_m"]:.3f}m로 수치상 '
                 f'유사했고, 저장 지도 AMCL 기준 정렬 RMS는 '
@@ -611,13 +669,15 @@ def render_report(records: list[dict[str, Any]]) -> str:
         else:
             lines.append(
                 f'`{selection["selected_backend"]}`를 현재 복도 데이터의 '
-                f'기본 백엔드로 선택한다. 동일 입력에서 시작–종료 '
+                f'{base_phrase} 선택한다. 동일 입력에서 시작–종료 '
                 f'불일치가 {ratios["start_to_end_ratio"]}배 작고, 저장 '
                 f'지도 AMCL 기준 정렬 RMS가 '
                 f'{ratios["amcl_aligned_rms_ratio"]}배 작았다.')
     lines.extend([
         '',
-        '이 비교는 백엔드의 절대 정확도를 증명하지 않는다. 같은 센서 '
+        ('이 비교는 설정의 절대 정확도를 증명하지 않는다. 같은 센서 '
+         if comparison_kind == 'config' else
+         '이 비교는 백엔드의 절대 정확도를 증명하지 않는다. 같은 센서 ') +
         '입력에서 폐루프 구조와 저장 지도 기준 일관성을 얼마나 '
         '유지했는지를 비교한 결과다.',
         '',
@@ -635,10 +695,13 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, default=None)
     parser.add_argument('--plot', type=Path, default=None)
     parser.add_argument('--report', type=Path, default=None)
+    parser.add_argument('--comparison-kind', choices=('backend', 'config'),
+                        default='backend')
     args = parser.parse_args(argv)
 
     records = []
     input_errors = []
+    result_mcaps = {}
     result_dirs = sorted(args.results.glob('*_result'))
     if not result_dirs:
         input_errors.append(f'no *_result directories under {args.results}')
@@ -678,10 +741,21 @@ def main(argv=None):
         record = analyse(mcap, source_mcap, map_yaml)
         record['backend'] = backend
         records.append(record)
+        result_mcaps[backend] = mcap
     input_errors.extend(comparison_precondition_errors(records))
     if input_errors:
         parser.error('comparison preconditions failed:\n- '
                      + '\n- '.join(input_errors))
+    odometry = read_odometry(source_mcap)
+    amcl = read_amcl(source_mcap)
+    common = common_reference_deviations({
+        record['backend']: estimated_trajectory(
+            read_map_to_odom(result_mcaps[record['backend']]), odometry)
+        for record in records}, amcl)
+    for record in records:
+        record['independent_pairing_diagnostic'] = (
+            record['deviation_from_amcl'])
+        record['deviation_from_amcl'] = common['variants'][record['backend']]
     for record in records:
         print(json.dumps(record, ensure_ascii=False, indent=2))
     if args.output:
@@ -690,10 +764,12 @@ def main(argv=None):
             encoding='utf-8')
         print(f'\n저장: {args.output}')
     if args.plot:
-        render_comparison(records, args.results, args.plot)
+        render_comparison(records, args.results, args.plot,
+                          args.comparison_kind)
         print(f'비교 그림 저장: {args.plot}')
     if args.report:
-        args.report.write_text(render_report(records), encoding='utf-8')
+        args.report.write_text(
+            render_report(records, args.comparison_kind), encoding='utf-8')
         print(f'비교 보고서 저장: {args.report}')
     return 0
 

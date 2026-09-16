@@ -19,6 +19,17 @@ CANVAS = (960, 720)
 MAP_BOX = (48, 104, 912, 640)
 
 
+def _font(size: int):
+    """Use scalable default text while retaining older Pillow support."""
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        try:
+            return ImageFont.truetype('DejaVuSans.ttf', size=size)
+        except OSError:
+            return ImageFont.load_default()
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -140,11 +151,8 @@ def _map_image(sample: dict, bounds: tuple) -> Image.Image:
     resolution = sample['resolution_m']
     ox = round((sample['origin_x_m'] - min_x) / resolution)
     oy = round((sample['origin_y_m'] - min_y) / resolution)
-    if (abs(min_x + ox * resolution - sample['origin_x_m']) >
-            resolution * 0.01 or
-            abs(min_y + oy * resolution - sample['origin_y_m']) >
-            resolution * 0.01):
-        raise ValueError('map origin is not aligned to resolution')
+    # Cartographer's online grids may shift by fractional cells. The shared
+    # video canvas is a nearest-cell visualization, not a new metric map.
     width, height = sample['width'], sample['height']
     pixels = bytes(88 if value == 255 else 30 if value >= 50 else 224
                    for value in sample['data'])
@@ -159,11 +167,12 @@ def _frame(world: Image.Image, sample: dict, index: int, total: int,
            first_time_ns: int) -> Image.Image:
     frame = Image.new('RGB', CANVAS, '#101923')
     draw = ImageDraw.Draw(frame)
-    font = ImageFont.load_default()
+    title_font = _font(22)
+    detail_font = _font(16)
     draw.text((48, 32), 'CARTOGRAPHER / 2D LIDAR MAP RECORD',
-              fill='#eff4f8', font=font)
+              fill='#eff4f8', font=title_font)
     draw.text((48, 60), 'Recorded /map OccupancyGrid  |  not camera footage',
-              fill='#a7bbc9', font=font)
+              fill='#a7bbc9', font=detail_font)
     left, top, right, bottom = MAP_BOX
     avail_w, avail_h = right - left, bottom - top
     factor = min(avail_w / world.width, avail_h / world.height)
@@ -179,10 +188,10 @@ def _frame(world: Image.Image, sample: dict, index: int, total: int,
     draw.text((48, 664),
               f'actual map t+{elapsed:.1f}s  |  snapshot {index}/{total}'
               f'  |  known cells {sample["known_cells"]:,}',
-              fill='#eff4f8', font=font)
+              fill='#eff4f8', font=detail_font)
     draw.text((48, 687),
               'Gray unknown  /  light free  /  dark occupied'
-              '  |  map frame: map', fill='#a7bbc9', font=font)
+              '  |  map frame: map', fill='#a7bbc9', font=detail_font)
     return frame
 
 
@@ -204,6 +213,11 @@ def render(map_mcap: Path, source_bag: Path, output_dir: Path,
         inputs['run_log'] = _input_files(run_log)
     snapshots, tf_messages = _read_maps(map_mcap, max_snapshots)
     bounds = _world_bounds(snapshots)
+    canvas_origin_error_m = max(
+        abs((sample[f'origin_{axis}_m'] - bounds[index]) -
+            round((sample[f'origin_{axis}_m'] - bounds[index]) /
+                  sample['resolution_m']) * sample['resolution_m'])
+        for sample in snapshots for index, axis in enumerate(('x', 'y')))
     output_dir.mkdir(parents=True, exist_ok=True)
     final = snapshots[-1]
     # The authoritative optimized final map is converted from the pbstream
@@ -269,6 +283,8 @@ def render(map_mcap: Path, source_bag: Path, output_dir: Path,
             'last_recorded_occupied_cells': final['occupied_cells'],
             'world_canvas_width_cells': bounds[2],
             'world_canvas_height_cells': bounds[3],
+            'canvas_origin_rounding_max_axis_error_m': round(
+                canvas_origin_error_m, 6),
             'first_map_log_time_ns': first,
             'last_map_log_time_ns': last,
         },

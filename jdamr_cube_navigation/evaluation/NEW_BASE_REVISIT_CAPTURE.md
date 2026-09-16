@@ -52,15 +52,22 @@ bag에 `/map`이 없더라도 지도 생성이 빠진 것은 아니다. 기존 �
    `map` 좌표에 다시 그린다. 새 Keepout 마스크의 크기·origin·해상도·연결성,
    새 차체 footprint 여유를 검증한다.
 
+2026-09-16 기록은 1~3단계만 완료했다. 새 Keepout 마스크는 만들지 않았고 새 지도를
+운영 지도에 적용하지 않았다.
+
 ## 영상·포트폴리오 근거
 
 - `jdamr_cube_navigation/evaluation/corridor_run_media.py --run-dir <원본-bag-디렉터리> --output-dir <새-미디어-디렉터리>`는
-  실차 bag·경로 이벤트를 바탕으로 궤적·정지·경로 이탈 지표, PNG·MP4와
+  실차 bag·경로 이벤트를 바탕으로 궤적·기록된 정지 명령·지정 waypoint 연결선 편차, PNG·MP4와
   입력 해시가 담긴 미디어 manifest를 만든다.
 - `jdamr_cube_navigation/evaluation/render_new_base_mapping.py --map-mcap <Cartographer-결과-MCAP> --source-bag <원본-bag-디렉터리> --run-log <오프라인-재생-로그> --output-dir <새-지도-미디어-디렉터리>`는
   결과 bag의 실제 `/map` 변화로 지도 성장 MP4·마지막 기록 지도 PNG와
   SHA-256·프레임 시간 provenance JSON을 만든다. **실물 카메라 영상이나 최종
   최적화 지도라고 표시하지 않는다.**
+- Cartographer 설정 두 가지를 같은 원본으로 비교할 때는
+  `jdamr_cube_navigation/evaluation/compare_slam_runs.py --results <두-결과-복사-폴더> --source-root <원본-아티팩트-상위-폴더> --comparison-kind config --output <records_common.json> --plot <comparison_common.png> --report <report_common.md>`를 사용한다.
+  `--comparison-kind config`를 빼면 기본 보고서 제목이 백엔드 비교가 되므로
+  이번 기록의 정본 재생성에서는 생략하지 않는다.
 - 실물 주행 모습도 필요하면 복도 측면의 고정 카메라/휴대폰으로 별도 촬영한다.
   시작·정지 장면과 벽·금지구역 주변을 프레임에 넣고, 원본 영상 파일과
   `RUN_ID.provenance.txt`의 UTC 시각을 함께 보존한다. 외부 영상이 없다면

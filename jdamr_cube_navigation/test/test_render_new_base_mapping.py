@@ -15,11 +15,40 @@ from tf2_msgs.msg import TFMessage
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'evaluation'))
 
 from render_new_base_mapping import (  # noqa: E402,I100,I201
+    _font,
     _map_image,
     _read_maps,
     _world_bounds,
     render,
 )
+
+
+def test_font_falls_back_when_legacy_pillow_lacks_sized_default(
+        monkeypatch):
+    """A renderer on older Pillow can still select a legible font."""
+    import render_new_base_mapping
+
+    scalable = object()
+    bitmap = object()
+
+    def legacy_default(size=None):
+        if size is not None:
+            raise TypeError('size is unsupported')
+        return bitmap
+
+    monkeypatch.setattr(
+        render_new_base_mapping.ImageFont, 'load_default', legacy_default)
+    monkeypatch.setattr(
+        render_new_base_mapping.ImageFont, 'truetype',
+        lambda name, size: scalable)
+    assert _font(18) is scalable
+
+    def missing_font(name, size):
+        raise OSError('font unavailable')
+
+    monkeypatch.setattr(
+        render_new_base_mapping.ImageFont, 'truetype', missing_font)
+    assert _font(18) is bitmap
 
 
 def _map(width, height, cells, origin_x=0.0):
@@ -75,6 +104,7 @@ def test_map_pixels_and_provenance_come_from_changed_mcap_snapshots(tmp_path):
     assert manifest['map']['last_recorded_known_cells'] == 5
     assert manifest['map']['last_recorded_width_cells'] == 3
     assert manifest['map']['resolution_m_per_cell'] == pytest.approx(0.1)
+    assert manifest['map']['canvas_origin_rounding_max_axis_error_m'] == 0
     assert manifest['timing']['frame_times'][0]['known_cells'] == 2
     assert manifest['timing']['frame_times'][-1]['known_cells'] == 5
     assert manifest['not_claimed'] == [
@@ -106,6 +136,29 @@ def test_world_alignment_and_occupancy_colors(tmp_path):
     assert image.getpixel((2, 0)) == 88
     assert image.getpixel((1, 1)) == 88
     assert image.getpixel((2, 1)) == 224
+
+
+def test_fractional_cartographer_origin_uses_nearest_canvas_cell(tmp_path):
+    """A valid sub-cell online-grid shift must not block evidence rendering."""
+    mcap = tmp_path / 'maps.mcap'
+    _write_mcap(mcap, [
+        _map(2, 2, [0, 0, 100, 0]),
+        _map(2, 2, [0, 0, 100, 0], origin_x=0.06),
+    ])
+    samples, _ = _read_maps(mcap, 10)
+    bounds = _world_bounds(samples)
+    assert bounds[2] == 3
+    image = _map_image(samples[1], bounds)
+    assert image.getpixel((1, 0)) == 30
+    assert image.getpixel((0, 0)) == 88
+
+    source = tmp_path / 'source'
+    source.mkdir()
+    (source / 'input.mcap').write_bytes(b'source')
+    manifest = render(mcap, source, tmp_path / 'media',
+                      fps=2, duration_s=1.0)
+    assert manifest['map'][
+        'canvas_origin_rounding_max_axis_error_m'] == pytest.approx(0.04)
 
 
 def test_missing_map_or_reused_source_is_rejected_before_output(tmp_path):

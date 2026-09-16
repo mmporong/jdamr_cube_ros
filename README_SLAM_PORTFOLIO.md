@@ -6,10 +6,22 @@
 
 ## 현재 상태
 
+2026-09-16 새 차체는 기존 저장 지도와 Keepout으로 복도를 재방문해 20개 목표를 모두 완료했고 Nav2 복구는 0회였다. 기록된 AMCL 주행 경로는 76.362m, 사전 계획 경로는 77.233m였다. 이는 **기존 지도 기반 자율주행** 결과이지, 주행 중 새 지도를 온보드에서 생성한 결과는 아니다.
+
 `real_combined_obstacle_retry_20260910T122006`으로 저장 지도·Keepout·실시간 장애물 대응을
 묶은 복도 왕복을 마쳤다. 20개 목표를 모두 통과했고 계획 경로는 77.290m, 기록된 AMCL
 경로는 78.498m였다. Collision Monitor StopZone 6회와 같은 goal의 명령 재개를 확인했다.
 LiDAR 객체 분류기는 없으므로 박스나 사람을 자동 분류했다고 주장하지 않는다.
+
+### 2026-09-16 새 차체 주행 데이터와 지도 후보
+
+실차 원본 `new_base_revisit_20260916_wide_start` MCAP은 186,865개 메시지·147개 청크 CRC와 인덱스 검사를 통과했다. LiDAR 10,391개 주행 구간 표본은 9.674Hz였고 최대 공백은 0.132초였다. AMCL 첫·마지막 주행 표본 간 거리는 0.132m, 마지막 표본과 지정 home 간 거리는 0.329m로 서로 다른 값이다. recorder 전송 손실 카운터와 `/collision_monitor_state` 관측은 기록되지 않았고, 왕복한 실차와 달리 바퀴 오도메트리 첫·끝 위치는 32.6604m 벌어졌다. 원본 데이터는 `PARTIAL_SUCCESS`이며 안전 관측·오도메트리·외부 정답까지 검증된 데이터로 승격하지 않았다.
+
+같은 원본을 물리 로봇과 격리된 두 ROS 도메인에서 Cartographer 설정 두 가지로 끝까지 재생했다. 기본 `jdamr_cube_2d_corridor.lua`는 최종 900×202셀·45.0×10.1m 복도 지도를 만들었다. 기존 저장 지도는 894×212셀·44.7×10.6m다. `jdamr_cube_2d_real.lua` 후보는 465×174셀·23.25×8.7m로 복도가 압축되고 벽이 중복됐다. 두 실행에 공통인 AMCL 시각 표본 283개에서 강체 정렬 RMS는 각각 0.627m와 5.775m였다. 시작–종료 불일치 0.095m와 0.133m는 지도 두 셀 이내의 근소한 차이여서 자동 선택 기준에서는 동률로 처리했다. AMCL은 외부 ground truth가 아니며, 기본 지도에도 옅은 병렬 벽 흔적이 있으므로 이 비교를 절대 지도 정확도라고 해석하지 않는다.
+
+기본 지도는 Cartographer 원본 `.pbstream`·YAML·PGM을 보존하고, 별도 후보 사본에서 YAML의 이미지 경로만 상대경로로 바꿔 `map_registry.yaml`에 `candidate`로 등록했다. **새 지도용 Keepout 마스크 재작성, 새 지도 AMCL 재로딩, 실차 사용은 수행하지 않았다.** 기존 `published` 운영 지도와 마스크는 변경하지 않았다.
+
+원본·결과·재생성 미디어의 경로와 품질 절차는 [새 차체 재방문 증거 계약](jdamr_cube_navigation/evaluation/NEW_BASE_REVISIT_CAPTURE.md)에 있다. 이번 산출물의 정본은 `$HOME/jdamr_artifacts/new_base_revisit_20260916_wide_start/`, `$HOME/jdamr_artifacts/new_base_revisit_20260916_route_media_v02/`, `$HOME/jdamr_artifacts/new_base_revisit_20260916_mapping_media_corridor_v02/`, `$HOME/jdamr_artifacts/new_base_revisit_20260916_cartographer_comparison_v01/report_common.md`, `$HOME/jdamr_artifacts/new_base_revisit_20260916_candidate_map_v01/`이다. 영상은 ROS 지도·주행 기록의 재생이며 실물 카메라 촬영이나 3D 지도가 아니다.
 
 ### 2026-09-04 DDS 격리 기준선
 

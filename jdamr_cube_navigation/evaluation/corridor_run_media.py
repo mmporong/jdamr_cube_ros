@@ -6,14 +6,14 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
+from datetime import datetime
 import hashlib
 import json
 import math
+from pathlib import Path
 import re
 import shutil
 import subprocess
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import matplotlib
@@ -940,9 +940,8 @@ def analyse_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             'truth.',
             'Recorder transport-loss counters were not emitted; loss is '
             'UNKNOWN.',
-            'The full-capture resource gate missed one terminal sample; '
-            'drive-window '
-            'resource values remain descriptive evidence only.',
+            'Process resource samples are descriptive evidence, not a '
+            'run-qualification result.',
             'No camera image or person/object detector topic was recorded; '
             'obstacle class is UNKNOWN.',
         ],
@@ -1034,7 +1033,8 @@ def render_route(route_yaml: Path, metrics: dict[str, Any],
     preflight_length_m = navigation['preflight']['planned_path_length_m']
     amcl_length_m = navigation['amcl_path_length_m']
     drive_minutes = capture['drive_duration_s'] / 60
-    return_error_m = navigation['start_to_end_amcl_m']
+    sample_gap_m = navigation['start_to_end_amcl_m']
+    home_gap_m = navigation['final_home_error_amcl_m']
     battery_min_v = navigation['battery_min_v']
     battery_max_v = navigation['battery_max_v']
     total_messages = capture['total_messages']
@@ -1047,7 +1047,8 @@ def render_route(route_yaml: Path, metrics: dict[str, Any],
         f'Preflight path  {preflight_length_m:.3f} m',
         f'AMCL path  {amcl_length_m:.3f} m',
         f'Drive time  {drive_minutes:.2f} min',
-        f'Return error  {return_error_m:.3f} m',
+        f'AMCL first-last  {sample_gap_m:.3f} m',
+        f'Designated home  {home_gap_m:.3f} m',
         f'Battery  {battery_min_v:.2f}–{battery_max_v:.2f} V',
         '',
         f'MCAP messages  {total_messages:,}',
@@ -1440,7 +1441,7 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         elapsed_s = (evidence_stamp_ns - start_ns) / 1e9
         progress_pct = min(100.0, elapsed_s / metrics['capture'][
             'drive_duration_s'] * 100.0)
-        draw.text((18, 8), '실차 SLAM 장애물 대응 관제',
+        draw.text((18, 8), '실차 저장지도 자율주행 관제',
                   font=title_font, fill='#f8fafc')
         run_text = f"RUN  {metrics.get('run_id', 'EVIDENCE PREVIEW')}"
         run_box = draw.textbbox((0, 0), run_text, font=note_font)
@@ -1467,8 +1468,8 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
         cards = (
             ('주행 시간', f'{elapsed_s:5.1f}s  ·  {progress_pct:4.1f}%'),
             ('주행 상태', drive_state),
-            ('경로 이탈', f'{current_deviation_m:.2f} m'),
-            ('라이다 근거',
+            ('기준선 편차', f'{current_deviation_m:.2f} m'),
+            ('경로 장애물 관측',
              f'{len(selected_cluster)}점 · 경로 {route_gap_text}'),
             (intervention_label, intervention_text),
         )
@@ -1485,12 +1486,12 @@ def render_animation(route_yaml: Path, metrics: dict[str, Any],
                       fill='#7dd3fc')
             value_color = (
                 '#fda4af' if '정지' in value else
-                '#c4b5fd' if label == '경로 이탈' else '#f8fafc')
+                '#c4b5fd' if label == '기준선 편차' else '#f8fafc')
             draw.text((left + 10, 69), value, font=detail_font,
                       fill=value_color)
         draw.text((18, 119),
-                  '파랑 원래 주행 경로  ·  초록 실제 주행  ·  '
-                  '보라 장애물 회피 선회  ·  빨강 장애물',
+                  '파랑 지정 waypoint 연결선  ·  초록 AMCL 주행  ·  '
+                  '보라 라이다 연관 우회 후보  ·  빨강 장애물 후보',
                   font=note_font, fill='#cbd5e1')
         bar_left = 24
         bar_right = canvas_size[0] - 24
@@ -1707,7 +1708,8 @@ def render_card(metrics: dict[str, Any], output: Path) -> None:
     max_recoveries = navigation['max_recoveries']
     preflight_length_m = navigation['preflight']['planned_path_length_m']
     amcl_length_m = navigation['amcl_path_length_m']
-    return_error_m = navigation['start_to_end_amcl_m']
+    sample_gap_m = navigation['start_to_end_amcl_m']
+    home_gap_m = navigation['final_home_error_amcl_m']
     scan_gap_s = continuity['/scan']['max_gap_s']
     total_messages = capture['total_messages']
     figure = plt.figure(figsize=(12, 6.3), dpi=100, facecolor='#08111f')
@@ -1724,7 +1726,7 @@ def render_card(metrics: dict[str, Any], output: Path) -> None:
     cards = [
         ('NAV2 PREFLIGHT', f'{preflight_length_m:.3f} m'),
         ('AMCL PATH', f'{amcl_length_m:.3f} m'),
-        ('RETURN ERROR', f'{return_error_m:.3f} m'),
+        ('AMCL SAMPLE GAP', f'{sample_gap_m:.3f} m'),
         ('SCAN MAX GAP', f'{scan_gap_s:.3f} s'),
     ]
     for index, (label, value) in enumerate(cards):
@@ -1737,6 +1739,7 @@ def render_card(metrics: dict[str, Any], output: Path) -> None:
         axes.text(left + 0.018, 0.265, value, color='white', fontsize=22,
                   weight='bold')
     axes.text(0.06, 0.08,
+              f'First-last AMCL samples; designated home gap {home_gap_m:.3f} m\n'
               f'MCAP {total_messages:,} messages · '
               'CRC / summary / indexes PASS · keepout active',
               color='#94a3b8', fontsize=12)
