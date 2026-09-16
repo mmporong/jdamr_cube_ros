@@ -237,6 +237,9 @@ def _validate_new_base_params(context, revisit=False):
     if not (stop[0] > footprint[0] and stop[1] < footprint[1]
             and stop[2] > footprint[2]):
         raise RuntimeError('new-base StopZone does not contain footprint')
+    if min(stop[0] - footprint[0], footprint[1] - stop[1],
+           stop[2] - footprint[2]) < 0.05 - 1e-6:
+        raise RuntimeError('new-base StopZone margin is below 0.05m')
     if not (slow[0] > stop[0] and slow[1] < stop[1]
             and slow[2] > stop[2]):
         raise RuntimeError('new-base SlowdownZone does not contain StopZone')

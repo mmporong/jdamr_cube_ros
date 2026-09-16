@@ -338,7 +338,7 @@ collision_monitor:
     - FootprintApproach
     StopZone:
       type: polygon
-      points: '[[0.185, 0.35], [0.185, -0.35], [-0.38, -0.35], [-0.38, 0.35]]'
+      points: '[[0.135, 0.34], [0.135, -0.34], [-0.345, -0.34], [-0.345, 0.34]]'
       action_type: stop
       min_points: 3
       visualize: true

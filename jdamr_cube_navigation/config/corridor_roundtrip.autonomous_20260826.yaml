@@ -28,7 +28,7 @@ max_route_start_distance_m: 1.0
 max_resume_start_distance_m: 6.0
 # 지도·금지구역에 대한 경로 여유는 test_route_clearance.py가 계산한다.
 waypoints:
-  - {id: outbound_01m, x: 1.00, y: -0.04}
+  - {id: outbound_01m, x: 1.00, y: -0.30}
   - {id: outbound_06m, x: 6.00, y: -0.73}
   - {id: outbound_10m, x: 10.00, y: -1.07}
   - {id: outbound_14m, x: 14.00, y: -1.42}

@@ -74,6 +74,27 @@ def test_physical_candidate_is_accepted():
     assert controller['FollowPath']['rotate_to_heading_min_angle'] >= 1.57
 
 
+def test_stop_zone_has_requested_geometric_margin():
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    local = document['local_costmap']['local_costmap']['ros__parameters']
+    monitor = document['collision_monitor']['ros__parameters']
+    footprint = yaml.safe_load(local['footprint'])
+    stop = yaml.safe_load(monitor['StopZone']['points'])
+    margins = (
+        max(point[0] for point in stop) - max(point[0] for point in footprint),
+        min(point[0] for point in footprint) - min(point[0] for point in stop),
+        max(abs(point[1]) for point in stop)
+        - max(abs(point[1]) for point in footprint),
+    )
+    assert margins == pytest.approx((0.05, 0.05, 0.05))
+    assert monitor['FootprintApproach']['enabled'] is True
+    assert document['controller_server']['ros__parameters']['FollowPath'][
+        'use_collision_detection'] is True
+    planner = document['planner_server']['ros__parameters']['GridBased']
+    assert planner['plugin'] == 'nav2_navfn_planner::NavfnPlanner'
+    assert planner['use_astar'] is False
+
+
 def test_revisit_rejects_long_detour_outside_recorded_corridor():
     assert revisit_plan_length_ok(78.0, 76.42)
     assert not revisit_plan_length_ok(120.0, 76.42)
@@ -472,6 +493,16 @@ def test_narrowed_stop_zone_is_rejected(tmp_path):
     narrowed = tmp_path / 'narrowed.yaml'
     narrowed.write_text(yaml.safe_dump(document), encoding='utf-8')
     with pytest.raises(RuntimeError, match='StopZone does not contain'):
+        _load_validator(narrowed)(None)
+
+
+def test_stop_zone_below_requested_margin_is_rejected(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    document['collision_monitor']['ros__parameters']['StopZone']['points'] = \
+        '[[0.125, 0.33], [0.125, -0.33], [-0.335, -0.33], [-0.335, 0.33]]'
+    narrowed = tmp_path / 'below_margin.yaml'
+    narrowed.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(RuntimeError, match='margin is below 0.05m'):
         _load_validator(narrowed)(None)
 
 

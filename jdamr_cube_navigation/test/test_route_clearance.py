@@ -1,10 +1,8 @@
-"""Regression tests that the corridor route physically fits the corridor."""
+"""Check waypoint lines against known walls and keepouts, not Nav2 feasibility."""
 
 # On 2026-09-03 the first leg aborted with "collision ahead" because the
-# waypoints ran within 0.06-0.18m of mapped walls, inside the 0.20m inscribed
-# radius, so the robot's own footprint cells read as lethal.  Nothing was
-# blocking the corridor.  These tests keep a route from being committed when
-# it does not physically fit, without needing the robot.
+# waypoints ran within the robot footprint of mapped walls.  Saved-map unknown
+# cells and rotation feasibility still require a Nav2 planning-only preflight.
 
 import math
 import json
@@ -88,7 +86,7 @@ def _worst_along(hit, start, end, cap):
 
 
 def test_every_segment_clears_the_inscribed_radius():
-    """A route inside the inscribed radius reads as a collision to the controller."""
+    """Nominal lines must clear known occupied cells; unknown is checked by Nav2."""
     config, map_image, _, origin = _map_files()
     hit = _sampler(map_image, origin, lambda value: value <= 200)
 
@@ -100,7 +98,7 @@ def test_every_segment_clears_the_inscribed_radius():
 
 
 def test_no_segment_enters_a_keepout_zone():
-    """The stair branches must stay unreachable from the planned route."""
+    """Nominal lines must not enter the stair keepout mask."""
     config, _, mask_image, origin = _map_files()
     hit = _sampler(mask_image, origin, lambda value: value < 100)
 
