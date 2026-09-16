@@ -63,6 +63,29 @@ ros2 run jdamr_cube_vslam vslam_accuracy \
 정확도를 주장하려면 줄자로 잰 직선 구간과 각도 지그로 고정한 회전 구간을
 `config/accuracy_protocol.yaml`에 기록하고 같은 명령에 `--measurements`로 넘긴다.
 
+## Wheel odometry 기반 point cloud 융합
+
+카메라 단독 visual odometry가 저텍스처 구간에서 실패하더라도 RGB-D 역투영과
+좌표변환 파이프라인은 별도로 검증할 수 있다. 다음 명령은 wheel odometry의 yaw를
+초기 pose로 사용해 5° 간격 프레임을 고르고 2 cm voxel 컬러 점군을 만든다.
+
+```bash
+ros2 run jdamr_cube_vslam fuse_rgbd_odom \
+  --input "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/bag_paired_10fps" \
+  --output-dir "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/odom_fusion_5deg" \
+  --yaw-step-deg 5 \
+  --voxel-m 0.02 \
+  --expected-yaw-deg 90
+```
+
+출력은 `fused_cloud.ply`, `selected_frames.csv`, `fusion_summary.json`이다. 이 방식에는
+loop closure나 scan matching이 없으므로 SLAM 지도로 부르지 않는다. 카메라 장착
+변환을 실측하지 않은 상태에서는 기본값 0을 사용했다는 제한도 JSON에 기록된다.
+
+회전 실험은 `--duration 120`처럼 준비 시간을 포함해 충분한 녹화 시간을 주거나,
+시간 제한 없이 기록한 뒤 `Ctrl+C`로 끝낸다. `--expected-yaw-deg`를 지정하면 목표의
+90% 미만만 저장된 기록을 `partial_capture`로 표시한다.
+
 ## 3D 결과물 고도화
 
 빠른 검토용 PLY는 2 cm voxel과 노이즈 필터를 적용한다.
@@ -93,3 +116,5 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/export_3d_
 정적 연결 검증 수치는 `evaluation/20260916_RGBD_VSLAM_SMOKE.md`에 분리했다.
 P턴 실주행 A/B와 3D 산출물 판정은
 `evaluation/20260916_RGBD_VSLAM_PTURN.md`에 기록했다.
+wheel odometry를 사용한 90° 회전 point cloud 실험은
+`evaluation/20260916_RGBD_ODOM_FUSION_90TURN.md`에 기록했다.

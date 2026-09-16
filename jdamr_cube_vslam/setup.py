@@ -45,6 +45,8 @@ setup(
             'jdamr_cube_vslam.trajectory_accuracy:main',
             'downsample_rgbd_bag = '
             'jdamr_cube_vslam.downsample_rgbd_bag:main',
+            'fuse_rgbd_odom = '
+            'jdamr_cube_vslam.fuse_rgbd_odom:main',
         ],
     },
 )
