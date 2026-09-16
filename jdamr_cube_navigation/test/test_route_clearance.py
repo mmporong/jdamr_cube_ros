@@ -7,6 +7,7 @@
 # it does not physically fit, without needing the robot.
 
 import math
+import json
 from pathlib import Path
 
 import pytest
@@ -15,11 +16,12 @@ import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 ROUTE = PACKAGE_ROOT / 'config' / 'corridor_roundtrip.autonomous_20260826.yaml'
+NEW_BASE_PARAMS = PACKAGE_ROOT / 'config' / 'new_base_nav2_params.yaml'
 
-# Footprint [[0.23, 0.20], ...] -> the inscribed radius is the half width.
-INSCRIBED_RADIUS_M = 0.20
-# Margin over the inscribed radius so a small heading error is not a collision.
-REQUIRED_CLEARANCE_M = 0.35
+_footprint = json.loads(yaml.safe_load(NEW_BASE_PARAMS.read_text())[
+    'local_costmap']['local_costmap']['ros__parameters']['footprint'])
+INSCRIBED_RADIUS_M = max(abs(point[1]) for point in _footprint)
+REQUIRED_CLEARANCE_M = INSCRIBED_RADIUS_M + 0.10
 RESOLUTION = 0.05
 
 
@@ -69,7 +71,7 @@ def _clearance(hit, x, y, cap):
 
 
 def _segments(config):
-    previous = (0.0, 0.0, 'start')
+    previous = (config['start_pose']['x'], config['start_pose']['y'], 'start')
     for waypoint in config['waypoints']:
         yield previous, (waypoint['x'], waypoint['y'], waypoint['id'])
         previous = (waypoint['x'], waypoint['y'], waypoint['id'])

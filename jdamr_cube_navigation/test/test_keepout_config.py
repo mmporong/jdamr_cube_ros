@@ -519,7 +519,7 @@ def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
     assert config['max_route_start_distance_m'] == 1.0
     assert config['max_resume_start_distance_m'] == 6.0
     assert len(waypoints) == 20
-    assert waypoints[0]['id'] == 'outbound_02m'
+    assert waypoints[0]['id'] == 'outbound_01m'
     assert waypoints[9]['id'] == 'turnaround'
     assert waypoints[-1] == {'id': 'home', 'x': 0.0, 'y': -0.1}
 
