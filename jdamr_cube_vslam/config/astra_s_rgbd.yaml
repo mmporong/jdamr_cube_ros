@@ -1,0 +1,36 @@
+sensor:
+  model: Orbbec Astra S
+  usb_id: "2bc5:0402"
+  serial: "17120813010"
+  driver_workspace: "$HOME/astra_ws"
+  driver_launch: astra_camera astra.launch.xml
+
+streams:
+  color:
+    topic: /camera/color/image_raw
+    camera_info_topic: /camera/color/camera_info
+    width_px: 640
+    height_px: 480
+    rate_hz: 30
+  depth:
+    topic: /camera/depth/image_raw
+    camera_info_topic: /camera/depth/camera_info
+    width_px: 320
+    height_px: 240
+    rate_hz: 30
+    registered_to_color: true
+  synchronization:
+    driver_option: color_depth_synchronization
+    enabled: true
+
+frames:
+  camera_link: camera_link
+  color_optical: camera_color_optical_frame
+  mapping: map
+  odometry: odom
+
+provenance:
+  verified_at: "2026-09-16"
+  valid_for: "Astra S serial 17120813010 connected directly to JD-AMR Raspberry Pi"
+  method: "Driver source inspection and simultaneous RGB/depth topic probe"
+  invalidate_when: "Camera, USB device, driver commit, stream mode, or mounting pose changes"

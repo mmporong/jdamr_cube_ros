@@ -1,0 +1,21 @@
+camera_mount:
+  status: unmeasured
+  parent_frame: base_link
+  child_frame: camera_link
+  transform:
+    x_m: null
+    y_m: null
+    z_m: null
+    roll_rad: null
+    pitch_rad: null
+    yaw_rad: null
+  provenance:
+    measured_at: null
+    valid_for: "Current temporary Astra S mounting pose"
+    method: null
+    invalidate_when: "Camera bracket position or orientation changes"
+
+usage_gate:
+  camera_only_rgbd_slam: allowed
+  wheel_odom_fusion: blocked_until_measured
+  lidar_rgbd_fusion: blocked_until_measured

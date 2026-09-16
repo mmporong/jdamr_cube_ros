@@ -1,0 +1,16 @@
+association:
+  max_time_delta_s: 0.08
+  minimum_pairs: 30
+
+acceptance:
+  # Portfolio claims remain blocked until a controlled run supplies measured truth.
+  max_translation_ate_rmse_m: 0.10
+  max_yaw_rmse_deg: 5.0
+  max_distance_scale_error_percent: 5.0
+  max_loop_closure_error_m: 0.10
+
+controlled_measurements:
+  description: >-
+    Fill start/end timestamps after one straight-line and one in-place-turn run.
+    Expected values must come from tape/fixture measurements, not wheel odometry.
+  segments: []
