@@ -28,6 +28,12 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 ## Depth 박스 정밀주차 관측
 
+이 기능은 2026-09-17 기준 관측 검증까지만 유지하고 주행 제어에는 연결하지 않는다. 고정
+테이블은 지도에 등록한 서비스 pose로 접근하며, SLAM 고도화는 localization 신뢰도와 복구,
+반복 도착 평가를 우선한다. G4·ToF로 테이블 다리를 맞추는 모델별 계산과 5cm 박스 주차는
+보류한다. Depth 관측 코드는 이후 양팔이 컵을 놓기 직전 상판과 빈 공간을 확인하는 국소
+인지로 전환한다.
+
 박스 앞 정밀주차의 1단계는 태그 없이 Depth에서 보이는 평면을 검출한다. 현재 낮은 카메라
 위치에서는 상판보다 전면이 안정적으로 보이므로 `surface_mode=front`를 사용한다. 카메라를
 높인 뒤에는 `surface_mode=top`으로 바꿔 같은 관측 구조를 사용할 수 있다. 검출기는 카메라
