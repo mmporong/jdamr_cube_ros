@@ -6,6 +6,7 @@ from pathlib import Path
 
 from jdamr_cube_navigation.box_top_detection import (
     CameraIntrinsics,
+    detect_box_front,
     detect_box_top,
     DetectionStability,
 )
@@ -53,6 +54,32 @@ def test_detects_metric_box_top_without_a_tag():
     assert math.degrees(detection.edge_angle_rad) == pytest.approx(
         0.0, abs=2.0)
     assert detection.confidence > 0.6
+
+
+def test_detects_metric_box_front_and_yaw_without_a_tag():
+    """A bounded vertical face yields distance, center, size and yaw."""
+    depth = np.full((INTRINSICS.height, INTRINSICS.width), 3000,
+                    dtype=np.uint16)
+    rows, columns = np.mgrid[0:INTRINSICS.height, 0:INTRINSICS.width]
+    z_m = 0.80 + 0.20 * (
+        (columns - INTRINSICS.center_x_px) / INTRINSICS.focal_x_px)
+    x_m = ((columns - INTRINSICS.center_x_px) * z_m
+           / INTRINSICS.focal_x_px)
+    y_m = ((rows - INTRINSICS.center_y_px) * z_m
+           / INTRINSICS.focal_y_px)
+    inside = np.abs(x_m - 0.05) <= 0.25
+    inside &= y_m >= 0.10
+    inside &= y_m <= 0.35
+    depth[inside] = np.rint(z_m[inside] * 1000.0).astype(np.uint16)
+    detection = detect_box_front(depth, INTRINSICS)
+    assert detection is not None
+    assert detection.surface_kind == 'front'
+    assert detection.front_distance_m == pytest.approx(0.80, abs=0.05)
+    assert detection.center_x_m == pytest.approx(0.05, abs=0.04)
+    assert detection.width_m == pytest.approx(0.50, abs=0.08)
+    assert detection.height_m == pytest.approx(0.25, abs=0.06)
+    assert math.degrees(detection.edge_angle_rad) == pytest.approx(
+        13.8, abs=2.0)
 
 
 def test_rejects_a_distant_vertical_wall():

@@ -28,9 +28,12 @@ class BoxTopConfig:
     pixel_step: int = 2
     plane_distance_m: float = 0.025
     minimum_normal_y: float = 0.65
+    minimum_front_normal_z: float = 0.80
     maximum_top_y_m: float = 0.05
     minimum_width_m: float = 0.18
     maximum_width_m: float = 1.20
+    minimum_height_m: float = 0.08
+    maximum_height_m: float = 0.80
     minimum_depth_extent_m: float = 0.08
     minimum_inliers: int = 120
     ransac_iterations: int = 80
@@ -53,6 +56,8 @@ class BoxTopDetection:
     inlier_count: int
     candidate_count: int
     confidence: float
+    surface_kind: str = 'top'
+    height_m: float = 0.0
 
 
 def _validate(intrinsics: CameraIntrinsics, config: BoxTopConfig) -> None:
@@ -68,8 +73,12 @@ def _validate(intrinsics: CameraIntrinsics, config: BoxTopConfig) -> None:
         raise ValueError('plane_distance_m must be positive')
     if not 0.0 <= config.minimum_normal_y <= 1.0:
         raise ValueError('minimum_normal_y must be in [0, 1]')
+    if not 0.0 <= config.minimum_front_normal_z <= 1.0:
+        raise ValueError('minimum_front_normal_z must be in [0, 1]')
     if not 0.0 < config.minimum_width_m < config.maximum_width_m:
         raise ValueError('box width bounds are invalid')
+    if not 0.0 < config.minimum_height_m < config.maximum_height_m:
+        raise ValueError('box height bounds are invalid')
     if config.minimum_inliers < 3 or config.ransac_iterations <= 0:
         raise ValueError('RANSAC bounds are invalid')
 
@@ -139,10 +148,41 @@ def _front_edge(points: np.ndarray) -> float:
     return math.atan(float(slope))
 
 
-def detect_box_top(
+def _plane_shape(points: np.ndarray) -> tuple[float, float, float]:
+    width_m = float(np.percentile(points[:, 0], 95.0)
+                    - np.percentile(points[:, 0], 5.0))
+    height_m = float(np.percentile(points[:, 1], 95.0)
+                     - np.percentile(points[:, 1], 5.0))
+    depth_extent_m = float(np.percentile(points[:, 2], 95.0)
+                           - np.percentile(points[:, 2], 5.0))
+    return width_m, height_m, depth_extent_m
+
+
+def _shape_is_valid(
+        points: np.ndarray, normal: np.ndarray,
+        config: BoxTopConfig, surface_kind: str) -> bool:
+    width_m, height_m, depth_extent_m = _plane_shape(points)
+    if not config.minimum_width_m <= width_m <= config.maximum_width_m:
+        return False
+    if surface_kind == 'front':
+        return (
+            abs(normal[2]) >= config.minimum_front_normal_z
+            and config.minimum_height_m
+            <= height_m <= config.maximum_height_m
+        )
+    center = np.median(points, axis=0)
+    return (
+        abs(normal[1]) >= config.minimum_normal_y
+        and center[1] <= config.maximum_top_y_m
+        and depth_extent_m >= config.minimum_depth_extent_m
+    )
+
+
+def _detect_box_plane(
         depth_mm: np.ndarray, intrinsics: CameraIntrinsics,
-        config: BoxTopConfig = BoxTopConfig()) -> BoxTopDetection | None:
-    """Return the strongest nearby upward/downward horizontal plane candidate."""
+        config: BoxTopConfig, surface_kind: str) -> BoxTopDetection | None:
+    if surface_kind not in {'front', 'top'}:
+        raise ValueError('surface_kind must be front or top')
     points, _, _ = depth_points(depth_mm, intrinsics, config)
     if len(points) < config.minimum_inliers:
         return None
@@ -159,24 +199,13 @@ def detect_box_top(
         if plane is None:
             continue
         normal, offset = plane
-        if abs(normal[1]) < config.minimum_normal_y:
-            continue
         distances = np.abs(points @ normal + offset)
         mask = distances <= config.plane_distance_m
         count = int(np.count_nonzero(mask))
         if count < config.minimum_inliers:
             continue
         candidate = points[mask]
-        center = np.median(candidate, axis=0)
-        if center[1] > config.maximum_top_y_m:
-            continue
-        width_m = float(np.percentile(candidate[:, 0], 95.0)
-                        - np.percentile(candidate[:, 0], 5.0))
-        depth_extent_m = float(np.percentile(candidate[:, 2], 95.0)
-                               - np.percentile(candidate[:, 2], 5.0))
-        if not config.minimum_width_m <= width_m <= config.maximum_width_m:
-            continue
-        if depth_extent_m < config.minimum_depth_extent_m:
+        if not _shape_is_valid(candidate, normal, config, surface_kind):
             continue
         residual = float(np.sqrt(np.mean(distances[mask] ** 2)))
         score = count / max(residual, 0.001)
@@ -188,7 +217,10 @@ def detect_box_top(
 
     candidate = points[best_mask]
     normal, offset = _fit_plane(candidate)
-    if normal[1] < 0.0:
+    if surface_kind == 'front' and normal[2] > 0.0:
+        normal = -normal
+        offset = -offset
+    elif surface_kind == 'top' and normal[1] < 0.0:
         normal = -normal
         offset = -offset
     distances = np.abs(points @ normal + offset)
@@ -196,13 +228,17 @@ def detect_box_top(
     refined = points[refined_mask]
     if len(refined) < config.minimum_inliers:
         return None
+    if not _shape_is_valid(refined, normal, config, surface_kind):
+        return None
     center = np.median(refined, axis=0)
-    width_m = float(np.percentile(refined[:, 0], 95.0)
-                    - np.percentile(refined[:, 0], 5.0))
-    depth_extent_m = float(np.percentile(refined[:, 2], 95.0)
-                           - np.percentile(refined[:, 2], 5.0))
+    width_m, height_m, depth_extent_m = _plane_shape(refined)
     plane_rms_m = float(np.sqrt(np.mean(distances[refined_mask] ** 2)))
-    front_distance_m = float(np.percentile(refined[:, 2], 10.0))
+    if surface_kind == 'front':
+        front_distance_m = float(np.median(refined[:, 2]))
+        edge_angle_rad = math.atan2(float(normal[0]), float(-normal[2]))
+    else:
+        front_distance_m = float(np.percentile(refined[:, 2], 10.0))
+        edge_angle_rad = _front_edge(refined)
     inlier_ratio = len(refined) / len(points)
     residual_quality = max(
         0.0, 1.0 - plane_rms_m / config.plane_distance_m)
@@ -214,13 +250,29 @@ def detect_box_top(
         front_distance_m=front_distance_m,
         width_m=width_m,
         depth_extent_m=depth_extent_m,
-        edge_angle_rad=_front_edge(refined),
+        edge_angle_rad=edge_angle_rad,
         plane_normal=tuple(float(value) for value in normal),
         plane_rms_m=plane_rms_m,
         inlier_count=int(len(refined)),
         candidate_count=int(len(points)),
         confidence=float(confidence),
+        surface_kind=surface_kind,
+        height_m=height_m,
     )
+
+
+def detect_box_top(
+        depth_mm: np.ndarray, intrinsics: CameraIntrinsics,
+        config: BoxTopConfig = BoxTopConfig()) -> BoxTopDetection | None:
+    """Return the strongest nearby horizontal top-plane candidate."""
+    return _detect_box_plane(depth_mm, intrinsics, config, 'top')
+
+
+def detect_box_front(
+        depth_mm: np.ndarray, intrinsics: CameraIntrinsics,
+        config: BoxTopConfig = BoxTopConfig()) -> BoxTopDetection | None:
+    """Return the strongest bounded vertical front-plane candidate."""
+    return _detect_box_plane(depth_mm, intrinsics, config, 'front')
 
 
 class DetectionStability:

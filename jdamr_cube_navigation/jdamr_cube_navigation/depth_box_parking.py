@@ -7,6 +7,7 @@ import time
 from jdamr_cube_navigation.box_top_detection import (
     BoxTopConfig,
     CameraIntrinsics,
+    detect_box_front,
     detect_box_top,
     DetectionStability,
 )
@@ -33,9 +34,12 @@ class DepthBoxParkingNode(Node):
             ('pixel_step', defaults.pixel_step),
             ('plane_distance_m', defaults.plane_distance_m),
             ('minimum_normal_y', defaults.minimum_normal_y),
+            ('minimum_front_normal_z', defaults.minimum_front_normal_z),
             ('maximum_top_y_m', defaults.maximum_top_y_m),
             ('minimum_width_m', defaults.minimum_width_m),
             ('maximum_width_m', defaults.maximum_width_m),
+            ('minimum_height_m', defaults.minimum_height_m),
+            ('maximum_height_m', defaults.maximum_height_m),
             ('minimum_depth_extent_m', defaults.minimum_depth_extent_m),
             ('minimum_inliers', defaults.minimum_inliers),
             ('ransac_iterations', defaults.ransac_iterations),
@@ -46,6 +50,7 @@ class DepthBoxParkingNode(Node):
             ('stable_distance_m', 0.03),
             ('stable_lateral_m', 0.03),
             ('stable_angle_deg', 3.0),
+            ('surface_mode', 'front'),
         ):
             self.declare_parameter(name, value)
         self._config = BoxTopConfig(**{
@@ -61,6 +66,10 @@ class DepthBoxParkingNode(Node):
             maximum_angle_spread_deg=float(
                 self.get_parameter('stable_angle_deg').value),
         )
+        self._surface_mode = str(
+            self.get_parameter('surface_mode').value)
+        if self._surface_mode not in {'front', 'top'}:
+            raise ValueError('surface_mode must be front or top')
         processing_hz = float(self.get_parameter('processing_hz').value)
         if processing_hz <= 0.0:
             raise ValueError('processing_hz must be positive')
@@ -121,8 +130,12 @@ class DepthBoxParkingNode(Node):
             return
         depth_mm = np.frombuffer(message.data, dtype=np.uint16).reshape(
             message.height, message.width)
-        detection = detect_box_top(
-            depth_mm, self._intrinsics, self._config)
+        detector = (
+            detect_box_front
+            if self._surface_mode == 'front'
+            else detect_box_top
+        )
+        detection = detector(depth_mm, self._intrinsics, self._config)
         stable = self._stability.update(detection)
         stamp_s = (message.header.stamp.sec
                    + message.header.stamp.nanosec * 1e-9)
@@ -133,7 +146,7 @@ class DepthBoxParkingNode(Node):
                 'detected': False,
                 'stable': False,
                 'stable_frame_count': self._stability.frame_count,
-                'reason': 'no_box_top_candidate',
+                'reason': 'no_box_surface_candidate',
                 'control_ready': False,
             })
             return
@@ -143,6 +156,7 @@ class DepthBoxParkingNode(Node):
             'detected': True,
             'stable': stable,
             'stable_frame_count': self._stability.frame_count,
+            'surface_kind': detection.surface_kind,
             'front_distance_m': detection.front_distance_m,
             'desired_standoff_m': self._config.desired_standoff_m,
             'standoff_error_m': (
@@ -151,6 +165,7 @@ class DepthBoxParkingNode(Node):
             'lateral_error_m': detection.center_x_m,
             'edge_angle_deg': math.degrees(detection.edge_angle_rad),
             'width_m': detection.width_m,
+            'height_m': detection.height_m,
             'depth_extent_m': detection.depth_extent_m,
             'plane_normal': list(detection.plane_normal),
             'plane_rms_m': detection.plane_rms_m,

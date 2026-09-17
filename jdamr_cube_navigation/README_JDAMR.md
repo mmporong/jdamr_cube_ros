@@ -28,10 +28,12 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 ## Depth 박스 정밀주차 관측
 
-박스 앞 정밀주차의 1단계는 태그 없이 Depth에서 보이는 상판을 평면으로 검출한다. 검출기는
-카메라 optical frame 기준 박스 전면 거리, 좌우 오차, 전면 모서리 각도, 상판 폭·깊이와
-신뢰도를 `/box_parking/perception_status`에 JSON으로 발행한다. 8개 연속 관측의 거리·좌우·
-각도 분산이 설정 범위 안에 들어와야 `stable=true`가 된다.
+박스 앞 정밀주차의 1단계는 태그 없이 Depth에서 보이는 평면을 검출한다. 현재 낮은 카메라
+위치에서는 상판보다 전면이 안정적으로 보이므로 `surface_mode=front`를 사용한다. 카메라를
+높인 뒤에는 `surface_mode=top`으로 바꿔 같은 관측 구조를 사용할 수 있다. 검출기는 카메라
+optical frame 기준 박스 전면 거리, 좌우 오차, 평면 각도, 폭·높이와 신뢰도를
+`/box_parking/perception_status`에 JSON으로 발행한다. 8개 연속 관측의 거리·좌우·각도
+분산이 설정 범위 안에 들어와야 `stable=true`가 된다.
 
 이 노드는 관측 전용이다. `/cmd_vel`을 발행하지 않고 `control_ready=false`를 유지하므로
 로봇을 움직이지 않는다. 박스를 실제로 반복 검출하고 카메라 외부 파라미터와 정지 오차를
@@ -51,8 +53,10 @@ ros2 topic echo --full-length /box_parking/perception_status
 
 실차 파이의 배포 워크스페이스는 `$HOME/jdamr_ws`다. 2026-09-17 정지 장면에서 관측
 노드만 추가로 실행했을 때 토픽은 평균 4.609 Hz였고, 박스가 없는 장면은
-`reason=no_box_top_candidate`로 거부했다. 이 결과는 오검출 방지의 음성 샘플이며 박스
-검출 성공이나 5 cm 주차 성능의 증거는 아니다.
+`reason=no_box_surface_candidate`로 거부했다. 같은 위치에 박스를 둔 뒤 전면 검출은 거리
+0.762m, 우측 편차 약 0.0224m, 평면 각도 약 -1.05°, 폭 약 0.321m, 높이 약 0.186m,
+신뢰도 약 0.97로 연속 `stable=true`를 유지했다. 이는 정지 상태의 상대 자세 관측
+증거이며 방향 제어 또는 5cm 주차 성능의 증거는 아니다.
 
 ## 저장 지도 자율주행의 금지구역
 
