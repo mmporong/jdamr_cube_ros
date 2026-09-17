@@ -79,7 +79,7 @@ camera_pid=$!
 
 sleep 6
 for image_topic in /camera/color/image_raw /camera/depth/image_raw; do
-  if ! timeout 10s ros2 topic echo --no-daemon --spin-time 4 \
+  if ! timeout 20s ros2 topic echo --no-daemon --spin-time 4 \
       --once --field header "$image_topic" \
       >/dev/null 2>&1; then
     echo "No frame received from ${image_topic}; see ${camera_log}" >&2

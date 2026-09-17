@@ -120,11 +120,11 @@ def test_physical_navigation_launches_force_fastdds_udp_transport():
     _assert_udp_transport_call(add_actions[0].args[0])
 
 
-def test_autonomous_mapping_keeps_dds_off_the_wifi_interface():
+def test_autonomous_mapping_uses_the_proven_sensor_transport_scope():
     source = LAUNCH_PATH.read_text(encoding='utf-8')
 
     ast.parse(source)
-    assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'" in source
+    assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'" in source
 
 
 def test_controller_uses_forward_only_collision_aware_rpp():
