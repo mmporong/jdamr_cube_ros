@@ -86,14 +86,20 @@ def generate_launch_description():
                 'nav2_velocity_smoother::VelocitySmoother',
                 'velocity_smoother', cmd_vel=True),
             component(
-                'nav2_collision_monitor',
-                'nav2_collision_monitor::CollisionMonitor',
-                'collision_monitor'),
-            component(
                 'nav2_bt_navigator', 'nav2_bt_navigator::BtNavigator',
                 'bt_navigator'),
         ],
         output='screen',
+    )
+    # Keep scan processing out of the planner/controller process so planner
+    # load cannot delay the monitor callback and cause an invalid-source stop.
+    collision_monitor = Node(
+        package='nav2_collision_monitor',
+        executable='collision_monitor',
+        name='collision_monitor',
+        output='screen',
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
+        remappings=remappings,
     )
     navigation_lifecycle = Node(
         package='nav2_lifecycle_manager',
@@ -157,7 +163,8 @@ def generate_launch_description():
                 'required autonomous-mapping process exited'))],
         ))
         for process in (
-            navigation_container, navigation_lifecycle, liveness_guard)
+            navigation_container, collision_monitor,
+            navigation_lifecycle, liveness_guard)
     ]
 
     return LaunchDescription([
@@ -177,6 +184,7 @@ def generate_launch_description():
             description='Activate Nav2 and map_saver lifecycle nodes'),
         *required_exit_handlers,
         navigation_container,
+        collision_monitor,
         navigation_lifecycle,
         liveness_guard,
         map_saver,

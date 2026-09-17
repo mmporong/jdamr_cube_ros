@@ -284,6 +284,21 @@ def test_nav2_uses_an_isolated_component_container_for_physical_reliability():
     assert "name='nav2_mapping_container'" in source
     assert source.count("'bond_timeout': 0.0") == 2
     assert "executable='nav2_liveness_guard'" in source
+    assert "package='nav2_collision_monitor'" in source
+    assert "executable='collision_monitor'" in source
+
+
+def test_collision_monitor_is_not_composed_with_the_planner():
+    syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
+    composed_plugins = [
+        ast.literal_eval(node.args[1])
+        for node in ast.walk(syntax)
+        if isinstance(node, ast.Call)
+        and _call_name(node) == 'ComposableNode'
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+    ]
+    assert 'nav2_collision_monitor::CollisionMonitor' not in composed_plugins
 
 
 def test_composed_nodes_receive_the_rewritten_parameter_file():

@@ -39,6 +39,29 @@ def test_capture_records_metric_rgbd_and_reference_topics():
     assert 'systemctl start jdamr-astra-camera.service' in script
 
 
+def test_capture_has_low_bandwidth_navigation_profile():
+    script = (PACKAGE_ROOT / 'scripts' / 'capture_rgbd_bag.sh').read_text(
+        encoding='utf-8')
+    for required in (
+        '--low-bandwidth',
+        'color_width=320',
+        'color_height=240',
+        '--record-navigation',
+        '/cmd_vel',
+        '/cmd_vel_smoothed',
+        '/collision_monitor_state',
+        'navigation_telemetry: ${record_navigation}',
+    ):
+        assert required in script
+
+
+def test_installed_capture_can_find_qos_overrides():
+    script = (PACKAGE_ROOT / 'scripts' / 'capture_rgbd_bag.sh').read_text(
+        encoding='utf-8')
+    assert '../../../share/jdamr_cube_vslam/config/' in script
+    assert 'rosbag QoS overrides not found' in script
+
+
 def test_tf_static_qos_is_transient_local():
     config = yaml.safe_load(
         (PACKAGE_ROOT / 'config' / 'rosbag_qos_overrides.yaml').read_text(

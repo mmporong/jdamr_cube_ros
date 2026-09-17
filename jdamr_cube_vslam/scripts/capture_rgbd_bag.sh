@@ -2,11 +2,14 @@
 set -eo pipefail
 
 usage() {
-  echo "usage: $0 [--duration SEC] [--output DIR]"
+  echo "usage: $0 [--duration SEC] [--output DIR] [--low-bandwidth] [--record-navigation]"
 }
 
 duration_s=0
 output_root="${HOME}/jdamr_data/vslam"
+color_width=640
+color_height=480
+record_navigation=false
 while (($#)); do
   case "$1" in
     --duration)
@@ -16,6 +19,15 @@ while (($#)); do
     --output)
       output_root="$2"
       shift 2
+      ;;
+    --low-bandwidth)
+      color_width=320
+      color_height=240
+      shift
+      ;;
+    --record-navigation)
+      record_navigation=true
+      shift
       ;;
     -h|--help)
       usage
@@ -73,7 +85,7 @@ setsid nice -n 5 bash -lc "source /opt/ros/jazzy/setup.bash; \
     enable_point_cloud:=false enable_colored_point_cloud:=false \
     depth_registration:=true color_depth_synchronization:=true \
     depth_width:=320 depth_height:=240 depth_fps:=30 \
-    color_width:=640 color_height:=480 color_fps:=30" \
+    color_width:=${color_width} color_height:=${color_height} color_fps:=30" \
   >"$camera_log" 2>&1 &
 camera_pid=$!
 
@@ -104,23 +116,32 @@ metadata="${bag_dir}/capture.yaml"
   echo "camera_serial: '17120813010'"
   echo "depth_registered_to_color: true"
   echo "color_depth_synchronization: true"
+  echo "color_resolution: '${color_width}x${color_height}'"
+  echo "depth_resolution: '320x240'"
+  echo "navigation_telemetry: ${record_navigation}"
   echo "duration_s: ${duration_s}"
 } >"$metadata"
 
 package_prefix="$(ros2 pkg prefix jdamr_cube_vslam 2>/dev/null || true)"
 qos_overrides="${package_prefix}/share/jdamr_cube_vslam/config/rosbag_qos_overrides.yaml"
 if [[ -z "$package_prefix" || ! -f "$qos_overrides" ]]; then
-  qos_overrides="$(cd "$(dirname "${BASH_SOURCE[0]}")/../config" \
-    && pwd)/rosbag_qos_overrides.yaml"
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  qos_overrides=''
+  for candidate in \
+      "${script_dir}/../config/rosbag_qos_overrides.yaml" \
+      "${script_dir}/../../../share/jdamr_cube_vslam/config/rosbag_qos_overrides.yaml"; do
+    if [[ -f "$candidate" ]]; then
+      qos_overrides="$(readlink -f "$candidate")"
+      break
+    fi
+  done
+fi
+if [[ -z "$qos_overrides" || ! -f "$qos_overrides" ]]; then
+  echo "rosbag QoS overrides not found" >&2
+  exit 1
 fi
 
-record_command=(
-  ros2 bag record
-  --storage mcap
-  --storage-preset-profile zstd_fast
-  --qos-profile-overrides-path "$qos_overrides"
-  --output "${bag_dir}/bag"
-  --topics
+record_topics=(
   /camera/color/image_raw
   /camera/color/camera_info
   /camera/depth/image_raw
@@ -129,6 +150,22 @@ record_command=(
   /tf_static
   /odom
   /scan
+)
+if "$record_navigation"; then
+  record_topics+=(
+    /cmd_vel
+    /cmd_vel_smoothed
+    /collision_monitor_state
+  )
+fi
+record_command=(
+  ros2 bag record
+  --storage mcap
+  --storage-preset-profile zstd_fast
+  --qos-profile-overrides-path "$qos_overrides"
+  --output "${bag_dir}/bag"
+  --topics
+  "${record_topics[@]}"
 )
 
 echo "RGB-D capture: ${bag_dir}"

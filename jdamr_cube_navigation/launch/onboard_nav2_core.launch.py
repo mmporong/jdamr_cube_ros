@@ -233,7 +233,8 @@ def _validate_new_base_params(context, revisit=False):
             or stop_zone.get('holonomic') is not False):
         raise RuntimeError('new-base StopZone is not active')
     expected_velocity_polygons = {
-        'rotation', 'translation_forward', 'translation_backward', 'stopped'}
+        'rotation', 'rotation_clockwise', 'translation_forward',
+        'translation_backward', 'stopped'}
     if (set(stop_zone.get('velocity_polygons', [])) !=
             expected_velocity_polygons):
         raise RuntimeError('new-base directional StopZone is incomplete')
@@ -251,6 +252,15 @@ def _validate_new_base_params(context, revisit=False):
             or monitor['scan']['topic'] != '/scan'):
         raise RuntimeError('new-base scan collision source is not active')
     rotation_points = polygon_points(stop_zone['rotation']['points'])
+    clockwise_points = polygon_points(
+        stop_zone['rotation_clockwise']['points'])
+    counterclockwise = stop_zone['rotation']
+    clockwise = stop_zone['rotation_clockwise']
+    if (counterclockwise['theta_min'] <= 0.0
+            or clockwise['theta_max'] >= 0.0
+            or clockwise_points != rotation_points):
+        raise RuntimeError(
+            'new-base rotation StopZone must exclude zero velocity')
     forward_stop = bounds(stop_zone['translation_forward']['points'])
     backward_stop = bounds(stop_zone['translation_backward']['points'])
     stopped_stop = bounds(stop_zone['stopped']['points'])

@@ -346,6 +346,7 @@ collision_monitor:
       holonomic: false
       velocity_polygons:
       - rotation
+      - rotation_clockwise
       - translation_forward
       - translation_backward
       - stopped
@@ -356,8 +357,18 @@ collision_monitor:
         points: '[[0.43, 0.0], [0.397, 0.165], [0.304, 0.304], [0.165, 0.397], [0.0, 0.43], [-0.165, 0.397], [-0.304, 0.304], [-0.397, 0.165], [-0.43, 0.0], [-0.397, -0.165], [-0.304, -0.304], [-0.165, -0.397], [0.0, -0.43], [0.165, -0.397], [0.304, -0.304], [0.397, -0.165]]'
         linear_min: -0.005
         linear_max: 0.005
-        theta_min: -1.0
+        theta_min: 0.005
         theta_max: 1.0
+      rotation_clockwise:
+        # Keep zero angular velocity out of both rotation ranges. Previously
+        # (0, 0) selected the 0.43 m circumscribed circle instead of the
+        # stopped rectangle and could latch StopZone after the controller
+        # had already stopped.
+        points: '[[0.43, 0.0], [0.397, 0.165], [0.304, 0.304], [0.165, 0.397], [0.0, 0.43], [-0.165, 0.397], [-0.304, 0.304], [-0.397, 0.165], [-0.43, 0.0], [-0.397, -0.165], [-0.304, -0.304], [-0.165, -0.397], [0.0, -0.43], [0.165, -0.397], [0.304, -0.304], [0.397, -0.165]]'
+        linear_min: -0.005
+        linear_max: 0.005
+        theta_min: -1.0
+        theta_max: -0.005
       translation_forward:
         # Straight forward motion does not close lateral clearance. Keep the
         # requested 50 mm at the leading edge, but do not add another lateral

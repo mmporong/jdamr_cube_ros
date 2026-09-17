@@ -91,8 +91,15 @@ def test_stop_zone_has_requested_geometric_margin():
     assert margins == pytest.approx((0.05, 0.05, 0.05))
     assert stop_zone['type'] == 'velocity_polygon'
     assert stop_zone['velocity_polygons'] == [
-        'rotation', 'translation_forward', 'translation_backward', 'stopped']
+        'rotation', 'rotation_clockwise', 'translation_forward',
+        'translation_backward', 'stopped']
     rotation = yaml.safe_load(stop_zone['rotation']['points'])
+    clockwise = yaml.safe_load(stop_zone['rotation_clockwise']['points'])
+    assert clockwise == rotation
+    assert stop_zone['rotation']['theta_min'] > 0.0
+    assert stop_zone['rotation_clockwise']['theta_max'] < 0.0
+    assert stop_zone['stopped']['theta_min'] <= 0.0
+    assert stop_zone['stopped']['theta_max'] >= 0.0
     footprint_radius = max(math.hypot(*point) for point in footprint)
     edge_distances = []
     for start, end in zip(rotation, rotation[1:] + rotation[:1]):
@@ -557,11 +564,23 @@ def test_rotation_stop_zone_below_swept_radius_is_rejected(tmp_path):
     ]
     stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
     stop_zone['rotation']['points'] = points
+    stop_zone['rotation_clockwise']['points'] = points
     narrowed = tmp_path / 'narrowed_rotation.yaml'
     narrowed.write_text(yaml.safe_dump(document), encoding='utf-8')
 
     with pytest.raises(RuntimeError, match='swept corner radius'):
         _load_validator(narrowed)(None)
+
+
+def test_rotation_stop_zone_matching_zero_velocity_is_rejected(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    stop_zone['rotation']['theta_min'] = 0.0
+    invalid = tmp_path / 'rotation_matches_zero.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='exclude zero velocity'):
+        _load_validator(invalid)(None)
 
 
 @pytest.mark.parametrize('mutate,expected', [
