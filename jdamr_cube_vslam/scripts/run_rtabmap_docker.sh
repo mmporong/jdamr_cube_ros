@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 BAG_DIR OUTPUT_DIR [--allow-static] [--profile baseline|low-texture] [--odom-guess-frame FRAME] [--odom-guess-min-translation M] [--odom-guess-min-rotation RAD] [--camera-mount YAML] [--image IMAGE]"
+  echo "usage: $0 BAG_DIR OUTPUT_DIR [--allow-static] [--profile baseline|low-texture] [--external-odom] [--odom-guess-frame FRAME] [--odom-guess-min-translation M] [--odom-guess-min-rotation RAD] [--camera-mount YAML] [--image IMAGE]"
 }
 
 if (($# < 2)); then
@@ -18,12 +18,17 @@ require_assembled_map=1
 odom_guess_frame_id=''
 odom_guess_min_translation='0.005'
 odom_guess_min_rotation='0.005'
+odom_source_mode='visual'
 rtabmap_profile='baseline'
 camera_mount_config=''
 while (($#)); do
   case "$1" in
     --allow-static)
       require_assembled_map=0
+      shift
+      ;;
+    --external-odom)
+      odom_source_mode='external'
       shift
       ;;
     --odom-guess-frame)
@@ -70,8 +75,12 @@ if [[ -z "$camera_mount_config" ]]; then
 fi
 
 camera_mount_env=()
-if [[ -n "$odom_guess_frame_id" ]]; then
-  if [[ "$odom_guess_frame_id" != 'odom' ]]; then
+if [[ "$odom_source_mode" == external && -n "$odom_guess_frame_id" ]]; then
+  echo "--external-odom and --odom-guess-frame are mutually exclusive" >&2
+  exit 2
+fi
+if [[ -n "$odom_guess_frame_id" || "$odom_source_mode" == external ]]; then
+  if [[ -n "$odom_guess_frame_id" && "$odom_guess_frame_id" != 'odom' ]]; then
     echo "JD-AMR wheel guess frame must be odom; using base_footprint conflicts with the recorded odom TF" >&2
     exit 1
   fi
@@ -95,10 +104,10 @@ mount = config.get('camera_mount', {})
 gate = config.get('usage_gate', {})
 if mount.get('status') != 'measured':
     raise SystemExit(
-        'wheel odometry guess is blocked: camera mount status must be measured')
+        'wheel odometry fusion is blocked: camera mount status must be measured')
 if gate.get('wheel_odom_fusion') != 'allowed':
     raise SystemExit(
-        'wheel odometry guess is blocked by usage_gate.wheel_odom_fusion')
+        'wheel odometry fusion is blocked by usage_gate.wheel_odom_fusion')
 
 transform = mount.get('transform', {})
 keys = ('x_m', 'y_m', 'z_m', 'roll_rad', 'pitch_rad', 'yaw_rad')
@@ -124,7 +133,8 @@ PY
     echo "invalid camera mount config: ${camera_mount_config}" >&2
     exit 1
   fi
-  python3 - "$odom_guess_min_translation" "$odom_guess_min_rotation" <<'PY'
+  if [[ -n "$odom_guess_frame_id" ]]; then
+    python3 - "$odom_guess_min_translation" "$odom_guess_min_rotation" <<'PY'
 import math
 import sys
 
@@ -140,9 +150,10 @@ for name, raw_value in zip(
         raise SystemExit(
             f'odometry guess minimum {name} must be finite and nonnegative')
 PY
-  printf -v odom_guess_min_translation '%.6f' \
-    "$odom_guess_min_translation"
-  printf -v odom_guess_min_rotation '%.6f' "$odom_guess_min_rotation"
+    printf -v odom_guess_min_translation '%.6f' \
+      "$odom_guess_min_translation"
+    printf -v odom_guess_min_rotation '%.6f' "$odom_guess_min_rotation"
+  fi
   camera_mount_env=(
     -e CAMERA_MOUNT_PARENT="${camera_mount_values[0]}"
     -e CAMERA_MOUNT_CHILD="${camera_mount_values[1]}"
@@ -165,6 +176,7 @@ docker run --rm \
   -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
   -e REQUIRE_ASSEMBLED_MAP="$require_assembled_map" \
   -e ODOM_GUESS_FRAME_ID="$odom_guess_frame_id" \
+  -e ODOM_SOURCE_MODE="$odom_source_mode" \
   -e RTABMAP_PROFILE="$rtabmap_profile" \
   "${camera_mount_env[@]}" \
   -v "${bag_dir}:/data:ro" \

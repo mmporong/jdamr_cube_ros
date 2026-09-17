@@ -32,6 +32,8 @@ def test_capture_records_metric_rgbd_and_reference_topics():
         '--storage-preset-profile zstd_fast',
         '--qos-profile-overrides-path',
         'All requested topics are subscribed',
+        'ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET',
+        'No sample received from ${reference_topic}',
     ):
         assert required in script
     assert 'systemctl start jdamr-astra-camera.service' in script
@@ -140,13 +142,25 @@ def test_wheel_guess_injects_measured_camera_transform():
         assert variable in processor
     assert 'static_transform_publisher' in processor
     assert 'scripts/wait_for_tf.py' in processor
-    assert '--from-frame "$ODOM_GUESS_FRAME_ID"' in processor
+    assert '--from-frame "$tf_check_from_frame"' in processor
     assert '--to-frame "$CAMERA_MOUNT_CHILD"' in processor
     assert 'guess_frame_id         = ${ODOM_GUESS_FRAME_ID}' in processor
     assert 'odom_guess_min_translation:=' in processor
     assert 'odom_guess_min_rotation:=' in processor
     assert 'vo_frame_id:=vslam_odom' in processor
     assert 'odom_frame_id          = vslam_odom' in processor
+    assert 'wait_for_transform_s=1.5' in processor
+    assert 'bag_play_rate=0.5' in processor
+    assert 'retrying without radius-noise filtering' in processor
+    assert 'ODOM_SOURCE_MODE' in wrapper
+    assert '--external-odom' in wrapper
+    assert 'visual_odometry:="$visual_odometry"' in processor
+    assert 'publish_tf_odom=true' in processor
+    assert 'publish_tf_odom=false' in processor
+    assert 'publish_tf_odom:="$publish_tf_odom"' in processor
+    assert 'odom_topic:=/odom' in processor
+    assert 'rtabmap_frame_id=base_link' in processor
+    assert 'ODOM_GUESS_FRAME_ID:-$CAMERA_MOUNT_PARENT' in processor
     assert 'odom_guess_frame_id:=${ODOM_GUESS_FRAME_ID}' in processor
 
 
@@ -309,7 +323,8 @@ def test_offline_mapping_does_not_consume_lidar_as_visual_ground_truth():
         PACKAGE_ROOT / 'scripts' / 'process_rgbd_bag_in_container.sh'
     ).read_text(encoding='utf-8')
     assert 'subscribe_scan:=false' in script
-    assert 'visual_odometry:=true' in script
+    assert 'visual_odometry=true' in script
+    assert 'visual_odometry:="$visual_odometry"' in script
     assert '--Grid/Sensor 1' in script
     assert 'reference_topic /odom' not in script
     assert '--reference-topic /odom' in script

@@ -31,7 +31,7 @@ done
 source /opt/ros/jazzy/setup.bash
 source "${HOME}/astra_ws/install/setup.bash"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-12}"
-export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 
 run_id="rgbd_$(date +%Y%m%dT%H%M%S)"
@@ -66,7 +66,7 @@ sudo -n systemctl stop jdamr-astra-camera.service
 setsid nice -n 5 bash -lc "source /opt/ros/jazzy/setup.bash; \
   source '${HOME}/astra_ws/install/setup.bash'; \
   export ROS_DOMAIN_ID='${ROS_DOMAIN_ID}'; \
-  export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST; \
+  export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET; \
   export FASTDDS_BUILTIN_TRANSPORTS=UDPv4; \
   exec ros2 launch astra_camera astra.launch.xml \
     enable_color:=true enable_depth:=true enable_ir:=false \
@@ -83,6 +83,15 @@ for image_topic in /camera/color/image_raw /camera/depth/image_raw; do
       --once --field header "$image_topic" \
       >/dev/null 2>&1; then
     echo "No frame received from ${image_topic}; see ${camera_log}" >&2
+    exit 1
+  fi
+done
+
+for reference_topic in /odom /scan; do
+  if ! timeout 10s ros2 topic echo --no-daemon --spin-time 4 \
+      --once --field header "$reference_topic" \
+      >/dev/null 2>&1; then
+    echo "No sample received from ${reference_topic}; refusing an incomplete SLAM capture" >&2
     exit 1
   fi
 done

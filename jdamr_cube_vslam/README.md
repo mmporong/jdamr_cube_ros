@@ -78,6 +78,19 @@ RTAB-Map visual odometry의 출력 frame은 `vslam_odom`으로 분리한다. 그
 `--odom-guess-min-translation`과 `--odom-guess-min-rotation`으로 변경하되 동일 bag A/B에서
 한 변수씩 검증한다.
 
+Visual Odometry 프런트엔드와 분리해 RGB-D 매핑 데이터 자체를 확인할 때는 wheel
+`/odom`을 외부 odometry로 직접 사용한다.
+
+```bash
+bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabmap_docker.sh" \
+  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/bag_paired_10fps" \
+  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/rtabmap_external_odom" \
+  --profile low-texture \
+  --external-odom
+```
+
+이 결과는 Visual SLAM이 아니라 odometry-seeded RGB-D mapping으로 분류한다.
+
 ## 거리·각도 검증
 
 ```bash
@@ -148,3 +161,5 @@ P턴 실주행 A/B와 3D 산출물 판정은
 `evaluation/20260916_RGBD_VSLAM_PTURN.md`에 기록했다.
 wheel odometry를 사용한 90° 회전 point cloud 실험은
 `evaluation/20260916_RGBD_ODOM_FUSION_90TURN.md`에 기록했다.
+0.7m 자동 폐루프의 Visual SLAM과 external wheel odom RGB-D mapping 비교는
+`evaluation/20260917_RGBD_CLOSED_LOOP_PROBE.md`에 기록했다.

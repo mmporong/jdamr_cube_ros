@@ -62,7 +62,12 @@ SLAM 지도 증거로 사용하지 않는다.
 새 폐루프 bag에서 camera-only, wheel guess·gate 0, wheel guess·gate 0.005를 순서대로
 실행한다. LiDAR 비교에서는 선택한 wheel-assisted 설정을 고정하고 scan 제약만 추가한다.
 
-### 3. 새 폐루프 bag 1개
+### 3. 소형 폐루프 bag — 완료, 방 전체 폐루프 필요
+
+0.7m 전진·복귀와 360° 회전은 완료했다. external wheel odom RGB-D mapping은 단일 map을
+유지했지만 camera-only와 wheel-guess Visual SLAM은 재초기화로 두 map으로 분리됐다. 세부
+근거는 `20260917_RGBD_CLOSED_LOOP_PROBE.md`에 있다. 다음 기록은 같은 자리의 짧은 왕복이
+아니라 방 둘레를 따라 translation과 재방문 구간을 충분히 포함한다.
 
 기존 P턴은 출발점 재방문이 없어 loop closure 검증에 불충분하다. 새 기록은 다음 조건을
 지킨다.
