@@ -5,15 +5,13 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch.actions import RegisterEventHandler, SetEnvironmentVariable, Shutdown
 from launch.event_handlers import OnProcessExit
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
-from launch_ros.actions import Node, SetRemap
-from launch_ros.descriptions import ParameterFile
+from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.descriptions import ComposableNode, ParameterFile
 
 from nav2_common.launch import RewrittenYaml
 
@@ -21,7 +19,6 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     """Build navigation-only mapping launch; the explorer starts in IDLE."""
     package_share = get_package_share_directory('jdamr_cube_navigation')
-    nav2_share = get_package_share_directory('nav2_bringup')
 
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -43,18 +40,83 @@ def generate_launch_description():
         allow_substs=True,
     )
 
-    navigation = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(nav2_share, 'launch', 'navigation_launch.py')),
-        launch_arguments={
-            'use_sim_time': use_sim_time,
-            # Include launch arguments accept substitutions, not ParameterFile.
-            'params_file': rewritten_params,
+    remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
+
+    def component(package, plugin, name, *, cmd_vel=False):
+        component_remappings = list(remappings)
+        if cmd_vel:
+            component_remappings.append(('cmd_vel', 'cmd_vel_nav'))
+        return ComposableNode(
+            package=package,
+            plugin=plugin,
+            name=name,
+            parameters=[configured_params, {'use_sim_time': use_sim_time}],
+            remappings=component_remappings,
+        )
+
+    navigation_nodes = [
+        'controller_server',
+        'planner_server',
+        'behavior_server',
+        'velocity_smoother',
+        'collision_monitor',
+        'bt_navigator',
+    ]
+    navigation_container = ComposableNodeContainer(
+        package='rclcpp_components',
+        executable='component_container_isolated',
+        name='nav2_mapping_container',
+        namespace='',
+        # Costmaps are child nodes of controller/planner. Supplying the
+        # rewritten file at process level keeps their footprint and obstacle
+        # layers identical to the parent components.
+        parameters=[configured_params, {'use_sim_time': use_sim_time}],
+        composable_node_descriptions=[
+            component(
+                'nav2_controller', 'nav2_controller::ControllerServer',
+                'controller_server', cmd_vel=True),
+            component(
+                'nav2_planner', 'nav2_planner::PlannerServer',
+                'planner_server'),
+            component(
+                'nav2_behaviors', 'behavior_server::BehaviorServer',
+                'behavior_server', cmd_vel=True),
+            component(
+                'nav2_velocity_smoother',
+                'nav2_velocity_smoother::VelocitySmoother',
+                'velocity_smoother', cmd_vel=True),
+            component(
+                'nav2_collision_monitor',
+                'nav2_collision_monitor::CollisionMonitor',
+                'collision_monitor'),
+            component(
+                'nav2_bt_navigator', 'nav2_bt_navigator::BtNavigator',
+                'bt_navigator'),
+        ],
+        output='screen',
+    )
+    navigation_lifecycle = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_navigation',
+        output='screen',
+        parameters=[{
             'autostart': autostart,
-            # Keep lifecycle nodes isolated: the composed container can stall
-            # under physical scan/TF load and remove every Nav2 action server.
-            'use_composition': 'False',
-        }.items(),
+            'node_names': navigation_nodes,
+            'use_sim_time': use_sim_time,
+            # The separate graph guard owns liveness. Nav2 bond heartbeats
+            # added DDS traffic and falsely reset healthy components on this
+            # Pi; zero disables only the bond timer, not lifecycle control.
+            'bond_timeout': 0.0,
+        }],
+    )
+    liveness_guard = Node(
+        package='jdamr_cube_navigation',
+        executable='nav2_liveness_guard',
+        name='nav2_mapping_liveness_guard',
+        output='screen',
+        arguments=['--required', ','.join(navigation_nodes)],
+        parameters=[{'use_sim_time': use_sim_time}],
     )
 
     map_saver = Node(
@@ -73,6 +135,7 @@ def generate_launch_description():
             'autostart': autostart,
             'node_names': ['map_saver'],
             'use_sim_time': use_sim_time,
+            'bond_timeout': 0.0,
         }],
     )
     explorer = Node(
@@ -87,6 +150,15 @@ def generate_launch_description():
         on_exit=[Shutdown(
             reason='frontier explorer exited; stopping autonomous mapping')],
     ))
+    required_exit_handlers = [
+        RegisterEventHandler(OnProcessExit(
+            target_action=process,
+            on_exit=[Shutdown(reason=(
+                'required autonomous-mapping process exited'))],
+        ))
+        for process in (
+            navigation_container, navigation_lifecycle, liveness_guard)
+    ]
 
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
@@ -95,7 +167,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'params_file',
             default_value=os.path.join(
-                package_share, 'config', 'nav2_params.yaml'),
+                package_share, 'config', 'new_base_nav2_params.yaml'),
             description='Absolute path to the autonomous mapping Nav2 params'),
         DeclareLaunchArgument(
             'use_sim_time', default_value='false',
@@ -103,13 +175,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'autostart', default_value='true',
             description='Activate Nav2 and map_saver lifecycle nodes'),
-        GroupAction(actions=[
-            # Jazzy navigation_launch.py starts docking_server without a
-            # cmd_vel remap. Keep it behind the smoother/collision pipeline so
-            # collision_monitor remains the only final /cmd_vel publisher.
-            SetRemap(src='docking_server:cmd_vel', dst='cmd_vel_nav'),
-            navigation,
-        ]),
+        *required_exit_handlers,
+        navigation_container,
+        navigation_lifecycle,
+        liveness_guard,
         map_saver,
         map_saver_lifecycle,
         explorer_exit_shutdown,

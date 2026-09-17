@@ -68,9 +68,10 @@ def test_physical_candidate_is_accepted():
     assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.08
     controller = document['controller_server']['ros__parameters']
     assert controller['progress_checker']['plugin'] == (
-        'nav2_controller::SimpleProgressChecker')
+        'nav2_controller::PoseProgressChecker')
     assert controller['progress_checker']['required_movement_radius'] == 0.05
-    assert controller['progress_checker']['movement_time_allowance'] == 15.0
+    assert controller['progress_checker']['required_movement_angle'] == 0.10
+    assert controller['progress_checker']['movement_time_allowance'] == 10.0
     assert controller['FollowPath']['rotate_to_heading_min_angle'] >= 1.57
 
 
@@ -79,7 +80,8 @@ def test_stop_zone_has_requested_geometric_margin():
     local = document['local_costmap']['local_costmap']['ros__parameters']
     monitor = document['collision_monitor']['ros__parameters']
     footprint = yaml.safe_load(local['footprint'])
-    stop = yaml.safe_load(monitor['StopZone']['points'])
+    stop_zone = monitor['StopZone']
+    stop = yaml.safe_load(stop_zone['stopped']['points'])
     margins = (
         max(point[0] for point in stop) - max(point[0] for point in footprint),
         min(point[0] for point in footprint) - min(point[0] for point in stop),
@@ -87,6 +89,29 @@ def test_stop_zone_has_requested_geometric_margin():
         - max(abs(point[1]) for point in footprint),
     )
     assert margins == pytest.approx((0.05, 0.05, 0.05))
+    assert stop_zone['type'] == 'velocity_polygon'
+    assert stop_zone['velocity_polygons'] == [
+        'rotation', 'translation_forward', 'translation_backward', 'stopped']
+    rotation = yaml.safe_load(stop_zone['rotation']['points'])
+    footprint_radius = max(math.hypot(*point) for point in footprint)
+    edge_distances = []
+    for start, end in zip(rotation, rotation[1:] + rotation[:1]):
+        edge_distances.append(abs(
+            start[0] * end[1] - start[1] * end[0]) / math.hypot(
+                end[0] - start[0], end[1] - start[1]))
+    assert len(rotation) >= 12
+    assert min(edge_distances) >= footprint_radius
+    forward = yaml.safe_load(stop_zone['translation_forward']['points'])
+    assert max(point[0] for point in forward) == pytest.approx(
+        max(point[0] for point in footprint) + 0.05)
+    assert max(abs(point[1]) for point in forward) == pytest.approx(
+        max(abs(point[1]) for point in footprint))
+    backward = yaml.safe_load(stop_zone['translation_backward']['points'])
+    assert min(point[0] for point in backward) == pytest.approx(
+        min(point[0] for point in footprint) - 0.05)
+    assert max(abs(point[1]) for point in backward) == pytest.approx(
+        max(abs(point[1]) for point in footprint))
+    assert monitor['source_timeout'] == 1.0
     assert monitor['FootprintApproach']['enabled'] is True
     assert document['controller_server']['ros__parameters']['FollowPath'][
         'use_collision_detection'] is True
@@ -139,6 +164,18 @@ def test_revisit_uses_previous_bounded_dynamic_replan_tree():
         REVISIT_BT.name)
     assert REVISIT_BT.name in LAUNCH.read_text(
         encoding='utf-8')
+
+
+def test_autonomous_mapping_recovery_never_commands_blind_motion():
+    """Mapping recovery may clear and wait but never spin or reverse."""
+    mapping_bt = (ROOT / 'jdamr_cube_navigation/behavior_trees/'
+                  'navigate_to_pose_safe_mapping.xml')
+    root = ET.parse(mapping_bt).getroot()
+    recoveries = list(root.iter('RecoveryNode'))
+
+    assert recoveries[0].attrib['number_of_retries'] == '1'
+    assert not any(node.tag in {'Spin', 'BackUp'} for node in root.iter())
+    assert len(list(root.iter('Wait'))) == 1
 
 
 def test_revisit_rejects_the_recorded_instant_false_success():
@@ -488,8 +525,10 @@ def test_old_map_is_rejected():
 
 def test_narrowed_stop_zone_is_rejected(tmp_path):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
-    document['collision_monitor']['ros__parameters']['StopZone']['points'] = \
+    points = \
         '[[0.28, 0.25], [0.28, -0.25], [-0.28, -0.25], [-0.28, 0.25]]'
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    stop_zone['stopped']['points'] = points
     narrowed = tmp_path / 'narrowed.yaml'
     narrowed.write_text(yaml.safe_dump(document), encoding='utf-8')
     with pytest.raises(RuntimeError, match='StopZone does not contain'):
@@ -498,11 +537,30 @@ def test_narrowed_stop_zone_is_rejected(tmp_path):
 
 def test_stop_zone_below_requested_margin_is_rejected(tmp_path):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
-    document['collision_monitor']['ros__parameters']['StopZone']['points'] = \
+    points = \
         '[[0.125, 0.33], [0.125, -0.33], [-0.335, -0.33], [-0.335, 0.33]]'
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    stop_zone['stopped']['points'] = points
     narrowed = tmp_path / 'below_margin.yaml'
     narrowed.write_text(yaml.safe_dump(document), encoding='utf-8')
     with pytest.raises(RuntimeError, match='margin is below 0.05m'):
+        _load_validator(narrowed)(None)
+
+
+def test_rotation_stop_zone_below_swept_radius_is_rejected(tmp_path):
+    """The launch gate rejects a polygon that misses rotating corners."""
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    points = [
+        [round(0.40 * math.cos(index * math.pi / 6.0), 6),
+         round(0.40 * math.sin(index * math.pi / 6.0), 6)]
+        for index in range(12)
+    ]
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    stop_zone['rotation']['points'] = points
+    narrowed = tmp_path / 'narrowed_rotation.yaml'
+    narrowed.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='swept corner radius'):
         _load_validator(narrowed)(None)
 
 
@@ -515,10 +573,12 @@ def test_stop_zone_below_requested_margin_is_rejected(tmp_path):
      'scan collision source is not active'),
     (lambda monitor: monitor.update(observation_sources=[]),
      'scan collision source is not active'),
-    (lambda monitor: monitor['StopZone'].update(points=(
+    (lambda monitor: monitor.update(source_timeout=3.0),
+     'scan source timeout must be 1.0s'),
+    (lambda monitor: monitor['StopZone']['stopped'].update(points=(
         '[[0.35, 0.35], [0.35, 0.30], [-0.38, 0.30], [-0.38, 0.35]]')),
      'polygon must cover both sides'),
-    (lambda monitor: monitor['StopZone'].update(points=(
+    (lambda monitor: monitor['StopZone']['stopped'].update(points=(
         '[[0.35, 0.35], [-0.38, -0.35], [0.35, -0.35], [-0.38, 0.35]]')),
      'corners must follow the perimeter'),
 ])

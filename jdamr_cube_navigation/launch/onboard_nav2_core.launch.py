@@ -8,6 +8,7 @@
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -178,8 +179,14 @@ def _validate_new_base_params(context, revisit=False):
     rear = front - geometry['frame_length']['value']
     half_width = geometry['wheel_outer_width']['value'] / 2.0
 
+    def polygon_points(value):
+        polygon = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(polygon, list) or len(polygon) < 3:
+            raise RuntimeError('new-base polygon needs at least three points')
+        return polygon
+
     def bounds(points):
-        polygon = json.loads(points) if isinstance(points, str) else points
+        polygon = polygon_points(points)
         if len(polygon) != 4:
             raise RuntimeError('new-base polygon must have four corners')
         xs = sorted({point[0] for point in polygon})
@@ -219,11 +226,22 @@ def _validate_new_base_params(context, revisit=False):
     if not {'StopZone', 'SlowdownZone', 'FootprintApproach'} <= set(
             monitor['polygons']):
         raise RuntimeError('new-base collision polygons are incomplete')
-    for name, action in (('StopZone', 'stop'), ('SlowdownZone', 'slowdown')):
-        zone = monitor[name]
-        if (zone['type'] != 'polygon' or zone['action_type'] != action
-                or not zone['enabled'] or zone['min_points'] < 3):
-            raise RuntimeError(f'new-base {name} is not active')
+    stop_zone = monitor['StopZone']
+    if (stop_zone['type'] != 'velocity_polygon'
+            or stop_zone['action_type'] != 'stop'
+            or not stop_zone['enabled'] or stop_zone['min_points'] < 3
+            or stop_zone.get('holonomic') is not False):
+        raise RuntimeError('new-base StopZone is not active')
+    expected_velocity_polygons = {
+        'rotation', 'translation_forward', 'translation_backward', 'stopped'}
+    if (set(stop_zone.get('velocity_polygons', [])) !=
+            expected_velocity_polygons):
+        raise RuntimeError('new-base directional StopZone is incomplete')
+    slow_zone = monitor['SlowdownZone']
+    if (slow_zone['type'] != 'polygon'
+            or slow_zone['action_type'] != 'slowdown'
+            or not slow_zone['enabled'] or slow_zone['min_points'] < 3):
+        raise RuntimeError('new-base SlowdownZone is not active')
     if (monitor['FootprintApproach']['action_type'] != 'approach'
             or not monitor['FootprintApproach']['enabled']):
         raise RuntimeError('new-base approach monitor is not active')
@@ -232,17 +250,65 @@ def _validate_new_base_params(context, revisit=False):
             or monitor['scan']['type'] != 'scan'
             or monitor['scan']['topic'] != '/scan'):
         raise RuntimeError('new-base scan collision source is not active')
-    stop = bounds(monitor['StopZone']['points'])
+    rotation_points = polygon_points(stop_zone['rotation']['points'])
+    forward_stop = bounds(stop_zone['translation_forward']['points'])
+    backward_stop = bounds(stop_zone['translation_backward']['points'])
+    stopped_stop = bounds(stop_zone['stopped']['points'])
     slow = bounds(monitor['SlowdownZone']['points'])
-    if not (stop[0] > footprint[0] and stop[1] < footprint[1]
-            and stop[2] > footprint[2]):
+    if len(rotation_points) < 12:
+        raise RuntimeError('new-base rotation StopZone is too coarse')
+    edge_distances = []
+    turn_sign = None
+    for index, start in enumerate(rotation_points):
+        end = rotation_points[(index + 1) % len(rotation_points)]
+        following = rotation_points[(index + 2) % len(rotation_points)]
+        edge_length = math.hypot(end[0] - start[0], end[1] - start[1])
+        if edge_length <= 0.0:
+            raise RuntimeError(
+                'new-base rotation StopZone has duplicate points')
+        edge_distances.append(abs(
+            start[0] * end[1] - start[1] * end[0]) / edge_length)
+        turn = ((end[0] - start[0]) * (following[1] - end[1])
+                - (end[1] - start[1]) * (following[0] - end[0]))
+        if abs(turn) <= 1e-9:
+            continue
+        current_sign = 1 if turn > 0.0 else -1
+        if turn_sign is None:
+            turn_sign = current_sign
+        elif turn_sign != current_sign:
+            raise RuntimeError('new-base rotation StopZone must be convex')
+    footprint_radius = max(
+        math.hypot(x, y)
+        for x in (footprint[0], footprint[1])
+        for y in (-footprint[2], footprint[2]))
+    if min(edge_distances) < footprint_radius - 1e-6:
+        raise RuntimeError(
+            'new-base rotation StopZone misses the swept corner radius')
+    if not (stopped_stop[0] > footprint[0]
+            and stopped_stop[1] < footprint[1]
+            and stopped_stop[2] > footprint[2]):
         raise RuntimeError('new-base StopZone does not contain footprint')
-    if min(stop[0] - footprint[0], footprint[1] - stop[1],
-           stop[2] - footprint[2]) < 0.05 - 1e-6:
+    if min(stopped_stop[0] - footprint[0],
+           footprint[1] - stopped_stop[1],
+           stopped_stop[2] - footprint[2]) < 0.05 - 1e-6:
         raise RuntimeError('new-base StopZone margin is below 0.05m')
-    if not (slow[0] > stop[0] and slow[1] < stop[1]
-            and slow[2] > stop[2]):
+    if not (forward_stop[0] - footprint[0] >= 0.05 - 1e-6
+            and forward_stop[1] <= footprint[1]
+            and abs(forward_stop[2] - footprint[2]) <= 1e-6):
+        raise RuntimeError('new-base forward StopZone shape is invalid')
+    if not (footprint[1] - backward_stop[1] >= 0.05 - 1e-6
+            and backward_stop[0] >= footprint[0]
+            and abs(backward_stop[2] - footprint[2]) <= 1e-6):
+        raise RuntimeError('new-base backward StopZone shape is invalid')
+    rotation_front = max(point[0] for point in rotation_points)
+    rotation_rear = min(point[0] for point in rotation_points)
+    rotation_half_width = max(abs(point[1]) for point in rotation_points)
+    if not (slow[0] > max(stopped_stop[0], rotation_front)
+            and slow[1] < min(stopped_stop[1], rotation_rear)
+            and slow[2] > max(stopped_stop[2], rotation_half_width)):
         raise RuntimeError('new-base SlowdownZone does not contain StopZone')
+    if monitor['source_timeout'] != 1.0:
+        raise RuntimeError('new-base scan source timeout must be 1.0s')
     if params['amcl']['ros__parameters']['set_initial_pose']:
         raise RuntimeError('new-base AMCL cannot force the old map origin')
     amcl_tf_tolerance_s = params['amcl']['ros__parameters'][
@@ -252,11 +318,18 @@ def _validate_new_base_params(context, revisit=False):
         raise RuntimeError('new-base AMCL transform tolerance must be 1.0s')
     if params['velocity_smoother']['ros__parameters']['max_velocity'][0] > 0.08:
         raise RuntimeError('new-base forward speed exceeds uncalibrated limit')
+    minimum_linear_velocity = params['velocity_smoother'][
+        'ros__parameters']['min_velocity'][0]
+    if minimum_linear_velocity < 0.0:
+        raise RuntimeError('new-base autonomous profile cannot reverse')
+    progress = params['controller_server']['ros__parameters'][
+        'progress_checker']
+    if (progress['plugin'] != 'nav2_controller::PoseProgressChecker'
+            or progress.get('required_movement_angle') != 0.10):
+        raise RuntimeError('new-base progress checker must count rotation')
     if params['controller_server']['ros__parameters']['FollowPath'][
             'desired_linear_vel'] > 0.08:
         raise RuntimeError('new-base controller speed exceeds uncalibrated limit')
-    if monitor['source_timeout'] > 0.30:
-        raise RuntimeError('new-base scan source timeout exceeds candidate bound')
     if params['bt_navigator']['ros__parameters'][
             'robot_base_frame'] != 'base_footprint':
         raise RuntimeError('new-base BT needs base_footprint')

@@ -42,10 +42,11 @@ def generate_launch_description():
         # 이 파이의 Fast DDS SHM user-data 경로는 discovery 후 데이터가
         # 전달되지 않는다. 노드를 띄우기 전에 UDP-only로 고정한다.
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
-        # 센서 bringup은 LOCALHOST에 두고, 온보드 Nav2는 SUBNET으로
-        # 구독한다. 방해물 주행 20/20 완주 때 검증된 제어 경계다.
+        # Base sensors, Cartographer and Nav2 must use one discovery scope.
+        # A LOCALHOST/SUBNET split intermittently hid /tf and Collision
+        # Monitor lifecycle services during autonomous-mapping startup.
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ydlidar_g4',

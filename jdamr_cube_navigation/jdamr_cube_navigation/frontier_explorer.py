@@ -25,6 +25,13 @@ STATIONARY_LINEAR_SPEED_MAX = 0.01
 # The base encoder reports standstill yaw noise in 0.013744 rad/s steps.
 # Accept the measured two-step jitter while rejecting actual slow rotation.
 STATIONARY_ANGULAR_SPEED_MAX = 0.03
+COLLISION_ACTION_NAMES = {
+    0: 'DO_NOTHING',
+    1: 'STOP',
+    2: 'SLOWDOWN',
+    3: 'APPROACH',
+    4: 'LIMIT',
+}
 
 
 class ExplorerState(str, Enum):
@@ -324,9 +331,15 @@ class ExplorerPolicy:
 
     def __init__(self, *, stall_timeout: float = 20.0,
                  settle_seconds: float = 10.0, empty_cycles: int = 10,
-                 max_recoveries: int = 3, blacklist_seconds: float = 30.0,
+                 max_consecutive_failures: int = 2,
+                 max_collision_interventions: int = 3,
+                 blacklist_seconds: float = 30.0,
                  blacklist_radius: float = 0.35) -> None:
         """Initialize policy thresholds without enabling exploration."""
+        if max_consecutive_failures <= 0:
+            raise ValueError('max_consecutive_failures must be positive')
+        if max_collision_interventions <= 0:
+            raise ValueError('max_collision_interventions must be positive')
         self.state = ExplorerState.IDLE
         self.fault = ''
         self.active_goal: Optional[FrontierCandidate] = None
@@ -334,11 +347,14 @@ class ExplorerPolicy:
         self.stall_timeout = stall_timeout
         self.settle_seconds = settle_seconds
         self.empty_cycles_required = empty_cycles
-        self.max_recoveries = max_recoveries
+        self.max_consecutive_failures = max_consecutive_failures
+        self.max_collision_interventions = max_collision_interventions
         self.blacklist_seconds = blacklist_seconds
         self.blacklist_radius = blacklist_radius
         self._best_distance = math.inf
         self._last_progress_at = 0.0
+        self._consecutive_failures = 0
+        self._collision_interventions = 0
         self._last_empty_generation: Optional[int] = None
         self._empty_cycles = 0
         self._settling_since: Optional[float] = None
@@ -370,6 +386,7 @@ class ExplorerPolicy:
         self.active_goal = None
         self.state = ExplorerState.IDLE
         self.fault = ''
+        self._reset_failure_budget()
         self._reset_completion()
         return PolicyDecision(cancel_goal=cancel)
 
@@ -422,30 +439,42 @@ class ExplorerPolicy:
         self.fault = ''
         self._best_distance = math.inf
         self._last_progress_at = now
+        self._collision_interventions = 0
         return True
 
     def feedback(self, now: float, distance_remaining: float,
                  recoveries: int, generation: int = 0) -> PolicyDecision:
-        """Track meaningful progress and fail on excessive recovery."""
+        """Track physical goal progress; recovery counts are not motion."""
         if self.state != ExplorerState.NAVIGATE:
             return PolicyDecision()
-        if recoveries > self.max_recoveries:
-            return self.fail_goal(
-                now, generation, 'recovery limit exceeded')
         if distance_remaining + 0.05 < self._best_distance:
             self._best_distance = distance_remaining
             self._last_progress_at = now
+            self._collision_interventions = 0
         return PolicyDecision()
+
+    def collision_intervention(self, polygon_name: str) -> PolicyDecision:
+        """Latch after repeated collision interventions without progress."""
+        if self.state != ExplorerState.NAVIGATE:
+            return PolicyDecision()
+        self._collision_interventions += 1
+        if self._collision_interventions < self.max_collision_interventions:
+            return PolicyDecision()
+        polygon = polygon_name or 'unknown polygon'
+        return self.pause(
+            f'repeated collision intervention: {polygon} '
+            f'({self._collision_interventions})')
 
     def navigation_succeeded(self) -> None:
         """Release the completed goal and request fresh frontier selection."""
         self.active_goal = None
         self.state = ExplorerState.SELECT
+        self._reset_failure_budget()
         self._reset_completion()
 
     def fail_goal(self, now: float, generation: int,
                   reason: str) -> PolicyDecision:
-        """Blacklist the failed region before returning to selection."""
+        """Blacklist a failure and latch after the bounded retry budget."""
         if self.active_goal is not None:
             self.blacklist.append(BlacklistEntry(
                 self.active_goal.x, self.active_goal.y,
@@ -453,9 +482,16 @@ class ExplorerPolicy:
                 generation))
         cancel = self.state == ExplorerState.NAVIGATE
         self.active_goal = None
-        self.state = ExplorerState.SELECT
-        self.fault = reason
-        return PolicyDecision(cancel_goal=cancel, fault=reason)
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.max_consecutive_failures:
+            self.state = ExplorerState.PAUSED
+            self.fault = (
+                f'consecutive navigation failures '
+                f'({self._consecutive_failures}): {reason}')
+        else:
+            self.state = ExplorerState.SELECT
+            self.fault = reason
+        return PolicyDecision(cancel_goal=cancel, fault=self.fault)
 
     def observe_frontiers(self, count: int, generation: int,
                           now: float) -> None:
@@ -493,8 +529,13 @@ class ExplorerPolicy:
         self.state = ExplorerState.SELECT
         self.fault = ''
         self.active_goal = None
+        self._reset_failure_budget()
         self._reset_completion()
         return True, 'ready'
+
+    def _reset_failure_budget(self) -> None:
+        self._consecutive_failures = 0
+        self._collision_interventions = 0
 
     def _reset_completion(self) -> None:
         self._empty_cycles = 0
@@ -566,6 +607,8 @@ class FrontierExplorer(Node):
         self.declare_parameter('tf_stale_seconds', 2.0)
         self.declare_parameter('odom_stale_seconds', 2.0)
         self.declare_parameter('collision_state_stale_seconds', 3.0)
+        self.declare_parameter('collision_stop_latch_seconds', 1.0)
+        self.declare_parameter('collision_approach_latch_seconds', 3.0)
         self.declare_parameter('cancel_timeout_seconds', 3.0)
         self.declare_parameter('battery_stale_seconds', 10.0)
         self.declare_parameter('min_battery_voltage', 10.5)
@@ -595,6 +638,11 @@ class FrontierExplorer(Node):
         self._collision_query_started = -math.inf
         self._collision_query_token = 0
         self._collision_query_error = ''
+        self._collision_action = 0
+        self._collision_polygon = ''
+        self._collision_action_since = -math.inf
+        self._command_owner_checked = -math.inf
+        self._command_owner_valid = False
         self._probe_abort = False
         self._path_candidates: list[FrontierCandidate] = []
         self._path_index = 0
@@ -689,9 +737,44 @@ class FrontierExplorer(Node):
     def _on_abort(self, _msg: Empty) -> None:
         self._probe_abort = True
 
-    def _on_collision_state(self, _msg: CollisionMonitorState) -> None:
-        # Observability only. Lifecycle state is the readiness authority.
-        pass
+    def _on_collision_state(self, msg: CollisionMonitorState) -> None:
+        """Observe interventions and stop repeated no-progress cycles."""
+        now = self._monotonic()
+        action = int(msg.action_type)
+        polygon = str(msg.polygon_name)
+        changed = (
+            action != self._collision_action or
+            polygon != self._collision_polygon)
+        self._collision_action = action
+        self._collision_polygon = polygon
+        if not changed:
+            return
+        self._collision_action_since = now
+        if action in (
+                CollisionMonitorState.STOP,
+                CollisionMonitorState.APPROACH):
+            self._apply(self.policy.collision_intervention(polygon))
+
+    def _check_persistent_collision(self, now: float) -> None:
+        """Latch an intervention that remains active beyond its safe window."""
+        if self.policy.state != ExplorerState.NAVIGATE:
+            return
+        thresholds = {
+            CollisionMonitorState.STOP: float(self.get_parameter(
+                'collision_stop_latch_seconds').value),
+            CollisionMonitorState.APPROACH: float(self.get_parameter(
+                'collision_approach_latch_seconds').value),
+        }
+        threshold = thresholds.get(self._collision_action)
+        if threshold is None:
+            return
+        if now - self._collision_action_since < threshold:
+            return
+        action = COLLISION_ACTION_NAMES.get(
+            self._collision_action, str(self._collision_action))
+        polygon = self._collision_polygon or 'unknown polygon'
+        self._apply(self.policy.pause(
+            f'collision intervention persisted: {action}/{polygon}'))
 
     def _poll_collision_lifecycle(self) -> None:
         if not self._lifecycle.service_is_ready():
@@ -779,8 +862,16 @@ class FrontierExplorer(Node):
             _yaw_from_quaternion(transform.transform.rotation))
 
     def _command_owner_ok(self) -> bool:
-        return command_owner_is_collision_monitor(
-            self.get_publishers_info_by_topic('/cmd_vel'))
+        # Endpoint discovery is a graph operation, not a 10 Hz sensor read.
+        # Querying it on every policy tick consumed a full Pi core and delayed
+        # odom/TF callbacks. A one-second cache still catches competing command
+        # publishers before any explicit start/resume transition.
+        now = self._monotonic()
+        if now - self._command_owner_checked >= 1.0:
+            self._command_owner_valid = command_owner_is_collision_monitor(
+                self.get_publishers_info_by_topic('/cmd_vel'))
+            self._command_owner_checked = now
+        return self._command_owner_valid
 
     def _readiness(self, now: Optional[float] = None) -> Readiness:
         current = self._monotonic() if now is None else now
@@ -895,6 +986,7 @@ class FrontierExplorer(Node):
         self._check_navigation_transition_timeout(now)
         if self._shutdown_requested:
             return
+        self._check_persistent_collision(now)
         self._refresh_tf()
         readiness = self._readiness(now)
         if self._stop_save_pending:
@@ -963,8 +1055,9 @@ class FrontierExplorer(Node):
             now=now))
 
     def _extract_frontiers(
-            self, request: FrontierExtractionRequest
-            ) -> Sequence[FrontierCandidate]:
+            self,
+            request: FrontierExtractionRequest,
+    ) -> Sequence[FrontierCandidate]:
         """Perform CPU-only frontier extraction on the worker thread."""
         return self.core.extract(
             request.grid, *request.robot_pose,
@@ -1417,6 +1510,10 @@ class FrontierExplorer(Node):
             'pending' if self._navigation_transition_pending() else 'clear')
         collision_error = (
             getattr(self, '_collision_query_error', '') or 'none')
+        collision_action = COLLISION_ACTION_NAMES.get(
+            getattr(self, '_collision_action', 0), 'UNKNOWN')
+        collision_polygon = (
+            getattr(self, '_collision_polygon', '') or 'none')
         msg.data = (
             f'state={self.policy.state.value};fault={self.policy.fault};'
             f'goal={"none" if goal is None else f"{goal.x:.2f},{goal.y:.2f}"};'
@@ -1425,6 +1522,8 @@ class FrontierExplorer(Node):
             f'readiness_missing={missing};save={self._last_save_status};'
             f'motion_transition={motion_transition};frontiers={frontiers};'
             f'map_sequence={self._map_sequence};'
+            f'collision_action={collision_action};'
+            f'collision_polygon={collision_polygon};'
             f'collision_lifecycle_error={collision_error}')
         self._status_pub.publish(msg)
 

@@ -9,6 +9,7 @@ import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PARAMS_PATH = PACKAGE_ROOT / 'config' / 'nav2_params.yaml'
+NEW_BASE_PARAMS_PATH = PACKAGE_ROOT / 'config' / 'new_base_nav2_params.yaml'
 LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'autonomous_mapping.launch.py'
 NAVIGATION_LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
 URDF_PATH = (
@@ -127,6 +128,12 @@ def test_autonomous_mapping_uses_the_proven_sensor_transport_scope():
     assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'" in source
 
 
+def test_autonomous_mapping_defaults_to_new_base_geometry():
+    source = LAUNCH_PATH.read_text(encoding='utf-8')
+
+    assert "package_share, 'config', 'new_base_nav2_params.yaml'" in source
+
+
 def test_controller_uses_forward_only_collision_aware_rpp():
     controller = _node_params(_params(), 'controller_server')['FollowPath']
 
@@ -137,11 +144,11 @@ def test_controller_uses_forward_only_collision_aware_rpp():
     assert controller['rotate_to_heading_angular_vel'] <= 0.7
 
 
-def test_velocity_smoother_clamps_forward_and_angular_velocity():
-    smoother = _node_params(_params(), 'velocity_smoother')
+def test_velocity_smoother_disables_reverse_recovery_and_limits_turn_rate():
+    config = yaml.safe_load(NEW_BASE_PARAMS_PATH.read_text(encoding='utf-8'))
+    smoother = _node_params(config, 'velocity_smoother')
 
-    assert smoother['min_velocity'][0] == 0.0, (
-        'physical mapping must not command reverse linear velocity')
+    assert smoother['min_velocity'][0] == 0.0
     assert smoother['max_velocity'][0] <= 0.18
     assert abs(smoother['min_velocity'][2]) <= 0.7
     assert smoother['max_velocity'][2] <= 0.7
@@ -222,14 +229,16 @@ def test_collision_monitor_has_stop_slowdown_and_two_second_approach():
     assert actions['slowdown']['slowdown_ratio'] >= 0.60
 
 
-def test_mapping_behavior_tree_is_forward_only_but_keeps_safe_recoveries():
+def test_mapping_behavior_tree_recovery_does_not_move_the_robot():
     tree = ET.parse(BT_PATH)
     element_names = {element.tag for element in tree.iter()}
     selector = tree.find('.//GoalCheckerSelector')
     follow_path = tree.find('.//FollowPath')
 
-    assert 'BackUp' not in element_names
-    assert 'Spin' in element_names
+    assert tree.getroot().find('.//RecoveryNode').attrib[
+        'number_of_retries'] == '1'
+    assert tree.find('.//BackUp') is None
+    assert tree.findall('.//Spin') == []
     assert 'Wait' in element_names
     assert selector is not None
     assert selector.attrib['default_goal_checker'] == 'general_goal_checker'
@@ -243,7 +252,11 @@ def test_mapping_launch_uses_navigation_only_with_safe_defaults():
 
     assert 'bringup_launch.py' not in source, (
         'mapping must not start AMCL/map_server through bringup_launch.py')
-    assert 'navigation_launch.py' in source
+    for package in (
+            'nav2_controller', 'nav2_planner', 'nav2_behaviors',
+            'nav2_velocity_smoother', 'nav2_collision_monitor',
+            'nav2_bt_navigator'):
+        assert f"'{package}'" in source
     assert "executable='frontier_explorer'" in source
     assert "executable='map_saver_server'" in source
     assert "name='lifecycle_manager_map_saver'" in source
@@ -264,43 +277,34 @@ def test_mapping_launch_uses_navigation_only_with_safe_defaults():
     assert ast.literal_eval(defaults['default_value']) == 'false'
 
 
-def test_nav2_uses_isolated_processes_for_physical_reliability():
+def test_nav2_uses_an_isolated_component_container_for_physical_reliability():
     source = LAUNCH_PATH.read_text(encoding='utf-8')
 
-    assert "executable='component_container_isolated'" not in source
-    assert "'use_composition': 'False'" in source
-    assert "'container_name': 'nav2_container'" not in source
+    assert "executable='component_container_isolated'" in source
+    assert "name='nav2_mapping_container'" in source
+    assert source.count("'bond_timeout': 0.0") == 2
+    assert "executable='nav2_liveness_guard'" in source
 
 
-def test_include_launch_arguments_never_receive_parameter_file_objects():
+def test_composed_nodes_receive_the_rewritten_parameter_file():
     syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
-    includes = [
+    components = [
         node for node in ast.walk(syntax)
         if isinstance(node, ast.Call) and
-        _call_name(node) == 'IncludeLaunchDescription'
+        _call_name(node) == 'ComposableNode'
     ]
 
-    assert includes, 'expected a Nav2 IncludeLaunchDescription'
-    for include in includes:
-        argument = next(
-            keyword.value for keyword in include.keywords
-            if keyword.arg == 'launch_arguments')
-        dictionary = argument.func.value if (
-            isinstance(argument, ast.Call) and
-            isinstance(argument.func, ast.Attribute) and
-            argument.func.attr == 'items') else argument
-        assert isinstance(dictionary, ast.Dict)
-        for value in dictionary.values:
-            assert not (
-                isinstance(value, ast.Call) and
-                _call_name(value) == 'ParameterFile'), (
-                    'Include launch arguments accept substitutions, not '
-                    'ParameterFile objects')
-            assert not (
-                isinstance(value, ast.Name) and
-                value.id == 'configured_params'), (
-                    'configured_params is a ParameterFile and cannot be '
-                    'passed to IncludeLaunchDescription')
+    assert components
+    factory = next(
+        node for node in ast.walk(syntax)
+        if isinstance(node, ast.FunctionDef) and node.name == 'component')
+    parameters = next(
+        keyword.value for node in ast.walk(factory)
+        if isinstance(node, ast.Call) and _call_name(node) == 'ComposableNode'
+        for keyword in node.keywords if keyword.arg == 'parameters')
+    assert any(
+        isinstance(item, ast.Name) and item.id == 'configured_params'
+        for item in parameters.elts)
 
 
 def test_docking_velocity_is_remapped_before_navigation_launch():
