@@ -33,7 +33,9 @@ fi
 
 cleanup() {
   set +e
-  for pid in "${snapshot_pid:-}" "${recorder_pid:-}" "${launch_pid:-}"; do
+  for pid in "${bag_pid:-}" "${snapshot_pid:-}" "${recorder_pid:-}" \
+    "${launch_pid:-}" \
+    "${camera_tf_pid:-}"; do
     if [[ -n "$pid" ]]; then
       kill -INT -- "-$pid" 2>/dev/null
     fi
@@ -41,10 +43,31 @@ cleanup() {
   wait "${recorder_pid:-}" 2>/dev/null
   wait "${snapshot_pid:-}" 2>/dev/null
   wait "${launch_pid:-}" 2>/dev/null
+  wait "${camera_tf_pid:-}" 2>/dev/null
+  wait "${bag_pid:-}" 2>/dev/null
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]]; then
+  for variable in CAMERA_MOUNT_PARENT CAMERA_MOUNT_CHILD CAMERA_MOUNT_X \
+    CAMERA_MOUNT_Y CAMERA_MOUNT_Z CAMERA_MOUNT_ROLL CAMERA_MOUNT_PITCH \
+    CAMERA_MOUNT_YAW; do
+    if [[ -z "${!variable:-}" ]]; then
+      echo "missing measured camera mount value: ${variable}" >&2
+      exit 1
+    fi
+  done
+  setsid ros2 run tf2_ros static_transform_publisher \
+    --x "$CAMERA_MOUNT_X" --y "$CAMERA_MOUNT_Y" --z "$CAMERA_MOUNT_Z" \
+    --roll "$CAMERA_MOUNT_ROLL" --pitch "$CAMERA_MOUNT_PITCH" \
+    --yaw "$CAMERA_MOUNT_YAW" \
+    --frame-id "$CAMERA_MOUNT_PARENT" \
+    --child-frame-id "$CAMERA_MOUNT_CHILD" \
+    >/output/camera_mount_tf.log 2>&1 &
+  camera_tf_pid=$!
+fi
 
 setsid ros2 launch rtabmap_launch rtabmap.launch.py \
   use_sim_time:=true \
@@ -89,7 +112,28 @@ setsid python3 \
 snapshot_pid=$!
 
 sleep 5
-ros2 bag play /data --clock --read-ahead-queue-size 2000
+setsid ros2 bag play /data --clock --read-ahead-queue-size 2000 \
+  >/output/bag_play.log 2>&1 &
+bag_pid=$!
+
+if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]]; then
+  if ! kill -0 "$camera_tf_pid" 2>/dev/null; then
+    echo "camera mount static TF publisher exited early" >&2
+    exit 1
+  fi
+  if ! python3 /workspace/jdamr_cube_vslam/scripts/wait_for_tf.py \
+      --from-frame "$ODOM_GUESS_FRAME_ID" \
+      --to-frame "$CAMERA_MOUNT_CHILD" \
+      --timeout 10 \
+      --use-sim-time \
+      >/output/camera_mount_tf_check.log; then
+    cat /output/camera_mount_tf_check.log >&2
+    exit 1
+  fi
+fi
+
+wait "$bag_pid"
+bag_pid=''
 sleep 5
 
 cleanup
@@ -98,6 +142,13 @@ trap - EXIT
 if grep -Eq 'ParameterNotDeclaredException|\[ERROR\].*process has died.*rtabmap' \
     "$rtabmap_log"; then
   echo "RTAB-Map node failed; see ${rtabmap_log}" >&2
+  exit 1
+fi
+
+if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]] \
+    && ! grep -Fq \
+      "guess_frame_id         = ${ODOM_GUESS_FRAME_ID}" "$rtabmap_log"; then
+  echo "RTAB-Map did not activate the requested odometry guess frame" >&2
   exit 1
 fi
 

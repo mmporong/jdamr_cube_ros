@@ -1,7 +1,9 @@
 """Static contract tests for capture and RTAB-Map orchestration."""
 
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 import yaml
 
@@ -65,6 +67,161 @@ def test_unmeasured_mount_blocks_sensor_fusion():
     assert config['usage_gate']['camera_only_rgbd_slam'] == 'allowed'
     assert config['usage_gate']['lidar_rgbd_fusion'] \
         == 'blocked_until_measured'
+
+
+def test_wrapper_rejects_wheel_guess_with_unmeasured_mount():
+    script = PACKAGE_ROOT / 'scripts' / 'run_rtabmap_docker.sh'
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        bag_path = temporary_path / 'bag'
+        bag_path.mkdir()
+        completed = subprocess.run(
+            [
+                str(script),
+                str(bag_path),
+                str(temporary_path / 'output'),
+                '--odom-guess-frame',
+                'base_footprint',
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    assert completed.returncode != 0
+    assert 'camera mount status must be measured' in completed.stderr
+
+
+def test_wheel_guess_injects_measured_camera_transform():
+    wrapper = (
+        PACKAGE_ROOT / 'scripts' / 'run_rtabmap_docker.sh'
+    ).read_text(encoding='utf-8')
+    processor = (
+        PACKAGE_ROOT / 'scripts' / 'process_rgbd_bag_in_container.sh'
+    ).read_text(encoding='utf-8')
+    for variable in (
+        'CAMERA_MOUNT_PARENT',
+        'CAMERA_MOUNT_CHILD',
+        'CAMERA_MOUNT_X',
+        'CAMERA_MOUNT_Y',
+        'CAMERA_MOUNT_Z',
+        'CAMERA_MOUNT_ROLL',
+        'CAMERA_MOUNT_PITCH',
+        'CAMERA_MOUNT_YAW',
+    ):
+        assert variable in wrapper
+        assert variable in processor
+    assert 'static_transform_publisher' in processor
+    assert 'scripts/wait_for_tf.py' in processor
+    assert '--from-frame "$ODOM_GUESS_FRAME_ID"' in processor
+    assert '--to-frame "$CAMERA_MOUNT_CHILD"' in processor
+    assert 'guess_frame_id         = ${ODOM_GUESS_FRAME_ID}' in processor
+    assert 'odom_guess_frame_id:=${ODOM_GUESS_FRAME_ID}' in processor
+
+
+def test_wrapper_passes_measured_camera_transform_to_container():
+    script = PACKAGE_ROOT / 'scripts' / 'run_rtabmap_docker.sh'
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        bag_path = temporary_path / 'bag'
+        bag_path.mkdir()
+        config_path = temporary_path / 'camera_mount.yaml'
+        config_path.write_text(
+            """camera_mount:
+  status: measured
+  parent_frame: base_link
+  child_frame: camera_link
+  transform:
+    x_m: 0.065
+    y_m: 0.0
+    z_m: 0.2
+    roll_rad: 0.0
+    pitch_rad: 0.0
+    yaw_rad: 0.0
+usage_gate:
+  wheel_odom_fusion: allowed
+""",
+            encoding='utf-8',
+        )
+        fake_bin = temporary_path / 'bin'
+        fake_bin.mkdir()
+        fake_docker = fake_bin / 'docker'
+        fake_docker.write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n',
+            encoding='utf-8',
+        )
+        fake_docker.chmod(0o755)
+        environment = os.environ.copy()
+        environment['PATH'] = f'{fake_bin}:{environment["PATH"]}'
+        completed = subprocess.run(
+            [
+                str(script),
+                str(bag_path),
+                str(temporary_path / 'output'),
+                '--odom-guess-frame',
+                'base_footprint',
+                '--camera-mount',
+                str(config_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+    assert completed.returncode == 0, completed.stderr
+    for expected in (
+        'ODOM_GUESS_FRAME_ID=base_footprint',
+        'CAMERA_MOUNT_PARENT=base_link',
+        'CAMERA_MOUNT_CHILD=camera_link',
+        'CAMERA_MOUNT_X=0.065',
+        'CAMERA_MOUNT_Y=0.0',
+        'CAMERA_MOUNT_Z=0.2',
+        'CAMERA_MOUNT_ROLL=0.0',
+        'CAMERA_MOUNT_PITCH=0.0',
+        'CAMERA_MOUNT_YAW=0.0',
+    ):
+        assert expected in completed.stdout
+
+
+def test_wrapper_rejects_boolean_camera_transform():
+    script = PACKAGE_ROOT / 'scripts' / 'run_rtabmap_docker.sh'
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        bag_path = temporary_path / 'bag'
+        bag_path.mkdir()
+        config_path = temporary_path / 'camera_mount.yaml'
+        config_path.write_text(
+            """camera_mount:
+  status: measured
+  parent_frame: base_link
+  child_frame: camera_link
+  transform:
+    x_m: true
+    y_m: 0.0
+    z_m: 0.2
+    roll_rad: 0.0
+    pitch_rad: 0.0
+    yaw_rad: 0.0
+usage_gate:
+  wheel_odom_fusion: allowed
+""",
+            encoding='utf-8',
+        )
+        completed = subprocess.run(
+            [
+                str(script),
+                str(bag_path),
+                str(temporary_path / 'output'),
+                '--odom-guess-frame',
+                'base_footprint',
+                '--camera-mount',
+                str(config_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    assert completed.returncode != 0
+    assert 'transform x_m must be finite' in completed.stderr
 
 
 def test_offline_mapping_does_not_consume_lidar_as_visual_ground_truth():

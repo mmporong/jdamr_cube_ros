@@ -3,6 +3,11 @@
 이 패키지는 기존 2D LiDAR SLAM·Nav2 운용을 변경하지 않고 Orbbec Astra S 입력을
 별도 기록해 RTAB-Map으로 미터 스케일의 3D 지도를 생성한다.
 
+현재 상태는 입력·visual odometry·DB 생성까지 검증됐지만 연속적인 3D SLAM 지도는 아직
+통과하지 못했다. 저텍스처 P턴에서 발생한 재초기화와 분리 점군을 wheel odometry 보조와
+LiDAR graph 제약으로 개선하는 것이 현재 목표다. 다음 실행 순서와 성공 기준은
+[RGB-D Visual SLAM 다음 실행 계획](evaluation/20260917_RGBD_VSLAM_NEXT_RUN.md)을 따른다.
+
 ## 실행 구조
 
 1. Raspberry Pi에서 `capture_rgbd_bag.sh`가 기존 Depth 전용 서비스를 잠시 멈춘다.
@@ -48,6 +53,22 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabma
 `low-texture`는 최소 inlier를 10으로 유지하고 5회 연속 추적 실패 시 새 map으로
 재초기화한다. 최소 inlier를 더 낮추면 로그상 추적 손실은 줄어도 잘못된 대응으로
 점군이 찢어질 수 있으므로 기본 설정으로 사용하지 않는다.
+
+휠 odometry 이동량을 visual odometry의 초기 추정으로 사용할 때는 카메라 장착 변환을
+먼저 실측한다. `config/camera_mount.yaml`의 상태와 usage gate가 허용되지 않으면 wrapper가
+실행을 거부한다. 실측 뒤 동일 bag 비교는 다음과 같이 실행한다.
+
+```bash
+bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabmap_docker.sh" \
+  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/bag_paired_10fps" \
+  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/rtabmap_wheel_guess" \
+  --profile low-texture \
+  --odom-guess-frame base_footprint
+```
+
+wrapper는 실측 `base_link → camera_link`를 정적 TF로 주입한다. bag 재생 중
+`base_footprint → base_link → camera_link` 연결을 직접 확인하며, TF publisher가 종료되거나
+연결을 10초 안에 확인하지 못하면 wheel-guess 결과를 만들지 않는다.
 
 ## 거리·각도 검증
 
@@ -106,6 +127,7 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/export_3d_
 
 ## 고도화 순서
 
+- 선행 조건: `base_link → camera_link` 외부 파라미터 실측과 정적 TF 공급
 - 1차: 카메라 단독 RGB-D baseline과 loop closure 성공 여부
 - 2차: wheel odometry guess를 사용한 저텍스처 복도 강건성 비교
 - 3차: 2D LiDAR scan을 추가한 RGB-D+LiDAR graph 최적화 비교
