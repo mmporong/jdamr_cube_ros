@@ -66,6 +66,10 @@ ros2 topic echo --full-length /box_parking/perception_status
 접근한 뒤 평면 각도를 별도로 맞춰야 한다. 이 시험은 방향 부호 검증이며 연속 폐루프 제어나
 최종 정지 정확도 검증은 아니다.
 
+차체 앞면과 카메라 렌즈면이 같은 현재 장착에서 물리 간격 5cm를 목표로 할 때의 센서
+사각지대 계산, Depth→라이다 전환과 근거리 센서 대안은
+[Depth 박스 정밀주차 설계](evaluation/20260917_DEPTH_BOX_PARKING_DESIGN.md)를 따른다.
+
 ## 저장 지도 자율주행의 금지구역
 
 복도 반복 수집처럼 이미 저장된 지도로 이동할 때는 `keepout_navigation.launch.py`만 사용한다. 이 launch는 AMCL과 저장 지도로 위치를 잡고, 동일한 금지구역 마스크를 global/local costmap에 함께 적용하며 전용 RViz도 기본으로 연다. RViz에는 원본 지도, `/keepout_filter_mask`, AMCL 파티클, 라이다, 전역 계획 경로와 초기 위치·Nav2 목표 도구가 미리 설정돼 있다. 마스크 또는 filter info 서버가 종료되면 전체 자율주행도 종료한다. 일반 `navigation.launch.py`의 `use_keepout:=false` 상태로 복도 자율주행을 시작하지 않는다.

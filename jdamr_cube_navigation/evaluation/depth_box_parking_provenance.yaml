@@ -1,0 +1,45 @@
+schema_version: 1
+as_of: '2026-09-17'
+
+measurements:
+  depth_camera_front_plane_offset:
+    value: 0.0
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: 현재 차체와 전면 장착 Depth 카메라
+    method: 사용자 확인 — 카메라 렌즈면과 차체 앞면이 같은 평면
+    status: USER_REPORTED
+
+  g4_lidar_front_setback:
+    value: 0.075
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: 현재 차체와 G4 라이다 장착 위치
+    method: 사용자 줄자 측정 — 차체 앞면에서 라이다 중심까지 75 mm
+    status: USER_REPORTED
+
+  g4_reported_range_min:
+    value: 0.28
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: ydlidar_g4_node가 발행한 현재 /scan
+    method: sensor_msgs/msg/LaserScan.range_min 실시간 확인
+    source: /scan
+    status: RUNTIME_REPORTED
+
+  depth_algorithm_minimum:
+    value: 0.35
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: config/depth_box_parking.yaml
+    method: 박스 평면 검출 후보의 소프트웨어 허용 하한
+    status: CONFIGURED_NOT_SENSOR_VALIDATED
+
+targets:
+  requested_front_clearance:
+    value: 0.05
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: 박스 앞 정밀주차 목표
+    method: 사용자 목표
+    status: TARGET_NOT_VALIDATED
