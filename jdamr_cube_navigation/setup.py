@@ -1,7 +1,7 @@
 """Package and console-entry configuration for jdamr_cube_navigation."""
 
-import os
 from glob import glob
+import os
 
 from setuptools import setup
 
@@ -70,6 +70,8 @@ setup(
             'jdamr_cube_navigation.g005_frontier_observer:main',
             'g005_frontier_coordinator = '
             'jdamr_cube_navigation.g005_frontier_coordinator:main',
+            'depth_box_parking = '
+            'jdamr_cube_navigation.depth_box_parking:main',
         ],
     },
 )

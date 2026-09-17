@@ -26,6 +26,34 @@ export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=false
 ```
 
+## Depth 박스 정밀주차 관측
+
+박스 앞 정밀주차의 1단계는 태그 없이 Depth에서 보이는 상판을 평면으로 검출한다. 검출기는
+카메라 optical frame 기준 박스 전면 거리, 좌우 오차, 전면 모서리 각도, 상판 폭·깊이와
+신뢰도를 `/box_parking/perception_status`에 JSON으로 발행한다. 8개 연속 관측의 거리·좌우·
+각도 분산이 설정 범위 안에 들어와야 `stable=true`가 된다.
+
+이 노드는 관측 전용이다. `/cmd_vel`을 발행하지 않고 `control_ready=false`를 유지하므로
+로봇을 움직이지 않는다. 박스를 실제로 반복 검출하고 카메라 외부 파라미터와 정지 오차를
+실측하기 전에는 정밀 접근 제어에 연결하지 않는다. 이후 제어 단계는 Nav2가 박스 근처의
+대기 위치까지 이동하고, 안정화된 Depth 상대 오차로 마지막 구간만 저속 보정하며, 2D
+라이다와 Collision Monitor는 충돌 정지를 담당하는 구조로 결합한다.
+
+```bash
+cd "$HOME/jdamr_rgbd_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+export ROS_DOMAIN_ID=12
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+ros2 launch jdamr_cube_navigation depth_box_parking.launch.py
+ros2 topic echo --full-length /box_parking/perception_status
+```
+
+실차 파이의 배포 워크스페이스는 `$HOME/jdamr_ws`다. 2026-09-17 정지 장면에서 관측
+노드만 추가로 실행했을 때 토픽은 평균 4.609 Hz였고, 박스가 없는 장면은
+`reason=no_box_top_candidate`로 거부했다. 이 결과는 오검출 방지의 음성 샘플이며 박스
+검출 성공이나 5 cm 주차 성능의 증거는 아니다.
+
 ## 저장 지도 자율주행의 금지구역
 
 복도 반복 수집처럼 이미 저장된 지도로 이동할 때는 `keepout_navigation.launch.py`만 사용한다. 이 launch는 AMCL과 저장 지도로 위치를 잡고, 동일한 금지구역 마스크를 global/local costmap에 함께 적용하며 전용 RViz도 기본으로 연다. RViz에는 원본 지도, `/keepout_filter_mask`, AMCL 파티클, 라이다, 전역 계획 경로와 초기 위치·Nav2 목표 도구가 미리 설정돼 있다. 마스크 또는 filter info 서버가 종료되면 전체 자율주행도 종료한다. 일반 `navigation.launch.py`의 `use_keepout:=false` 상태로 복도 자율주행을 시작하지 않는다.
