@@ -34,6 +34,10 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 보류한다. Depth 관측 코드는 이후 양팔이 컵을 놓기 직전 상판과 빈 공간을 확인하는 국소
 인지로 전환한다.
 
+테이블별 목적지는 `map` 좌표계의 이름 있는 서비스 pose로 교시하며, 구현 범위와 데이터
+형식은 [식당 서비스 목적지 등록 후속 작업](evaluation/20260917_RESTAURANT_SERVICE_DESTINATION_BACKLOG.md)에
+분리했다. 현재 브랜치에서는 목적지 관리자나 주행 제어를 추가하지 않는다.
+
 박스 앞 정밀주차의 1단계는 태그 없이 Depth에서 보이는 평면을 검출한다. 현재 낮은 카메라
 위치에서는 상판보다 전면이 안정적으로 보이므로 `surface_mode=front`를 사용한다. 카메라를
 높인 뒤에는 `surface_mode=top`으로 바꿔 같은 관측 구조를 사용할 수 있다. 검출기는 카메라
