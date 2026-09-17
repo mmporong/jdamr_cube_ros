@@ -20,7 +20,8 @@ SLAM 지도 증거로 사용하지 않는다.
 | 저텍스처 P턴 camera-only | quality=0 비율 감소 | 재초기화 2회, 지도 연속성 FAIL |
 | inlier 5 완화 | 추적 손실 수치 감소 | 오대응과 점군 찢어짐으로 REJECT |
 | wheel-odom 점군 융합 | 3D 역투영·pose 적용 확인 | SLAM 아님 |
-| `base_link → camera_link` | bag과 설정에 없음 | 센서 융합 BLOCKED |
+| `base_link → camera_link` | bag에는 없음, 현재 장착 실측값 설정 완료 | wheel-guess 실행 가능 |
+| 동일 P턴 wheel-assisted A/B | reset 2→0, ATE 0.7346→0.2070m | 강건성 개선, 지도 완성은 아님 |
 
 기존 P턴 bag은 다음 토픽을 포함한다.
 
@@ -30,33 +31,36 @@ SLAM 지도 증거로 사용하지 않는다.
 - `/tf_static`: `base_footprint → base_link`, `base_link → laser_link`
 - 카메라 내부 TF: `camera_link → camera_color_optical_frame` 등
 
-기록에는 `base_link → camera_link`가 없다. 따라서 `odom_guess_frame_id=base_footprint`를
-활성화하기 전에 현재 임시 장착의 카메라 외부 파라미터를 실측하고 정적 TF로 공급해야 한다.
+기록에는 `base_link → camera_link`가 없다. 현재 임시 장착은 바퀴축 기준 전방 0.065m,
+중앙 0m, 바닥 기준 렌즈 중심 0.215m이며 정면·명목 수평 장착으로 기록했다. wrapper가 이 값을
+정적 TF로 공급한 뒤 `odom_guess_frame_id=odom` 연결을 확인한다. visual odometry 출력은
+`vslam_odom`으로 분리해 입력 휠 TF `odom → base_footprint`와 충돌하지 않게 한다. 카메라 브래킷을
+움직이면 이 값은 즉시 폐기한다.
 
 ## 다음 실행 순서
 
-### 1. 카메라 외부 파라미터 실측
+### 1. 카메라 외부 파라미터 실측 — 완료
 
-현재 장착 상태에서 다음 값을 `config/camera_mount.yaml`에 기록한다.
+현재 장착 상태에서 다음 값을 `config/camera_mount.yaml`에 기록했다.
 
 - `base_link` 원점에서 카메라 `camera_link` 원점까지의 `x`, `y`, `z` [m]
 - 차체 전방 기준 카메라의 `roll`, `pitch`, `yaw` [rad]
 - 측정일, 측정 방법, 이 값이 유효한 브래킷 상태
 
-카메라 높이나 방향을 바꾸면 이 값은 폐기하고 다시 측정한다. 사진으로 추정한 값은 센서
-융합 결과의 근거로 사용하지 않는다.
+카메라 높이나 방향을 바꾸면 이 값은 폐기하고 다시 측정한다. roll·pitch·yaw는 장착 정렬
+관측값이므로 wheel-guess A/B 후 바닥 평면과 벽의 기울기로 잔여 오차를 평가한다.
 
-### 2. 동일 bag A/B
+### 2. 동일 bag A/B — 완료
 
-동일 입력을 사용해 다음을 비교한다.
+동일 입력을 사용해 camera-only와 wheel-guess를 비교했다. 세부 수치는
+`20260917_RGBD_WHEEL_ASSISTED_AB.md`에 기록했다. 다음 두 모드는 새 폐루프 bag에서 이어간다.
 
-1. `camera-only`: 현재 `low-texture` 프로파일
-2. `wheel-guess`: 휠 odometry의 `base_footprint` 이동량을 visual odometry의 초기 추정으로 사용
-3. `wheel-odom`: visual odometry를 끄고 `/odom`을 외부 odometry로 사용한 graph baseline
-4. `RGB-D + 2D LiDAR`: 위 두 단계가 안정된 뒤 `/scan` 제약 추가
+1. `wheel-odom`: visual odometry를 끄고 `/odom`을 외부 odometry로 사용한 graph baseline
+2. `RGB-D + 2D LiDAR`: 폐루프 RGB-D graph가 안정된 뒤 `/scan` 제약 추가
 
-변수는 한 번에 하나만 바꾼다. camera-only와 wheel-guess의 차이는 초기 추정 사용 여부,
-wheel-guess와 LiDAR 융합의 차이는 scan 제약 사용 여부로 제한한다.
+기존 A/B는 wheel guess와 이동 문턱을 함께 적용한 통합 비교다. 인과 효과를 분리해야 할 때는
+새 폐루프 bag에서 camera-only, wheel guess·gate 0, wheel guess·gate 0.005를 순서대로
+실행한다. LiDAR 비교에서는 선택한 wheel-assisted 설정을 고정하고 scan 제약만 추가한다.
 
 ### 3. 새 폐루프 bag 1개
 
@@ -102,4 +106,3 @@ wheel-guess와 LiDAR 융합의 차이는 scan 제약 사용 여부로 제한한�
 
 휠 보조 후에도 graph와 점군 연속성이 확보되지 않으면, 실패 분석까지 남기고 Visual SLAM을
 주요 결과로 과장하지 않는다. 이 경우 Depth 카메라는 매니퓰레이션용 국소 인지로 전환한다.
-

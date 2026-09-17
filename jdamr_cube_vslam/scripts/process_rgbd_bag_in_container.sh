@@ -28,6 +28,9 @@ odom_guess_launch_arg=()
 if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]]; then
   odom_guess_launch_arg=(
     "odom_guess_frame_id:=${ODOM_GUESS_FRAME_ID}"
+    "odom_guess_min_translation:=${ODOM_GUESS_MIN_TRANSLATION:-0.005}"
+    "odom_guess_min_rotation:=${ODOM_GUESS_MIN_ROTATION:-0.005}"
+    "vo_frame_id:=vslam_odom"
   )
 fi
 
@@ -150,6 +153,18 @@ if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]] \
       "guess_frame_id         = ${ODOM_GUESS_FRAME_ID}" "$rtabmap_log"; then
   echo "RTAB-Map did not activate the requested odometry guess frame" >&2
   exit 1
+fi
+
+if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]]; then
+  for expected in \
+    "odom_frame_id          = vslam_odom" \
+    "guess_min_translation  = ${ODOM_GUESS_MIN_TRANSLATION:-0.005}" \
+    "guess_min_rotation     = ${ODOM_GUESS_MIN_ROTATION:-0.005}"; do
+    if ! grep -Fq "$expected" "$rtabmap_log"; then
+      echo "RTAB-Map did not activate requested odometry guess threshold: ${expected}" >&2
+      exit 1
+    fi
+  done
 fi
 
 if [[ ! -s "$database_path" ]]; then

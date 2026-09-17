@@ -11,6 +11,7 @@ from jdamr_cube_vslam.trajectory_accuracy import (
     evaluate_pairs,
     main,
     Pose,
+    read_trajectory,
 )
 import pytest
 import yaml
@@ -127,3 +128,32 @@ def test_cli_writes_json_and_markdown(tmp_path):
     assert report['inputs']['scale_alignment_applied'] is False
     assert report['trajectory_metrics']['pair_count'] == 40
     assert '거리 스케일 오차' in report_md.read_text(encoding='utf-8')
+
+
+def test_read_trajectory_skips_null_odometry_pose(tmp_path):
+    path = tmp_path / 'trajectory.csv'
+    _write_csv(path, [
+        Pose(0.0, 0.0, 0.0, 0.0),
+        Pose(1.0, 1.0, 0.0, 0.0),
+        Pose(2.0, 2.0, 0.0, 0.0),
+    ])
+    with path.open(encoding='utf-8') as stream:
+        rows = list(csv.DictReader(stream))
+    rows.insert(2, {
+        'timestamp_s': 1.5,
+        'x_m': 0.0,
+        'y_m': 0.0,
+        'z_m': 0.0,
+        'qx': 0.0,
+        'qy': 0.0,
+        'qz': 0.0,
+        'qw': 0.0,
+        'frame_id': 'vslam_odom',
+        'child_frame_id': 'camera_link',
+    })
+    with path.open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    poses = read_trajectory(path)
+    assert [pose.timestamp_s for pose in poses] == [0.0, 1.0, 2.0]

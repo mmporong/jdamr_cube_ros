@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 BAG_DIR OUTPUT_DIR [--allow-static] [--profile baseline|low-texture] [--odom-guess-frame FRAME] [--camera-mount YAML] [--image IMAGE]"
+  echo "usage: $0 BAG_DIR OUTPUT_DIR [--allow-static] [--profile baseline|low-texture] [--odom-guess-frame FRAME] [--odom-guess-min-translation M] [--odom-guess-min-rotation RAD] [--camera-mount YAML] [--image IMAGE]"
 }
 
 if (($# < 2)); then
@@ -16,6 +16,8 @@ shift 2
 image="introlab3it/rtabmap_ros:jazzy"
 require_assembled_map=1
 odom_guess_frame_id=''
+odom_guess_min_translation='0.005'
+odom_guess_min_rotation='0.005'
 rtabmap_profile='baseline'
 camera_mount_config=''
 while (($#)); do
@@ -26,6 +28,14 @@ while (($#)); do
       ;;
     --odom-guess-frame)
       odom_guess_frame_id="$2"
+      shift 2
+      ;;
+    --odom-guess-min-translation)
+      odom_guess_min_translation="$2"
+      shift 2
+      ;;
+    --odom-guess-min-rotation)
+      odom_guess_min_rotation="$2"
       shift 2
       ;;
     --profile)
@@ -61,6 +71,10 @@ fi
 
 camera_mount_env=()
 if [[ -n "$odom_guess_frame_id" ]]; then
+  if [[ "$odom_guess_frame_id" != 'odom' ]]; then
+    echo "JD-AMR wheel guess frame must be odom; using base_footprint conflicts with the recorded odom TF" >&2
+    exit 1
+  fi
   if [[ ! -f "$camera_mount_config" ]]; then
     echo "camera mount config not found: ${camera_mount_config}" >&2
     exit 1
@@ -110,6 +124,25 @@ PY
     echo "invalid camera mount config: ${camera_mount_config}" >&2
     exit 1
   fi
+  python3 - "$odom_guess_min_translation" "$odom_guess_min_rotation" <<'PY'
+import math
+import sys
+
+
+for name, raw_value in zip(
+        ('translation', 'rotation'), sys.argv[1:], strict=True):
+    try:
+        value = float(raw_value)
+    except ValueError as error:
+        raise SystemExit(
+            f'odometry guess minimum {name} must be numeric') from error
+    if not math.isfinite(value) or value < 0.0:
+        raise SystemExit(
+            f'odometry guess minimum {name} must be finite and nonnegative')
+PY
+  printf -v odom_guess_min_translation '%.6f' \
+    "$odom_guess_min_translation"
+  printf -v odom_guess_min_rotation '%.6f' "$odom_guess_min_rotation"
   camera_mount_env=(
     -e CAMERA_MOUNT_PARENT="${camera_mount_values[0]}"
     -e CAMERA_MOUNT_CHILD="${camera_mount_values[1]}"
@@ -119,6 +152,8 @@ PY
     -e CAMERA_MOUNT_ROLL="${camera_mount_values[5]}"
     -e CAMERA_MOUNT_PITCH="${camera_mount_values[6]}"
     -e CAMERA_MOUNT_YAW="${camera_mount_values[7]}"
+    -e ODOM_GUESS_MIN_TRANSLATION="$odom_guess_min_translation"
+    -e ODOM_GUESS_MIN_ROTATION="$odom_guess_min_rotation"
   )
 fi
 

@@ -49,13 +49,16 @@ def read_trajectory(path: Path) -> list[Pose]:
     poses = []
     with path.open(newline='', encoding='utf-8') as stream:
         for row in csv.DictReader(stream):
+            quaternion = tuple(float(row[key]) for key in (
+                'qx', 'qy', 'qz', 'qw'))
+            if sum(value * value for value in quaternion) < 1e-12:
+                continue
             poses.append(Pose(
                 timestamp_s=float(row['timestamp_s']),
                 x_m=float(row['x_m']),
                 y_m=float(row['y_m']),
                 yaw_rad=quaternion_to_yaw_rad(
-                    float(row['qx']), float(row['qy']),
-                    float(row['qz']), float(row['qw'])),
+                    *quaternion),
             ))
     if len(poses) < 2:
         raise ValueError(f'trajectory requires at least two poses: {path}')

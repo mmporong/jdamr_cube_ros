@@ -7,6 +7,8 @@
 통과하지 못했다. 저텍스처 P턴에서 발생한 재초기화와 분리 점군을 wheel odometry 보조와
 LiDAR graph 제약으로 개선하는 것이 현재 목표다. 다음 실행 순서와 성공 기준은
 [RGB-D Visual SLAM 다음 실행 계획](evaluation/20260917_RGBD_VSLAM_NEXT_RUN.md)을 따른다.
+같은 P턴 bag의 wheel-assisted A/B 결과와 TF frame 수정 근거는
+[휠 오도메트리 보조 A/B](evaluation/20260917_RGBD_WHEEL_ASSISTED_AB.md)에 기록했다.
 
 ## 실행 구조
 
@@ -63,12 +65,18 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabma
   "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/bag_paired_10fps" \
   "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/rtabmap_wheel_guess" \
   --profile low-texture \
-  --odom-guess-frame base_footprint
+  --odom-guess-frame odom
 ```
 
 wrapper는 실측 `base_link → camera_link`를 정적 TF로 주입한다. bag 재생 중
-`base_footprint → base_link → camera_link` 연결을 직접 확인하며, TF publisher가 종료되거나
+`odom → base_footprint → base_link → camera_link` 연결을 직접 확인하며, TF publisher가 종료되거나
 연결을 10초 안에 확인하지 못하면 wheel-guess 결과를 만들지 않는다.
+RTAB-Map visual odometry의 출력 frame은 `vslam_odom`으로 분리한다. 그래야 입력 휠 TF인
+`odom → base_footprint`와 RTAB-Map의 보정 TF가 같은 자식 frame을 두고 충돌하지 않는다.
+휠 odometry가 정지 상태에서 정확히 0을 유지한 기존 bag의 분포를 근거로, 이동 누적값이
+5mm 또는 0.005rad에 도달할 때만 visual odometry를 갱신한다. 필요하면
+`--odom-guess-min-translation`과 `--odom-guess-min-rotation`으로 변경하되 동일 bag A/B에서
+한 변수씩 검증한다.
 
 ## 거리·각도 검증
 

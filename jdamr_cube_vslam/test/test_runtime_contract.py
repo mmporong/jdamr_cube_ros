@@ -56,17 +56,23 @@ def test_sensor_provenance_is_complete():
         'verified_at', 'valid_for', 'method', 'invalidate_when'}
 
 
-def test_unmeasured_mount_blocks_sensor_fusion():
+def test_measured_mount_allows_wheel_odometry_fusion():
     config = yaml.safe_load(
         (PACKAGE_ROOT / 'config' / 'camera_mount.yaml').read_text(
             encoding='utf-8'))
-    assert config['camera_mount']['status'] == 'unmeasured'
-    assert all(
-        value is None
-        for value in config['camera_mount']['transform'].values())
+    assert config['camera_mount']['status'] == 'measured'
+    assert config['camera_mount']['transform'] == {
+        'x_m': 0.065,
+        'y_m': 0.0,
+        'z_m': 0.215,
+        'roll_rad': 0.0,
+        'pitch_rad': 0.0,
+        'yaw_rad': 0.0,
+    }
     assert config['usage_gate']['camera_only_rgbd_slam'] == 'allowed'
+    assert config['usage_gate']['wheel_odom_fusion'] == 'allowed'
     assert config['usage_gate']['lidar_rgbd_fusion'] \
-        == 'blocked_until_measured'
+        == 'blocked_until_cross_sensor_validation'
 
 
 def test_wrapper_rejects_wheel_guess_with_unmeasured_mount():
@@ -75,13 +81,33 @@ def test_wrapper_rejects_wheel_guess_with_unmeasured_mount():
         temporary_path = Path(temporary_directory)
         bag_path = temporary_path / 'bag'
         bag_path.mkdir()
+        config_path = temporary_path / 'camera_mount.yaml'
+        config_path.write_text(
+            """camera_mount:
+  status: unmeasured
+  parent_frame: base_link
+  child_frame: camera_link
+  transform:
+    x_m: null
+    y_m: null
+    z_m: null
+    roll_rad: null
+    pitch_rad: null
+    yaw_rad: null
+usage_gate:
+  wheel_odom_fusion: blocked_until_measured
+""",
+            encoding='utf-8',
+        )
         completed = subprocess.run(
             [
                 str(script),
                 str(bag_path),
                 str(temporary_path / 'output'),
                 '--odom-guess-frame',
-                'base_footprint',
+                'odom',
+                '--camera-mount',
+                str(config_path),
             ],
             check=False,
             capture_output=True,
@@ -107,6 +133,8 @@ def test_wheel_guess_injects_measured_camera_transform():
         'CAMERA_MOUNT_ROLL',
         'CAMERA_MOUNT_PITCH',
         'CAMERA_MOUNT_YAW',
+        'ODOM_GUESS_MIN_TRANSLATION',
+        'ODOM_GUESS_MIN_ROTATION',
     ):
         assert variable in wrapper
         assert variable in processor
@@ -115,6 +143,10 @@ def test_wheel_guess_injects_measured_camera_transform():
     assert '--from-frame "$ODOM_GUESS_FRAME_ID"' in processor
     assert '--to-frame "$CAMERA_MOUNT_CHILD"' in processor
     assert 'guess_frame_id         = ${ODOM_GUESS_FRAME_ID}' in processor
+    assert 'odom_guess_min_translation:=' in processor
+    assert 'odom_guess_min_rotation:=' in processor
+    assert 'vo_frame_id:=vslam_odom' in processor
+    assert 'odom_frame_id          = vslam_odom' in processor
     assert 'odom_guess_frame_id:=${ODOM_GUESS_FRAME_ID}' in processor
 
 
@@ -158,7 +190,7 @@ usage_gate:
                 str(bag_path),
                 str(temporary_path / 'output'),
                 '--odom-guess-frame',
-                'base_footprint',
+                'odom',
                 '--camera-mount',
                 str(config_path),
             ],
@@ -169,7 +201,7 @@ usage_gate:
         )
     assert completed.returncode == 0, completed.stderr
     for expected in (
-        'ODOM_GUESS_FRAME_ID=base_footprint',
+        'ODOM_GUESS_FRAME_ID=odom',
         'CAMERA_MOUNT_PARENT=base_link',
         'CAMERA_MOUNT_CHILD=camera_link',
         'CAMERA_MOUNT_X=0.065',
@@ -178,8 +210,34 @@ usage_gate:
         'CAMERA_MOUNT_ROLL=0.0',
         'CAMERA_MOUNT_PITCH=0.0',
         'CAMERA_MOUNT_YAW=0.0',
+        'ODOM_GUESS_MIN_TRANSLATION=0.005000',
+        'ODOM_GUESS_MIN_ROTATION=0.005000',
     ):
         assert expected in completed.stdout
+
+
+def test_wrapper_rejects_invalid_wheel_guess_threshold():
+    script = PACKAGE_ROOT / 'scripts' / 'run_rtabmap_docker.sh'
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        bag_path = temporary_path / 'bag'
+        bag_path.mkdir()
+        completed = subprocess.run(
+            [
+                str(script),
+                str(bag_path),
+                str(temporary_path / 'output'),
+                '--odom-guess-frame',
+                'odom',
+                '--odom-guess-min-translation',
+                '-0.001',
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    assert completed.returncode != 0
+    assert 'translation must be finite and nonnegative' in completed.stderr
 
 
 def test_wrapper_rejects_boolean_camera_transform():
@@ -212,7 +270,7 @@ usage_gate:
                 str(bag_path),
                 str(temporary_path / 'output'),
                 '--odom-guess-frame',
-                'base_footprint',
+                'odom',
                 '--camera-mount',
                 str(config_path),
             ],
@@ -222,6 +280,28 @@ usage_gate:
         )
     assert completed.returncode != 0
     assert 'transform x_m must be finite' in completed.stderr
+
+
+def test_wrapper_rejects_base_footprint_as_guess_frame():
+    script = PACKAGE_ROOT / 'scripts' / 'run_rtabmap_docker.sh'
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        bag_path = temporary_path / 'bag'
+        bag_path.mkdir()
+        completed = subprocess.run(
+            [
+                str(script),
+                str(bag_path),
+                str(temporary_path / 'output'),
+                '--odom-guess-frame',
+                'base_footprint',
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    assert completed.returncode != 0
+    assert 'wheel guess frame must be odom' in completed.stderr
 
 
 def test_offline_mapping_does_not_consume_lidar_as_visual_ground_truth():

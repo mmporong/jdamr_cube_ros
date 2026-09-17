@@ -34,12 +34,22 @@ class _CsvSink:
         self._writer = csv.DictWriter(self._stream, fieldnames=CSV_FIELDS)
         self._writer.writeheader()
         self.count = 0
+        self.invalid_count = 0
 
     def write(self, message: Odometry) -> None:
         """Append one odometry pose."""
         stamp = message.header.stamp
         position = message.pose.pose.position
         orientation = message.pose.pose.orientation
+        quaternion_norm_squared = (
+            orientation.x * orientation.x
+            + orientation.y * orientation.y
+            + orientation.z * orientation.z
+            + orientation.w * orientation.w
+        )
+        if quaternion_norm_squared < 1e-12:
+            self.invalid_count += 1
+            return
         self._writer.writerow({
             'timestamp_s': stamp.sec + stamp.nanosec * 1e-9,
             'x_m': position.x,
@@ -84,9 +94,14 @@ class TrajectoryCsvRecorder(Node):
         """Flush and close both output files."""
         visual_count = self._visual.count
         reference_count = self._reference.count
+        visual_invalid_count = self._visual.invalid_count
+        reference_invalid_count = self._reference.invalid_count
         self._visual.close()
         self._reference.close()
-        print(f'rows: visual={visual_count}, reference={reference_count}')
+        print(
+            f'rows: visual={visual_count}, reference={reference_count}, '
+            f'invalid_visual={visual_invalid_count}, '
+            f'invalid_reference={reference_invalid_count}')
 
 
 def _parse_args(argv=None):
