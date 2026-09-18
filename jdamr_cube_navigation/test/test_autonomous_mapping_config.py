@@ -1,9 +1,14 @@
 """Static regression tests for the physical-robot mapping safety envelope."""
 
 import ast
+import importlib.util
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+from launch import LaunchContext
+from launch.actions import OpaqueFunction
+from launch_ros.actions import Node
+import pytest
 import yaml
 
 
@@ -275,6 +280,62 @@ def test_mapping_launch_uses_navigation_only_with_safe_defaults():
         keyword.arg: keyword.value for keyword in sim_time.keywords
     }
     assert ast.literal_eval(defaults['default_value']) == 'false'
+
+
+def test_mapping_physical_custom_params_use_new_base_contract(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE_ROOT if name == 'jdamr_cube_navigation'
+        else PACKAGE_ROOT.parent / 'jdamr_cube_description'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'params_file': str(PARAMS_PATH),
+        'use_sim_time': 'false',
+    })
+
+    with pytest.raises(RuntimeError, match='footprint is smaller'):
+        module._validate_physical_params(context)
+
+
+def test_mapping_simulation_allows_legacy_params(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, 'validate_new_base_params',
+        lambda _params, _geometry: pytest.fail('simulation invoked validator'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'params_file': '/missing/legacy-sim.yaml',
+        'use_sim_time': 'true',
+    })
+
+    assert module._validate_physical_params(context) == []
+
+
+def test_mapping_validation_action_precedes_every_node(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE_ROOT if name == 'jdamr_cube_navigation'
+        else PACKAGE_ROOT.parent / 'jdamr_cube_description'))
+
+    entities = module.generate_launch_description().entities
+    validator_index = next(
+        index for index, entity in enumerate(entities)
+        if isinstance(entity, OpaqueFunction)
+        and entity._OpaqueFunction__function is
+        module._validate_physical_params)
+    first_node_index = next(
+        index for index, entity in enumerate(entities)
+        if isinstance(entity, Node))
+    assert validator_index < first_node_index
 
 
 def test_nav2_uses_an_isolated_component_container_for_physical_reliability():

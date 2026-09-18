@@ -1,4 +1,4 @@
-"""Launch the selected onboard navigation profile in a composed container."""
+"""Launch composed Nav2 with a separate collision-monitor process."""
 
 # Run the corridor Nav2 subset in a composed container and keep graph-loss
 # detection separate.  Composition correlated with lower load in earlier
@@ -7,8 +7,6 @@
 # and remaining causal uncertainty live in evaluation/20260904_HANDOFF.md.
 
 import hashlib
-import json
-import math
 import os
 from pathlib import Path
 import subprocess
@@ -20,6 +18,7 @@ from jdamr_cube_navigation.mobile_manipulator_protection import (
     load_mobile_manipulator_protection,
 )
 from jdamr_cube_navigation.nav2_liveness_guard import DEFAULT_REQUIRED
+from jdamr_cube_navigation.new_base_contract import validate_new_base_params
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.actions import RegisterEventHandler, SetEnvironmentVariable
@@ -175,174 +174,7 @@ def _validate_new_base_params(context, revisit=False):
     geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))
                      / 'config' / 'new_base_geometry.yaml')
     geometry = yaml.safe_load(geometry_path.read_text(encoding='utf-8'))
-    front = geometry['front_to_wheel_axis']['value']
-    rear = front - geometry['frame_length']['value']
-    half_width = geometry['wheel_outer_width']['value'] / 2.0
-
-    def polygon_points(value):
-        polygon = json.loads(value) if isinstance(value, str) else value
-        if not isinstance(polygon, list) or len(polygon) < 3:
-            raise RuntimeError('new-base polygon needs at least three points')
-        return polygon
-
-    def bounds(points):
-        polygon = polygon_points(points)
-        if len(polygon) != 4:
-            raise RuntimeError('new-base polygon must have four corners')
-        xs = sorted({point[0] for point in polygon})
-        ys = sorted({point[1] for point in polygon})
-        if (len(xs) != 2 or len(ys) != 2 or ys[0] != -ys[1]
-                or {tuple(point) for point in polygon} !=
-                {(x, y) for x in xs for y in ys}):
-            raise RuntimeError('new-base polygon must cover both sides as a rectangle')
-        ordered_corners = [
-            (xs[1], ys[1]), (xs[1], ys[0]),
-            (xs[0], ys[0]), (xs[0], ys[1]),
-        ]
-        if [tuple(point) for point in polygon] != ordered_corners:
-            raise RuntimeError('new-base polygon corners must follow the perimeter')
-        return (xs[1], xs[0], ys[1])
-
-    costmaps = [params[key][key]['ros__parameters']
-                for key in ('local_costmap', 'global_costmap')]
-    footprints = [bounds(costmap['footprint']) for costmap in costmaps]
-    if footprints[0] != footprints[1]:
-        raise RuntimeError('new-base costmap footprints differ')
-    footprint = footprints[0]
-    if not (footprint[0] > front and footprint[1] < rear
-            and footprint[2] > half_width):
-        raise RuntimeError('new-base footprint is smaller than measured base')
-    if any(costmap['robot_base_frame'] != 'base_footprint'
-           for costmap in costmaps):
-        raise RuntimeError('new-base costmaps need base_footprint')
-    for costmap in costmaps:
-        layer = costmap['obstacle_layer']
-        scan = layer['scan']
-        if (not layer['enabled'] or 'scan' not in layer['observation_sources']
-                or scan['topic'] != '/scan' or not scan['marking']):
-            raise RuntimeError('new-base costmap scan layer is not active')
-
-    monitor = params['collision_monitor']['ros__parameters']
-    if not {'StopZone', 'SlowdownZone', 'FootprintApproach'} <= set(
-            monitor['polygons']):
-        raise RuntimeError('new-base collision polygons are incomplete')
-    stop_zone = monitor['StopZone']
-    if (stop_zone['type'] != 'velocity_polygon'
-            or stop_zone['action_type'] != 'stop'
-            or not stop_zone['enabled'] or stop_zone['min_points'] < 3
-            or stop_zone.get('holonomic') is not False):
-        raise RuntimeError('new-base StopZone is not active')
-    expected_velocity_polygons = {
-        'rotation', 'rotation_clockwise', 'translation_forward',
-        'translation_backward', 'stopped'}
-    if (set(stop_zone.get('velocity_polygons', [])) !=
-            expected_velocity_polygons):
-        raise RuntimeError('new-base directional StopZone is incomplete')
-    slow_zone = monitor['SlowdownZone']
-    if (slow_zone['type'] != 'polygon'
-            or slow_zone['action_type'] != 'slowdown'
-            or not slow_zone['enabled'] or slow_zone['min_points'] < 3):
-        raise RuntimeError('new-base SlowdownZone is not active')
-    if (monitor['FootprintApproach']['action_type'] != 'approach'
-            or not monitor['FootprintApproach']['enabled']):
-        raise RuntimeError('new-base approach monitor is not active')
-    if ('scan' not in monitor['observation_sources']
-            or not monitor['scan']['enabled']
-            or monitor['scan']['type'] != 'scan'
-            or monitor['scan']['topic'] != '/scan'):
-        raise RuntimeError('new-base scan collision source is not active')
-    rotation_points = polygon_points(stop_zone['rotation']['points'])
-    clockwise_points = polygon_points(
-        stop_zone['rotation_clockwise']['points'])
-    counterclockwise = stop_zone['rotation']
-    clockwise = stop_zone['rotation_clockwise']
-    if (counterclockwise['theta_min'] <= 0.0
-            or clockwise['theta_max'] >= 0.0
-            or clockwise_points != rotation_points):
-        raise RuntimeError(
-            'new-base rotation StopZone must exclude zero velocity')
-    forward_stop = bounds(stop_zone['translation_forward']['points'])
-    backward_stop = bounds(stop_zone['translation_backward']['points'])
-    stopped_stop = bounds(stop_zone['stopped']['points'])
-    slow = bounds(monitor['SlowdownZone']['points'])
-    if len(rotation_points) < 12:
-        raise RuntimeError('new-base rotation StopZone is too coarse')
-    edge_distances = []
-    turn_sign = None
-    for index, start in enumerate(rotation_points):
-        end = rotation_points[(index + 1) % len(rotation_points)]
-        following = rotation_points[(index + 2) % len(rotation_points)]
-        edge_length = math.hypot(end[0] - start[0], end[1] - start[1])
-        if edge_length <= 0.0:
-            raise RuntimeError(
-                'new-base rotation StopZone has duplicate points')
-        edge_distances.append(abs(
-            start[0] * end[1] - start[1] * end[0]) / edge_length)
-        turn = ((end[0] - start[0]) * (following[1] - end[1])
-                - (end[1] - start[1]) * (following[0] - end[0]))
-        if abs(turn) <= 1e-9:
-            continue
-        current_sign = 1 if turn > 0.0 else -1
-        if turn_sign is None:
-            turn_sign = current_sign
-        elif turn_sign != current_sign:
-            raise RuntimeError('new-base rotation StopZone must be convex')
-    footprint_radius = max(
-        math.hypot(x, y)
-        for x in (footprint[0], footprint[1])
-        for y in (-footprint[2], footprint[2]))
-    if min(edge_distances) < footprint_radius - 1e-6:
-        raise RuntimeError(
-            'new-base rotation StopZone misses the swept corner radius')
-    if not (stopped_stop[0] > footprint[0]
-            and stopped_stop[1] < footprint[1]
-            and stopped_stop[2] > footprint[2]):
-        raise RuntimeError('new-base StopZone does not contain footprint')
-    if min(stopped_stop[0] - footprint[0],
-           footprint[1] - stopped_stop[1],
-           stopped_stop[2] - footprint[2]) < 0.05 - 1e-6:
-        raise RuntimeError('new-base StopZone margin is below 0.05m')
-    if not (forward_stop[0] - footprint[0] >= 0.05 - 1e-6
-            and forward_stop[1] <= footprint[1]
-            and abs(forward_stop[2] - footprint[2]) <= 1e-6):
-        raise RuntimeError('new-base forward StopZone shape is invalid')
-    if not (footprint[1] - backward_stop[1] >= 0.05 - 1e-6
-            and backward_stop[0] >= footprint[0]
-            and abs(backward_stop[2] - footprint[2]) <= 1e-6):
-        raise RuntimeError('new-base backward StopZone shape is invalid')
-    rotation_front = max(point[0] for point in rotation_points)
-    rotation_rear = min(point[0] for point in rotation_points)
-    rotation_half_width = max(abs(point[1]) for point in rotation_points)
-    if not (slow[0] > max(stopped_stop[0], rotation_front)
-            and slow[1] < min(stopped_stop[1], rotation_rear)
-            and slow[2] > max(stopped_stop[2], rotation_half_width)):
-        raise RuntimeError('new-base SlowdownZone does not contain StopZone')
-    if monitor['source_timeout'] != 1.0:
-        raise RuntimeError('new-base scan source timeout must be 1.0s')
-    if params['amcl']['ros__parameters']['set_initial_pose']:
-        raise RuntimeError('new-base AMCL cannot force the old map origin')
-    amcl_tf_tolerance_s = params['amcl']['ros__parameters'][
-        'transform_tolerance']
-    if (type(amcl_tf_tolerance_s) not in (int, float) or
-            amcl_tf_tolerance_s != 1.0):
-        raise RuntimeError('new-base AMCL transform tolerance must be 1.0s')
-    if params['velocity_smoother']['ros__parameters']['max_velocity'][0] > 0.08:
-        raise RuntimeError('new-base forward speed exceeds uncalibrated limit')
-    minimum_linear_velocity = params['velocity_smoother'][
-        'ros__parameters']['min_velocity'][0]
-    if minimum_linear_velocity < 0.0:
-        raise RuntimeError('new-base autonomous profile cannot reverse')
-    progress = params['controller_server']['ros__parameters'][
-        'progress_checker']
-    if (progress['plugin'] != 'nav2_controller::PoseProgressChecker'
-            or progress.get('required_movement_angle') != 0.10):
-        raise RuntimeError('new-base progress checker must count rotation')
-    if params['controller_server']['ros__parameters']['FollowPath'][
-            'desired_linear_vel'] > 0.08:
-        raise RuntimeError('new-base controller speed exceeds uncalibrated limit')
-    if params['bt_navigator']['ros__parameters'][
-            'robot_base_frame'] != 'base_footprint':
-        raise RuntimeError('new-base BT needs base_footprint')
+    validate_new_base_params(params, geometry)
     return []
 
 
@@ -467,9 +299,6 @@ def _launch_navigation(context):
             parameters=[configured_params, {'use_sim_time': use_sim_time}],
             remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
         ),
-        composable('nav2_collision_monitor',
-                   'nav2_collision_monitor::CollisionMonitor',
-                   'collision_monitor', collision_monitor_parameters),
         composable('nav2_bt_navigator', 'nav2_bt_navigator::BtNavigator',
                    'bt_navigator', [configured_params]),
     ]
@@ -507,6 +336,18 @@ def _launch_navigation(context):
         parameters=[configured_params, {'use_sim_time': use_sim_time}],
         composable_node_descriptions=keepout_components + nav2_components,
         output='screen',
+    )
+
+    # Keep scan processing out of the planner/controller process so planner
+    # load cannot delay the monitor callback and cause an invalid-source stop.
+    collision_monitor = Node(
+        package='nav2_collision_monitor',
+        executable='collision_monitor',
+        name='collision_monitor',
+        output='screen',
+        parameters=[*collision_monitor_parameters,
+                    {'use_sim_time': use_sim_time}],
+        remappings=remappings,
     )
 
     keepout_lifecycle = Node(
@@ -563,6 +404,7 @@ def _launch_navigation(context):
 
     required_processes = [
         container,
+        collision_monitor,
         keepout_lifecycle,
         localization_lifecycle,
         navigation_lifecycle,

@@ -44,6 +44,7 @@ def _configure(context):
             'keepout_mask': registry['keepout']['yaml_path'],
             'params_file': str(generated),
             'navigation_profile': LaunchConfiguration('navigation_profile'),
+            'discovery_range': LaunchConfiguration('discovery_range'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'autostart': 'true',
         }.items(),
@@ -63,5 +64,9 @@ def generate_launch_description():
             'navigation_profile', default_value='new_base_candidate',
             choices=['new_base_candidate', 'new_base_revisit_candidate', 'corridor']),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
+        DeclareLaunchArgument(
+            'discovery_range', default_value='SUBNET',
+            choices=['LOCALHOST', 'SUBNET'],
+            description='Match the physical onboard navigation sensor discovery scope'),
         OpaqueFunction(function=_configure),
     ])

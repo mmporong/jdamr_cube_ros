@@ -8,21 +8,19 @@ import time
 from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
+from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from jdamr_cube_navigation.corridor_route import (
-    CorridorRoute, NAVIGATION_BEHAVIOR_TREES, _positive_finite_config,
-    revisit_plan_length_ok,
-    revisit_goal_witness,
-    current_map_xy,
-    revisit_map_correction_ok,
-    odom_distance_since_stamp,
-    finite_localization_xy,
+    _positive_finite_config, CorridorRoute, current_map_xy,
+    finite_localization_xy, NAVIGATION_BEHAVIOR_TREES,
+    odom_distance_since_stamp, revisit_goal_witness,
+    revisit_map_correction_ok, revisit_plan_length_ok,
 )
 from launch import LaunchContext
-from launch_ros.actions import ComposableNodeContainer
+from launch.utilities import perform_substitutions
+from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.utilities import evaluate_parameters
 from nav2_common.launch import RewrittenYaml
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 import pytest
 import yaml
 
@@ -367,6 +365,70 @@ def test_revisit_loads_previous_wait_only_recovery_server(
     assert 'behavior_server' in lifecycle_names[0]
 
 
+def test_onboard_collision_monitor_runs_as_required_isolated_process(
+        monkeypatch):
+    spec = importlib.util.spec_from_file_location('new_base_launch', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, '_validate_new_base_params',
+                        lambda _context, revisit=False: [])
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _name: str(ROOT / 'jdamr_cube_navigation'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'obstacle_candidate',
+        'map': '/tmp/new-base-map.yaml',
+        'keepout_mask': '/tmp/new-base-mask.yaml',
+        'params_file': str(OLD_PARAMS),
+        'use_sim_time': 'true',
+        'autostart': 'false',
+    })
+
+    actions = module._launch_navigation(context)
+    container = next(action for action in actions if
+                     isinstance(action, ComposableNodeContainer))
+    descriptions = container._ComposableNodeContainer__composable_node_descriptions
+    component_names = {
+        ''.join(part.perform(context) for part in description.node_name)
+        for description in descriptions
+    }
+    assert 'collision_monitor' not in component_names
+
+    monitor = next(
+        action for action in actions
+        if isinstance(action, Node)
+        and getattr(action, '_Node__node_name', None) == 'collision_monitor')
+    assert monitor._Node__package == 'nav2_collision_monitor'
+    assert monitor._Node__node_executable == 'collision_monitor'
+    monitor_params = evaluate_parameters(context, monitor._Node__parameters)
+    assert monitor_params[-1]['use_sim_time'] is True
+    protection = module.load_mobile_manipulator_protection(
+        ROOT / 'jdamr_cube_navigation/config/mobile_manipulator_protection.yaml')
+    assert monitor_params[-2] == protection['collision_monitor_overrides']
+    assert [
+        (perform_substitutions(context, source),
+         perform_substitutions(context, target))
+        for source, target in monitor._Node__remappings
+    ] == [('/tf', 'tf'), ('/tf_static', 'tf_static')]
+
+    lifecycle = next(
+        action for action in actions
+        if getattr(action, '_Node__node_name', None) ==
+        'lifecycle_manager_navigation')
+    lifecycle_params = evaluate_parameters(
+        context, lifecycle._Node__parameters)[0]
+    assert 'collision_monitor' in lifecycle_params['node_names']
+
+    exit_handlers = [
+        action for action in actions
+        if action.__class__.__name__ == 'RegisterEventHandler']
+    required_targets = {
+        handler.event_handler._OnActionEventBase__action_matcher
+        for handler in exit_handlers
+    }
+    assert monitor in required_targets
+
+
 def test_revisit_accepts_only_verified_legacy_map_with_new_base_geometry():
     old_map = Path.home() / 'maps/autonomous_20260826T161908.yaml'
     old_mask = Path.home() / 'maps/autonomous_20260826T161908_keepout_multi.yaml'
@@ -572,6 +634,64 @@ def test_rotation_stop_zone_below_swept_radius_is_rejected(tmp_path):
         _load_validator(narrowed)(None)
 
 
+def _write_rotation_polygon(tmp_path, points, name):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    stop_zone['rotation']['points'] = points
+    stop_zone['rotation_clockwise']['points'] = points
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(document), encoding='utf-8')
+    return path
+
+
+def test_collinear_rotation_polygon_is_rejected(tmp_path):
+    points = [[0.45, -0.4 + index * 0.8 / 11.0]
+              for index in range(12)]
+    invalid = _write_rotation_polygon(
+        tmp_path, points, 'collinear_rotation.yaml')
+
+    with pytest.raises(RuntimeError, match='zero area'):
+        _load_validator(invalid)(None)
+
+
+def test_rotation_polygon_shifted_away_from_origin_is_rejected(tmp_path):
+    source = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    points = yaml.safe_load(source['collision_monitor']['ros__parameters'][
+        'StopZone']['rotation']['points'])
+    shifted = [[x + 1.0, y] for x, y in points]
+    invalid = _write_rotation_polygon(
+        tmp_path, shifted, 'shifted_rotation.yaml')
+
+    with pytest.raises(RuntimeError, match='swept corner radius'):
+        _load_validator(invalid)(None)
+
+
+def test_self_intersecting_rotation_polygon_is_rejected(tmp_path):
+    points = [
+        [round(0.55 * math.cos(index * 5 * math.pi / 6.0), 6),
+         round(0.55 * math.sin(index * 5 * math.pi / 6.0), 6)]
+        for index in range(12)
+    ]
+    invalid = _write_rotation_polygon(
+        tmp_path, points, 'star_rotation.yaml')
+
+    with pytest.raises(RuntimeError, match='must be convex'):
+        _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_rotation_polygon_accepts_both_winding_directions(tmp_path, reverse):
+    source = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    points = yaml.safe_load(source['collision_monitor']['ros__parameters'][
+        'StopZone']['rotation']['points'])
+    if reverse:
+        points.reverse()
+    candidate = _write_rotation_polygon(
+        tmp_path, points, f'rotation_winding_{reverse}.yaml')
+
+    assert _load_validator(candidate)(None) == []
+
+
 def test_rotation_stop_zone_matching_zero_velocity_is_rejected(tmp_path):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
@@ -583,17 +703,183 @@ def test_rotation_stop_zone_matching_zero_velocity_is_rejected(tmp_path):
         _load_validator(invalid)(None)
 
 
+def test_velocity_polygon_order_is_fail_closed(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    stop_zone['velocity_polygons'] = [
+        'stopped', 'rotation', 'rotation_clockwise',
+        'translation_forward', 'translation_backward']
+    invalid = tmp_path / 'stopped_first.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='order is incomplete or unsafe'):
+        _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('value,expected', [
+    (float('nan'), 'range is invalid'),
+    (2.0, 'range is invalid'),
+])
+def test_velocity_polygon_ranges_must_be_finite_and_ordered(
+        tmp_path, value, expected):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    rotation = document['collision_monitor']['ros__parameters'][
+        'StopZone']['rotation']
+    if math.isnan(value):
+        rotation['linear_min'] = value
+    else:
+        rotation['linear_min'] = value
+        rotation['linear_max'] = 1.0
+    invalid = tmp_path / 'invalid_velocity_range.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=expected):
+        _load_validator(invalid)(None)
+
+
+def test_velocity_polygon_ranges_are_pinned_to_approved_policy(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    stop_zone['rotation']['theta_min'] = 0.9
+    stop_zone['rotation_clockwise']['theta_max'] = -0.9
+    invalid = tmp_path / 'rotation_policy_gap.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=(
+            'rotation velocity range violates approved policy')):
+        _load_validator(invalid)(None)
+
+
+def test_polygon_coordinates_must_be_finite_numeric_pairs(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    points = yaml.safe_load(stop_zone['rotation']['points'])
+    points[0][0] = float('nan')
+    stop_zone['rotation']['points'] = points
+    stop_zone['rotation_clockwise']['points'] = points
+    invalid = tmp_path / 'nan_polygon.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='finite numeric pairs'):
+        _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('plugin_name', ['FollowPath', 'Parking'])
+def test_registered_rpp_controller_requires_collision_detection(
+        tmp_path, plugin_name):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    controller = document['controller_server']['ros__parameters']
+    if plugin_name == 'Parking':
+        controller['controller_plugins'].append(plugin_name)
+        controller[plugin_name] = dict(controller['FollowPath'])
+    controller[plugin_name]['use_collision_detection'] = False
+    invalid = tmp_path / f'{plugin_name}_collision_disabled.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=(
+            f'{plugin_name} collision detection must be active')):
+        _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('plugins', [[], ['Parking']])
+def test_registered_controllers_require_follow_path(tmp_path, plugins):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    controller = document['controller_server']['ros__parameters']
+    controller['controller_plugins'] = plugins
+    invalid = tmp_path / 'missing_follow_path.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='must include FollowPath'):
+        _load_validator(invalid)(None)
+
+
+def test_missing_registered_controller_is_rejected(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    controller = document['controller_server']['ros__parameters']
+    controller['controller_plugins'].append('Parking')
+    invalid = tmp_path / 'missing_registered_controller.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=(
+            'registered controller Parking is missing')):
+        _load_validator(invalid)(None)
+
+
+def test_unknown_registered_controller_plugin_is_rejected(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    controller = document['controller_server']['ros__parameters']
+    controller['controller_plugins'].append('Unsafe')
+    controller['Unsafe'] = {
+        'plugin': 'dwb_core::DWBLocalPlanner',
+        'desired_linear_vel': 0.08,
+        'use_collision_detection': True,
+    }
+    invalid = tmp_path / 'unsupported_controller.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=(
+            'controller Unsafe plugin is unsupported')):
+        _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('velocity', [float('nan'), 0.0, -0.01, 0.081])
+def test_registered_controller_velocity_is_finite_positive_and_bounded(
+        tmp_path, velocity):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    controller = document['controller_server']['ros__parameters']
+    controller['FollowPath']['desired_linear_vel'] = velocity
+    invalid = tmp_path / 'unsafe_controller_velocity.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=(
+            'controller speed exceeds uncalibrated limit')):
+        _load_validator(invalid)(None)
+
+
 @pytest.mark.parametrize('mutate,expected', [
     (lambda monitor: monitor['StopZone'].update(enabled=False),
      'StopZone is not active'),
     (lambda monitor: monitor['StopZone'].update(action_type='slowdown'),
      'StopZone is not active'),
+    (lambda monitor: monitor['StopZone'].update(min_points=100000),
+     'StopZone is not active'),
+    (lambda monitor: monitor['SlowdownZone'].update(min_points=True),
+     'SlowdownZone is not active'),
+    (lambda monitor: monitor['SlowdownZone'].update(slowdown_ratio=1.0),
+     'slowdown ratio violates approved policy'),
+    (lambda monitor: monitor['SlowdownZone'].update(slowdown_ratio=float('nan')),
+     'slowdown ratio violates approved policy'),
+    (lambda monitor: monitor['FootprintApproach'].update(enabled=False),
+     'approach monitor is not active'),
+    (lambda monitor: monitor['FootprintApproach'].update(type='circle'),
+     'approach monitor is not active'),
+    (lambda monitor: monitor['FootprintApproach'].update(min_points=4),
+     'approach monitor is not active'),
+    (lambda monitor: monitor['FootprintApproach'].update(
+        time_before_collision=0.0),
+     'approach time_before_collision violates approved policy'),
+    (lambda monitor: monitor['FootprintApproach'].update(
+        simulation_time_step=100.0),
+     'approach simulation_time_step violates approved policy'),
+    (lambda monitor: monitor.update(base_frame_id='base_link'),
+     'collision monitor needs base_footprint'),
+    (lambda monitor: monitor['FootprintApproach'].update(
+        footprint_topic='/wrong_footprint'),
+     'approach monitor is not active'),
     (lambda monitor: monitor['scan'].update(enabled=False),
      'scan collision source is not active'),
     (lambda monitor: monitor.update(observation_sources=[]),
      'scan collision source is not active'),
     (lambda monitor: monitor.update(source_timeout=3.0),
      'scan source timeout must be 1.0s'),
+    (lambda monitor: monitor.update(source_timeout=True),
+     'scan source timeout must be 1.0s'),
+    (lambda monitor: monitor['scan'].update(source_timeout=1.1),
+     'scan timeout override must be exactly 1.0s'),
+    (lambda monitor: monitor['scan'].update(source_timeout=0.0),
+     'scan timeout override must be exactly 1.0s'),
+    (lambda monitor: monitor['scan'].update(source_timeout=0.5),
+     'scan timeout override must be exactly 1.0s'),
     (lambda monitor: monitor['StopZone']['stopped'].update(points=(
         '[[0.35, 0.35], [0.35, 0.30], [-0.38, 0.30], [-0.38, 0.35]]')),
      'polygon must cover both sides'),
@@ -608,3 +894,25 @@ def test_disabled_or_one_sided_monitor_is_rejected(tmp_path, mutate, expected):
     invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
     with pytest.raises(RuntimeError, match=expected):
         _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('name', ['StopZone', 'SlowdownZone', 'FootprintApproach'])
+@pytest.mark.parametrize('sources', [[], ['missing'], ['scan', 'missing']])
+def test_polygon_cannot_drop_scan_observations(tmp_path, name, sources):
+    """An active scan source must still participate in every safety polygon."""
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    document['collision_monitor']['ros__parameters'][name]['sources_names'] = sources
+    invalid = tmp_path / 'invalid_polygon_sources.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(RuntimeError, match='must observe the scan source'):
+        _load_validator(invalid)(None)
+
+
+def test_explicit_scan_source_is_allowed_for_safety_polygons(tmp_path):
+    """Keep explicit and upstream-default scan selection equivalent."""
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    for name in ('StopZone', 'SlowdownZone', 'FootprintApproach'):
+        document['collision_monitor']['ros__parameters'][name]['sources_names'] = ['scan']
+    valid = tmp_path / 'explicit_polygon_sources.yaml'
+    valid.write_text(yaml.safe_dump(document), encoding='utf-8')
+    assert _load_validator(valid)(None) == []

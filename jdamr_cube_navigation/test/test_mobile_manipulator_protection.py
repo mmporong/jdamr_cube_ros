@@ -91,7 +91,7 @@ def test_obstacle_profile_applies_protection_only_to_collision_monitor():
     ast.parse(source)
     assert "if profile == 'obstacle_candidate':" in source
     assert "protection['collision_monitor_overrides']" in source
-    assert ("'collision_monitor', collision_monitor_parameters" in source)
+    assert 'parameters=[*collision_monitor_parameters,' in source
 
 
 def test_base_only_profile_has_no_arm_pose_dependency():

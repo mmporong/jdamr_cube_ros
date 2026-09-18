@@ -337,7 +337,8 @@ def test_arrival_evidence_retains_final_errors():
     assert node.confirmation['confirmed']
 
 
-def test_service_launch_adds_parking_without_changing_costmaps(monkeypatch):
+@pytest.mark.parametrize('discovery_range', ['SUBNET', 'LOCALHOST'])
+def test_service_launch_adds_parking_without_changing_costmaps(monkeypatch, discovery_range):
     """Construct launch parameters without starting nodes or moving a robot."""
     from launch import LaunchContext
     spec = importlib.util.spec_from_file_location(
@@ -352,7 +353,8 @@ def test_service_launch_adds_parking_without_changing_costmaps(monkeypatch):
     source = PACKAGE / 'config/new_base_nav2_params.yaml'
     context.launch_configurations.update({
         'registry': '/registry.yaml', 'params_file': str(source),
-        'navigation_profile': 'new_base_candidate', 'use_sim_time': 'false'})
+        'navigation_profile': 'new_base_candidate', 'use_sim_time': 'false',
+        'discovery_range': discovery_range})
     original = yaml.safe_load(source.read_text())
     actions = module._configure(context)
     arguments = dict(actions[1].launch_arguments)
@@ -368,5 +370,24 @@ def test_service_launch_adds_parking_without_changing_costmaps(monkeypatch):
         del controller['Parking'], controller['parking_goal_checker']
         assert output == original
         assert arguments['map'] == '/maps/new_base_room.yaml'
+        assert arguments['discovery_range'].perform(context) == discovery_range
     finally:
         generated.unlink()
+
+
+def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
+    """Use the same discovery scope as the physical keepout wrapper."""
+    from launch.actions import DeclareLaunchArgument
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'service_launch_defaults', PACKAGE / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda _: str(PACKAGE))
+    description = module.generate_launch_description()
+    declaration = next(action for action in description.entities
+                       if isinstance(action, DeclareLaunchArgument)
+                       and action.name == 'discovery_range')
+    context = LaunchContext()
+    declaration.execute(context)
+    assert context.launch_configurations['discovery_range'] == 'SUBNET'

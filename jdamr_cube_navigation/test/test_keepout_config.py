@@ -978,9 +978,9 @@ def test_onboard_core_uses_composition_with_a_liveness_guard():
     for plugin in ('nav2_amcl::AmclNode',
                    'nav2_controller::ControllerServer',
                    'nav2_planner::PlannerServer',
-                   'nav2_bt_navigator::BtNavigator',
-                   'nav2_collision_monitor::CollisionMonitor'):
+                   'nav2_bt_navigator::BtNavigator'):
         assert plugin in source, plugin
+    assert 'nav2_collision_monitor::CollisionMonitor' not in source
 
     # Every server the route executor depends on must be watched.
     for name in ('amcl', 'controller_server', 'planner_server',

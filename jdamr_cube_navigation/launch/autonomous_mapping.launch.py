@@ -1,11 +1,13 @@
 """Launch conservative Nav2 navigation over a live Cartographer map."""
 
 import os
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
+from jdamr_cube_navigation.new_base_contract import validate_new_base_params
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.actions import RegisterEventHandler, SetEnvironmentVariable, Shutdown
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
@@ -14,6 +16,23 @@ from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode, ParameterFile
 
 from nav2_common.launch import RewrittenYaml
+import yaml
+
+
+def _validate_physical_params(context):
+    """Reject custom physical parameters that bypass the new-base contract."""
+    if LaunchConfiguration('use_sim_time').perform(context).lower() in (
+            '1', 'true', 'yes', 'on'):
+        return []
+    params_path = Path(os.path.expanduser(
+        LaunchConfiguration('params_file').perform(context)))
+    params = yaml.safe_load(params_path.read_text(encoding='utf-8'))
+    geometry_path = (
+        Path(get_package_share_directory('jdamr_cube_description'))
+        / 'config' / 'new_base_geometry.yaml')
+    geometry = yaml.safe_load(geometry_path.read_text(encoding='utf-8'))
+    validate_new_base_params(params, geometry)
+    return []
 
 
 def generate_launch_description():
@@ -182,6 +201,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'autostart', default_value='true',
             description='Activate Nav2 and map_saver lifecycle nodes'),
+        OpaqueFunction(function=_validate_physical_params),
         *required_exit_handlers,
         navigation_container,
         collision_monitor,
