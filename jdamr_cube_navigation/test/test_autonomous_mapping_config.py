@@ -6,7 +6,9 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from launch import LaunchContext
-from launch.actions import OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable)
+from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 import pytest
 import yaml
@@ -127,10 +129,38 @@ def test_physical_navigation_launches_force_fastdds_udp_transport():
 
 
 def test_autonomous_mapping_uses_the_proven_sensor_transport_scope():
-    source = LAUNCH_PATH.read_text(encoding='utf-8')
-
-    ast.parse(source)
-    assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'" in source
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        module, 'get_package_share_directory',
+        lambda _name: str(PACKAGE_ROOT))
+    try:
+        entities = module.generate_launch_description().entities
+    finally:
+        monkeypatch.undo()
+    discovery = next(
+        entity for entity in entities
+        if isinstance(entity, DeclareLaunchArgument)
+        and entity.name == 'discovery_range')
+    assert discovery.default_value[0].text == 'SUBNET'
+    environment = next(
+        entity for entity in entities
+        if isinstance(entity, SetEnvironmentVariable)
+        and perform_substitutions(LaunchContext(), entity.name)
+        == 'ROS_AUTOMATIC_DISCOVERY_RANGE')
+    assert entities.index(discovery) < entities.index(environment)
+    context = LaunchContext()
+    discovery.execute(context)
+    environment.execute(context)
+    assert context.environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'SUBNET'
+    context = LaunchContext()
+    context.launch_configurations['discovery_range'] = 'LOCALHOST'
+    discovery.execute(context)
+    environment.execute(context)
+    assert context.environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'LOCALHOST'
 
 
 def test_autonomous_mapping_defaults_to_new_base_geometry():

@@ -42,6 +42,7 @@ def generate_launch_description():
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    discovery_range = LaunchConfiguration('discovery_range')
     safe_bt = os.path.join(
         package_share, 'behavior_trees', 'navigate_to_pose_safe_mapping.xml')
 
@@ -188,8 +189,12 @@ def generate_launch_description():
 
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
+        DeclareLaunchArgument(
+            'discovery_range', default_value='SUBNET',
+            choices=['LOCALHOST', 'SUBNET'],
+            description='DDS discovery scope for mapping sensors'),
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', discovery_range),
         DeclareLaunchArgument(
             'params_file',
             default_value=os.path.join(

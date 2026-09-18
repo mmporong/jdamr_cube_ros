@@ -20,11 +20,14 @@ import time
 
 from ament_index_python.packages import get_package_prefix
 from geometry_msgs.msg import Point32, PolygonStamped, TransformStamped, Twist
+from jdamr_cube_navigation.depth_navigation_config import build_depth_navigation_params
+from jdamr_cube_navigation.depth_obstacle_filter import make_cloud
 from lifecycle_msgs.srv import ChangeState
 from nav2_msgs.msg import CollisionMonitorState
+import numpy as np
 import rclpy
 from rclpy.qos import DurabilityPolicy, qos_profile_sensor_data, QoSProfile
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, PointCloud2
 from tf2_msgs.msg import TFMessage
 import yaml
 
@@ -33,16 +36,20 @@ DOMAIN_ID = 199
 PREFIX = '/collision_probe'
 
 
-def run(params_path, geometry_path, output):
+def run(params_path, geometry_path, output, *, with_depth=False):
     """Start one monitor child and stop that exact process in all exit paths."""
     output.mkdir(parents=True, exist_ok=False)
     document = yaml.safe_load(params_path.read_text())
+    if with_depth:
+        document = build_depth_navigation_params(document)
     geometry = yaml.safe_load(geometry_path.read_text())
     monitor = copy.deepcopy(document['collision_monitor']['ros__parameters'])
     monitor.update(cmd_vel_in_topic=PREFIX + '/input',
                    cmd_vel_out_topic=PREFIX + '/output',
                    state_topic=PREFIX + '/state', use_sim_time=False)
     monitor['scan']['topic'] = PREFIX + '/scan'
+    if with_depth:
+        monitor['depth_obstacles']['topic'] = PREFIX + '/depth_obstacles'
     monitor['FootprintApproach']['footprint_topic'] = PREFIX + '/footprint'
     monitor['StopZone']['polygon_pub_topic'] = PREFIX + '/stop_zone'
     monitor['SlowdownZone']['polygon_pub_topic'] = PREFIX + '/slowdown_zone'
@@ -61,6 +68,7 @@ def run(params_path, geometry_path, output):
                      'lib/nav2_collision_monitor/collision_monitor')
     result = {'scope': 'synthetic_installed_monitor_only_no_physical_motion',
               'domain_id': DOMAIN_ID, 'topic_prefix': PREFIX,
+              'depth_source_enabled': with_depth,
               'params_sha256': hashlib.sha256(params_path.read_bytes()).hexdigest(),
               'geometry_sha256': hashlib.sha256(geometry_path.read_bytes()).hexdigest(),
               'cases': []}
@@ -81,6 +89,8 @@ def run(params_path, geometry_path, output):
                 node = rclpy.create_node('synthetic_scan_harness', namespace=PREFIX)
                 scan_pub = node.create_publisher(
                     LaserScan, PREFIX + '/scan', qos_profile_sensor_data)
+                depth_pub = node.create_publisher(
+                    PointCloud2, PREFIX + '/depth_obstacles', qos_profile_sensor_data)
                 cmd_pub = node.create_publisher(Twist, PREFIX + '/input', 10)
                 tf_pub = node.create_publisher(TFMessage, PREFIX + '/tf', 10)
                 static_pub = node.create_publisher(
@@ -119,9 +129,10 @@ def run(params_path, geometry_path, output):
                     if not future.done() or not future.result().success:
                         raise RuntimeError(f'lifecycle transition failed: {transition}')
 
-                def exercise(name, velocity, points, expected, *, stale=False):
+                def exercise(name, velocity, points, expected, *, stale=False,
+                             depth_points=(), stale_depth=False):
                     start = time.monotonic()
-                    until = start + (1.6 if stale else 0.8)
+                    until = start + (1.6 if stale or stale_depth else 0.8)
                     while time.monotonic() < until:
                         stamp = node.get_clock().now().to_msg()
                         odom_tf = TransformStamped()
@@ -146,6 +157,11 @@ def run(params_path, geometry_path, output):
                                 index = round(angle / scan.angle_increment) % 1440
                                 scan.ranges[index] = math.hypot(dx, dy)
                             scan_pub.publish(scan)
+                        if with_depth and not stale_depth:
+                            depth_pub.publish(make_cloud(
+                                list(depth_points) if depth_points else
+                                np.empty((0, 3)),
+                                'base_footprint', stamp))
                         command_message = Twist()
                         command_message.linear.x, command_message.angular.z = velocity
                         cmd_pub.publish(command_message)
@@ -196,6 +212,22 @@ def run(params_path, geometry_path, output):
                 exercise('fresh_scan_resumes', (0.08, 0.0), [],
                          lambda cmd, state, n: cmd.linear.x > 0 and state != 'invalid source'
                          and n == 4)
+                if with_depth:
+                    depth_intrusion = [(0.12, y, 0.7) for y in (-0.08, 0.0, 0.08)]
+                    exercise('depth_only_high_obstacle_stops', (0.08, 0.0), [],
+                             lambda cmd, state, _: cmd.linear.x == 0
+                             and cmd.angular.z == 0 and state == 'StopZone',
+                             depth_points=depth_intrusion)
+                    exercise('fresh_clear_depth_resumes', (0.08, 0.0), [],
+                             lambda cmd, state, _: cmd.linear.x > 0
+                             and state != 'invalid source')
+                    exercise('stale_depth_with_fresh_lidar_stops', (0.08, 0.0), [],
+                             lambda cmd, state, _: cmd.linear.x == 0
+                             and cmd.angular.z == 0 and state == 'invalid source',
+                             stale_depth=True)
+                    exercise('fresh_depth_after_dropout_resumes', (0.08, 0.0), [],
+                             lambda cmd, state, _: cmd.linear.x > 0
+                             and state != 'invalid source')
                 result['pass'] = True
                 assert len(subscriptions) == 3
     except Exception as error:
@@ -225,8 +257,11 @@ def main():
     parser.add_argument('--geometry', type=Path, default=package.parent /
                         'jdamr_cube_description/config/new_base_geometry.yaml')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--with-depth', action='store_true',
+                        help='Also exercise the opt-in pointcloud source')
     args = parser.parse_args()
-    print(json.dumps(run(args.params, args.geometry, args.output), indent=2))
+    print(json.dumps(run(args.params, args.geometry, args.output,
+                         with_depth=args.with_depth), indent=2))
 
 
 if __name__ == '__main__':

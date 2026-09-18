@@ -69,9 +69,67 @@ def validate_new_base_params(params, geometry):
     for costmap in costmaps:
         layer = costmap['obstacle_layer']
         scan = layer['scan']
-        if (not layer['enabled'] or 'scan' not in layer['observation_sources']
+        sources = layer.get('observation_sources')
+        if (not layer['enabled'] or sources != 'scan'
                 or scan['topic'] != '/scan' or not scan['marking']):
             raise RuntimeError('new-base costmap scan layer is not active')
+    depth_enabled = [
+        'depth_obstacle_layer' in costmap for costmap in costmaps]
+    if any(depth_enabled) and not all(depth_enabled):
+        raise RuntimeError('new-base depth layer must cover both costmaps')
+    if all(depth_enabled):
+        for costmap in costmaps:
+            plugins = costmap.get('plugins', [])
+            if ('depth_obstacle_layer' not in plugins
+                    or plugins.index('depth_obstacle_layer')
+                    != plugins.index('inflation_layer') - 1):
+                raise RuntimeError(
+                    'new-base depth layer must run before inflation')
+            depth_layer = costmap['depth_obstacle_layer']
+            expected_layer = {
+                'plugin': 'nav2_costmap_2d::VoxelLayer',
+                'enabled': True,
+                'combination_method': 1,
+                'origin_z': 0.0,
+                'z_resolution': 0.1,
+                'z_voxels': 16,
+                'mark_threshold': 0,
+                'unknown_threshold': 15,
+                'publish_voxel_map': False,
+                'min_obstacle_height': -0.05,
+                'max_obstacle_height': 1.5,
+                'observation_sources': 'depth_marks depth_rays',
+            }
+            if any(depth_layer.get(key) != value
+                   for key, value in expected_layer.items()):
+                raise RuntimeError(
+                    'new-base depth voxel layer violates approved policy')
+            marks = depth_layer.get('depth_marks', {})
+            rays = depth_layer.get('depth_rays', {})
+            common = (
+                marks.get('sensor_frame') == 'camera_color_optical_frame'
+                and rays.get('sensor_frame') == 'camera_color_optical_frame'
+                and marks.get('data_type') == 'PointCloud2'
+                and rays.get('data_type') == 'PointCloud2')
+            marking = (
+                marks.get('topic') == '/depth_navigation/obstacles'
+                and marks.get('marking') is True
+                and marks.get('clearing') is False
+                and marks.get('min_obstacle_height') == 0.05
+                and marks.get('max_obstacle_height') == 1.5
+                and marks.get('obstacle_min_range') == 0.4
+                and marks.get('obstacle_max_range') == 2.5)
+            clearing = (
+                rays.get('topic') == '/depth_navigation/rays'
+                and rays.get('marking') is False
+                and rays.get('clearing') is True
+                and rays.get('min_obstacle_height') == -0.05
+                and rays.get('max_obstacle_height') == 1.5
+                and rays.get('raytrace_min_range') == 0.4
+                and rays.get('raytrace_max_range') == 2.5)
+            if not (common and marking and clearing):
+                raise RuntimeError(
+                    'new-base depth costmap sources violate approved policy')
 
     monitor = params['collision_monitor']['ros__parameters']
     if monitor.get('base_frame_id') != 'base_footprint':
@@ -79,9 +137,26 @@ def validate_new_base_params(params, geometry):
     if not {'StopZone', 'SlowdownZone', 'FootprintApproach'} <= set(
             monitor['polygons']):
         raise RuntimeError('new-base collision polygons are incomplete')
+    approved_sources = (['scan'], ['scan', 'depth_obstacles'])
+    observation_sources = monitor.get('observation_sources')
+    if all(depth_enabled) != (
+            observation_sources == ['scan', 'depth_obstacles']):
+        raise RuntimeError(
+            'new-base depth costmaps and collision source must be enabled together')
+    if observation_sources not in approved_sources:
+        if (not isinstance(observation_sources, list)
+                or 'scan' not in observation_sources):
+            raise RuntimeError(
+                'new-base scan collision source is not active')
+        raise RuntimeError(
+            'new-base collision sources must be scan with optional depth')
     for name in ('StopZone', 'SlowdownZone', 'FootprintApproach'):
-        if monitor[name].get('sources_names', ['scan']) != ['scan']:
-            raise RuntimeError(f'new-base {name} must observe the scan source')
+        effective_sources = monitor[name].get(
+            'sources_names', observation_sources)
+        if effective_sources != observation_sources:
+            raise RuntimeError(
+                f'new-base {name} must observe the scan source and all '
+                'approved sources')
     stop_zone = monitor['StopZone']
     if (stop_zone['type'] != 'velocity_polygon'
             or stop_zone['action_type'] != 'stop'
@@ -150,6 +225,16 @@ def validate_new_base_params(params, geometry):
             or monitor['scan']['type'] != 'scan'
             or monitor['scan']['topic'] != '/scan'):
         raise RuntimeError('new-base scan collision source is not active')
+    if observation_sources == ['scan', 'depth_obstacles']:
+        depth = monitor.get('depth_obstacles', {})
+        if (depth.get('type') != 'pointcloud'
+                or depth.get('topic') != '/depth_navigation/obstacles'
+                or depth.get('enabled') is not True
+                or depth.get('source_timeout') != 1.0
+                or depth.get('min_height') != 0.05
+                or depth.get('max_height') != 1.5):
+            raise RuntimeError(
+                'new-base depth collision source violates approved policy')
 
     rotation_points = polygon_points(stop_zone['rotation']['points'])
     clockwise_points = polygon_points(

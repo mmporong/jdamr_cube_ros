@@ -1,0 +1,23 @@
+depth_obstacle_filter:
+  ros__parameters:
+    depth_topic: /camera/depth/image_raw
+    camera_info_topic: /camera/depth/camera_info
+    obstacle_topic: /depth_navigation/obstacles
+    ray_topic: /depth_navigation/rays
+    status_topic: /depth_navigation/status
+    optical_frame: camera_color_optical_frame
+    base_frame: base_footprint
+    calibration_model: rectified_projection
+    min_depth_m: 0.4
+    max_depth_m: 2.5
+    min_height_m: 0.05
+    max_height_m: 1.5
+    max_forward_m: 2.5
+    max_lateral_m: 1.5
+    pixel_stride: 4
+    voxel_size_m: 0.04
+    min_valid_fraction: 0.05
+    max_points: 20000
+    max_image_age_s: 0.5
+    max_processing_hz: 5.0
+    transform_timeout_s: 0.05
