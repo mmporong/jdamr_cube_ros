@@ -2,10 +2,11 @@
 
 ## 상태
 
-- 상태: `DEFERRED`
-- 현재 우선순위: RGB-D Visual SLAM 검증 이후
-- 구현 브랜치 후보: `feat/restaurant-service-destinations`
-- 현재 주행 동작에는 연결하지 않는다.
+- 상태: `IMPLEMENTED_LOCAL` — 실차 위치 교시·도착 검증 대기
+- 2026-09-18 요청으로 목적지 등록·선택·주차 연결 구현을 진행했다.
+- 구현 브랜치: `feat/restaurant-service-destinations`
+- `restaurant_service` 명령으로 사용하며 기존 주행의 기본값은 유지한다.
+- 구현·명령·현재 검증 범위: [서비스 위치 구현](20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md).
 
 ## 목표
 
@@ -18,7 +19,10 @@
 
 ## 데이터 모델
 
-목적지 파일은 지도와 함께 버전 관리하며 다음 필드를 가진다.
+아래 스키마는 9월 17일의 설계 초안이다. 구현에서는 `restaurant_service init/teach`가
+등록부를 생성하고, YAML과 이미지 해시를 모두 저장한다. 최종 허용 오차는 기존
+`parking_contract.yaml`의 위치 0.05m·방향 3°를 공통 사용한다. 아래 초안의 pose별
+tolerance 값은 현재 런타임 입력이 아니다. 실제 필드와 사용법은 위 구현 문서를 따른다.
 
 ```yaml
 map:
@@ -67,7 +71,7 @@ tables:
 좌표는 RViz 화면을 보고 추정해 입력하지 않는다. 실제 기체를 세운 뒤 AMCL pose를 캡처한
 값과 지도·마스크 해시를 함께 저장한다.
 
-## 후속 구현 작업
+## 설계 당시 구현 항목
 
 1. `restaurant_service_destinations.yaml` 스키마와 샘플을 추가한다.
 2. 현재 `/amcl_pose`를 이름 있는 서비스 pose로 저장하는 교시 도구를 만든다.
@@ -88,4 +92,3 @@ tables:
 - Nav2 도착 여부와 별도로 최종 위치·방향 오차가 기록된다.
 - 5cm 정확도는 반복 실측 결과가 있을 때만 주장한다.
 - Depth 국소 인지와 베이스 목적지 등록의 책임이 분리돼 있다.
-

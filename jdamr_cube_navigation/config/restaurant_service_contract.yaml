@@ -1,0 +1,7 @@
+schema_version: 1
+# Candidate localization confidence limits, not a measured accuracy guarantee.
+# Standard deviation limits: 0.10 m on each map axis and 10 degrees in yaw.
+max_x_covariance_m2: 0.01
+max_y_covariance_m2: 0.01
+max_yaw_covariance_rad2: 0.030461741978670857
+physical_validation: NOT_PHYSICALLY_VALIDATED

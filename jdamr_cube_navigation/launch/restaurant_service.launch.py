@@ -1,0 +1,67 @@
+"""Start saved-map Nav2 with the registered assets and parking controller."""
+
+from pathlib import Path
+import tempfile
+
+from ament_index_python.packages import get_package_share_directory
+from jdamr_cube_navigation.parking import (
+    load_parking_contract, parking_controller_overrides,
+)
+from jdamr_cube_navigation.service_destinations import expanded_path, load_registry
+from launch import LaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction,
+    RegisterEventHandler,
+)
+from launch.event_handlers import OnShutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+import yaml
+
+
+def _configure(context):
+    registry = load_registry(LaunchConfiguration('registry').perform(context))
+    package = Path(get_package_share_directory('jdamr_cube_navigation'))
+    source = expanded_path(LaunchConfiguration('params_file').perform(context))
+    document = yaml.safe_load(source.read_text(encoding='utf-8'))
+    contract = load_parking_contract(package / 'config/parking_contract.yaml')
+    controller = parking_controller_overrides(document, contract)
+    document['controller_server']['ros__parameters'] = controller
+    with tempfile.NamedTemporaryFile(
+            mode='w', prefix='jdamr_service_', suffix='.yaml',
+            encoding='utf-8', delete=False) as stream:
+        yaml.safe_dump(document, stream, sort_keys=False)
+        generated = Path(stream.name)
+
+    def cleanup(_context):
+        generated.unlink(missing_ok=True)
+        return []
+
+    navigation = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(str(package / 'launch/onboard_nav2_core.launch.py')),
+        launch_arguments={
+            'map': registry['map']['yaml_path'],
+            'keepout_mask': registry['keepout']['yaml_path'],
+            'params_file': str(generated),
+            'navigation_profile': LaunchConfiguration('navigation_profile'),
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'autostart': 'true',
+        }.items(),
+    )
+    return [RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(function=cleanup)])),
+            navigation]
+
+
+def generate_launch_description():
+    """Load navigation only; named destination execution is a separate command."""
+    package = Path(get_package_share_directory('jdamr_cube_navigation'))
+    return LaunchDescription([
+        DeclareLaunchArgument('registry', description='Taught service destination YAML'),
+        DeclareLaunchArgument('params_file', default_value=str(
+            package / 'config/new_base_nav2_params.yaml')),
+        DeclareLaunchArgument(
+            'navigation_profile', default_value='new_base_candidate',
+            choices=['new_base_candidate', 'new_base_revisit_candidate', 'corridor']),
+        DeclareLaunchArgument('use_sim_time', default_value='false'),
+        OpaqueFunction(function=_configure),
+    ])

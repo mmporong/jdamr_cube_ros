@@ -72,6 +72,8 @@ setup(
             'jdamr_cube_navigation.g005_frontier_coordinator:main',
             'depth_box_parking = '
             'jdamr_cube_navigation.depth_box_parking:main',
+            'restaurant_service = '
+            'jdamr_cube_navigation.restaurant_service:main',
         ],
     },
 )
