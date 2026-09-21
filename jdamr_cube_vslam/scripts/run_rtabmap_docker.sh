@@ -168,6 +168,11 @@ PY
   )
 fi
 
+if [[ -n "$odom_guess_frame_id" ]]; then
+  echo "wheel-guess replay blocked: independent visual/reference TF trees are not implemented; use camera-only or --external-odom" >&2
+  exit 2
+fi
+
 docker run --rm \
   --network host \
   --ipc host \

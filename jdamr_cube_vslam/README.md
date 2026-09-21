@@ -42,6 +42,11 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabma
 이 명령은 실제 assembled 3D cloud가 생성되지 않으면 실패한다. 센서 연결만 확인하는
 정적 smoke bag에는 `--allow-static`을 추가한다.
 
+기본 카메라 전용 경로는 입력 bag을 수정하지 않고 `visual_input` 처리본을 만든다.
+카메라 내부 TF만 남기고 바퀴 TF와 주행 명령 토픽을 제외하며, 시각 추정은
+`/rtabmap/odom`으로 발행한다. 원본 `/odom`은 비교 기록에만 사용한다.
+오프라인 재생은 0.5배속이며, 점군 export는 depth decimation 2를 사용한다.
+
 회색 벽처럼 특징이 적은 구간을 포함한 기록은 동기 RGB-D bag과 보수적인
 저텍스처 프로파일을 사용한다.
 
@@ -56,30 +61,14 @@ bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabma
 재초기화한다. 최소 inlier를 더 낮추면 로그상 추적 손실은 줄어도 잘못된 대응으로
 점군이 찢어질 수 있으므로 기본 설정으로 사용하지 않는다.
 
-휠 odometry 이동량을 visual odometry의 초기 추정으로 사용할 때는 카메라 장착 변환을
-먼저 실측한다. `config/camera_mount.yaml`의 상태와 usage gate가 허용되지 않으면 wrapper가
-실행을 거부한다. 실측 뒤 동일 bag 비교는 다음과 같이 실행한다.
-
-```bash
-bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabmap_docker.sh" \
-  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/bag_paired_10fps" \
-  "$HOME/jdamr_data/vslam/rgbd_YYYYMMDDTHHMMSS/rtabmap_wheel_guess" \
-  --profile low-texture \
-  --odom-guess-frame odom
-```
-
-wrapper는 실측 `base_link → camera_link`를 정적 TF로 주입한다. bag 재생 중
-`odom → base_footprint → base_link → camera_link` 연결을 직접 확인하며, TF publisher가 종료되거나
-연결을 10초 안에 확인하지 못하면 wheel-guess 결과를 만들지 않는다.
-RTAB-Map visual odometry의 출력 frame은 `vslam_odom`으로 분리한다. 그래야 입력 휠 TF인
-`odom → base_footprint`와 RTAB-Map의 보정 TF가 같은 자식 frame을 두고 충돌하지 않는다.
-휠 odometry가 정지 상태에서 정확히 0을 유지한 기존 bag의 분포를 근거로, 이동 누적값이
-5mm 또는 0.005rad에 도달할 때만 visual odometry를 갱신한다. 필요하면
-`--odom-guess-min-translation`과 `--odom-guess-min-rotation`으로 변경하되 동일 bag A/B에서
-한 변수씩 검증한다.
+2026-09-21부터 `--odom-guess-frame` 혼합 경로는 실행 전에 오류를 반환한다.
+기존 구성은 같은 카메라 자식 frame에 바퀴·시각 TF가 함께 연결되거나,
+시각 TF를 끄면 mapping의 `vslam_odom → camera_link`가 끊기는 문제가 있다.
+장착값의 측정 여부와 별개인 TF 구조 문제이며, 별도 참조/시각 트리 검증 전까지
+카메라 전용 모드 또는 아래 외부 odometry 모드를 사용한다.
 
 Visual Odometry 프런트엔드와 분리해 RGB-D 매핑 데이터 자체를 확인할 때는 wheel
-`/odom`을 외부 odometry로 직접 사용한다.
+`/odom`을 외부 odometry로 사용한다.
 
 ```bash
 bash "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_vslam/scripts/run_rtabmap_docker.sh" \

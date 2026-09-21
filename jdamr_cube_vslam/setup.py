@@ -21,7 +21,7 @@ setup(
         (os.path.join('share', package_name, 'config'),
          glob('config/*.yaml')),
         (os.path.join('share', package_name, 'scripts'),
-         glob('scripts/*.sh')),
+         glob('scripts/*.sh') + glob('scripts/*.py')),
         (os.path.join('share', package_name, 'evaluation'),
          glob('evaluation/*.md')),
     ],

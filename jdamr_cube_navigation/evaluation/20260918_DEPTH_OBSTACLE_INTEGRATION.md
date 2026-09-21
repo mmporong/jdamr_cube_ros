@@ -253,6 +253,8 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/guarded_turn_comparison.png
 $HOME/jdamr_artifacts/depth_obstacles_20260921/compare_turn.py
 ```
 
+후속 [제한 복귀 회전 평가](../../jdamr_cube_vslam/evaluation/20260921_RGBD_RECORDED_RETURN.md)에서 녹화와 동작을 한 감독 프로세스로 묶었다. 실제 회전 구간의 RGB·depth·scan·odom 수신을 확인하고 7개 시점의 odometry-seeded 점군을 생성했다. 미검증 높이와 fusion 차단 상태는 유지한다.
+
 ## 실행 및 실차 적용 조건
 
 카메라 드라이버와 차체 TF는 기존 시스템에서 제공해야 한다. `publish_camera_mount:=true`를 선택하면 실측 mount 파일에서 `base_link` → `camera_link` 정적 TF를 발행한다. 같은 TF를 발행하는 이전 wrapper는 함께 사용하지 않는다. 장착 TF 발행은 센서 간 정렬의 실측 검증을 대신하지 않는다.

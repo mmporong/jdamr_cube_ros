@@ -12,6 +12,10 @@ rtabmap_log=/output/rtabmap.log
 trajectory_log=/output/trajectory_recorder.log
 rtabmap_profile="${RTABMAP_PROFILE:-baseline}"
 odom_source_mode="${ODOM_SOURCE_MODE:-visual}"
+if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]]; then
+  echo "wheel-guess replay blocked: independent visual/reference TF trees are not implemented" >&2
+  exit 2
+fi
 rtabmap_extra_args=''
 rtabmap_odom_extra_args=''
 case "$rtabmap_profile" in
@@ -25,19 +29,37 @@ case "$rtabmap_profile" in
     exit 2
     ;;
 esac
+odom_extra_launch_args=()
+if [[ -n "$rtabmap_odom_extra_args" ]]; then
+  odom_extra_launch_args=("odom_args:=${rtabmap_odom_extra_args}")
+fi
 odom_guess_launch_arg=()
 wait_for_transform_s=0.3
-bag_play_rate=1.0
+bag_play_rate=0.5
 rtabmap_frame_id=camera_link
 visual_odometry=true
-publish_tf_odom=true
+# The replay already owns odom -> base -> camera_link. A second parent for
+# camera_link would mix the recorded wheel tree with visual estimation.
+publish_tf_odom=false
+rtabmap_odom_topic=/rtabmap/odom
+playback_bag=/data
 if [[ "$odom_source_mode" == external ]]; then
   rtabmap_frame_id=base_link
   visual_odometry=false
-  publish_tf_odom=false
+  rtabmap_odom_topic=/odom
 elif [[ "$odom_source_mode" != visual ]]; then
   echo "unknown odometry source mode: ${odom_source_mode}" >&2
   exit 2
+fi
+
+if [[ "$odom_source_mode" == visual && -z "${ODOM_GUESS_FRAME_ID:-}" ]]; then
+  # Retain camera-internal TF and wheel odometry messages for comparison,
+  # but let visual odometry be the only TF parent of camera_link.
+  python3 /workspace/jdamr_cube_vslam/scripts/prepare_visual_replay.py \
+    --input /data --output /output/visual_input \
+    >/output/visual_replay_preparation.log
+  playback_bag=/output/visual_input
+  publish_tf_odom=true
 fi
 if [[ -n "${ODOM_GUESS_FRAME_ID:-}" || "$odom_source_mode" == external ]]; then
   wait_for_transform_s=1.5
@@ -48,7 +70,6 @@ if [[ -n "${ODOM_GUESS_FRAME_ID:-}" ]]; then
     "odom_guess_frame_id:=${ODOM_GUESS_FRAME_ID}"
     "odom_guess_min_translation:=${ODOM_GUESS_MIN_TRANSLATION:-0.005}"
     "odom_guess_min_rotation:=${ODOM_GUESS_MIN_ROTATION:-0.005}"
-    "vo_frame_id:=vslam_odom"
   )
 fi
 
@@ -98,7 +119,7 @@ setsid ros2 launch rtabmap_launch rtabmap.launch.py \
     --RGBD/ProximityBySpace true --Grid/Sensor 1 \
     --Grid/3D true --Grid/RangeMax 5.0 --Rtabmap/DetectionRate 2.0 \
     ${rtabmap_extra_args}" \
-  odom_args:="${rtabmap_odom_extra_args}" \
+  "${odom_extra_launch_args[@]}" \
   database_path:="$database_path" \
   frame_id:="$rtabmap_frame_id" \
   "${odom_guess_launch_arg[@]}" \
@@ -106,7 +127,8 @@ setsid ros2 launch rtabmap_launch rtabmap.launch.py \
   rgb_topic:=/camera/color/image_raw \
   depth_topic:=/camera/depth/image_raw \
   camera_info_topic:=/camera/color/camera_info \
-  odom_topic:=/odom \
+  odom_topic:="$rtabmap_odom_topic" \
+  vo_frame_id:=vslam_odom \
   depth:=true visual_odometry:="$visual_odometry" icp_odometry:=false \
   publish_tf_odom:="$publish_tf_odom" \
   subscribe_scan:=false \
@@ -137,7 +159,11 @@ setsid python3 \
 snapshot_pid=$!
 
 sleep 5
-setsid ros2 bag play /data --clock --rate "$bag_play_rate" \
+if ! kill -0 "$launch_pid" 2>/dev/null; then
+  echo "RTAB-Map launch exited before replay; see ${rtabmap_log}" >&2
+  exit 1
+fi
+setsid ros2 bag play "$playback_bag" --clock --rate "$bag_play_rate" \
   --read-ahead-queue-size 2000 \
   >/output/bag_play.log 2>&1 &
 bag_pid=$!
@@ -208,7 +234,7 @@ if [[ "$trajectory_ready" == true ]] \
     && command -v rtabmap-export >/dev/null 2>&1; then
   set +e
   rtabmap-export --cloud --poses --poses_format 10 \
-    --voxel 0.02 --noise_radius 0.05 --noise_k 5 \
+    --decimation 2 --voxel 0.02 --noise_radius 0.05 --noise_k 5 \
     --output jdamr_rgbd --output_dir /output "$database_path" \
     >/output/rtabmap_export.log 2>&1
   export_status=$?
@@ -217,7 +243,7 @@ if [[ "$trajectory_ready" == true ]] \
       >>/output/rtabmap_export.log
     rm -f /output/jdamr_rgbd_cloud.ply /output/jdamr_rgbd_poses.txt
     rtabmap-export --cloud --poses --poses_format 10 \
-      --voxel 0.02 \
+      --decimation 2 --voxel 0.02 \
       --output jdamr_rgbd --output_dir /output "$database_path" \
       >>/output/rtabmap_export.log 2>&1
     export_status=$?

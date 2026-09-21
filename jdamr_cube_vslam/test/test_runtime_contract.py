@@ -181,13 +181,15 @@ def test_wheel_guess_injects_measured_camera_transform():
     assert 'publish_tf_odom=true' in processor
     assert 'publish_tf_odom=false' in processor
     assert 'publish_tf_odom:="$publish_tf_odom"' in processor
-    assert 'odom_topic:=/odom' in processor
+    assert 'rtabmap_odom_topic=/rtabmap/odom' in processor
+    assert 'rtabmap_odom_topic=/odom' in processor
+    assert 'odom_topic:="$rtabmap_odom_topic"' in processor
     assert 'rtabmap_frame_id=base_link' in processor
     assert 'ODOM_GUESS_FRAME_ID:-$CAMERA_MOUNT_PARENT' in processor
     assert 'odom_guess_frame_id:=${ODOM_GUESS_FRAME_ID}' in processor
 
 
-def test_wrapper_passes_measured_camera_transform_to_container():
+def test_external_mount_is_forwarded_but_ambiguous_wheel_guess_is_blocked():
     script = PACKAGE_ROOT / 'scripts' / 'run_rtabmap_docker.sh'
     with tempfile.TemporaryDirectory() as temporary_directory:
         temporary_path = Path(temporary_directory)
@@ -221,7 +223,7 @@ usage_gate:
         fake_docker.chmod(0o755)
         environment = os.environ.copy()
         environment['PATH'] = f'{fake_bin}:{environment["PATH"]}'
-        completed = subprocess.run(
+        blocked = subprocess.run(
             [
                 str(script),
                 str(bag_path),
@@ -236,9 +238,15 @@ usage_gate:
             text=True,
             env=environment,
         )
+        completed = subprocess.run(
+            [str(script), str(bag_path), str(temporary_path / 'external'),
+             '--external-odom', '--camera-mount', str(config_path)],
+            check=False, capture_output=True, text=True, env=environment)
+    assert blocked.returncode == 2
+    assert 'wheel-guess replay blocked' in blocked.stderr
     assert completed.returncode == 0, completed.stderr
     for expected in (
-        'ODOM_GUESS_FRAME_ID=odom',
+        'ODOM_SOURCE_MODE=external',
         'CAMERA_MOUNT_PARENT=base_link',
         'CAMERA_MOUNT_CHILD=camera_link',
         'CAMERA_MOUNT_X=0.065',
@@ -247,8 +255,8 @@ usage_gate:
         'CAMERA_MOUNT_ROLL=0.0',
         'CAMERA_MOUNT_PITCH=0.0',
         'CAMERA_MOUNT_YAW=0.0',
-        'ODOM_GUESS_MIN_TRANSLATION=0.005000',
-        'ODOM_GUESS_MIN_ROTATION=0.005000',
+        'ODOM_GUESS_MIN_TRANSLATION=0.005',
+        'ODOM_GUESS_MIN_ROTATION=0.005',
     ):
         assert expected in completed.stdout
 
@@ -366,7 +374,8 @@ def test_low_texture_profile_keeps_odometry_only_arguments_separate():
     ).read_text(encoding='utf-8')
     assert "rtabmap_odom_extra_args='--Odom/ResetCountdown 5 " \
         "--OdomF2M/MaxSize 3000'" in script
-    assert 'odom_args:="${rtabmap_odom_extra_args}"' in script
+    assert 'odom_extra_launch_args=("odom_args:=${rtabmap_odom_extra_args}")' in script
+    assert '"${odom_extra_launch_args[@]}"' in script
     slam_argument_lines = [
         line for line in script.splitlines()
         if 'rtabmap_extra_args=' in line
