@@ -24,6 +24,7 @@ from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import BatteryState, LaserScan
@@ -36,6 +37,14 @@ MAX_TRAVEL_M = 1.0
 MAX_RUN_S = 90.0
 MAX_LINEAR_MPS = 0.06
 MAX_ANGULAR_RADPS = 0.20
+VALIDATION_REFERENCE_MIN_M = 0.65
+VALIDATION_REFERENCE_MAX_M = 1.0
+VALIDATION_REFERENCE_TOLERANCE_M = 0.04
+VALIDATION_TRIAL_MAX_TRAVEL_M = 0.45
+VALIDATION_TRIAL_MAX_RUN_S = 30.0
+VALIDATION_TRIAL_MAX_LINEAR_MPS = 0.03
+VALIDATION_TRIAL_MAX_ANGULAR_RADPS = 0.10
+VALIDATION_TRIAL_MODE = 'physical_validation_trial'
 GRAPH_SAMPLE_S = 0.5
 GRAPH_FRESHNESS_S = 0.75
 CM_ENABLE_POLL_S = 1.0
@@ -107,6 +116,19 @@ def ownership_reasons(owners):
                 or set(owners.get(topic, ())) != required)]
 
 
+def validation_reference_reason(reference_m):
+    """Validate the one-shot measured starting distance for a trial."""
+    if (isinstance(reference_m, bool)
+            or not isinstance(reference_m, (int, float))
+            or not math.isfinite(reference_m)):
+        return 'validation_reference_invalid'
+    if reference_m == 0.0:
+        return 'validation_reference_missing'
+    if not VALIDATION_REFERENCE_MIN_M <= reference_m <= VALIDATION_REFERENCE_MAX_M:
+        return 'validation_reference_out_of_range'
+    return None
+
+
 def readiness_reasons(
         observation, received, *, now_mono_s, now_ros_s, battery,
         collision_action, final_command, lifecycle, owners,
@@ -146,7 +168,9 @@ def readiness_reasons(
         if not 0.0 <= now_mono_s - observed <= 3.0:
             reasons.append(f'{name}_lifecycle_stale')
     if (collision_action is not None
-            and collision_action != CollisionMonitorState.DO_NOTHING):
+            and collision_action not in (
+                CollisionMonitorState.DO_NOTHING,
+                CollisionMonitorState.SLOWDOWN)):
         reasons.append('collision_monitor_intervention')
     if require_start and not zero_witness_valid:
         reasons.append('final_zero_not_observed')
@@ -188,6 +212,8 @@ class BoxApproachExecution(Node):
             'camera_mount_file': '', 'geometry_file': '',
             'parking_contract_file': '', 'nav_params_file': '',
             'physical_validation_file': '',
+            # One service call consumes this measured starting distance.
+            'validation_reference_m': 0.0,
             # Ephemeral operator confirmation: every process restart resets false.
             'charger_unplugged_confirmed': False,
             'optical_frame': 'camera_color_optical_frame',
@@ -226,6 +252,8 @@ class BoxApproachExecution(Node):
         self.armed = False
         self.latched = False
         self.terminal_state = None
+        self.execution_mode = 'production'
+        self.validation_reference_m = None
         self.reason = 'DISARMED'
         self.start_pose = None
         self.started_mono_s = None
@@ -259,6 +287,9 @@ class BoxApproachExecution(Node):
         self.cm_toggle_client = self.create_client(
             Toggle, '/collision_monitor/toggle')
         self.create_service(Trigger, '/box_parking/start_approach', self.on_start)
+        self.create_service(
+            Trigger, '/box_parking/start_validation_approach',
+            self.on_start_validation)
         self.create_service(Trigger, '/box_parking/cancel_approach', self.on_cancel)
         self.create_timer(.1, self.tick)
         self.create_timer(.5, self.poll_lifecycle)
@@ -401,7 +432,9 @@ class BoxApproachExecution(Node):
         """Latch any collision-monitor intervention during execution."""
         self.collision_action = message.action_type
         self.received['collision'] = self._monotonic()
-        if self.armed and message.action_type != CollisionMonitorState.DO_NOTHING:
+        if (self.armed and message.action_type not in (
+                CollisionMonitorState.DO_NOTHING,
+                CollisionMonitorState.SLOWDOWN)):
             self.abort('collision_monitor_intervention')
 
     def on_final_command(self, message):
@@ -461,7 +494,9 @@ class BoxApproachExecution(Node):
         self.terminal_state = 'SUCCEEDED'
         self.policy.reset()
 
-    def readiness(self, require_start=True, require_command_fresh=None):
+    def readiness(
+            self, require_start=True, require_command_fresh=None,
+            require_physical_validation=True):
         """Return every current start/runtime blocker."""
         self.refresh_chain_identity()
         reasons = readiness_reasons(
@@ -479,15 +514,33 @@ class BoxApproachExecution(Node):
             require_command_fresh=require_command_fresh,
             graph_received_mono_s=self.graph_received_mono_s,
             cm_enable_valid=self.cm_enable_valid())
-        try:
-            physical_validation(
-                self.values['physical_validation_file'],
-                self.values['camera_mount_file'], self.values['geometry_file'],
-                self.values['nav_params_file'],
-                self.values['parking_contract_file'])
-        except (OSError, ValueError, yaml.YAMLError) as error:
-            reasons.append(str(error))
+        if require_physical_validation:
+            try:
+                physical_validation(
+                    self.values['physical_validation_file'],
+                    self.values['camera_mount_file'], self.values['geometry_file'],
+                    self.values['nav_params_file'],
+                    self.values['parking_contract_file'])
+            except (OSError, ValueError, yaml.YAMLError) as error:
+                reasons.append(str(error))
         return reasons
+
+    def arm(self, mode, validation_reference_m=None):
+        """Initialize one run without weakening any readiness decision."""
+        self.policy.reset()
+        self.armed, self.latched = True, False
+        self.terminal_state = None
+        self.reason = 'ARMED'
+        self.execution_mode = mode
+        self.validation_reference_m = validation_reference_m
+        self.start_pose = self.pose
+        self.started_mono_s = self._monotonic()
+        self.motion_sent = False
+        self.first_motion_publish_mono_s = None
+        self.first_motion_echo_mono_s = None
+        self.first_motion_chain_witness = None
+        self.travel_m = 0.0
+        self.travel_pose = self.pose
 
     def on_start(self, request, response):
         """Start only after all independent evidence is simultaneously valid."""
@@ -499,19 +552,39 @@ class BoxApproachExecution(Node):
         if reasons:
             response.success, response.message = False, reasons[0]
             return response
-        self.policy.reset()
-        self.armed, self.latched = True, False
-        self.terminal_state = None
-        self.reason = 'ARMED'
-        self.start_pose = self.pose
-        self.started_mono_s = self._monotonic()
-        self.motion_sent = False
-        self.first_motion_publish_mono_s = None
-        self.first_motion_echo_mono_s = None
-        self.first_motion_chain_witness = None
-        self.travel_m = 0.0
-        self.travel_pose = self.pose
+        self.arm('production')
         response.success, response.message = True, 'approach armed'
+        return response
+
+    def on_start_validation(self, request, response):
+        """Consume one measured reference and arm a tightly bounded trial."""
+        del request
+        reference_m = self.get_parameter('validation_reference_m').value
+        result = self.set_parameters([
+            Parameter('validation_reference_m', value=0.0)])[0]
+        if not result.successful:
+            response.success, response.message = (
+                False, 'validation_reference_consumption_failed')
+            return response
+        if self.armed:
+            response.success, response.message = False, 'approach_already_armed'
+            return response
+        reason = validation_reference_reason(reference_m)
+        if reason is not None:
+            response.success, response.message = False, reason
+            return response
+        reasons = self.readiness(
+            require_start=True, require_physical_validation=False)
+        if reasons:
+            response.success, response.message = False, reasons[0]
+            return response
+        if abs(self.observation['front_distance_m'] - reference_m) > (
+                VALIDATION_REFERENCE_TOLERANCE_M):
+            response.success, response.message = (
+                False, 'validation_reference_disagreement')
+            return response
+        self.arm(VALIDATION_TRIAL_MODE, float(reference_m))
+        response.success, response.message = True, 'validation trial armed'
         return response
 
     def on_cancel(self, request, response):
@@ -616,6 +689,7 @@ class BoxApproachExecution(Node):
                  else 'READY' if not blockers else 'BLOCKED')
         document = {
             'state': state,
+            'mode': getattr(self, 'execution_mode', 'production'),
             'reason': self.reason, 'blockers': blockers,
             'chain_epoch': self.chain_epoch,
             'activation_epochs': dict(self.activation_epochs),
@@ -662,10 +736,16 @@ class BoxApproachExecution(Node):
                 self.abort(blockers[0])
                 self.publish_status(blockers)
                 return
-        blockers = self.readiness(
-            require_start=(not self.armed or not self.motion_sent),
-            require_command_fresh=(self.armed and self.motion_sent
-                                   and not waiting_for_first_echo))
+        readiness_arguments = {
+            'require_start': (not self.armed or not self.motion_sent),
+            'require_command_fresh': (
+                self.armed and self.motion_sent and not waiting_for_first_echo),
+        }
+        trial = (self.armed and getattr(
+            self, 'execution_mode', 'production') == VALIDATION_TRIAL_MODE)
+        if trial:
+            readiness_arguments['require_physical_validation'] = False
+        blockers = self.readiness(**readiness_arguments)
         if not self.armed:
             if not ownership_reasons(self.owners()):
                 self.publish_zero()
@@ -675,10 +755,15 @@ class BoxApproachExecution(Node):
             self.abort(blockers[0])
             self.publish_status(blockers)
             return
-        if (self._monotonic() - self.started_mono_s > MAX_RUN_S
-                or self.travel_m > MAX_TRAVEL_M):
-            self.abort('execution_limit_reached')
-            self.publish_status(['execution_limit_reached'])
+        max_run_s = VALIDATION_TRIAL_MAX_RUN_S if trial else MAX_RUN_S
+        max_travel_m = (
+            VALIDATION_TRIAL_MAX_TRAVEL_M if trial else MAX_TRAVEL_M)
+        if (self._monotonic() - self.started_mono_s > max_run_s
+                or self.travel_m > max_travel_m):
+            reason = ('validation_trial_limit_reached' if trial
+                      else 'execution_limit_reached')
+            self.abort(reason)
+            self.publish_status([reason])
             return
         try:
             source_pose = pose_at(
@@ -695,11 +780,24 @@ class BoxApproachExecution(Node):
             cmd_angular_radps=self.final_command[1],
             observation_pose=source_pose)
         if result['state'] == 'SUCCEEDED':
-            self.succeed(result['reason'])
+            self.succeed('trial_completed' if trial else result['reason'])
         elif result['state'] == 'ABORTED':
             self.abort(result['reason'])
         else:
-            self.publish_command(result['linear_mps'], result['angular_radps'])
+            linear = result['linear_mps']
+            angular = result['angular_radps']
+            if (trial and linear >= 0.0
+                    and all(math.isfinite(value) for value in (linear, angular))):
+                scale = min(
+                    1.0,
+                    (VALIDATION_TRIAL_MAX_LINEAR_MPS / linear
+                     if linear > 0.0 else 1.0),
+                    (VALIDATION_TRIAL_MAX_ANGULAR_RADPS / abs(angular)
+                     if angular != 0.0 else 1.0),
+                )
+                linear *= scale
+                angular *= scale
+            self.publish_command(linear, angular)
             self.reason = result['reason']
         self.publish_status([])
 

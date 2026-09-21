@@ -15,6 +15,8 @@ from jdamr_cube_navigation.box_approach_execution import (
     physical_validation,
     readiness_reasons,
     shutdown_zero_drain,
+    validation_reference_reason,
+    VALIDATION_TRIAL_MODE,
 )
 from lifecycle_msgs.msg import State
 from nav2_msgs.msg import CollisionMonitorState
@@ -143,6 +145,8 @@ def armed_flow_node(clock):
     node = object.__new__(BoxApproachExecution)
     node.armed, node.latched = False, False
     node.terminal_state = None
+    node.execution_mode = 'production'
+    node.validation_reference_m = None
     node.reason = 'DISARMED'
     node.pose = (0.0, 0.0, 0.0)
     node.velocity = (0.0, 0.0)
@@ -163,11 +167,17 @@ def armed_flow_node(clock):
     node.last_publish_mono_s = -math.inf
     node._monotonic = lambda: clock[0]
     node.now_ros_s = lambda: 10.0
+    node.owners = lambda: safe_readiness()['owners']
     node.publish_footprint = lambda: None
     node.publish_status = lambda blockers: None
-    node.readiness = lambda require_start=True, require_command_fresh=None: (
-        ['command_stale'] if require_command_fresh
-        and clock[0] - node.received.get('command', -math.inf) > .5 else [])
+    def readiness(require_start=True, require_command_fresh=None,
+                  require_physical_validation=True):
+        del require_start, require_physical_validation
+        return (['command_stale'] if require_command_fresh
+                and clock[0] - node.received.get(
+                    'command', -math.inf) > .5 else [])
+
+    node.readiness = readiness
     commands = []
     node.command_pub = SimpleNamespace(publish=commands.append)
     node.policy = SimpleNamespace(
@@ -177,6 +187,25 @@ def armed_flow_node(clock):
             'linear_mps': .03, 'angular_radps': 0.0,
         })
     return node, commands
+
+
+def validation_start_node(clock, reference=.82, observed=.82):
+    """Extend the method harness with one consumable operator reference."""
+    node, commands = armed_flow_node(clock)
+    parameter = [reference]
+    node.observation = {
+        'stamp_s': 10.0, 'front_distance_m': observed,
+        'stable': True, 'confidence': .95,
+    }
+    node.get_parameter = lambda name: SimpleNamespace(value=parameter[0])
+
+    def set_parameters(values):
+        assert values[0].name == 'validation_reference_m'
+        parameter[0] = values[0].value
+        return [SimpleNamespace(successful=True)]
+
+    node.set_parameters = set_parameters
+    return node, commands, parameter
 
 
 def test_observer_control_ready_false_is_not_rewritten_or_used_as_approval():
@@ -517,6 +546,8 @@ def test_active_event_unseen_is_ready_but_observed_stop_is_not():
     args = safe_readiness()
     args['collision_action'] = None
     assert readiness_reasons(**args) == []
+    args['collision_action'] = CollisionMonitorState.SLOWDOWN
+    assert readiness_reasons(**args) == []
     args['collision_action'] = CollisionMonitorState.STOP
     assert 'collision_monitor_intervention' in readiness_reasons(**args)
 
@@ -612,6 +643,218 @@ def test_active_start_request_cannot_reset_timeout_or_travel():
     assert response.message == 'approach_already_armed'
 
 
+@pytest.mark.parametrize(('reference', 'reason'), [
+    (0.0, 'validation_reference_missing'),
+    (math.nan, 'validation_reference_invalid'),
+    (0.64, 'validation_reference_out_of_range'),
+    (1.01, 'validation_reference_out_of_range'),
+])
+def test_validation_reference_is_required_finite_and_in_range(
+        reference, reason):
+    assert validation_reference_reason(reference) == reason
+    node, _, parameter = validation_start_node([10.0], reference=reference)
+    response = node.on_start_validation(Trigger.Request(), Trigger.Response())
+    assert response.success is False
+    assert response.message == reason
+    assert parameter[0] == 0.0
+
+
+def test_validation_start_consumes_reference_and_requires_agreement():
+    clock = [10.0]
+    node, _, parameter = validation_start_node(clock, reference=.75)
+    response = node.on_start_validation(Trigger.Request(), Trigger.Response())
+    assert response.success is False
+    assert response.message == 'validation_reference_disagreement'
+    assert parameter[0] == 0.0
+    assert node.armed is False
+
+    node, _, parameter = validation_start_node(clock)
+    response = node.on_start_validation(Trigger.Request(), Trigger.Response())
+    assert response.success is True
+    assert parameter[0] == 0.0
+    assert node.execution_mode == VALIDATION_TRIAL_MODE
+    assert node.validation_reference_m == pytest.approx(.82)
+
+
+def test_validation_start_consumes_reference_even_when_already_armed():
+    node, _, parameter = validation_start_node([10.0])
+    node.armed = True
+    response = node.on_start_validation(Trigger.Request(), Trigger.Response())
+    assert response.success is False
+    assert response.message == 'approach_already_armed'
+    assert parameter[0] == 0.0
+
+
+def test_validation_start_keeps_all_nonapproval_readiness_guards():
+    clock = [10.0]
+    node, _, parameter = validation_start_node(clock)
+    calls = []
+
+    def blocked(**kwargs):
+        calls.append(kwargs)
+        return ['scan_stale']
+
+    node.readiness = blocked
+    response = node.on_start_validation(Trigger.Request(), Trigger.Response())
+    assert response.success is False
+    assert response.message == 'scan_stale'
+    assert calls == [{
+        'require_start': True, 'require_physical_validation': False}]
+    assert parameter[0] == 0.0
+
+
+@pytest.mark.parametrize(('linear', 'angular', 'expected_linear',
+                          'expected_angular'), [
+    (.06, -.10, .03, -.05),
+    (.02, .20, .01, .10),
+    (0.0, -.20, 0.0, -.10),
+])
+def test_validation_trial_scales_policy_command_without_changing_curvature(
+        linear, angular, expected_linear, expected_angular):
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    node.policy = SimpleNamespace(
+        reset=lambda: None,
+        step=lambda *args, **kwargs: {
+            'state': 'APPROACHING', 'reason': 'approaching',
+            'linear_mps': linear, 'angular_radps': angular,
+        })
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.tick()
+    assert commands[-1].linear.x == pytest.approx(expected_linear)
+    assert commands[-1].angular.z == pytest.approx(expected_angular)
+    if linear > 0.0:
+        assert (commands[-1].angular.z / commands[-1].linear.x
+                == pytest.approx(angular / linear))
+
+
+@pytest.mark.parametrize(('linear', 'angular'), [
+    (-.01, 0.0),
+    (math.nan, 0.0),
+    (.01, math.nan),
+])
+def test_validation_trial_does_not_sanitize_invalid_policy_commands(
+        linear, angular):
+    node, _, _ = validation_start_node([10.0])
+    node.policy = SimpleNamespace(
+        reset=lambda: None,
+        step=lambda *args, **kwargs: {
+            'state': 'APPROACHING', 'reason': 'approaching',
+            'linear_mps': linear, 'angular_radps': angular,
+        })
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    with pytest.raises(ValueError, match='unbounded_execution_command'):
+        node.tick()
+
+
+@pytest.mark.parametrize(('travel_m', 'elapsed_s'), [
+    (.4501, 0.0),
+    (0.0, 30.01),
+])
+def test_validation_trial_aborts_at_tighter_travel_and_time_limits(
+        travel_m, elapsed_s):
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.travel_m = travel_m
+    clock[0] += elapsed_s
+    node.tick()
+    assert node.terminal_state == 'ABORTED'
+    assert node.reason == 'validation_trial_limit_reached'
+    assert commands[-1].linear.x == 0.0
+
+
+def test_validation_trial_success_is_not_production_approval():
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    node.policy = SimpleNamespace(
+        reset=lambda: None,
+        step=lambda *args, **kwargs: {
+            'state': 'SUCCEEDED', 'reason': 'observed_pose_held',
+            'linear_mps': 0.0, 'angular_radps': 0.0,
+        })
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.tick()
+    assert node.terminal_state == 'SUCCEEDED'
+    assert node.reason == 'trial_completed'
+    assert node.execution_mode == VALIDATION_TRIAL_MODE
+    assert commands[-1].linear.x == 0.0
+
+    node.readiness = lambda **kwargs: ['physical_validation_file_missing']
+    response = node.on_start(Trigger.Request(), Trigger.Response())
+    assert response.success is False
+    assert response.message == 'physical_validation_file_missing'
+    assert node.execution_mode == VALIDATION_TRIAL_MODE
+
+
+def test_validation_trial_collision_stop_uses_existing_abort_guard():
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.on_collision(SimpleNamespace(action_type=CollisionMonitorState.STOP))
+    assert node.terminal_state == 'ABORTED'
+    assert node.reason == 'collision_monitor_intervention'
+    assert node.execution_mode == VALIDATION_TRIAL_MODE
+    assert commands[-1].linear.x == 0.0
+
+
+def test_validation_trial_slowdown_remains_armed_and_status_reports_it():
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.on_collision(SimpleNamespace(
+        action_type=CollisionMonitorState.SLOWDOWN))
+    assert node.armed is True
+    assert node.terminal_state is None
+    assert commands == []
+
+    node.last_publish_mono_s = -math.inf
+    node.graph_received_mono_s = 10.0
+    node.cm_enable_ack = None
+    node.received['footprint'] = 10.0
+    published = []
+    node.zero_witness_valid = lambda: True
+    node.cm_enable_valid = lambda: True
+    node.status_pub = SimpleNamespace(publish=published.append)
+    BoxApproachExecution.publish_status(node, [])
+    status = json.loads(published[-1].data)
+    assert status['collision_monitor_state'] == 'SLOWDOWN'
+
+
+@pytest.mark.parametrize('action', [
+    CollisionMonitorState.STOP,
+    CollisionMonitorState.APPROACH,
+    CollisionMonitorState.LIMIT,
+    255,
+])
+def test_validation_trial_non_slowdown_interventions_still_abort(action):
+    node, commands, _ = validation_start_node([10.0])
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.on_collision(SimpleNamespace(action_type=action))
+    assert node.terminal_state == 'ABORTED'
+    assert node.reason == 'collision_monitor_intervention'
+    assert commands[-1].linear.x == 0.0
+
+
+def test_validation_trial_runtime_stale_scan_uses_existing_abort_guard():
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.readiness = lambda **kwargs: ['scan_stale']
+    node.tick()
+    assert node.terminal_state == 'ABORTED'
+    assert node.reason == 'scan_stale'
+    assert commands[-1].linear.x == 0.0
+
+
 def test_odometry_counts_cumulative_travel_not_only_displacement():
     node = object.__new__(BoxApproachExecution)
     node.received = {}
@@ -697,7 +940,9 @@ def test_isolated_ros_node_starts_disarmed_without_physical_approval():
         services = dict(node.get_service_names_and_types_by_node(
             node.get_name(), node.get_namespace()))
         assert '/box_parking/start_approach' in services
+        assert '/box_parking/start_validation_approach' in services
         assert '/box_parking/cancel_approach' in services
+        assert node.get_parameter('validation_reference_m').value == 0.0
     finally:
         node.destroy_node()
         context.shutdown()
@@ -726,7 +971,16 @@ def test_status_never_reports_ready_while_a_start_blocker_exists():
     node.publish_status(['physical_validation_file_missing'])
     status = json.loads(published[0].data)
     assert status['state'] == 'BLOCKED'
+    assert status['mode'] == 'production'
     assert status['collision_monitor_state'] == 'ACTIVE_EVENT_UNSEEN'
+
+    node.execution_mode = VALIDATION_TRIAL_MODE
+    node.latched = True
+    node.terminal_state = 'SUCCEEDED'
+    node.publish_status(['physical_validation_file_missing'])
+    status = json.loads(published[-1].data)
+    assert status['state'] == 'SUCCEEDED'
+    assert status['mode'] == VALIDATION_TRIAL_MODE
 
 
 def test_shutdown_drains_zero_for_bounded_six_tenths(monkeypatch):
