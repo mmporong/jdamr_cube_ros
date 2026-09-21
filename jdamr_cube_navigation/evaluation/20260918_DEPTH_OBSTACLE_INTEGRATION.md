@@ -63,7 +63,7 @@ GDB에서 `rclcpp::CallbackGroup::~CallbackGroup()` 충돌, vtable 주소의 unm
 - 반영 코드로 독립 실행 2회: 매회 비용 `254 → 254 → 254 → 0`, lifecycle 정리 완료, 자식 종료 `0`, CLI 종료 `0`.
 - 관련 회귀 테스트 269개 통과. 이 중 새 종료·환경 격리·실패 판정 회귀는 14개다.
 - 변경 Python 2개 파일의 `ament_flake8`, `ament_pep257`와 navigation 패키지 빌드 통과. 기존 `mcap_ros2` reader의 deprecation warning 1건은 별개로 남는다.
-- 알려진 Pi IP `192.168.0.205`, `192.168.0.160`의 SSH 무응답과 `deepthinkcar.local` 이름 조회 실패를 재확인했다. 배포·센서 실측·주행은 수행하지 않았다.
+- 최초에는 과거 IP `192.168.0.205`, `192.168.0.160`과 잘못된 호스트명 `deepthinkcar.local`만 조회해 Pi 연결 불가로 보고했다. 이는 기존 로봇의 접속 확인으로 충분하지 않았다. 올바른 접속 대상은 `lim@jdamr.local`이며 아래 정정 기록을 따른다.
 
 증거 위치:
 
@@ -78,6 +78,12 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/shutdown_fixed_repeat/summary.jso
 과거 baseline의 `status: pass`는 수정 전 판정 결함의 재현 기록이다. `cleanup.anomaly: true`와 자식 `-11` 때문에 전체 성공 증거가 아니다. GDB 실행 2건은 debugger 프로세스 종료 0과 실제 target의 SIGSEGV를 구분하도록 `diagnostic_only_target_sigsegv`로 표시했다.
 
 근거 소스: [Nav2 1.3.12 멤버 선언 순서](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/include/nav2_costmap_2d/costmap_2d_ros.hpp), [Nav2 lifecycle cleanup](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/src/costmap_2d_ros.cpp), [rclcpp 28.1.21 callback group](https://github.com/ros2/rclcpp/blob/28.1.21/rclcpp/include/rclcpp/callback_group.hpp), [pluginlib loader 소멸](https://github.com/ros/pluginlib/blob/5.4.5/pluginlib/include/pluginlib/class_loader_imp.hpp).
+
+### Pi 접속 기록 정정
+
+- 9월 21일 09:46 KST: `jdamr.local`이 `192.168.0.159`로 해석됐고 기존 SSH 키 검증을 유지한 접속에 성공했다. 원격 `hostname`은 `jdamr`, uptime은 약 45분이었다. `real_bringup`, `robot_state_publisher`, `ydlidar_g4_node` 실행을 확인했다. bringup 인자는 바퀴 반경 `0.0329 m`, 간격 `0.510 m`였다. 프로세스 존재 확인이며 토픽 데이터 품질 검증은 아니다.
+- 성공 당시 작업 PC는 `aicampus_286`, IP `192.168.0.217`이었다. 10:02 KST에는 PC가 `robot`, IP `192.168.0.42`로 바뀌었고 기본 게이트웨이 MAC도 달랐다. 이 네트워크에서 `jdamr.local` 조회는 timeout, 직전 확인 주소의 SSH는 `No route to host`였다. PC의 네트워크 변경은 확인됐지만 Pi의 현재 연결망·전원 상태는 원격으로 확정하지 않았다.
+- 고정 IP를 현재 주소로 단정하지 않는다. 재접속은 기존 호스트명과 SSH 키로 식별하고 작업 PC의 Wi-Fi를 함께 확인한다. 주소가 해석되지 않을 때 네트워크를 임의 변경하거나 파이 재부팅을 먼저 요구하지 않는다.
 
 ## 실행 및 실차 적용 조건
 
@@ -95,6 +101,6 @@ ros2 launch jdamr_cube_navigation depth_obstacle_navigation.launch.py mode:=obse
 
 관측한 벽·박스가 두 센서에서 같은 위치에 놓이는지 확인한 뒤 장착 provenance와 fusion 허용 상태를 갱신해야 한다. 현재 `usage_gate.lidar_rgbd_fusion`은 `blocked_until_cross_sensor_validation`으로 유지했다. 물리 `navigation`/`mapping` 모드는 이 상태에서 시작되지 않는다. 시뮬레이션 모드는 명시적 DDS domain 100–232, LOCALHOST 탐색, 비어 있는 static peers를 요구한다. 실차 domain 12에서는 `use_sim_time`으로 검증을 건너뛸 수 없다.
 
-현재 Pi의 알려진 IP 두 곳에 SSH가 닿지 않아 배포·실시간 센서 정렬·회피 주행은 수행하지 않았다. 새 layer가 생성하는 장애물은 RGB-D 기반 2.5D 주행 비용지도이며, SLAM으로 정합된 3D 지도나 물체 분류 결과가 아니다. 기본 depth 사용 범위는 0.4–2.5 m이므로 이 구현만으로 5 cm 테이블 밀착을 보장하지 않는다. 센서 최소 거리·가림·보이지 않는 방향은 별도 접근 제어에 반영해야 한다.
+Pi SSH 접속은 위 기록처럼 한 차례 성공했으나, 이번 변경의 배포·실시간 센서 정렬·회피 주행은 아직 수행하지 않았다. 새 layer가 생성하는 장애물은 RGB-D 기반 2.5D 주행 비용지도이며, SLAM으로 정합된 3D 지도나 물체 분류 결과가 아니다. 기본 depth 사용 범위는 0.4–2.5 m이므로 이 구현만으로 5 cm 테이블 밀착을 보장하지 않는다. 센서 최소 거리·가림·보이지 않는 방향은 별도 접근 제어에 반영해야 한다.
 
 참고 구현: [Nav2 1.3.12 VoxelLayer](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/plugins/voxel_layer.cpp), [ObstacleLayer](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/plugins/obstacle_layer.cpp), [Collision Monitor PointCloud](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_collision_monitor/src/pointcloud.cpp).
