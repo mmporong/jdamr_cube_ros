@@ -14,6 +14,9 @@
 - [20260908_PURPOSE_AND_RUNTIME_AUDIT.md](20260908_PURPOSE_AND_RUNTIME_AUDIT.md):
   현재 목적·완료 증거, 온보드 장애물 후보·goal UUID 기록·경량 후처리 구현,
   G005 오정지 수정과 제한시간 진단
+- [20260921_NAVIGATION_JD_GAP_ROADMAP.md](20260921_NAVIGATION_JD_GAP_ROADMAP.md):
+  물류 AMR 자율주행 SW 채용 요건 대조, 보유 증거 표, 고도화 항목 P1~P6·A1~A2의
+  계약·구현 위치·완료 조건과 진행 현황
 - [20260908_DYNAMIC_OBSTACLE_READINESS.md](20260908_DYNAMIC_OBSTACLE_READINESS.md):
   수납 팔 collision 외곽 기반 보호영역, 실제 온보드 후보의 정지·동일 목표 재개 PASS,
   compact MCAP과 공간 중심 미디어
