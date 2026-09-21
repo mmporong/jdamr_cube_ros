@@ -11,6 +11,8 @@ from jdamr_cube_navigation.box_top_detection import (
     detect_box_top,
     DetectionStability,
 )
+from jdamr_cube_navigation.depth_obstacle_core import _depth_view
+from jdamr_cube_navigation.depth_obstacle_filter import camera_intrinsics
 import numpy as np
 import rclpy
 from rclpy._rclpy_pybind11 import RCLError
@@ -21,10 +23,40 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 
+def decode_depth_observation(
+        info, image, optical_frame, calibration_model,
+        now_s, max_image_age_s):
+    """Validate synchronized geometry, freshness and the ROS depth buffer."""
+    stamp_s = (image.header.stamp.sec
+               + image.header.stamp.nanosec * 1e-9)
+    age_s = now_s - stamp_s
+    if (not math.isfinite(stamp_s) or stamp_s <= 0.0
+            or not math.isfinite(age_s)
+            or not 0.0 <= age_s <= max_image_age_s):
+        raise ValueError('stale_or_future_depth')
+    if str(image.encoding).upper() != '16UC1':
+        raise ValueError(f'unsupported_depth_encoding:{image.encoding}')
+    values = camera_intrinsics(
+        info, image, optical_frame, calibration_model)
+    intrinsics = CameraIntrinsics(
+        width=image.width,
+        height=image.height,
+        focal_x_px=values[0],
+        focal_y_px=values[1],
+        center_x_px=values[2],
+        center_y_px=values[3],
+    )
+    depth_mm = _depth_view(
+        image.data, image.width, image.height, image.step,
+        image.encoding, image.is_bigendian)
+    return depth_mm, intrinsics, stamp_s, age_s
+
+
 class DepthBoxParkingNode(Node):
     """Observe a box top without owning or publishing velocity commands."""
 
     def __init__(self):
+        """Configure a read-only observer with bounded input freshness."""
         super().__init__('jdamr_depth_box_parking')
         defaults = BoxTopConfig()
         for name, value in (
@@ -46,6 +78,9 @@ class DepthBoxParkingNode(Node):
             ('maximum_points', defaults.maximum_points),
             ('random_seed', defaults.random_seed),
             ('processing_hz', 5.0),
+            ('max_image_age_s', 0.5),
+            ('optical_frame', 'camera_color_optical_frame'),
+            ('calibration_model', 'rectified_projection'),
             ('stable_frames', 8),
             ('stable_distance_m', 0.03),
             ('stable_lateral_m', 0.03),
@@ -71,11 +106,20 @@ class DepthBoxParkingNode(Node):
         if self._surface_mode not in {'front', 'top'}:
             raise ValueError('surface_mode must be front or top')
         processing_hz = float(self.get_parameter('processing_hz').value)
-        if processing_hz <= 0.0:
-            raise ValueError('processing_hz must be positive')
+        self._max_image_age_s = float(
+            self.get_parameter('max_image_age_s').value)
+        if not math.isfinite(processing_hz) or processing_hz <= 0.0:
+            raise ValueError('processing_hz must be finite and positive')
+        if (not math.isfinite(self._max_image_age_s)
+                or self._max_image_age_s <= 0.0):
+            raise ValueError('max_image_age_s must be finite and positive')
+        self._optical_frame = str(
+            self.get_parameter('optical_frame').value)
+        self._calibration_model = str(
+            self.get_parameter('calibration_model').value)
         self._minimum_period_s = 1.0 / processing_hz
         self._last_processed_s = -math.inf
-        self._intrinsics = None
+        self._camera_info = None
         self._status = self.create_publisher(
             String, '/box_parking/perception_status', 10)
         self.create_subscription(
@@ -85,19 +129,14 @@ class DepthBoxParkingNode(Node):
             Image, '/camera/depth/image_raw',
             self._on_depth, qos_profile_sensor_data)
         self.get_logger().info(
-            'depth box parking perception started; velocity output is disabled')
+            'depth box parking perception started; '
+            'velocity output is disabled')
 
     def _on_camera_info(self, message: CameraInfo) -> None:
-        self._intrinsics = CameraIntrinsics(
-            width=message.width,
-            height=message.height,
-            focal_x_px=message.k[0],
-            focal_y_px=message.k[4],
-            center_x_px=message.k[2],
-            center_y_px=message.k[5],
-        )
+        self._camera_info = message
 
     def _publish(self, document: dict) -> None:
+        document = {**document, 'control_ready': False}
         message = String()
         message.data = json.dumps(
             document, ensure_ascii=False, separators=(',', ':'))
@@ -107,41 +146,49 @@ class DepthBoxParkingNode(Node):
             if rclpy.ok():
                 raise
 
+    def _reject(self, reason: str, **details) -> None:
+        """Clear consecutive stability after any unusable observation."""
+        self._stability.update(None)
+        self._publish({
+            'detected': False,
+            'stable': False,
+            'stable_frame_count': 0,
+            'reason': reason,
+            **details,
+        })
+
     def _on_depth(self, message: Image) -> None:
         now_s = time.monotonic()
         if now_s - self._last_processed_s < self._minimum_period_s:
             return
         self._last_processed_s = now_s
-        if self._intrinsics is None:
-            self._publish({
-                'detected': False,
-                'stable': False,
-                'reason': 'camera_info_missing',
-                'control_ready': False,
-            })
+        if self._camera_info is None:
+            self._reject('camera_info_missing')
             return
-        if message.encoding != '16UC1':
-            self._publish({
-                'detected': False,
-                'stable': False,
-                'reason': f'unsupported_depth_encoding:{message.encoding}',
-                'control_ready': False,
-            })
+        try:
+            ros_now_s = self.get_clock().now().nanoseconds * 1e-9
+            depth_mm, intrinsics, stamp_s, age_s = decode_depth_observation(
+                self._camera_info, message, self._optical_frame,
+                self._calibration_model, ros_now_s,
+                self._max_image_age_s)
+            detector = (
+                detect_box_front
+                if self._surface_mode == 'front'
+                else detect_box_top
+            )
+            detection = detector(depth_mm, intrinsics, self._config)
+        except (AttributeError, ValueError, TypeError,
+                OverflowError, IndexError) as error:
+            self._reject(str(error) or type(error).__name__)
             return
-        depth_mm = np.frombuffer(message.data, dtype=np.uint16).reshape(
-            message.height, message.width)
-        detector = (
-            detect_box_front
-            if self._surface_mode == 'front'
-            else detect_box_top
-        )
-        detection = detector(depth_mm, self._intrinsics, self._config)
+        except np.linalg.LinAlgError as error:
+            self._reject(f'numerical_detection_failure:{error}')
+            return
         stable = self._stability.update(detection)
-        stamp_s = (message.header.stamp.sec
-                   + message.header.stamp.nanosec * 1e-9)
         if detection is None:
             self._publish({
                 'stamp_s': stamp_s,
+                'age_s': age_s,
                 'frame_id': message.header.frame_id,
                 'detected': False,
                 'stable': False,
@@ -152,6 +199,7 @@ class DepthBoxParkingNode(Node):
             return
         self._publish({
             'stamp_s': stamp_s,
+            'age_s': age_s,
             'frame_id': message.header.frame_id,
             'detected': True,
             'stable': stable,

@@ -18,6 +18,9 @@ jdamr_depth_box_parking:
     maximum_points: 6000
     random_seed: 17
     processing_hz: 5.0
+    max_image_age_s: 0.5
+    optical_frame: camera_color_optical_frame
+    calibration_model: rectified_projection
     stable_frames: 8
     stable_distance_m: 0.03
     stable_lateral_m: 0.03

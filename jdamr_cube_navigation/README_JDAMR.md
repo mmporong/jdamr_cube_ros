@@ -28,7 +28,10 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 ## Depth 박스 정밀주차 관측
 
-이 기능은 2026-09-17 기준 관측 검증까지만 유지하고 주행 제어에는 연결하지 않는다. 고정
+2026-09-21에는 [하부차체 45cm 이격 접근의 계산·shadow 검증](evaluation/20260921_BOX_APPROACH_SHADOW.md)을
+추가했다. 박스 전면 상대 자세로 곡선 접근·최종 방향 정렬·정지 유지 명령을 계산하지만,
+새 launch는 JSON 상태만 발행하며 속도 명령이나 Nav2 목표를 발행하지 않는다.
+현재 충전 및 카메라 외부 파라미터 검증 상태를 유지하고 실차 실행에는 연결하지 않았다. 고정
 테이블은 지도에 등록한 서비스 pose로 접근하며, SLAM 고도화는 localization 신뢰도와 복구,
 반복 도착 평가를 우선한다. G4·ToF로 테이블 다리를 맞추는 모델별 계산과 5cm 박스 주차는
 보류한다. Depth 관측 코드는 이후 양팔이 컵을 놓기 직전 상판과 빈 공간을 확인하는 국소
@@ -36,7 +39,7 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 테이블별 목적지는 `map` 좌표계의 이름 있는 서비스 pose로 교시하며, 구현 범위와 데이터
 형식은 [식당 서비스 목적지 등록 후속 작업](evaluation/20260917_RESTAURANT_SERVICE_DESTINATION_BACKLOG.md)에
-분리했다. 현재 브랜치에서는 목적지 관리자나 주행 제어를 추가하지 않는다.
+분리했다. 지도 기반 서비스 목적지와 이번 박스 상대 접근 계산은 별도 경로다.
 
 박스 앞 정밀주차의 1단계는 태그 없이 Depth에서 보이는 평면을 검출한다. 현재 낮은 카메라
 위치에서는 상판보다 전면이 안정적으로 보이므로 `surface_mode=front`를 사용한다. 카메라를
