@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 
 from geometry_msgs.msg import TransformStamped
+import jdamr_cube_navigation.depth_obstacle_filter as filter_module
 from jdamr_cube_navigation.depth_obstacle_filter import (
     body_bounds_from_geometry, camera_intrinsics, DepthObstacleFilter,
     make_cloud, transform_matrix,
@@ -21,6 +22,34 @@ from tf2_ros import Buffer
 ROOT = Path(__file__).resolve().parents[2]
 GEOMETRY = ROOT / 'jdamr_cube_description/config/new_base_geometry.yaml'
 OPTICAL = 'camera_color_optical_frame'
+
+
+def test_dispatcher_yields_between_worker_submissions(monkeypatch):
+    """Retain blocking idle waits while preventing a busy dispatch loop."""
+    states = iter([True, True, False])
+    events = []
+
+    class Executor:
+        def spin_once(self, timeout_sec):
+            events.append(('spin', timeout_sec))
+
+    monkeypatch.setattr(filter_module.rclpy, 'ok', lambda: next(states))
+    monkeypatch.setattr(filter_module.time, 'sleep',
+                        lambda delay: events.append(('yield', delay)))
+    filter_module.spin_with_worker_yield(Executor())
+    assert events == [('spin', 0.05), ('yield', 0.001),
+                      ('spin', 0.05), ('yield', 0.001)]
+
+
+def test_dispatcher_does_not_hide_callback_errors(monkeypatch):
+    """Let main perform normal cleanup when the executor reports failure."""
+    class Executor:
+        def spin_once(self, timeout_sec):
+            raise RuntimeError('callback failed')
+
+    monkeypatch.setattr(filter_module.rclpy, 'ok', lambda: True)
+    with pytest.raises(RuntimeError, match='callback failed'):
+        filter_module.spin_with_worker_yield(Executor())
 
 
 def messages():

@@ -263,6 +263,15 @@ class DepthObstacleFilter(Node):
         self.last_published_stamp = stamp.nanoseconds
 
 
+def spin_with_worker_yield(executor):
+    """Yield the Python dispatcher so queued worker callbacks can progress."""
+    while rclpy.ok():
+        executor.spin_once(timeout_sec=0.05)
+        # Ready-but-busy callback groups can keep the dispatch thread runnable.
+        # Yield its GIL without changing sensor timestamps or freshness limits.
+        time.sleep(0.001)
+
+
 def main(args=None):
     """Run TF reception separately from bounded image processing."""
     rclpy.init(args=args)
@@ -270,7 +279,7 @@ def main(args=None):
     executor = MultiThreadedExecutor(num_threads=2)
     executor.add_node(node)
     try:
-        executor.spin()
+        spin_with_worker_yield(executor)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:

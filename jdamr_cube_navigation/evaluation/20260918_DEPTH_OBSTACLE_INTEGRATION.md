@@ -114,6 +114,39 @@ ros2 launch jdamr_cube_navigation depth_obstacle_navigation.launch.py mode:=obse
 
 이 명령만으로 카메라 드라이버나 장착 TF가 생기지는 않는다. 기존 TF 발행 여부와 실제 장착 상태를 확인한 뒤 카메라 드라이버 및 필요한 장착 TF를 별도로 기동한다.
 
+### 카메라 재연결 후 실측과 수정
+
+Orbbec Astra S (`2bc5:0402`) 재인식 후 등록 RGB-D를 기동했다. RGB 640×480, 뎁스 320×240이며 둘 다 `camera_color_optical_frame`으로 수신했다. 저장된 `base_link → camera_link` 장착값을 관측용으로 발행했지만, 실물 장착 재측정이나 센서 통합 승인을 뜻하지 않는다.
+
+1. **TF 시간 문제:** Pi의 Astra 드라이버는 고정 카메라 내부 변환을 기본 `tf_publish_rate=10.0`에서 `/tf`로 발행했다. 관측 노드의 영상 시각 TF 조회가 50 ms 안에 성공하지 못하는 경우가 있었다. 12초 상태 표본은 `missing_transform_at_measurement_time` 17개, `healthy` 1개, `depth_stream_timeout` 2개였다. Pi에 설치된 `ob_camera_node.cpp`의 `publishStaticTransforms()` 분기에서 rate≤0은 동일한 고정 변환을 `/tf_static`으로 발행함을 확인했다. `tf_publish_rate:=0.0`으로 전환했고 기록 스크립트와 센서 설정 문서에도 반영했다. 영상 시각 검증·처리 기한은 완화하지 않았다.
+2. **정적 TF 전환 직후 관측:** 첫 12초 실측의 상태 메시지는 22/22 healthy, TF 누락 0이었다. 이는 상태 메시지 표본 비율이며 모든 영상의 처리 성공률이 아니다. 배분 루프 수정 전 8초 캡처 중에는 14/15 healthy, `expired_during_processing` 1개가 있었다. 해당 프레임은 기존 0.5초 기한으로 거부됐다. 상태 표본의 처리 시간 p50 46.07 ms, p95 323.24 ms였으며 RGB·뎁스 동시 수집 부하를 포함한다. 정적 TF 변경만으로 Pi의 부하 문제가 해결된 것은 아니었다.
+3. **시각 대응 캡처:** 새 `evaluation/capture_depth_alignment.py`는 읽기 전용으로 depth/scan/CameraInfo/RGB/status를 수집한다. 최신 depth 하나만 사용하던 초기 실행은 scan과 130.5 ms 차이로 실패했다. 최근 0.5초 내 양수·비미래 stamp 중 최신 depth부터 최근접 scan이 100 ms 이내인 쌍을 선택하도록 수정했다. 오래된 쌍이나 허용치 완화로 성공시키지 않는다. 원본 stamp의 TF, 영상 stride·endianness, RGB 시각 차이, 실패 원인 및 TF 재시도를 JSON/NPZ에 보존한다. `success`는 스냅샷 확보일 뿐 정렬 승인이나 주행 성공이 아니다.
+4. **재시도 진단 추가 후 캡처:** 8초 동안 depth 219개, scan 73개, RGB 160개 수신. 선택한 depth/scan 시각 차이는 77.31 ms, 캡처 시 영상 나이는 107.39 ms, scan 나이는 184.70 ms였다. 원 stamp TF 조회는 첫 시도에 성공했고 재시도 오류는 없었다. 기존 12초 성공 캡처도 보존했다.
+5. **장면 확인:** RGB·뎁스·XY 겹침 그림을 생성하고 확인했다. 12초 성공 캡처에서 0.4–2.5 m 범위의 뎁스는 전체 픽셀의 8.31%였다. 명목 높이 0.15±0.025 m의 뎁스 489점과 가장 가까운 라이다 XY 점의 거리 중앙값은 약 0.413 m였다. 같은 표면 대응을 보장하지 않으므로 이를 센서 위치 오차나 보정값으로 쓰지 않는다. 현재 장면만으로 두 센서 정렬을 입증하지 못했다. 다음 실측은 로봇 앞 약 1 m, 바닥에서 시작하는 넓은 세로 박스·판을 두 센서가 함께 보게 하고 비교한다. `lidar_rgbd_fusion`은 계속 차단 상태다.
+6. **배분 루프 부하 수정:** RGB 저장을 하지 않는 12초 표본에서도 healthy 17개, stream timeout 3개, 처리 기한 초과 1개가 발생했다. 처리 시간 p50/p95는 15.42/261.55 ms였다. `ps`에서 관측 프로세스 CPU 94.9%, 주 스레드 79.1%, 작업 스레드 각각 6.8/6.9%를 관찰했다. 이 값은 프로세스별 누적 평균이며 통제된 CPU 벤치마크는 아니다. 두 작업 스레드는 유지하고 `spin_once(timeout_sec=0.05)` 뒤 1 ms 실행권 양보를 추가했다. TF timeout·영상 시각·0.5초 freshness 정책은 바꾸지 않았다. 같은 12초 후속 표본은 22/22 healthy, p50/p95 9.30/12.33 ms였다. [rclpy의 유사 고부하 보고](https://github.com/ros2/rclpy/issues/1223)는 참고 자료이며 동일 upstream 결함으로 확정하지 않는다.
+7. **수정 후 동시 수집:** 8초 RGB·뎁스 동시 캡처에서 depth 140개, scan 73개, RGB 111개를 수신했다. 상태는 11/11 healthy, 처리 시간 p50/p95 9.78/14.06 ms였다. depth/scan 차이는 98.40 ms, 데이터 나이는 각각 55.01/153.41 ms, exact-stamp TF 첫 시도 성공이었다. 프레임 수는 BEST_EFFORT depth 1 구독의 수신 개수이므로 센서 FPS나 전체 프레임 처리율을 뜻하지 않는다. 짧은 정지 실측 개선이며 장시간·Nav2 동시 주행 안정성은 미검증이다.
+
+카메라와 관측 프로세스는 SSH 종료와 무관한 임시 systemd 서비스 `jdamr-rgbd-live-20260921`, `jdamr-depth-live-20260921`로 실행한다. 초기 user 서비스가 SSH 로그아웃과 함께 종료되는 현상을 확인해 system manager의 `User=lim` 서비스로 옮겼다. 부팅 자동 시작 서비스는 바꾸지 않았다. 기존 베이스 MainPID `997`과 바퀴 설정을 유지했고, 이동 명령과 Nav2는 실행하지 않았다. 관측 프로세스만 중단하려면 Pi에서 아래 명령을 사용한다.
+
+```bash
+sudo systemctl stop jdamr-depth-live-20260921 jdamr-rgbd-live-20260921
+```
+
+PC 근거:
+
+```text
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_static_tf_paired/capture.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_static_tf_paired/capture.npz
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_static_tf_paired/alignment_preview.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_static_tf_final/capture.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_static_tf_final/capture.npz
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_static_tf_final/observer_only_status.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_static_tf_final/observer_worker_yield_status.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/live_worker_yield/capture.json
+```
+
+코드 검증은 새 캡처 회귀 26개와 배분 루프 회귀 2개를 포함한 관련 98개 테스트, 변경 Python의 ament_flake8·ament_pep257, 기록 셸의 `bash -n`, navigation·vslam 로컬 빌드를 통과했다. LSP와 shellcheck는 실행하지 못했다. Pi에는 별도 관측 공간의 필터·캡처 도구·기록 스크립트·센서 설정만 갱신했다.
+
 ## 실행 및 실차 적용 조건
 
 카메라 드라이버와 차체 TF는 기존 시스템에서 제공해야 한다. `publish_camera_mount:=true`를 선택하면 실측 mount 파일에서 `base_link` → `camera_link` 정적 TF를 발행한다. 같은 TF를 발행하는 이전 wrapper는 함께 사용하지 않는다. 장착 TF 발행은 센서 간 정렬의 실측 검증을 대신하지 않는다.
@@ -130,6 +163,6 @@ ros2 launch jdamr_cube_navigation depth_obstacle_navigation.launch.py mode:=obse
 
 관측한 벽·박스가 두 센서에서 같은 위치에 놓이는지 확인한 뒤 장착 provenance와 fusion 허용 상태를 갱신해야 한다. 현재 `usage_gate.lidar_rgbd_fusion`은 `blocked_until_cross_sensor_validation`으로 유지했다. 물리 `navigation`/`mapping` 모드는 이 상태에서 시작되지 않는다. 시뮬레이션 모드는 명시적 DDS domain 100–232, LOCALHOST 탐색, 비어 있는 static peers를 요구한다. 실차 domain 12에서는 `use_sim_time`으로 검증을 건너뛸 수 없다.
 
-Pi 별도 공간에 배포·빌드하고 카메라 미연결 시의 관측 상태까지 확인했다. 실제 센서 정렬·회피 주행은 아직 수행하지 않았다. 새 layer가 생성하는 장애물은 RGB-D 기반 2.5D 주행 비용지도이며, SLAM으로 정합된 3D 지도나 물체 분류 결과가 아니다. 기본 depth 사용 범위는 0.4–2.5 m이므로 이 구현만으로 5 cm 테이블 밀착을 보장하지 않는다. 센서 최소 거리·가림·보이지 않는 방향은 별도 접근 제어에 반영해야 한다.
+Pi 별도 공간에서 실제 RGB-D 입력·장애물 관측·정지 상태 시각 대응 캡처까지 확인했다. 실제 센서 정렬 승인·회피 주행은 아직 수행하지 않았다. 새 layer가 생성하는 장애물은 RGB-D 기반 2.5D 주행 비용지도이며, SLAM으로 정합된 3D 지도나 물체 분류 결과가 아니다. 기본 depth 사용 범위는 0.4–2.5 m이므로 이 구현만으로 5 cm 테이블 밀착을 보장하지 않는다. 센서 최소 거리·가림·보이지 않는 방향은 별도 접근 제어에 반영해야 한다.
 
 참고 구현: [Nav2 1.3.12 VoxelLayer](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/plugins/voxel_layer.cpp), [ObstacleLayer](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/plugins/obstacle_layer.cpp), [Collision Monitor PointCloud](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_collision_monitor/src/pointcloud.cpp).

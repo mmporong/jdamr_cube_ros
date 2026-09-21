@@ -23,6 +23,12 @@ streams:
     driver_option: color_depth_synchronization
     enabled: true
 
+camera_internal_transforms:
+  driver_option: tf_publish_rate
+  value: 0.0
+  topic: /tf_static
+  reason: "Rigid camera extrinsics must not require future 10 Hz TF samples"
+
 frames:
   camera_link: camera_link
   color_optical: camera_color_optical_frame

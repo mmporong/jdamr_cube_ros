@@ -83,6 +83,7 @@ setsid nice -n 5 bash -lc "source /opt/ros/jazzy/setup.bash; \
   exec ros2 launch astra_camera astra.launch.xml \
     enable_color:=true enable_depth:=true enable_ir:=false \
     enable_point_cloud:=false enable_colored_point_cloud:=false \
+    tf_publish_rate:=0.0 \
     depth_registration:=true color_depth_synchronization:=true \
     depth_width:=320 depth_height:=240 depth_fps:=30 \
     color_width:=${color_width} color_height:=${color_height} color_fps:=30" \
