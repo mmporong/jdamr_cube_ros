@@ -9,13 +9,30 @@ from jdamr_cube_navigation.box_top_detection import BoxTopConfig
 from jdamr_cube_navigation.depth_box_parking import (
     decode_depth_observation,
     DepthBoxParkingNode,
+    LATEST_SENSOR_QOS,
 )
 import numpy as np
 import pytest
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    ReliabilityPolicy,
+)
 from sensor_msgs.msg import CameraInfo, Image
 
 
 OPTICAL_FRAME = 'camera_color_optical_frame'
+
+
+def test_depth_inputs_keep_only_latest_best_effort_sample():
+    assert LATEST_SENSOR_QOS.history == HistoryPolicy.KEEP_LAST
+    assert LATEST_SENSOR_QOS.depth == 1
+    assert LATEST_SENSOR_QOS.reliability == ReliabilityPolicy.BEST_EFFORT
+    assert LATEST_SENSOR_QOS.durability == DurabilityPolicy.VOLATILE
+    source = Path(__file__).resolve().parents[1].joinpath(
+        'jdamr_cube_navigation', 'depth_box_parking.py').read_text()
+    assert source.count('self._on_camera_info, LATEST_SENSOR_QOS') == 1
+    assert source.count('self._on_depth, LATEST_SENSOR_QOS') == 1
 
 
 def _messages(depth, *, stamp_s=10.0, step=None, bigendian=False):
@@ -173,3 +190,27 @@ def test_observer_source_never_publishes_velocity_or_control_ready_true():
     assert 'create_publisher(Twist' not in source
     assert "'/cmd_vel'" not in source
     assert "'control_ready': True" not in source
+
+
+def test_age_includes_detection_processing_time(monkeypatch):
+    """A fast input must not hide a slow detector in published diagnostics."""
+    info, image = _messages(np.ones((2, 2), dtype='<u2') * 1000)
+    node = object.__new__(DepthBoxParkingNode)
+    node._minimum_period_s, node._last_processed_s = 0.0, -math.inf
+    node._camera_info, node._optical_frame = info, OPTICAL_FRAME
+    node._calibration_model, node._max_image_age_s = 'rectified_projection', .5
+    node._surface_mode, node._config = 'front', BoxTopConfig()
+    node._stability = SimpleNamespace(update=lambda detection: False, frame_count=0)
+    clock_ticks = iter((10_100_000_000, 10_700_000_000))
+    node.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=next(clock_ticks)))
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.depth_box_parking.detect_box_front', lambda *_: None)
+    messages = []
+    node._status = SimpleNamespace(publish=messages.append)
+    node._on_depth(image)
+    document = json.loads(messages[0].data)
+    assert document['input_age_s'] == pytest.approx(.1)
+    assert document['age_s'] == pytest.approx(.7)
+    assert document['processing_duration_s'] >= 0.
+    assert document['control_ready'] is False

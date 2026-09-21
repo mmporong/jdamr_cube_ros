@@ -74,6 +74,8 @@ setup(
             'jdamr_cube_navigation.depth_box_parking:main',
             'box_approach_shadow = '
             'jdamr_cube_navigation.box_approach_shadow:main',
+            'box_approach_execution = '
+            'jdamr_cube_navigation.box_approach_execution:main',
             'depth_obstacle_filter = '
             'jdamr_cube_navigation.depth_obstacle_filter:main',
             'restaurant_service = '

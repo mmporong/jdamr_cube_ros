@@ -149,31 +149,35 @@ def _front_edge(points: np.ndarray) -> float:
 
 
 def _plane_shape(points: np.ndarray) -> tuple[float, float, float]:
-    width_m = float(np.percentile(points[:, 0], 95.0)
-                    - np.percentile(points[:, 0], 5.0))
-    height_m = float(np.percentile(points[:, 1], 95.0)
-                     - np.percentile(points[:, 1], 5.0))
-    depth_extent_m = float(np.percentile(points[:, 2], 95.0)
-                           - np.percentile(points[:, 2], 5.0))
-    return width_m, height_m, depth_extent_m
+    bounds = np.percentile(points, [5.0, 95.0], axis=0)
+    extents = bounds[1] - bounds[0]
+    return tuple(float(value) for value in extents)
+
+
+def _normal_is_valid(
+        normal: np.ndarray, config: BoxTopConfig,
+        surface_kind: str) -> bool:
+    if surface_kind == 'front':
+        return abs(normal[2]) >= config.minimum_front_normal_z
+    return abs(normal[1]) >= config.minimum_normal_y
 
 
 def _shape_is_valid(
         points: np.ndarray, normal: np.ndarray,
         config: BoxTopConfig, surface_kind: str) -> bool:
+    if not _normal_is_valid(normal, config, surface_kind):
+        return False
     width_m, height_m, depth_extent_m = _plane_shape(points)
     if not config.minimum_width_m <= width_m <= config.maximum_width_m:
         return False
     if surface_kind == 'front':
         return (
-            abs(normal[2]) >= config.minimum_front_normal_z
-            and config.minimum_height_m
+            config.minimum_height_m
             <= height_m <= config.maximum_height_m
         )
     center = np.median(points, axis=0)
     return (
-        abs(normal[1]) >= config.minimum_normal_y
-        and center[1] <= config.maximum_top_y_m
+        center[1] <= config.maximum_top_y_m
         and depth_extent_m >= config.minimum_depth_extent_m
     )
 
@@ -199,19 +203,22 @@ def _detect_box_plane(
         if plane is None:
             continue
         normal, offset = plane
+        if not _normal_is_valid(normal, config, surface_kind):
+            continue
         distances = np.abs(points @ normal + offset)
         mask = distances <= config.plane_distance_m
         count = int(np.count_nonzero(mask))
         if count < config.minimum_inliers:
             continue
+        residual = float(np.sqrt(np.mean(distances[mask] ** 2)))
+        score = count / max(residual, 0.001)
+        if score <= best_score:
+            continue
         candidate = points[mask]
         if not _shape_is_valid(candidate, normal, config, surface_kind):
             continue
-        residual = float(np.sqrt(np.mean(distances[mask] ** 2)))
-        score = count / max(residual, 0.001)
-        if score > best_score:
-            best_mask = mask
-            best_score = score
+        best_mask = mask
+        best_score = score
     if best_mask is None:
         return None
 

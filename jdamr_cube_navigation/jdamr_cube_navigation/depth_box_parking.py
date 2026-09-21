@@ -18,9 +18,22 @@ import rclpy
 from rclpy._rclpy_pybind11 import RCLError
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
+
+
+LATEST_SENSOR_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
 
 
 def decode_depth_observation(
@@ -124,10 +137,10 @@ class DepthBoxParkingNode(Node):
             String, '/box_parking/perception_status', 10)
         self.create_subscription(
             CameraInfo, '/camera/depth/camera_info',
-            self._on_camera_info, qos_profile_sensor_data)
+            self._on_camera_info, LATEST_SENSOR_QOS)
         self.create_subscription(
             Image, '/camera/depth/image_raw',
-            self._on_depth, qos_profile_sensor_data)
+            self._on_depth, LATEST_SENSOR_QOS)
         self.get_logger().info(
             'depth box parking perception started; '
             'velocity output is disabled')
@@ -184,11 +197,18 @@ class DepthBoxParkingNode(Node):
         except np.linalg.LinAlgError as error:
             self._reject(f'numerical_detection_failure:{error}')
             return
+        input_age_s = age_s
+        age_s = self.get_clock().now().nanoseconds * 1e-9 - stamp_s
+        timing = {
+            'input_age_s': input_age_s,
+            'processing_duration_s': time.monotonic() - now_s,
+        }
         stable = self._stability.update(detection)
         if detection is None:
             self._publish({
                 'stamp_s': stamp_s,
                 'age_s': age_s,
+                **timing,
                 'frame_id': message.header.frame_id,
                 'detected': False,
                 'stable': False,
@@ -200,6 +220,7 @@ class DepthBoxParkingNode(Node):
         self._publish({
             'stamp_s': stamp_s,
             'age_s': age_s,
+            **timing,
             'frame_id': message.header.frame_id,
             'detected': True,
             'stable': stable,

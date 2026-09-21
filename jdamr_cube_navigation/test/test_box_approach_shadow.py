@@ -1,19 +1,22 @@
 """Verify the non-actuating adapter and explicit interlock failures."""
 
+import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import jdamr_cube_navigation.box_approach_shadow as shadow_module
 from jdamr_cube_navigation.box_approach_shadow import (
-    BoxApproachShadow, guard_reasons, lower_base_geometry, pose_at,
+    BoxApproachShadow, camera_geometry, guard_reasons, lower_base_geometry, pose_at,
 )
+from launch import LaunchContext
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
 from rclpy.context import Context
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
+import yaml
 
 
 def safe_inputs():
@@ -94,6 +97,62 @@ def test_geometry_scope_cannot_silently_change(tmp_path):
     path.write_text('claim_scope: unknown\n')
     with pytest.raises(ValueError, match='geometry_scope'):
         lower_base_geometry(path)
+
+
+def measured_mount():
+    """Return a nominal measured fixture, not physical calibration approval."""
+    return {'camera_mount': {
+        'status': 'measured', 'parent_frame': 'base_link', 'child_frame': 'camera_link',
+        'transform': {'x_m': .065, 'y_m': 0., 'z_m': .215,
+                      'roll_rad': 0., 'pitch_rad': 0., 'yaw_rad': 0.},
+    }}
+
+
+@pytest.mark.parametrize('field', ('x_m', 'y_m', 'z_m', 'roll_rad', 'pitch_rad', 'yaw_rad'))
+@pytest.mark.parametrize('value', (None, float('nan'), float('inf'), '0', True))
+def test_camera_geometry_rejects_invalid_measurements(tmp_path, field, value):
+    """The Pi's null-filled old configuration must fail with an actionable error."""
+    document = measured_mount()
+    document['camera_mount']['transform'][field] = value
+    path = tmp_path / 'mount.yaml'
+    path.write_text(yaml.safe_dump(document))
+    with pytest.raises(ValueError, match='camera_mount_unmeasured_or_invalid'):
+        camera_geometry(path)
+
+
+@pytest.mark.parametrize('document', [
+    None, {}, {'camera_mount': None}, {'camera_mount': {'transform': None}},
+])
+def test_camera_geometry_rejects_incomplete_document(tmp_path, document):
+    """Malformed calibration cannot reach runtime callbacks."""
+    path = tmp_path / 'mount.yaml'
+    path.write_text(yaml.safe_dump(document))
+    with pytest.raises(ValueError, match='camera_mount_unmeasured_or_invalid'):
+        camera_geometry(path)
+
+
+def test_camera_geometry_and_launch_validate_before_start(tmp_path):
+    """Explicit launch paths resolve the selected snapshot, not a stale underlay."""
+    path = tmp_path / 'mount.yaml'
+    document = measured_mount()
+    path.write_text(yaml.safe_dump(document))
+    assert camera_geometry(path) == (.065, 0., 0.)
+    launch_path = Path(__file__).resolve().parents[1] / 'launch/box_approach_shadow.launch.py'
+    spec = importlib.util.spec_from_file_location('box_launch_test', launch_path)
+    launch_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launch_module)
+    # A bad calibration fails before geometry/contract lookup or process creation.
+    document['camera_mount']['status'] = 'unmeasured'
+    path.write_text(yaml.safe_dump(document))
+    context = LaunchContext()
+    context.launch_configurations['camera_mount_file'] = str(path)
+    with pytest.raises(ValueError, match='camera_mount_unmeasured_or_invalid'):
+        launch_module.validate_inputs(context)
+    document['camera_mount']['status'] = 'measured'
+    document['camera_mount']['transform']['pitch_rad'] = .1
+    path.write_text(yaml.safe_dump(document))
+    with pytest.raises(ValueError, match='camera_mount_nonlevel_not_supported'):
+        camera_geometry(path)
 
 
 def test_shadow_acquires_real_perception_contract_without_authorizing_motion(monkeypatch):

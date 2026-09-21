@@ -1,0 +1,22 @@
+[Unit]
+Description=JD-AMR registered RGB-D camera for box approach
+After=network-online.target
+Wants=network-online.target
+Conflicts=jdamr-astra-camera.service
+
+[Service]
+Type=simple
+User=lim
+Environment=ROS_DOMAIN_ID=12
+Environment=ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+Environment=FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+WorkingDirectory=/home/lim/astra_ws
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash; source /home/lim/astra_ws/install/setup.bash; exec ros2 launch astra_camera astra.launch.xml enable_color:=true enable_depth:=true enable_ir:=false enable_point_cloud:=false enable_colored_point_cloud:=false depth_registration:=true color_depth_synchronization:=true tf_publish_rate:=0.0 depth_width:=320 depth_height:=240 depth_fps:=30 color_width:=640 color_height:=480 color_fps:=30'
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

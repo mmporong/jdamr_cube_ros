@@ -68,6 +68,26 @@ def lower_base_geometry(path):
     return body_bounds_from_geometry(path), scope
 
 
+def camera_geometry(path):
+    """Reject missing calibration explicitly instead of accepting an old overlay."""
+    document = yaml.safe_load(Path(path).read_text())
+    mount = document.get('camera_mount', {}) if isinstance(document, dict) else {}
+    if not isinstance(mount, dict):
+        raise ValueError(f'camera_mount_unmeasured_or_invalid: {path}')
+    transform = mount.get('transform', {})
+    fields = ('x_m', 'y_m', 'z_m', 'roll_rad', 'pitch_rad', 'yaw_rad')
+    if (mount.get('status') != 'measured'
+            or mount.get('parent_frame') != 'base_link'
+            or mount.get('child_frame') != 'camera_link'
+            or not isinstance(transform, dict)
+            or any(type(transform.get(k)) not in (int, float)
+                   or not math.isfinite(transform[k]) for k in fields)):
+        raise ValueError(f'camera_mount_unmeasured_or_invalid: {path}')
+    if any(abs(transform[k]) > 1e-9 for k in ('roll_rad', 'pitch_rad')):
+        raise ValueError(f'camera_mount_nonlevel_not_supported: {path}')
+    return tuple(transform[k] for k in ('x_m', 'y_m', 'yaw_rad'))
+
+
 class BoxApproachShadow(Node):
     """Publish JSON only, even when a hypothetical approach would be allowed."""
 
@@ -86,14 +106,9 @@ class BoxApproachShadow(Node):
         defaults.update(vars(ApproachConfig()))
         for name, value in defaults.items():
             self.declare_parameter(name, value)
-        mount = yaml.safe_load(Path(self.get_parameter(
-            'camera_mount_file').value).read_text())['camera_mount']
-        transform = mount['transform']
-        if (mount['parent_frame'] != 'base_link'
-                or mount['child_frame'] != 'camera_link'
-                or any(abs(transform[k]) > 1e-9 for k in ('roll_rad', 'pitch_rad'))):
-            raise ValueError('shadow requires nominal level base_link camera geometry')
-        camera = tuple(transform[k] for k in ('x_m', 'y_m', 'yaw_rad'))
+        camera = camera_geometry(self.get_parameter('camera_mount_file').value)
+        for name in ('camera_mount_file', 'geometry_file', 'parking_contract_file'):
+            self.get_logger().info(f'{name}={self.get_parameter(name).value}')
         body, self.envelope_scope = lower_base_geometry(
             self.get_parameter('geometry_file').value)
         contract = load_parking_contract(Path(self.get_parameter('parking_contract_file').value))

@@ -1,6 +1,96 @@
 # 박스 상대 정밀 접근 — 비구동 구현과 검증
 
-## 완료 범위
+## 후속: 출발 준비와 실행 연결
+
+`box_approach_execution.launch.py`는 박스 관측기, 상대 접근 실행기, 기존
+velocity smoother, Collision Monitor와 lifecycle manager를 함께 준비한다.
+부팅이나 launch 실행은 출발 명령이 아니다. 시작은
+`/box_parking/start_approach`, 취소는 `/box_parking/cancel_approach` 서비스로 분리했다.
+준비 상태와 차단 사유는 `/box_parking/execution_status`에서 확인한다.
+
+- Pi underlay의 `camera_mount.yaml`은 unmeasured/null 상태였고 PC의 측정 설정과
+  달랐다. 명시적 snapshot 경로와 SHA256 manifest를 사용해 다른 overlay의 설정이
+  섞이지 않게 했다. 빈 설정은 프로세스 실행 전에 거부한다.
+- 명령은 `/cmd_vel_nav → velocity_smoother → /cmd_vel_smoothed → collision_monitor
+  → /cmd_vel → base_driver`로만 전달한다. 중복 명령 발행자와 필수 노드 누락을
+  확인하며, local costmap을 실행하지 않는 대신 같은 설정의 padded footprint를 발행한다.
+- 준비 단계의 0속도 확인과 주행 중 검사를 구분한다. 정지한 Collision Monitor는
+  `stop_pub_timeout` 이후 0속도 발행을 중단하므로 이를 주행 중 통신 단절과 동일하게
+  취급하지 않는다. 근거는 [Nav2 Jazzy 구현](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_collision_monitor/src/collision_monitor_node.cpp)의
+  `publishVelocity`다. 활성 상태 조회, 센서 시각, 명령 소유권 검사는 유지한다.
+- 실물 검증 승인은 카메라·차체·Nav2·주차 계약의 SHA256과 근거가 포함된 별도 파일을 요구한다.
+  관측기의 `control_ready=false`를 고치거나 승인 파일을 자동 생성하지 않는다.
+  `charger_unplugged_confirmed`는 프로세스가 시작될 때 false이며 영구 저장하지 않는다.
+
+현재 문서의 승인 파일 부재는 실제 차단 조건이다. 소프트웨어 테스트 통과나
+`systemctl is-active`만으로 출발 준비 완료를 판정하지 않는다. 실물 정밀 접근과
+정지 정확도는 아직 완료 증거가 없다.
+
+운영 파일은 `jdamr_cube_bringup/systemd/jdamr-box-rgbd.service`,
+`jdamr-box-approach.service`, `scripts/box_approach_prepare.sh`다. 서비스는
+`/etc/jdamr-box-approach.env`의 `JDAMR_APPROACH_RELEASE`가 지정하는 배포본을 사용한다.
+배포본의 `config/physical_validation.yaml`은 실물 검증 후에만 별도로 작성한다.
+서비스를 실행해도 시작 서비스 호출과 모든 조건 충족 전에는 0속도만 허용한다.
+
+실물 로봇과 분리된 준비 체인 재현:
+
+```bash
+cd "$HOME/jdamr_rgbd_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+python3 src/jdamr_cube_ros/jdamr_cube_navigation/evaluation/smoke_box_approach_startup.py
+```
+
+이 검사는 LOCALHOST/domain 198의 가상 센서와 설치된 Nav2를 사용한다.
+실물 domain 12 또는 모터 드라이버를 실행하지 않는다.
+
+`--armed` 옵션은 같은 격리 domain의 합성 승인 파일과 가상 베이스 수신기를 사용해
+실제 Nav2를 통과한 비영 속도를 검사한다. 실물 승인 파일을 만들거나 재사용하지 않는다.
+출발→취소, scan 단절, 실제 CM STOP, CM 출력 단절의 4개 경로가 통과했다.
+관련 테스트 160개, 변경 파일 flake8, navigation colcon build도 통과했다.
+독립 verifier는 비구동 배포·커밋 범위 PASS로 판단했으며 실차 정밀 주차 승인은 아니다.
+
+### Pi 반영 및 남은 조건 — 2026-09-21
+
+- 배포 위치: `$HOME/jdamr_deploy/box_approach_startup_20260921_79rBbd`.
+  운영 중에는 파일을 수정하지 않고, 갱신할 때 서비스를 정지한 뒤 manifest를 다시 검증한다.
+  manifest는 파일 일치성을 검사하며 관리자에 의한 manifest 재생성까지 막지는 않는다.
+- `jdamr-base`, `jdamr-box-rgbd`, `jdamr-box-approach` 서비스가 active/enabled다.
+  예전 depth-only/LOCALHOST 설정의 `jdamr-astra-camera`는 disabled로 전환했다.
+  실제 재부팅 검증은 하지 않았다. 부팅 후 접근기는 비무장 상태이며 자동 출발하지 않는다.
+- 기존 Nav2·수동 운전과 접근기의 명령 소유권은 공유하지 않는다. 다른 운전 모드로
+  전환할 때 `sudo systemctl stop jdamr-box-approach.service`로 이 체인을 먼저 해제한다.
+- CM/smoother ACTIVE, CM enable 응답, 보호 경로의 0속도 수신을 확인했다.
+  그래프는 0.5초마다 한 번 조회하며 tick에서 전체 그래프를 반복 조회하지 않는다.
+  정지 이후에는 시작 조건을 다시 평가하여 오래된 주행 이력이 재출발을 막지 않는다.
+- 센서 구독은 KEEP_LAST 1로 제한했다. 평면 후보의 결과를 바꾸지 않는 계산 생략과
+  percentile 통합을 적용했다. `age_s`는 검출 완료 시각 기준이고 처리 시간도 따로 발행한다.
+
+같은 날 부하가 높은 Pi에서 얻은 관측 결과:
+
+| 항목 | 수정 전 관측 | 최종 수정 후 관측 |
+| --- | --- | --- |
+| 관측 구간 / 검출 결과 수 | 8초 / 8개 | 15초 / 50개 |
+| 수신 시점 영상 age | 0.883~1.567초 | 중앙값 0.270초, p95 0.561초, 최대 0.660초 |
+| `perception_stale` 상태 수 | 75개 중 35개 | 140개 중 8개 |
+
+부하와 온도가 일정한 통제 벤치마크는 아니다. 최종 측정에서 파이는 85.2°C,
+`get_throttled=0xe0008`이었고 p95가 0.5초 기준을 넘었으므로 실차 운전 성능 PASS로
+취급하지 않는다. 140개 `/cmd_vel_nav` 명령은 모두 0이었다.
+
+현재 남은 차단은 실제 측면 근접점에 따른 CM STOP, 박스 후보의 연속 안정성 부족,
+실물 외부 파라미터 검증 파일 부재, 프로세스 재시작 후 충전 분리 확인 초기화다.
+물체 의미나 카메라 기울기를 현재 관측만으로 확정하지 않았다. 사용자에게 충전 분리를
+다시 요구한 것은 아니며, 이번 배포에서는 실물 출발을 호출하지 않아 false를 유지했다.
+추후 출발을 요청받으면 기존 확인의 유효성과 현재 상태를 판단해 프로세스에 반영한다.
+확인은 영구 저장하지 않으며 재충전 이후 재사용하지 않는다.
+
+남은 단계는 냉각/부하가 안정된 상태의 입력 지연 확인, 현재 목표의 안정된 관측과 카메라
+외부 파라미터 검증, 실제 장애물과의 간격 확보 후 제한 접근이다. 소프트웨어 기동 수정과
+실차 주차 완료를 구분한다. SIGINT 시 0속도 drain은 best-effort이며 전체 launch 동시
+종료에서는 베이스 watchdog이 최종 정지를 담당한다.
+
+## 앞선 shadow 구현의 완료 범위
 
 사용자가 충전기를 연결하고 기체를 옮긴 상태에서 정밀 주차 구현을 요청했다.
 실물 주행·Pi 배포·Collision Monitor 설정 변경 없이, 관측 처리와 접근 제어 계산을
