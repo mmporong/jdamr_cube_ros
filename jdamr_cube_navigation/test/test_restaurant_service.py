@@ -14,6 +14,7 @@ from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import (
     BLOCKED_PLAN_CODES, load_service_contract, parse_args, select_destination, ServiceRoute,
 )
+from jdamr_cube_navigation.service_destinations import route_config, taught_pose
 from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
 from nav_msgs.msg import OccupancyGrid
 import pytest
@@ -23,6 +24,24 @@ import yaml
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize('override,expected', [(None, 'LOCALHOST'), ('SUBNET', 'SUBNET')])
+def test_core_launch_resolves_discovery_default_before_environment(override, expected):
+    """Execute startup declarations in order, without starting ROS processes."""
+    from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+    spec = importlib.util.spec_from_file_location(
+        'core_launch_defaults', PACKAGE / 'launch/onboard_nav2_core.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    context = LaunchContext()
+    if override is not None:
+        context.launch_configurations['discovery_range'] = override
+    for action in module.generate_launch_description().entities:
+        if isinstance(action, (DeclareLaunchArgument, SetEnvironmentVariable)):
+            action.execute(context)
+    assert context.environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == expected
 
 
 def done(value):
@@ -108,6 +127,84 @@ def test_plan_only_is_default_and_teaching_requires_named_pose():
                        '--table-id', 'table_02', '--log', '/tmp/r.jsonl'])
     assert not args.execute
     assert args.table_id == 'table_02'
+
+
+def test_teach_parses_gap_without_enabling_motion():
+    """Manual gap provenance is a teaching option, not a driving command."""
+    args = parse_args(['service', 'teach', '--registry', '/tmp/r.yaml',
+                       '--table-id', 'table_02', '--pose-id', 'main', '--log', '/tmp/t.jsonl',
+                       '--target-front-gap-m', '0.05', '--measured-front-gap-m', '0.06',
+                       '--gap-measurement-note', 'ruler'])
+    assert args.target_front_gap_m == 0.05
+    assert args.measured_front_gap_m == 0.06
+    assert not hasattr(args, 'execute')
+
+
+@pytest.mark.parametrize('options', [
+    ['--measured-front-gap-m', '0.05'], ['--gap-measurement-note', 'ruler'],
+    ['--target-front-gap-m', 'nan'], ['--target-front-gap-m', '-1'],
+])
+def test_invalid_gap_options_fail_before_ros_startup(options):
+    """Invalid measurements must not wait for the robot to connect."""
+    with pytest.raises(SystemExit) as failure:
+        parse_args(['service', 'teach', '--registry', '/tmp/r.yaml',
+                    '--table-id', 'table_02', '--pose-id', 'main',
+                    '--log', '/tmp/t.jsonl', *options])
+    assert failure.value.code == 2
+
+
+def test_navigation_terminal_failure_is_propagated():
+    """Do not let an unresolved action fall through to the next waypoint."""
+    node = route()
+    node.navigate = Mock()
+    node.navigate.send_goal_async.return_value = done(handle(GoalStatus.STATUS_ABORTED))
+    node.finish_navigation = Mock(return_value=False)
+    with pytest.raises(RuntimeError, match='cancellation unconfirmed'):
+        node.execute()
+    assert node.navigate.send_goal_async.call_count == 1
+    assert '"event": "arrived"' not in node.result_stream.getvalue()
+
+
+@pytest.mark.parametrize('execute', [False, True])
+def test_alternate_selection_retains_waypoints_and_gap_evidence(execute):
+    """Plan and report the selected table's two poses without reusing the primary."""
+    node = route()
+    primary = taught_pose('main', (1, 2, 0), {})
+    alternate = taught_pose('other', (3, 4, math.pi / 2), {}, priority=2,
+                            target_front_gap_m=0.05, measured_front_gap_m=0.06,
+                            gap_measurement_note='ruler')
+    node.registry['tables'] = [{'table_id': 'table_01', 'enabled': True,
+                                'service_poses': [primary, alternate]}]
+    node.verify_live_maps = Mock()
+    node.wait_until_ready = Mock(return_value=True)
+    node._parking_parameters_ready = Mock(return_value=True)
+    failed = ComputePathThroughPoses.Result()
+    failed.error_code = ComputePathThroughPoses.Result.GOAL_OCCUPIED
+    successful = ComputePathThroughPoses.Result()
+    successful.path.poses = [PoseStamped()]
+    node.compute = Mock()
+    node.compute.send_goal_async.side_effect = [
+        done(SimpleNamespace(accepted=True, get_result_async=lambda: done(
+            SimpleNamespace(status=GoalStatus.STATUS_ABORTED, result=failed)))),
+        done(SimpleNamespace(accepted=True, get_result_async=lambda: done(
+            SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED, result=successful)))),
+    ]
+    expected = route_config(node.registry, alternate)['waypoints']
+
+    def dispatch():
+        assert node.waypoints == expected
+        assert node.pose_id == 'other'
+        return True
+
+    node.execute = Mock(side_effect=dispatch)
+    assert node.visit('table_01', execute=execute)
+    assert node.execute.call_count == int(execute)
+    records = [json.loads(line) for line in node.result_stream.getvalue().splitlines()]
+    selected = next(record for record in records if record['event'] == 'selected')
+    assert selected['waypoints'] == expected
+    assert selected['front_gap']['teaching_measured_m'] == 0.06
+    assert records[-1]['event'] == ('arrived' if execute else 'planned_only')
+    assert records[-1]['front_gap']['arrival_verification'] == 'NOT_MEASURED'
 
 
 @pytest.mark.parametrize('confirmed', [False, True])

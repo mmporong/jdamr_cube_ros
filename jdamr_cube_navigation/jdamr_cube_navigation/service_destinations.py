@@ -155,6 +155,11 @@ def validate_registry(document, verify_files=True):
             teaching = pose.get('teaching')
             if not isinstance(teaching, dict) or teaching.get('source') != 'map_to_base_link_tf':
                 raise ValueError('pose must retain teaching provenance')
+            validate_gap_measurement(
+                teaching.get('table_gap_m'), teaching.get('gap_measurement_note'))
+            target_gap_m = pose.get('target_front_gap_m')
+            if target_gap_m is not None and _number(target_gap_m, 'target_front_gap_m') <= 0:
+                raise ValueError('target_front_gap_m must be positive')
         if 1 not in priorities:
             raise ValueError('primary pose (priority 1) required')
     return document
@@ -192,19 +197,51 @@ def save_registry(path, document, replace=False):
             os.unlink(temporary)
 
 
-def taught_pose(pose_id, actual_pose, observation, priority=1, approach_offset_m=0.5):
+def validate_gap_measurement(measured_front_gap_m, measurement_note):
+    """Keep a manual teaching measurement separate from runtime sensing."""
+    if measured_front_gap_m is None:
+        if measurement_note is not None:
+            raise ValueError('gap measurement note requires a measured front gap')
+        return
+    if _number(measured_front_gap_m, 'measured_front_gap_m') <= 0:
+        raise ValueError('measured_front_gap_m must be positive')
+    if not isinstance(measurement_note, str) or not measurement_note.strip():
+        raise ValueError('measured front gap requires a measurement note')
+
+
+def front_gap_evidence(pose):
+    """Report intent and teaching evidence without claiming a new arrival measurement."""
+    teaching = pose.get('teaching', {})
+    return {
+        'reference': 'chassis_front_to_table_nearest_surface',
+        'target_m': pose.get('target_front_gap_m'),
+        'teaching_measured_m': teaching.get('table_gap_m'),
+        'teaching_measurement_note': teaching.get('gap_measurement_note'),
+        'arrival_measured_m': None,
+        'arrival_verification': 'NOT_MEASURED',
+    }
+
+
+def taught_pose(pose_id, actual_pose, observation, priority=1, approach_offset_m=0.5,
+                measured_front_gap_m=None, gap_measurement_note=None,
+                target_front_gap_m=None):
     """Preserve the stationary capture and derived approach's provenance."""
+    validate_gap_measurement(measured_front_gap_m, gap_measurement_note)
+    if target_front_gap_m is not None and _number(target_front_gap_m, 'target_front_gap_m') <= 0:
+        raise ValueError('target_front_gap_m must be positive')
     x_m, y_m, yaw_rad = actual_pose
     return {
         'id': _identifier(pose_id), 'priority': priority,
         'x_m': float(x_m), 'y_m': float(y_m), 'yaw_rad': float(yaw_rad),
         'approach_offset_m': approach_offset_m,
+        'target_front_gap_m': target_front_gap_m,
         'teaching': {
             'source': 'map_to_base_link_tf',
             'captured_at': datetime.now(timezone.utc).isoformat(),
             'observation': deepcopy(observation),
             'physical_accuracy': 'NOT_MEASURED',
-            'table_gap_m': None,
+            'table_gap_m': measured_front_gap_m,
+            'gap_measurement_note': gap_measurement_note,
         },
     }
 

@@ -298,3 +298,53 @@ def test_route_config_applies_offset_along_taught_yaw(registry):
     assert approach['yaw'] == pytest.approx(math.pi / 2)
     assert service == {
         'id': 'angled', 'x': 4.0, 'y': -2.0, 'yaw': math.pi / 2}
+
+
+def test_teaching_gap_is_not_a_live_arrival_measurement(tmp_path, registry):
+    """Persist a real teaching measurement without shifting or certifying arrival."""
+    pose = destinations.taught_pose(
+        'table_1_primary', (1.0, 2.0, 0.3), {},
+        measured_front_gap_m=0.07, gap_measurement_note='ruler, chassis front to box face',
+        target_front_gap_m=0.05)
+    updated = destinations.add_pose(registry, 'table_1', pose, replace=True)
+    path = tmp_path / 'destinations.yaml'
+    destinations.save_registry(path, updated)
+    saved = destinations.candidates(destinations.load_registry(path), 'table_1')[0]
+    gap = destinations.front_gap_evidence(saved)
+    assert gap['target_m'] == 0.05
+    assert gap['teaching_measured_m'] == 0.07
+    assert gap['arrival_measured_m'] is None
+    assert gap['arrival_verification'] == 'NOT_MEASURED'
+    final = destinations.route_config(updated, saved)['waypoints'][-1]
+    assert (final['x'], final['y'], final['yaw']) == (1.0, 2.0, 0.3)
+
+
+@pytest.mark.parametrize('value', [0, -0.1, True, math.nan, math.inf, '0.05'])
+def test_invalid_teaching_gap_is_rejected(value, registry):
+    """Reject invalid manual lengths both at capture and on YAML load."""
+    with pytest.raises(ValueError):
+        destinations.taught_pose('p', (0, 0, 0), {}, measured_front_gap_m=value,
+                                 gap_measurement_note='ruler')
+    registry['tables'][0]['service_poses'][0]['teaching'].update(
+        table_gap_m=value, gap_measurement_note='ruler')
+    with pytest.raises(ValueError):
+        destinations.validate_registry(registry)
+
+
+@pytest.mark.parametrize('gap,note', [(0.05, None), (0.05, ''), (0.05, '  '),
+                                      (None, 'ruler')])
+def test_gap_and_measurement_note_must_be_paired(gap, note):
+    """A value alone or a note alone must not become measurement evidence."""
+    with pytest.raises(ValueError):
+        destinations.taught_pose('p', (0, 0, 0), {}, measured_front_gap_m=gap,
+                                 gap_measurement_note=note)
+
+
+def test_legacy_registry_has_no_assumed_gap(registry):
+    """Existing taught poses remain usable without an invented clearance."""
+    pose = registry['tables'][0]['service_poses'][0]
+    pose.pop('target_front_gap_m')
+    pose['teaching'].pop('gap_measurement_note')
+    destinations.validate_registry(registry)
+    gap = destinations.front_gap_evidence(pose)
+    assert gap['target_m'] is None and gap['teaching_measured_m'] is None

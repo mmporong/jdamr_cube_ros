@@ -15,9 +15,9 @@ from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.corridor_route import _quaternion_yaw, AMCL_QOS, CorridorRoute
 from jdamr_cube_navigation.parking import load_parking_contract, ParkingHold
 from jdamr_cube_navigation.service_destinations import (
-    add_pose, candidates, grid_signature, load_registry, map_grid_signature,
+    add_pose, candidates, front_gap_evidence, grid_signature, load_registry, map_grid_signature,
     new_registry, route_config,
-    save_registry, taught_pose, validate_registry, verify_identity,
+    save_registry, taught_pose, validate_gap_measurement, validate_registry, verify_identity,
 )
 from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
 from nav_msgs.msg import OccupancyGrid
@@ -79,6 +79,7 @@ class ServiceRoute(CorridorRoute):
         self.table_id = None
         self.pose_id = None
         self.confirmation = None
+        self.selected_pose = None
         self.active_handle = None
         self.pending_goal = None
         self.navigation_result = None
@@ -154,6 +155,7 @@ class ServiceRoute(CorridorRoute):
         record = {'event': event, 'table_id': self.table_id,
                   'pose_id': self.pose_id, 'monotonic_s': time.monotonic(),
                   'physical_accuracy': 'NOT_MEASURED', **fields}
+        record['front_gap'] = front_gap_evidence(getattr(self, 'selected_pose', None) or {})
         covariance = getattr(self, 'amcl_covariance', None)
         yaw_covariance = getattr(self, 'amcl_yaw_covariance_rad2', None)
         record['localization_covariance'] = {
@@ -354,7 +356,8 @@ class ServiceRoute(CorridorRoute):
                 if final and not self._verify_parking_stop(index, waypoint, handle):
                     return False
             finally:
-                self.finish_navigation()
+                if not self.finish_navigation():
+                    raise RuntimeError('navigation cancellation unconfirmed')
         return True
 
     def capture_stationary_pose(self, timeout_s=10.0):
@@ -416,6 +419,8 @@ class ServiceRoute(CorridorRoute):
     def visit(self, table_id, execute=False, timeout_s=180.0):
         """Resolve, plan, navigate, park and confirm one selected table pose."""
         self.table_id = table_id
+        self.selected_pose = None
+        self.confirmation = None
         poses = candidates(self.registry, table_id)
         self.run_deadline_s = time.monotonic() + timeout_s
         self.verify_live_maps()
@@ -428,7 +433,9 @@ class ServiceRoute(CorridorRoute):
         if pose is None:
             self.emit('failed', reason='no_service_pose_planned')
             return False
+        self.selected_pose = pose
         self.emit('selected', target_pose=[pose[key] for key in ('x_m', 'y_m', 'yaw_rad')],
+                  waypoints=route_config(self.registry, pose)['waypoints'],
                   xy_tolerance_m=self.parking_contract['xy_tolerance_m'],
                   yaw_tolerance_rad=self.parking_contract['yaw_tolerance_rad'])
         if not execute:
@@ -461,9 +468,25 @@ def parse_args(argv):
             subparser.add_argument('--priority', type=int, choices=(1, 2), default=1)
             subparser.add_argument('--approach-offset-m', type=float, default=0.5)
             subparser.add_argument('--replace', action='store_true')
+            subparser.add_argument('--target-front-gap-m', type=float,
+                                   help='Requested chassis-front gap; does not shift taught pose')
+            subparser.add_argument('--measured-front-gap-m', type=float,
+                                   help='Gap measured at this stationary teaching pose')
+            subparser.add_argument('--gap-measurement-note',
+                                   help='Measurement method and physical reference')
         else:
             subparser.add_argument('--execute', action='store_true')
-    return parser.parse_args(remove_ros_args(args=argv)[1:])
+    parsed = parser.parse_args(remove_ros_args(args=argv)[1:])
+    if parsed.command == 'teach':
+        try:
+            validate_gap_measurement(parsed.measured_front_gap_m, parsed.gap_measurement_note)
+            if parsed.target_front_gap_m is not None and (
+                    not math.isfinite(parsed.target_front_gap_m)
+                    or parsed.target_front_gap_m <= 0):
+                raise ValueError('target_front_gap_m must be finite and positive')
+        except ValueError as error:
+            parser.error(str(error))
+    return parsed
 
 
 def main(args=None):
@@ -497,12 +520,15 @@ def main(args=None):
                     node.verify_live_maps()
                     actual_pose, observation = node.capture_stationary_pose()
                     pose = taught_pose(parsed.pose_id, actual_pose, observation,
-                                       parsed.priority, parsed.approach_offset_m)
+                                       parsed.priority, parsed.approach_offset_m,
+                                       parsed.measured_front_gap_m, parsed.gap_measurement_note,
+                                       parsed.target_front_gap_m)
                     updated = add_pose(registry, parsed.table_id, pose, parsed.replace)
                     # Detect an intervening edit before replacing the registry.
                     if load_registry(parsed.registry) != registry:
                         raise RuntimeError('registry changed during teaching; capture not saved')
                     save_registry(parsed.registry, updated, replace=True)
+                    node.selected_pose = pose
                     node.emit('taught', pose=pose)
                     ok = True
                 else:

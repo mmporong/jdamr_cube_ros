@@ -428,14 +428,14 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
-        SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', discovery_range),
         DeclareLaunchArgument(
             'discovery_range', default_value='LOCALHOST',
             choices=['LOCALHOST', 'SUBNET'],
             description=(
                 'The physical wrapper selects SUBNET to consume LOCALHOST '
                 'sensor publishers on this host')),
+        SetEnvironmentVariable(
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', discovery_range),
         DeclareLaunchArgument(
             'map',
             default_value=os.path.expanduser(

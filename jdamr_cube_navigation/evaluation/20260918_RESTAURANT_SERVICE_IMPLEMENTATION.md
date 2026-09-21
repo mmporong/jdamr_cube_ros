@@ -87,6 +87,23 @@ ros2 run jdamr_cube_navigation restaurant_service teach \
 기존 pose를 다시 교시할 때만 `--replace`를 쓴다. 다른 테이블과 기존 로그는 보존한다.
 상태가 안정된 1초 구간의 실제 TF·odom, AMCL 공분산과 command 관측 여부를 교시 근거에 남긴다.
 
+교시 시 차체 맨 앞과 테이블의 가장 가까운 면 사이 간격을 쟀다면 다음 옵션을 함께 쓴다.
+`--target-front-gap-m 0.05`는 요청 간격이고, `--measured-front-gap-m`에는 그 자리에서
+잰 값을 넣는다. 측정하지 않았다면 측정 옵션을 생략한다. 아래 예시는 실제 계측 결과가 아니다.
+
+```bash
+ros2 run jdamr_cube_navigation restaurant_service teach \
+  --registry "$HOME/jdamr_data/service/destinations.yaml" \
+  --table-id table_01 --pose-id table_01_main \
+  --target-front-gap-m 0.05 \
+  --measured-front-gap-m "$MEASURED_FRONT_GAP_M" \
+  --gap-measurement-note "줄자: 차체 맨 앞부터 테이블의 가장 가까운 면" \
+  --log "$HOME/jdamr_data/service/teach_table01_measured.jsonl"
+```
+
+요청 간격과 교시 간격은 서로 다른 값이며 목표 좌표를 자동으로 당겨 수정하지 않는다.
+실측값은 해당 교시 시각·pose에만 속한다. 테이블 또는 차체 외형을 바꾸면 다시 교시한다.
+
 4. 저장값 확인과 경로 계획은 이동 없이 실행할 수 있다.
 
 ```bash
@@ -116,6 +133,12 @@ ros2 run jdamr_cube_navigation restaurant_service go \
 지도·금지구역 파일 신원을 저장한다. 로그는 JSONL이며 선택 결과와 각 Nav2 goal의
 종료 상태, 최종 `position_error_m`, `yaw_error_rad`, `hold_s`, `physical_accuracy`를 남긴다.
 
+`selected.waypoints`에는 접근점과 최종점을 모두 남긴다. `front_gap`에는 요청 간격,
+교시 실측 간격·측정 방법, 이번 도착의 간격 확인 상태를 분리한다. 교시에서 5cm를
+기록했더라도 도착 시 센서·외부 측정이 없으면 `arrival_measured_m: null`,
+`arrival_verification: NOT_MEASURED`다. `arrived`만으로 5cm 주차 성공이나 팔 작업
+허가를 판정하지 않는다. 기존 등록부에 간격이 없으면 추측값을 채우지 않는다.
+
 이번 구현 검증은 파일 기반 단위 테스트와 ROS 메시지·action 응답을 사용한 통합 테스트,
 기존 주차·차체 설정 회귀 검증까지 190개 PASS다. `colcon build`, 변경 Python의
 `ament_flake8`·`ament_pep257`, 설치된 CLI와 launch 인자 확인도 통과했다.
@@ -130,3 +153,24 @@ localhost 전용 domain 187에서 실제 ROS 노드 생성·종료를 확인했�
 이전에 다른 기체로 진행했던 시뮬레이션 수치를 이번 실차 성능으로 사용하지 않는다.
 
 격자 변환 참고: [Nav2 Jazzy map_io.cpp](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_map_server/src/map_io.cpp).
+
+## 2026-09-21 오프라인 보완·실행 결과
+
+- Nav2 core launch에서 `discovery_range` 선언보다 환경변수 설정이 먼저 실행되는 오류를
+  재현했다. 인자 생략 시 시작하지 못했던 순서를 수정하고 기본 LOCALHOST와 명시적
+  SUBNET 실행 인자를 모두 테스트했다. 과거 실차 중단 전체의 원인으로 단정하지 않는다.
+- 교시 간격 근거, 선택된 접근점·최종점 로그, 취소 종료 미확인 예외 처리를 추가했다.
+  기존 Nav2 제어기·충돌 설정·교시 좌표는 바꾸지 않았다.
+- 관련 회귀 테스트 297개, 빌드, flake8·pep257 통과. 독립 코드 리뷰 APPROVE.
+- 기존 Gazebo 주차 시나리오를 localhost 전용 ROS domain 186에서 실행했다.
+  접근점·최종점 두 목표 모두 SUCCEEDED, 정지 확인 PASS, 실행 종료 코드 0.
+  시뮬레이터 ground truth 기준 최종 위치 오차 0.0410278683m, 방향 오차 2.672°.
+  MCAP 795,785 bytes를 남겼고 종료 후 잔존 프로세스는 없었다.
+- 결과 파일: `$HOME/jdamr_artifacts/parking_offline_20260921_after_launch_fix/summary.json`.
+  SHA-256: `2889bd8f8ca5e14565a4af4de69d51006e60c29489dbccf95f0811c3b607fec9`.
+
+이 실행은 기존 Gazebo 자산과 `corridor_route --park-final`의 주차 제어 흐름을 확인한 것이다.
+새 차체의 실측 재현이나 실제 테이블 간격 5cm 검증, `restaurant_service` 실물 end-to-end
+검증은 아니다. 이름별 테이블 선택은 별도의 코드 통합 테스트로 확인했다.
+실제 테이블 좌표 교시와 근접 구간 거리 센싱·실차 검증이 남아 있으며,
+이번 작업에서는 파이 접속·배포·실물 주행을 수행하지 않았다.
