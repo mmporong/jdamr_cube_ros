@@ -28,14 +28,11 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 
 ## Depth 박스 정밀주차 관측
 
-2026-09-21에는 [하부차체 45cm 이격 접근의 계산·shadow 검증](evaluation/20260921_BOX_APPROACH_SHADOW.md)을
-추가했다. 박스 전면 상대 자세로 곡선 접근·최종 방향 정렬·정지 유지 명령을 계산하지만,
-새 launch는 JSON 상태만 발행하며 속도 명령이나 Nav2 목표를 발행하지 않는다.
-현재 충전 및 카메라 외부 파라미터 검증 상태를 유지하고 실차 실행에는 연결하지 않았다. 고정
-테이블은 지도에 등록한 서비스 pose로 접근하며, SLAM 고도화는 localization 신뢰도와 복구,
-반복 도착 평가를 우선한다. G4·ToF로 테이블 다리를 맞추는 모델별 계산과 5cm 박스 주차는
-보류한다. Depth 관측 코드는 이후 양팔이 컵을 놓기 직전 상판과 빈 공간을 확인하는 국소
-인지로 전환한다.
+2026-09-21 박스 전용 접근 실행부와 반복 출발 검증 절차를 폐기했다.
+[실차 실패 및 폐기 기록](evaluation/archive/20260921_BOX_APPROACH_SHADOW.md)은
+분석용 보관 자료이며, 그 안의 이전 실행 명령은 사용하지 않는다.
+기존 Nav2·지도 기반 서비스 목적지 기능과 속도를 발행하지 않는 Depth 관측기는 유지한다.
+이 정리로 테이블 앞 5cm 정차가 구현되거나 검증된 것은 아니다.
 
 테이블별 목적지는 `map` 좌표계의 이름 있는 서비스 pose로 교시하며, 구현 범위와 데이터
 형식은 [식당 서비스 목적지 등록 후속 작업](evaluation/20260917_RESTAURANT_SERVICE_DESTINATION_BACKLOG.md)에

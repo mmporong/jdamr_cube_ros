@@ -39,7 +39,6 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
-            'box_parking_start = jdamr_cube_navigation.box_parking_start:main',
             'frontier_explorer = jdamr_cube_navigation.frontier_explorer:main',
             'corridor_route = jdamr_cube_navigation.corridor_route:main',
             'goto_pose = jdamr_cube_navigation.goto_pose:main',
@@ -73,10 +72,6 @@ setup(
             'jdamr_cube_navigation.g005_frontier_coordinator:main',
             'depth_box_parking = '
             'jdamr_cube_navigation.depth_box_parking:main',
-            'box_approach_shadow = '
-            'jdamr_cube_navigation.box_approach_shadow:main',
-            'box_approach_execution = '
-            'jdamr_cube_navigation.box_approach_execution:main',
             'depth_obstacle_filter = '
             'jdamr_cube_navigation.depth_obstacle_filter:main',
             'restaurant_service = '
