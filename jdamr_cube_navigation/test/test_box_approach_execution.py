@@ -15,6 +15,7 @@ from jdamr_cube_navigation.box_approach_execution import (
     physical_validation,
     readiness_reasons,
     shutdown_zero_drain,
+    trial_perception_disposition,
     validation_reference_reason,
     VALIDATION_TRIAL_MODE,
 )
@@ -147,6 +148,11 @@ def armed_flow_node(clock):
     node.terminal_state = None
     node.execution_mode = 'production'
     node.validation_reference_m = None
+    node.perception_hold_started_mono_s = None
+    node.perception_hold_command_sequence = None
+    node.perception_failure_snapshot = None
+    node.command_sequence = 0
+    node.values = {'optical_frame': 'camera_color_optical_frame'}
     node.reason = 'DISARMED'
     node.pose = (0.0, 0.0, 0.0)
     node.velocity = (0.0, 0.0)
@@ -195,7 +201,10 @@ def validation_start_node(clock, reference=.82, observed=.82):
     parameter = [reference]
     node.observation = {
         'stamp_s': 10.0, 'front_distance_m': observed,
-        'stable': True, 'confidence': .95,
+        'frame_id': 'camera_color_optical_frame',
+        'detected': True, 'stable': True, 'surface_kind': 'front',
+        'lateral_error_m': 0.0, 'edge_angle_deg': 0.0,
+        'confidence': .95,
     }
     node.get_parameter = lambda name: SimpleNamespace(value=parameter[0])
 
@@ -701,6 +710,153 @@ def test_validation_start_keeps_all_nonapproval_readiness_guards():
     assert calls == [{
         'require_start': True, 'require_physical_validation': False}]
     assert parameter[0] == 0.0
+
+
+@pytest.mark.parametrize(('mutate', 'expected'), [
+    (lambda observation: observation.update(stamp_s=10.1),
+     ('hard', 'source_stamp_future')),
+    (lambda observation: observation.update(
+        frame_id='wrong_optical_frame'),
+     ('hard', 'perception_frame_invalid')),
+    (lambda observation: observation.update(front_distance_m=math.nan),
+     ('hard', 'perception_value_invalid')),
+    (lambda observation: observation.update(front_distance_m=-.1),
+     ('hard', 'front_distance_invalid')),
+    (lambda observation: observation.update(confidence=.7),
+     ('hard', 'confidence_below_minimum')),
+    (lambda observation: observation.update(confidence=.7, stamp_s=9.0),
+     ('hard', 'confidence_below_minimum')),
+])
+def test_validation_trial_hard_perception_faults_are_not_paused(
+        mutate, expected):
+    node, _, _ = validation_start_node([10.0])
+    mutate(node.observation)
+    assert trial_perception_disposition(
+        node.observation, now_ros_s=10.0,
+        optical_frame='camera_color_optical_frame') == expected
+
+
+def test_validation_trial_runtime_stable_false_is_not_itself_a_dropout():
+    node, _, _ = validation_start_node([10.0])
+    node.observation['stable'] = False
+    assert trial_perception_disposition(
+        node.observation, now_ros_s=10.0,
+        optical_frame='camera_color_optical_frame') == ('usable', None)
+
+
+def test_validation_trial_hard_values_win_over_source_staleness():
+    node, _, _ = validation_start_node([10.0])
+    node.observation['stamp_s'] = 9.0
+    node.observation['front_distance_m'] = math.nan
+    assert trial_perception_disposition(
+        node.observation, now_ros_s=10.0,
+        optical_frame='camera_color_optical_frame') == (
+            'hard', 'perception_value_invalid')
+
+
+def test_validation_trial_transient_loss_holds_zero_then_resumes_same_run():
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.observation = {
+        'stamp_s': 10.0, 'frame_id': 'camera_color_optical_frame',
+        'detected': False, 'stable': False,
+        'reason': 'no_box_surface_candidate',
+    }
+    node.tick()
+    assert node.armed is True
+    assert node.reason == 'perception_zero_hold'
+    assert commands[-1].linear.x == 0.0
+    assert node.perception_failure_snapshot == {
+        'reason': 'no_box_surface_candidate', 'stamp_s': 10.0}
+
+    node.observation = {
+        'stamp_s': 10.0, 'frame_id': 'camera_color_optical_frame',
+        'detected': True, 'stable': True, 'surface_kind': 'front',
+        'front_distance_m': .82, 'lateral_error_m': 0.0,
+        'edge_angle_deg': 0.0, 'confidence': .95,
+    }
+    node.readiness = lambda **kwargs: ['odom_not_stationary']
+    node.tick()
+    assert node.reason == 'perception_zero_hold'
+
+    node.readiness = lambda **kwargs: []
+    node.on_final_command(Twist())
+    node.tick()
+    assert node.armed is True
+    assert node.perception_hold_started_mono_s is None
+    assert node.reason == 'perception_reacquired'
+    assert commands[-1].linear.x == 0.0
+    node.tick()
+    assert commands[-1].linear.x == pytest.approx(.03)
+
+
+def test_validation_trial_transient_loss_keeps_other_guards_fail_closed():
+    node, commands, _ = validation_start_node([10.0])
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.observation = {
+        'stamp_s': 9.4, 'frame_id': 'camera_color_optical_frame',
+        'detected': True, 'stable': True, 'surface_kind': 'front',
+        'front_distance_m': .82, 'lateral_error_m': 0.0,
+        'edge_angle_deg': 0.0, 'confidence': .95,
+    }
+    node.readiness = lambda **kwargs: [
+        'perception_observation_invalid', 'scan_stale']
+    node.tick()
+    assert node.terminal_state == 'ABORTED'
+    assert node.reason == 'scan_stale'
+    assert commands[-1].linear.x == 0.0
+
+
+def test_validation_trial_perception_hold_times_out_without_rearming():
+    clock = [10.0]
+    node, commands, _ = validation_start_node(clock)
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.observation = {
+        'stamp_s': 10.0, 'frame_id': 'camera_color_optical_frame',
+        'detected': False, 'stable': False,
+        'reason': 'no_box_surface_candidate',
+    }
+    node.tick()
+    clock[0] = 13.01
+    node.tick()
+    assert node.terminal_state == 'ABORTED'
+    assert node.reason == 'perception_reacquisition_timeout'
+    assert commands[-1].linear.x == 0.0
+
+
+def test_validation_trial_reacquired_data_cannot_bypass_hold_timeout():
+    clock = [10.0]
+    node, _, _ = validation_start_node(clock)
+    assert node.on_start_validation(
+        Trigger.Request(), Trigger.Response()).success is True
+    node.observation = {
+        'stamp_s': 10.0, 'frame_id': 'camera_color_optical_frame',
+        'detected': False, 'stable': False,
+        'reason': 'no_box_surface_candidate',
+    }
+    node.tick()
+    clock[0] = 13.01
+    node.observation = {
+        'stamp_s': 10.0, 'frame_id': 'camera_color_optical_frame',
+        'detected': True, 'stable': True, 'surface_kind': 'front',
+        'front_distance_m': .82, 'lateral_error_m': 0.0,
+        'edge_angle_deg': 0.0, 'confidence': .95,
+    }
+    node.tick()
+    assert node.terminal_state == 'ABORTED'
+    assert node.reason == 'perception_reacquisition_timeout'
+
+
+def test_disarmed_tick_does_not_evaluate_execution_deadlines():
+    node, commands = armed_flow_node([10.0])
+    node.started_mono_s = None
+    node.tick()
+    assert node.armed is False
+    assert commands[-1].linear.x == 0.0
 
 
 @pytest.mark.parametrize(('linear', 'angular', 'expected_linear',

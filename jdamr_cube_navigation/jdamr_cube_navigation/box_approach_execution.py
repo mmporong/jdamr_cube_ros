@@ -44,6 +44,7 @@ VALIDATION_TRIAL_MAX_TRAVEL_M = 0.45
 VALIDATION_TRIAL_MAX_RUN_S = 30.0
 VALIDATION_TRIAL_MAX_LINEAR_MPS = 0.03
 VALIDATION_TRIAL_MAX_ANGULAR_RADPS = 0.10
+VALIDATION_TRIAL_PERCEPTION_HOLD_S = 3.0
 VALIDATION_TRIAL_MODE = 'physical_validation_trial'
 GRAPH_SAMPLE_S = 0.5
 GRAPH_FRESHNESS_S = 0.75
@@ -127,6 +128,64 @@ def validation_reference_reason(reference_m):
     if not VALIDATION_REFERENCE_MIN_M <= reference_m <= VALIDATION_REFERENCE_MAX_M:
         return 'validation_reference_out_of_range'
     return None
+
+
+def trial_perception_disposition(observation, *, now_ros_s, optical_frame):
+    """Classify only bounded reacquisition cases as transient trial loss."""
+    try:
+        stamp_s = observation['stamp_s']
+        if (isinstance(stamp_s, bool)
+                or not isinstance(stamp_s, (int, float))
+                or not math.isfinite(stamp_s)):
+            return 'hard', 'source_stamp_invalid'
+        age_s = now_ros_s - stamp_s
+        if age_s < 0.0:
+            return 'hard', 'source_stamp_future'
+        if observation.get('frame_id') != optical_frame:
+            return 'hard', 'perception_frame_invalid'
+        for key in ('front_distance_m', 'lateral_error_m',
+                    'edge_angle_deg', 'confidence'):
+            if key in observation:
+                value = observation[key]
+                if (isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)):
+                    return 'hard', 'perception_value_invalid'
+        if ('front_distance_m' in observation
+                and not 0.0 < observation['front_distance_m'] <= 2.0):
+            return 'hard', 'front_distance_invalid'
+        if ('stable' in observation
+                and observation.get('stable') not in (True, False)):
+            return 'hard', 'stable_flag_invalid'
+        if observation.get('detected') is False:
+            return 'transient', str(observation.get(
+                'reason', 'target_temporarily_not_detected'))
+        if observation.get('detected') is not True:
+            return 'hard', 'detected_flag_invalid'
+        if any(key not in observation for key in (
+                'front_distance_m', 'lateral_error_m',
+                'edge_angle_deg', 'confidence')):
+            return 'hard', 'perception_schema_invalid'
+        if observation.get('surface_kind') != 'front':
+            return 'hard', 'surface_kind_invalid'
+        if observation['confidence'] < .8:
+            return 'hard', 'confidence_below_minimum'
+        if age_s > .5:
+            return 'transient', 'source_stale'
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return 'hard', 'perception_schema_invalid'
+    return 'usable', None
+
+
+def perception_snapshot(observation, reason):
+    """Retain a small JSON-safe diagnostic without copying arbitrary input."""
+    snapshot = {'reason': str(reason)}
+    for key in ('stamp_s', 'front_distance_m', 'confidence'):
+        value = observation.get(key)
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value)):
+            snapshot[key] = float(value)
+    return snapshot
 
 
 def readiness_reasons(
@@ -254,6 +313,10 @@ class BoxApproachExecution(Node):
         self.terminal_state = None
         self.execution_mode = 'production'
         self.validation_reference_m = None
+        self.perception_hold_started_mono_s = None
+        self.perception_hold_command_sequence = None
+        self.perception_failure_snapshot = None
+        self.command_sequence = 0
         self.reason = 'DISARMED'
         self.start_pose = None
         self.started_mono_s = None
@@ -375,6 +438,9 @@ class BoxApproachExecution(Node):
         except (json.JSONDecodeError, TypeError, ValueError):
             self.observation = {}
             if self.armed:
+                if getattr(self, 'execution_mode', None) == VALIDATION_TRIAL_MODE:
+                    self.perception_failure_snapshot = {
+                        'reason': 'invalid_perception_json'}
                 self.abort('invalid_perception_json')
 
     def on_odom(self, message):
@@ -441,6 +507,7 @@ class BoxApproachExecution(Node):
         """Observe the final protected command for startup zero echo."""
         self.final_command = message.linear.x, message.angular.z
         now = self._monotonic()
+        self.command_sequence = getattr(self, 'command_sequence', 0) + 1
         finite = all(math.isfinite(value) for value in self.final_command)
         self.received['command'] = now
         if (self.motion_sent and finite
@@ -533,6 +600,9 @@ class BoxApproachExecution(Node):
         self.reason = 'ARMED'
         self.execution_mode = mode
         self.validation_reference_m = validation_reference_m
+        self.perception_hold_started_mono_s = None
+        self.perception_hold_command_sequence = None
+        self.perception_failure_snapshot = None
         self.start_pose = self.pose
         self.started_mono_s = self._monotonic()
         self.motion_sent = False
@@ -713,8 +783,104 @@ class BoxApproachExecution(Node):
                 if math.isfinite(self.last_publish_mono_s) else None),
             'footprint_age_s': self._monotonic() - self.received.get(
                 'footprint', -math.inf),
+            'perception_zero_hold': (
+                getattr(self, 'perception_hold_started_mono_s', None)
+                is not None),
+            'perception_hold_age_s': (
+                self._monotonic()
+                - getattr(self, 'perception_hold_started_mono_s', None)
+                if getattr(self, 'perception_hold_started_mono_s', None)
+                is not None else None),
+            'perception_failure_snapshot': getattr(
+                self, 'perception_failure_snapshot', None),
         }
         self.status_pub.publish(String(data=json.dumps(document, allow_nan=False)))
+
+    def policy_result(self):
+        """Evaluate the existing fixed-goal policy from the source-time pose."""
+        source_pose = pose_at(
+            self.pose_history, float(self.observation['stamp_s']))
+        return self.policy.step(
+            self.observation, self.pose, now_s=self.now_ros_s(),
+            odom_stamp_s=self.odom_stamp_s,
+            linear_mps=self.velocity[0], angular_radps=self.velocity[1],
+            cmd_linear_mps=self.final_command[0],
+            cmd_angular_radps=self.final_command[1],
+            observation_pose=source_pose)
+
+    def hold_for_trial_perception(self, reason):
+        """Hold zero for a transient trial-only perception interruption."""
+        now = self._monotonic()
+        if self.perception_hold_started_mono_s is None:
+            self.perception_hold_started_mono_s = now
+            self.perception_hold_command_sequence = getattr(
+                self, 'command_sequence', 0)
+            self.perception_failure_snapshot = perception_snapshot(
+                self.observation, reason)
+        self.publish_zero()
+        blockers = self.readiness(
+            require_start=False, require_command_fresh=False,
+            require_physical_validation=False)
+        blockers = [blocker for blocker in blockers if blocker not in {
+            'perception_stale', 'perception_observation_invalid'}]
+        if blockers:
+            self.abort(blockers[0])
+            self.publish_status(blockers)
+            return
+        if now - self.perception_hold_started_mono_s > (
+                VALIDATION_TRIAL_PERCEPTION_HOLD_S):
+            self.abort('perception_reacquisition_timeout')
+            self.publish_status(['perception_reacquisition_timeout'])
+            return
+        self.reason = 'perception_zero_hold'
+        self.publish_status(['perception_reacquiring'])
+
+    def resume_trial_perception(self):
+        """Verify stable same-goal perception and a post-hold stopped chain."""
+        if (self._monotonic() - self.perception_hold_started_mono_s
+                > VALIDATION_TRIAL_PERCEPTION_HOLD_S):
+            self.abort('perception_reacquisition_timeout')
+            self.publish_status(['perception_reacquisition_timeout'])
+            return
+        self.publish_zero()
+        blockers = self.readiness(
+            require_start=True, require_command_fresh=False,
+            require_physical_validation=False)
+        settling = {
+            'final_zero_not_observed', 'odom_not_stationary',
+            'perception_observation_invalid'}
+        hard_blockers = [blocker for blocker in blockers
+                         if blocker not in settling]
+        if hard_blockers:
+            self.abort(hard_blockers[0])
+            self.publish_status(hard_blockers)
+            return
+        new_zero_echo = (getattr(self, 'command_sequence', 0)
+                         > self.perception_hold_command_sequence)
+        if blockers or not new_zero_echo:
+            if (self._monotonic() - self.perception_hold_started_mono_s
+                    > VALIDATION_TRIAL_PERCEPTION_HOLD_S):
+                self.abort('perception_reacquisition_timeout')
+                self.publish_status(['perception_reacquisition_timeout'])
+            else:
+                self.reason = 'perception_zero_hold'
+                self.publish_status(['perception_reacquiring'])
+            return
+        try:
+            result = self.policy_result()
+        except (KeyError, TypeError, ValueError) as error:
+            self.abort(str(error))
+            self.publish_status([str(error)])
+            return
+        if result['state'] == 'ABORTED':
+            self.abort(result['reason'])
+        elif result['state'] == 'SUCCEEDED':
+            self.succeed('trial_completed')
+        else:
+            self.perception_hold_started_mono_s = None
+            self.perception_hold_command_sequence = None
+            self.reason = 'perception_reacquired'
+        self.publish_status([])
 
     def tick(self):
         """Publish footprint/zero heartbeat or one fully guarded policy command."""
@@ -745,6 +911,35 @@ class BoxApproachExecution(Node):
             self, 'execution_mode', 'production') == VALIDATION_TRIAL_MODE)
         if trial:
             readiness_arguments['require_physical_validation'] = False
+        now = self._monotonic()
+        max_run_s = VALIDATION_TRIAL_MAX_RUN_S if trial else MAX_RUN_S
+        max_travel_m = (
+            VALIDATION_TRIAL_MAX_TRAVEL_M if trial else MAX_TRAVEL_M)
+        if (self.armed
+                and (now - self.started_mono_s > max_run_s
+                     or self.travel_m > max_travel_m)):
+            reason = ('validation_trial_limit_reached' if trial
+                      else 'execution_limit_reached')
+            self.abort(reason)
+            self.publish_status([reason])
+            return
+        if trial:
+            disposition, perception_reason = trial_perception_disposition(
+                self.observation, now_ros_s=self.now_ros_s(),
+                optical_frame=self.values['optical_frame'])
+            if disposition == 'hard':
+                self.perception_failure_snapshot = perception_snapshot(
+                    self.observation, perception_reason)
+                reason = f'perception_hard_invalid:{perception_reason}'
+                self.abort(reason)
+                self.publish_status([reason])
+                return
+            if disposition == 'transient':
+                self.hold_for_trial_perception(perception_reason)
+                return
+            if self.perception_hold_started_mono_s is not None:
+                self.resume_trial_perception()
+                return
         blockers = self.readiness(**readiness_arguments)
         if not self.armed:
             if not ownership_reasons(self.owners()):
@@ -755,30 +950,12 @@ class BoxApproachExecution(Node):
             self.abort(blockers[0])
             self.publish_status(blockers)
             return
-        max_run_s = VALIDATION_TRIAL_MAX_RUN_S if trial else MAX_RUN_S
-        max_travel_m = (
-            VALIDATION_TRIAL_MAX_TRAVEL_M if trial else MAX_TRAVEL_M)
-        if (self._monotonic() - self.started_mono_s > max_run_s
-                or self.travel_m > max_travel_m):
-            reason = ('validation_trial_limit_reached' if trial
-                      else 'execution_limit_reached')
-            self.abort(reason)
-            self.publish_status([reason])
-            return
         try:
-            source_pose = pose_at(
-                self.pose_history, float(self.observation['stamp_s']))
+            result = self.policy_result()
         except (KeyError, TypeError, ValueError) as error:
             self.abort(str(error))
             self.publish_status([str(error)])
             return
-        result = self.policy.step(
-            self.observation, self.pose, now_s=self.now_ros_s(),
-            odom_stamp_s=self.odom_stamp_s,
-            linear_mps=self.velocity[0], angular_radps=self.velocity[1],
-            cmd_linear_mps=self.final_command[0],
-            cmd_angular_radps=self.final_command[1],
-            observation_pose=source_pose)
         if result['state'] == 'SUCCEEDED':
             self.succeed('trial_completed' if trial else result['reason'])
         elif result['state'] == 'ABORTED':
