@@ -85,6 +85,35 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/shutdown_fixed_repeat/summary.jso
 - 성공 당시 작업 PC는 `aicampus_286`, IP `192.168.0.217`이었다. 10:02 KST에는 PC가 `robot`, IP `192.168.0.42`로 바뀌었고 기본 게이트웨이 MAC도 달랐다. 이 네트워크에서 `jdamr.local` 조회는 timeout, 직전 확인 주소의 SSH는 `No route to host`였다. PC의 네트워크 변경은 확인됐지만 Pi의 현재 연결망·전원 상태는 원격으로 확정하지 않았다.
 - 고정 IP를 현재 주소로 단정하지 않는다. 재접속은 기존 호스트명과 SSH 키로 식별하고 작업 PC의 Wi-Fi를 함께 확인한다. 주소가 해석되지 않을 때 네트워크를 임의 변경하거나 파이 재부팅을 먼저 요구하지 않는다.
 
+### Pi 관측 전용 배포 — 9월 21일 후속
+
+`aicampus_286` 재연결 후 `lim@jdamr.local` SSH에 성공했다. 커밋 `8936476`의 navigation·description·vslam 3개 패키지를 아래 별도 작업 공간에 복사하고 Pi에서 빌드했다. 기존 `$HOME/jdamr_ws` 소스·설치·서비스는 덮어쓰거나 재시작하지 않았다.
+
+```text
+Pi: $HOME/jdamr_deploy/depth_observer_8936476_UDRrKw
+PC 증거: $HOME/jdamr_artifacts/depth_obstacles_20260921/pi_observer_8936476
+```
+
+- Pi에서 3개 패키지 빌드 성공. depth core/filter/config 테스트 70개 통과. 핵심 코드 2개와 뎁스·차체·카메라 설정 3개의 SHA-256이 PC 원본과 일치했다.
+- 베이스 프로세스의 실효 설정은 `ROS_DOMAIN_ID=12`, `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`, `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`였다. 동일 설정에서 현재 시각의 `/scan` 메시지를 수신했고 frame은 `laser_link`였다. 첫 짧은 자동 타입 탐색은 실패했으나 명시적 LaserScan 타입 수신으로 데이터 존재를 확인했다.
+- `mode:=observe publish_camera_mount:=false`로 30초 한정 실행했다. 상태 메시지는 `waiting_for_depth`, `healthy=false`였고 노드의 발행 목록에 속도 명령은 없었다. Nav2·정적 camera mount TF·카메라 드라이버·주행 목표는 실행하지 않았다.
+- Pi USB 목록에는 Orbbec 장치가 없었고 `jdamr-astra-camera.service`는 inactive였다. 따라서 실제 뎁스 처리, 두 센서 좌표 정렬, Pi 실시간 처리 성능과 실차 회피는 검증하지 못했다. 카메라가 인식되면 등록 RGB-D 설정으로 입력을 시작해야 하며, 기존 camera service의 색상 비활성 기본 설정을 그대로 사용해 검증하지 않는다.
+- 한정 실행의 timeout wrapper는 예정된 SIGINT 후 `124`를 반환했다. ROS launch는 관측 자식의 clean exit를 보고했지만 `cannot use Destroyable because destruction was requested` 경고가 2건 남았다. 종료 로그를 보존했고 무경고 종료로 주장하지 않는다. 관측 노드는 계속 켜 두지 않았다.
+- 종료 후 `jdamr-base.service`는 `active`, MainPID `997`로 유지됐다. 센서 통합 허용 상태는 `blocked_until_cross_sensor_validation` 그대로다.
+
+카메라 연결 후 사용할 관측 실행 환경(Pi에서 실행):
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_ws/install/setup.bash"
+source "$HOME/jdamr_deploy/depth_observer_8936476_UDRrKw/install/local_setup.bash"
+export ROS_DOMAIN_ID=12 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+ros2 launch jdamr_cube_navigation depth_obstacle_navigation.launch.py mode:=observe
+```
+
+이 명령만으로 카메라 드라이버나 장착 TF가 생기지는 않는다. 기존 TF 발행 여부와 실제 장착 상태를 확인한 뒤 카메라 드라이버 및 필요한 장착 TF를 별도로 기동한다.
+
 ## 실행 및 실차 적용 조건
 
 카메라 드라이버와 차체 TF는 기존 시스템에서 제공해야 한다. `publish_camera_mount:=true`를 선택하면 실측 mount 파일에서 `base_link` → `camera_link` 정적 TF를 발행한다. 같은 TF를 발행하는 이전 wrapper는 함께 사용하지 않는다. 장착 TF 발행은 센서 간 정렬의 실측 검증을 대신하지 않는다.
@@ -101,6 +130,6 @@ ros2 launch jdamr_cube_navigation depth_obstacle_navigation.launch.py mode:=obse
 
 관측한 벽·박스가 두 센서에서 같은 위치에 놓이는지 확인한 뒤 장착 provenance와 fusion 허용 상태를 갱신해야 한다. 현재 `usage_gate.lidar_rgbd_fusion`은 `blocked_until_cross_sensor_validation`으로 유지했다. 물리 `navigation`/`mapping` 모드는 이 상태에서 시작되지 않는다. 시뮬레이션 모드는 명시적 DDS domain 100–232, LOCALHOST 탐색, 비어 있는 static peers를 요구한다. 실차 domain 12에서는 `use_sim_time`으로 검증을 건너뛸 수 없다.
 
-Pi SSH 접속은 위 기록처럼 한 차례 성공했으나, 이번 변경의 배포·실시간 센서 정렬·회피 주행은 아직 수행하지 않았다. 새 layer가 생성하는 장애물은 RGB-D 기반 2.5D 주행 비용지도이며, SLAM으로 정합된 3D 지도나 물체 분류 결과가 아니다. 기본 depth 사용 범위는 0.4–2.5 m이므로 이 구현만으로 5 cm 테이블 밀착을 보장하지 않는다. 센서 최소 거리·가림·보이지 않는 방향은 별도 접근 제어에 반영해야 한다.
+Pi 별도 공간에 배포·빌드하고 카메라 미연결 시의 관측 상태까지 확인했다. 실제 센서 정렬·회피 주행은 아직 수행하지 않았다. 새 layer가 생성하는 장애물은 RGB-D 기반 2.5D 주행 비용지도이며, SLAM으로 정합된 3D 지도나 물체 분류 결과가 아니다. 기본 depth 사용 범위는 0.4–2.5 m이므로 이 구현만으로 5 cm 테이블 밀착을 보장하지 않는다. 센서 최소 거리·가림·보이지 않는 방향은 별도 접근 제어에 반영해야 한다.
 
 참고 구현: [Nav2 1.3.12 VoxelLayer](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/plugins/voxel_layer.cpp), [ObstacleLayer](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/plugins/obstacle_layer.cpp), [Collision Monitor PointCloud](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_collision_monitor/src/pointcloud.cpp).
