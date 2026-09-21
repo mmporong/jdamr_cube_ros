@@ -184,6 +184,39 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/runtim
 $HOME/jdamr_artifacts/depth_obstacles_20260921/analyze_box_alignment.py
 ```
 
+### 박스 보정 후보 분석: 현장 높이 조건과의 충돌
+
+`evaluation/fit_box_alignment_candidate.py`를 추가했다. ROS 없이 저장된 NPZ만 읽고, 수동 박스 영역 provenance를 별도 JSON으로 받는다. 첫 캡처에서 후보를 구하고 두 번째 캡처에는 같은 후보를 적용한다. 같은 자리의 시간 분리 자료이므로 독립된 위치·거리에서 검증한 캘리브레이션은 아니다. 출력은 진단용 JSON·비교 그림이며 기존 설정 파일을 쓰지 않는다.
+
+수직 앞면·roll=0·기존 y/z 유지라는 조건에서 pitch -7.344°, yaw -1.876°, x=0.07632 m의 후보가 나왔다. x는 기존 0.065 m보다 11.32 mm 앞이다. 다음 값은 뎁스 앞면과 라이다 점에서 연장한 **수직 평면** 간 잔차의 p95이며, 실제 위치 오차나 주차 정확도가 아니다.
+
+| 두 번째 캡처에 적용한 조건 | 평면 잔차 p95 | 라이다 투영 중앙행 |
+| --- | ---: | ---: |
+| 기존 명목 장착값 | 36.99 mm | 139.86 |
+| 각도 후보만 적용 | 13.32 mm | 177.08 |
+| 각도·전방 위치 후보 적용 | 2.29 mm | 177.35 |
+
+그림에서는 라이다 점이 박스 앞면 내부로 이동한다. 그러나 단일 평면의 point-to-plane 자세 Jacobian rank는 6이 아닌 3이다. 높이·평면에 평행한 이동 등 모든 자세 자유도를 이 자료로 결정할 수 없다. 잔차가 작아졌다고 센서 보정을 승인하지 않는다.
+
+사용자가 **렌즈 높이 215 mm와 받침 없는 바닥 배치**를 재확인했다. 영상의 박스 밑단에 해당하는 수동 근사 영역(u=155–195, v=208–209)을 별도 기준으로 비교했다. 기존 변환에서는 밑단 높이 중앙값 -57.61 mm, 7.344° 후보에서는 +56.29 mm로 계산된다. 높이 215 mm를 유지하고 이 밑단을 바닥으로 가정한 상향각은 중앙값 3.74°(5–95 백분위 3.64–3.87°)다. 즉 앞면의 수직 가정과 바닥 조건을 동시에 설명하지 못한다. 밑단 픽셀은 접촉 위치를 정밀 측정한 점이 아니므로 3.74° 역시 적용 가능한 보정값으로 확정하지 않았다. 영상 아래 바닥 영역(u=145–235, v=220–239)의 유효 뎁스는 0%여서 바닥 평면을 추가로 추정할 수 없었다.
+
+드라이버도 읽기 전용으로 대조했다. 실제 depth CameraInfo는 K에 NaN, P는 fx=fy=285.171102, cx=159.5, cy=119.5였다. 기존 관측 코드는 유효 P를 사용하며 `test_registered_projection_does_not_use_nan_k`가 이 경로를 검증한다. Pi의 `ob_camera_info.cpp`에서 `getIRCameraInfo()`는 장치 파라미터가 무효이면 `getDefaultCameraInfo()` 값을 유지하지만, `getDepthCameraInfo()`의 `!isValidCameraParams` 분기는 무효 값을 K에 다시 넣는다. `utils.cpp`의 기본값은 시야각에서 계산한 초점거리와 영상 중앙 주점이다. 현재 P가 메시지와 일치한다는 사실은 확인됐지만, 공장 교정값의 정확성까지 입증한 것은 아니다. RGB CameraInfo도 같은 기본값 형태다. 이 때문에 카메라 기울기, 박스 앞면 기울기, 등록·내부 교정 오차를 아직 분리하지 못했다.
+
+**판정:** 후보는 오프라인 진단용으로만 보존한다. 명목 mount와 `lidar_rgbd_fusion` 차단은 유지하고, 로봇은 움직이지 않는다. 다음 추가 관측은 카메라가 깊이를 읽을 수 있는 무광 바닥 기준면을 확보한 후 바닥 법선·높이와 박스 면을 함께 비교하는 것이다. 예를 들어 박스 앞 바닥에 넓은 무광 종이·매트를 평평하게 놓고 먼저 깊이 유효 여부를 확인한다. 재질만으로 유효 깊이가 보장되는 것은 아니다.
+
+검증은 새 오프라인 분석 18개와 기존 뎁스 필터 27개를 합친 45개 테스트를 통과했다. 합성 자세 복원, 퇴화 평면 거부, 단일 평면의 높이 비관측성, 바닥 근사점 조건, 데이터 없는 바닥을 높이 0으로 오인하지 않는 동작, 기존 출력 덮어쓰기 거부를 포함한다. 테스트는 실차 domain과 분리했고, 변경 Python의 ament_flake8·ament_pep257도 통과했다.
+
+사용자가 종이 한 장을 놓은 뒤 `box_paper_01`로 추가 8초 정지 캡처를 수행했다. RGB 화면 맨 아래에 종이가 보였지만 depth 영상의 하단 220–239행에는 유효 값이 한 점도 없었다. 등록 뎁스의 해당 바닥 영역은 계속 비어 있어 바닥 평면을 구하지 않았다. 상태 표본 14/14 healthy, 처리 시간 p95 76.16 ms, 선택한 depth/scan 차이 99.53 ms였다. 이는 센서 수신 상태와 바닥 면의 측정 가능 여부가 별개임을 보여준다. 종이를 박스 옆으로 옮겨 RGB에서 전체가 보이도록 요청했으며, 첫 종이 관측만으로 보정하지 않는다.
+
+```text
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_candidate_selection.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_pose_candidate_03_ground/candidate.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_pose_candidate_03_ground/comparison.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_01/capture.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_01/capture.npz
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_01/paper_rgb_depth.png
+```
+
 ## 실행 및 실차 적용 조건
 
 카메라 드라이버와 차체 TF는 기존 시스템에서 제공해야 한다. `publish_camera_mount:=true`를 선택하면 실측 mount 파일에서 `base_link` → `camera_link` 정적 TF를 발행한다. 같은 TF를 발행하는 이전 wrapper는 함께 사용하지 않는다. 장착 TF 발행은 센서 간 정렬의 실측 검증을 대신하지 않는다.
