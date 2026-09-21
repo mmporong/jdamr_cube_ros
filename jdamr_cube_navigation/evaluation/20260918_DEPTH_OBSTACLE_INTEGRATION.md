@@ -42,7 +42,42 @@ $HOME/jdamr_artifacts/depth_obstacles_20260918/monitor_smoke/summary.json
 $HOME/jdamr_artifacts/depth_obstacles_20260918/voxel_smoke_reviewed4/summary.json
 ```
 
-VoxelLayer 시험의 standalone costmap 프로세스는 네 기능을 확인하고 lifecycle deactivate·cleanup을 마친 뒤 SIGINT 종료에서 `-11`을 반환했다. 잔존 자식 프로세스는 없으나 종료 오류의 원인은 규명하지 못했다. 기능 시험 통과와 종료 안정성은 구분하며, 전체 Nav2 통합 실행의 정상 종료까지 확인됐다고 주장하지 않는다. 앞선 harness 설정·서비스 이름·셀 경계 문제로 실패한 실행 로그도 별도 디렉터리에 보존했다.
+최초 VoxelLayer 시험의 standalone costmap 프로세스는 네 기능을 확인하고 lifecycle deactivate·cleanup을 마친 뒤 SIGINT 종료에서 `-11`을 반환했다. 당시 원인 미규명 상태와 실행 로그는 보존한다. 아래 9월 21일 후속 검증에서 원인과 시험 전용 대응을 확인했다. 전체 Nav2 통합 실행의 정상 종료까지 확인됐다고 주장하지 않는다. 앞선 harness 설정·서비스 이름·셀 경계 문제로 실패한 실행 로그도 별도 디렉터리에 보존했다.
+
+## 9월 21일: 파이 없는 종료 오류 수정
+
+### 원인과 대응 범위
+
+설치된 Nav2 `1.3.12-1noble.20260615.154707`의 `Costmap2DROS`는 `plugin_loader_`를 `callback_group_`보다 먼저 파괴한다. 이때 `liblayers.so`가 먼저 내려가지만 callback group에는 구독 weak pointer의 control block이 남는다. 이후 그 control block의 소멸 코드를 호출하면서 SIGSEGV가 발생했다.
+
+GDB에서 `rclcpp::CallbackGroup::~CallbackGroup()` 충돌, vtable 주소의 unmapped 상태, shared-library 목록에서 `liblayers.so`가 사라진 상태를 함께 확인했다. 센서 입력 지연이나 장애물 판정 실패가 아니라, 이 standalone 시험의 종료 시 객체·라이브러리 수명 문제다.
+
+`smoke_depth_voxel_layer.py`의 자식 프로세스 환경에만 동일한 설치 라이브러리를 `LD_PRELOAD`로 유지한다. 다른 라이브러리로 교체하는 것이 아니라 마지막 callback 정리까지 unload를 늦추는 대응이다. 경로는 ament package prefix로 찾고 기존 preload 값은 보존한다. 부모 환경·실차 launch·시스템 패키지는 바꾸지 않는다. 이 대응은 현재 두 layer가 함께 들어 있는 `liblayers.so`에 한정되며, 다른 플러그인을 추가하면 수명 조건을 다시 확인해야 한다. upstream 소스의 파괴 순서를 고친 것은 아니다.
+
+시험 성공 조건도 강화했다. 네 기능이 통과해도 자식 종료 코드가 0이 아니거나, lifecycle deactivate·cleanup이 끝나지 않았거나, cleanup 예외가 있으면 JSON과 CLI 모두 실패로 기록한다. `-11`, 강제 종료, 종료 코드 누락을 성공으로 인정하지 않는다. 재실행 시 이전 오류가 남지 않으며 자식 시작 실패 시 임시 파라미터 파일도 정리한다.
+
+### 검증 결과
+
+- 수정 전: 동일 네 기능 통과, 자식 종료 `-11` 재현.
+- 동일 라이브러리 수명 유지 A/B: 네 기능 유지, 자식 종료 `0`.
+- 반영 코드로 독립 실행 2회: 매회 비용 `254 → 254 → 254 → 0`, lifecycle 정리 완료, 자식 종료 `0`, CLI 종료 `0`.
+- 관련 회귀 테스트 269개 통과. 이 중 새 종료·환경 격리·실패 판정 회귀는 14개다.
+- 변경 Python 2개 파일의 `ament_flake8`, `ament_pep257`와 navigation 패키지 빌드 통과. 기존 `mcap_ros2` reader의 deprecation warning 1건은 별개로 남는다.
+- 알려진 Pi IP `192.168.0.205`, `192.168.0.160`의 SSH 무응답과 `deepthinkcar.local` 이름 조회 실패를 재확인했다. 배포·센서 실측·주행은 수행하지 않았다.
+
+증거 위치:
+
+```text
+$HOME/jdamr_artifacts/depth_obstacles_20260921/shutdown_baseline/summary.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/shutdown_gdb_vtable/nav2_costmap.log
+$HOME/jdamr_artifacts/depth_obstacles_20260921/shutdown_library_lifetime_ab/summary.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/shutdown_fixed/summary.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/shutdown_fixed_repeat/summary.json
+```
+
+과거 baseline의 `status: pass`는 수정 전 판정 결함의 재현 기록이다. `cleanup.anomaly: true`와 자식 `-11` 때문에 전체 성공 증거가 아니다. GDB 실행 2건은 debugger 프로세스 종료 0과 실제 target의 SIGSEGV를 구분하도록 `diagnostic_only_target_sigsegv`로 표시했다.
+
+근거 소스: [Nav2 1.3.12 멤버 선언 순서](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/include/nav2_costmap_2d/costmap_2d_ros.hpp), [Nav2 lifecycle cleanup](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_costmap_2d/src/costmap_2d_ros.cpp), [rclcpp 28.1.21 callback group](https://github.com/ros2/rclcpp/blob/28.1.21/rclcpp/include/rclcpp/callback_group.hpp), [pluginlib loader 소멸](https://github.com/ros/pluginlib/blob/5.4.5/pluginlib/include/pluginlib/class_loader_imp.hpp).
 
 ## 실행 및 실차 적용 조건
 

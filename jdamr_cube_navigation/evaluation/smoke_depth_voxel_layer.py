@@ -280,36 +280,57 @@ def _stop_child(process):
         return process.wait(timeout=2.0)
 
 
-def run_smoke(log_stream):
-    """Start one isolated lifecycle costmap and execute four assertions."""
-    parameters = _effective_parameters()
-    descriptor, parameter_name = tempfile.mkstemp(
-        prefix='depth_voxel_probe_', suffix='.yaml')
-    os.close(descriptor)
-    parameter_path = Path(parameter_name)
-    parameter_path.write_text(
-        yaml.safe_dump(parameters, sort_keys=False), encoding='utf-8')
+def _child_environment():
+    """Keep the installed layer DSO alive until this probe child exits."""
+    library = Path(get_package_prefix('nav2_costmap_2d')) / 'lib/liblayers.so'
+    if not library.is_file():
+        raise FileNotFoundError(f'Nav2 plugin library not found: {library}')
     environment = os.environ.copy()
     environment['ROS_DOMAIN_ID'] = DOMAIN_ID
     environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
     environment['ROS_STATIC_PEERS'] = ''
-    process = subprocess.Popen(
-        [
-            str(NAV2_EXECUTABLE),
-            '--ros-args',
-            '--remap', f'__node:={NODE_NAME}',
-            '--params-file', str(parameter_path),
-        ],
-        env=environment,
-        stdout=log_stream,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    # Nav2 1.3.12 unloads plugin_loader_ before callback_group_. The latter
+    # still owns subscription weak-reference control blocks in liblayers.so.
+    # Pin that same installed DSO in the child, not in the physical launch or
+    # parent environment, until all callback-group destructors have finished.
+    previous = environment.get('LD_PRELOAD', '')
+    environment['LD_PRELOAD'] = str(library) + (f':{previous}' if previous else '')
+    return environment, library
+
+
+def run_smoke(log_stream):
+    """Start one isolated lifecycle costmap and execute four assertions."""
+    parameters = _effective_parameters()
+    environment, library = _child_environment()
+    PROGRESS['plugin_lifetime_workaround'] = {
+        'strategy': 'child_only_ld_preload_same_installed_library',
+        'library': str(library),
+        'scope': 'standalone_smoke_only_not_physical_navigation',
+    }
+    descriptor, parameter_name = tempfile.mkstemp(
+        prefix='depth_voxel_probe_', suffix='.yaml')
+    os.close(descriptor)
+    parameter_path = Path(parameter_name)
+    process = None
     node = None
     lifecycle = None
     lifecycle_state = 'unconfigured'
     child_exit_code = None
     try:
+        parameter_path.write_text(
+            yaml.safe_dump(parameters, sort_keys=False), encoding='utf-8')
+        process = subprocess.Popen(
+            [
+                str(NAV2_EXECUTABLE),
+                '--ros-args',
+                '--remap', f'__node:={NODE_NAME}',
+                '--params-file', str(parameter_path),
+            ],
+            env=environment,
+            stdout=log_stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         rclpy.init()
         node = rclpy.create_node('depth_voxel_probe_driver')
         broadcaster = _publish_static_frames(node)
@@ -441,7 +462,7 @@ def run_smoke(log_stream):
             },
         }
     finally:
-        if (node is not None and lifecycle is not None
+        if (process is not None and node is not None and lifecycle is not None
                 and process.poll() is None):
             try:
                 if lifecycle_state == 'active':
@@ -457,7 +478,8 @@ def run_smoke(log_stream):
                     PROGRESS['stages'].append('cleaned_costmap')
             except Exception as error:
                 PROGRESS['lifecycle_cleanup_error'] = str(error)
-        child_exit_code = _stop_child(process)
+        if process is not None:
+            child_exit_code = _stop_child(process)
         PROGRESS['child_cleanup_exit_code'] = child_exit_code
         if node is not None:
             node.destroy_node()
@@ -465,7 +487,7 @@ def run_smoke(log_stream):
             rclpy.shutdown()
         parameter_path.unlink(missing_ok=True)
         log_stream.flush()
-        if child_exit_code not in (0, -signal.SIGINT):
+        if child_exit_code != 0:
             log_stream.write(
                 f'\nprobe cleanup child exit code: {child_exit_code}\n')
 
@@ -492,8 +514,8 @@ def main(argv=None):
     os.environ['ROS_DOMAIN_ID'] = DOMAIN_ID
     os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
     os.environ['ROS_STATIC_PEERS'] = ''
+    PROGRESS.clear()
     PROGRESS['stages'] = []
-    PROGRESS.pop('child_cleanup_exit_code', None)
     try:
         with log_path.open('x', encoding='utf-8') as log_stream:
             report = run_smoke(log_stream)
@@ -515,16 +537,20 @@ def main(argv=None):
     report['log'] = str(log_path)
     report['progress'] = PROGRESS.copy()
     cleanup_code = PROGRESS.get('child_cleanup_exit_code')
+    lifecycle_completed = all(
+        stage in PROGRESS['stages']
+        for stage in ('deactivated_costmap', 'cleaned_costmap'))
+    cleanup_error = PROGRESS.get('lifecycle_cleanup_error')
     report['cleanup'] = {
-        'lifecycle_deactivate_and_cleanup_completed': all(
-            stage in PROGRESS['stages']
-            for stage in ('deactivated_costmap', 'cleaned_costmap')),
+        'lifecycle_deactivate_and_cleanup_completed': lifecycle_completed,
+        'lifecycle_cleanup_error': cleanup_error,
         'child_exit_code_after_sigint': cleanup_code,
-        'anomaly': cleanup_code not in (0, -signal.SIGINT),
+        'anomaly': (cleanup_code != 0 or not lifecycle_completed
+                    or cleanup_error is not None),
     }
     if report['cleanup']['anomaly']:
-        report.setdefault('limitations', []).append(
-            'standalone_nav2_process_exited_minus_11_after_clean_lifecycle')
+        report['status'] = 'blocked_or_failed'
+        report.setdefault('errors', []).append('incomplete_or_failed_child_cleanup')
     summary_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + '\n',
         encoding='utf-8')
