@@ -1,7 +1,19 @@
 schema_version: 1
-as_of: '2026-09-17'
+as_of: '2026-09-21'
 
 measurements:
+  box_front_clearance_user_confirmation_20260921:
+    value: 0.82
+    unit: m
+    measured_at: '2026-09-21'
+    valid_for: 사용자가 출발 위치로 옮긴 직후의 박스와 현재 차체
+    method: '사용자 확인: "82 정확하다"; 측정 도구와 불확도는 확인되지 않음'
+    reference: 직전 질문의 차체 맨 앞면부터 박스 전면까지 거리
+    status: USER_CONFIRMED_SINGLE_POSE
+    paired_depth_observation_m: 0.824
+    paired_depth_observation_stamp_s: 1789975314.4542272
+    claim_scope: 현재 정지 위치의 거리 일치 확인; 카메라 자세·동적 제동·정차 정확도 검증 아님
+
   depth_camera_front_plane_offset:
     value: 0.0
     unit: m
