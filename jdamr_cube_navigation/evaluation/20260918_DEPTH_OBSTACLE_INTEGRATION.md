@@ -147,6 +147,43 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/live_worker_yield/capture.json
 
 코드 검증은 새 캡처 회귀 26개와 배분 루프 회귀 2개를 포함한 관련 98개 테스트, 변경 Python의 ament_flake8·ament_pep257, 기록 셸의 `bash -n`, navigation·vslam 로컬 빌드를 통과했다. LSP와 shellcheck는 실행하지 못했다. Pi에는 별도 관측 공간의 필터·캡처 도구·기록 스크립트·센서 설정만 갱신했다.
 
+### 박스 배치 후 정지 관측과 대시보드
+
+사용자가 전방에 박스를 놓은 뒤 8초 캡처를 두 번 수행했다. RGB에서 Hantek 박스가 확인되고, 등록 뎁스에는 전면의 연속된 거리 영역, 라이다에는 같은 방향의 평면 구간이 나타났다. 로봇 이동·Nav2 실행·장착 TF 수정은 하지 않았다.
+
+| 관측 | 대시보드 미실행 | 기존 Depth 화면 표시 중 |
+| --- | ---: | ---: |
+| 정상 상태 메시지 | 12/12 | 15/15 |
+| 처리 시간 p95 | 16.47 ms | 22.64 ms |
+| 선택한 depth/scan 시각 차이 | 98.60 ms | 83.74 ms |
+| 박스 뎁스 전방 좌표 중앙값 | 0.949 m | 0.949 m |
+| 박스 라이다 전방 좌표 중앙값 | 0.975 m | 0.976 m |
+
+전방 좌표의 원점은 `base_footprint`이며, 실측 차체 앞면 x=0.065 m를 빼면 약 0.884 m와 0.910–0.911 m다. 화면을 보고 선택한 뎁스 내부 영역(u=145–235, v=153–205, 0.6–1.2 m)과 같은 좌우 범위의 라이다 점을 비교했다. 자동 박스 분류 결과가 아니다. 두 센서가 보는 표면 높이가 다르므로 26–27 mm 차이를 캘리브레이션 오차나 주차 정확도로 해석하지 않는다.
+
+**남은 불일치:** 저장된 명목 장착 TF로 박스의 라이다 점을 뎁스 영상에 투영하면 약 140행인데, 실제 박스 영역은 중앙 열에서 148–210행이다. 선택한 박스 뎁스의 명목 높이도 -0.048–0.111 m로 계산돼 일부 점이 바닥 아래로 내려간다. 따라서 전방 물체 관측은 확인했지만 높이·자세 정합은 승인할 수 없다. `camera_mount.yaml`의 roll/pitch는 명목 0이며, 현재 자료만으로 카메라 기울기·박스 기울기·등록/내부 파라미터 오차를 분리할 수 없다. 임의 TF 보정이나 `lidar_rgbd_fusion` 허용 변경은 하지 않았다. 다음 단계는 바닥과 수직 기준면을 이용한 장착 자세 및 투영 검증이다.
+
+대시보드는 보조 저장소 `$HOME/bimanual-robot-ammr/tools/ammr_dashboard`의 읽기 전용 AMMR 센서 화면을 사용한다. Pi의 동일 소스 `$HOME/ammr_dashboard`를 원래 카메라 서비스를 재기동하지 않는 별도 임시 서비스로 실행했다. 최종 서비스는 `jdamr-dashboard-box-20260921`이며 Pi의 127.0.0.1:8090을 SSH로 PC의 127.0.0.1:8090에 전달한다. 구동 명령 API는 없다. 기존 화면은 raw `laser_link` +X를 차체 전방으로 표시하는 문제가 있어, 실제 장착 yaw=180°·x=-0.010 m를 명시한 표시 변환으로 수정했다. 웹의 전방 값이 약 2.7 m에서 약 0.98 m로 바뀌었으며 차체 외곽 여유거리와 구분해 표시한다. 이는 대시보드 좌표 표시 수정이며 베이스·Nav2 설정 변경이 아니다. RGB 640×480·Depth 320×240 동시 영상, 장애물 관측 상태, 처리 시간을 브라우저에서 확인했다. 중앙 Depth 값 약 3.64 m는 화면 중앙의 배경 거리이며 아래쪽 박스의 거리가 아니다.
+
+대시보드 회귀 테스트 9개와 별도 코드 검토를 통과했다. 상태 메시지 원본 영상 나이(`source_age_s`)와 대시보드 수신 나이(`age_s`)를 분리했다. 브라우저에만 통신 오류를 주입했을 때 센서 배지는 STALE, 카운트는 `—/2 LIVE`, 영상 주소는 제거됐으며 복구 후 LIVE/HEALTHY와 두 영상이 다시 표시됐다. 로봇·센서 서비스를 끄는 장애 주입은 하지 않았다.
+
+근거와 재현 분석:
+
+```text
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_01/capture.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_01/capture.npz
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_01/box_comparison.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_01/box_comparison.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/capture.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/capture.npz
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/box_comparison.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/box_comparison.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/dashboard_state.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/dashboard_live.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_alignment_02_dashboard/runtime_evidence.txt
+$HOME/jdamr_artifacts/depth_obstacles_20260921/analyze_box_alignment.py
+```
+
 ## 실행 및 실차 적용 조건
 
 카메라 드라이버와 차체 TF는 기존 시스템에서 제공해야 한다. `publish_camera_mount:=true`를 선택하면 실측 mount 파일에서 `base_link` → `camera_link` 정적 TF를 발행한다. 같은 TF를 발행하는 이전 wrapper는 함께 사용하지 않는다. 장착 TF 발행은 센서 간 정렬의 실측 검증을 대신하지 않는다.
