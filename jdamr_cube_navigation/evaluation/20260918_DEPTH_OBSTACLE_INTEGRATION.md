@@ -227,6 +227,32 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_02_left/paper_rgb_depth
 $HOME/jdamr_artifacts/depth_obstacles_20260921/analyze_paper_plane.py
 ```
 
+### 사용자 재배치 없는 제한 회전 관측
+
+2026-09-21 사용자의 주행 요청에 따라 종이를 더 옮기는 대신 제자리 회전을 수행했다. RGB-D 보정 후보는 배포하지 않았고, 기존 `new_base_nav2_params.yaml`의 LiDAR Collision Monitor를 별도 실행했다. 회전 StopZone·SlowdownZone·FootprintApproach를 유지하고 측정 차체의 padded footprint를 `base_footprint`에서 발행했다. 실제 `/cmd_vel` publisher가 Collision Monitor 하나임을 확인한 뒤 입력 `/cmd_vel_smoothed`에만 명령을 보냈다.
+
+일회성 관측 스크립트는 목표 15°, 각속도 0.12 rad/s, 비영점 명령 최대 3초로 제한했다. odom·scan의 ROS stamp/수신 지연 0.3초, Collision Monitor 출력 지연 0.4초, 사방 관측 및 보수적 최소거리 0.46 m를 확인하고 모든 종료 경로에서 1초간 영점 명령을 발행한다. 이 스크립트는 임시 관측 도구이며 일반 자율주행 컨트롤러로 배포하지 않았다.
+
+- 목표 도달로 종료했고, 정지 후 odom 누적 회전은 **16.448°**였다. 이는 실측 오도메트리 결과이지 15° 정확도 보장은 아니다.
+- 약 20.43분 간격의 회전 전후 라이다에 회전만 허용하는 -25°~25°/0.05° 격자 정합을 적용한 결과는 **16.40°**였다. 가까운 대응점 절반의 평균 거리는 5.41 mm였다. 주변 물체가 고정됐다는 가정과 병진을 추정하지 않는 제한이 있어 외부 정답값은 아니다.
+- RGB·뎁스에서 박스의 우측 이동과 왼쪽 의자의 새 관측을 확인했다. 회전 후 캡처는 8.18초 동안 depth 217/RGB 177/scan 58개를 수신했고, 상태 메시지 15개 모두 healthy였다. 선택한 depth/scan 시간차는 84.79 ms였다.
+- 회전 후 박스 내부를 수동 선택한 별도 ROI에서 기존 보정 후보를 재학습 없이 평가했다. 라이다 점에서 연장한 수직 평면과 뎁스 앞면 간 잔차 p95는 명목 TF **35.93 mm**, 이전 후보 **5.86 mm**였다. 물체 분류·실제 위치 오차·주차 정확도가 아니다.
+- 높이 및 바닥 기준·내부 파라미터 검증은 여전히 미완료다. `lidar_rgbd_fusion` 차단은 유지했다. 이번 결과는 다른 각도의 센서 관측 검증이며 3D SLAM 지도 완성이 아니다.
+
+녹화 범위 확인에서 결함도 발견했다. `guarded_turn_20260921_01`과 `_02`의 제한 시간 녹화가 실제 동작보다 먼저 끝났다. `_02`에는 RGB 639/depth 625/scan 218/odom 1,129개가 있지만 `/cmd_vel`과 Collision Monitor 상태 메시지는 0개이므로 회전 중 센서 bag으로 사용할 수 없다. 회전 중 발행·수신 명령과 누적 각도는 별도 `guarded_turn_20260921_result.json`에 남았고, 영상/뎁스 비교는 전후 정지 캡처에 한정한다. 후자 녹화 종료 콘솔에서 transport loss 1개를 관찰했으나 별도 로그 파일은 보존하지 못했다. 다음 동작 녹화는 recorder와 동작을 하나의 감독 프로세스로 묶어 시작·종료 순서를 보장해야 한다. 자료를 얻으려고 이번 회전을 반복하지는 않았다.
+
+종료 후 임시 Collision Monitor는 중단했으며 base·RGB-D·관측 노드·대시보드는 유지했다. 최종 odom과 명령의 전진/회전 속도는 모두 0이었다.
+
+```text
+$HOME/jdamr_artifacts/depth_obstacles_20260921/guarded_turn.py
+$HOME/jdamr_artifacts/depth_obstacles_20260921/guarded_turn_20260921_result.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/guarded_turn_20260921_02/
+$HOME/jdamr_artifacts/depth_obstacles_20260921/guarded_turn_20260921_after/capture.npz
+$HOME/jdamr_artifacts/depth_obstacles_20260921/guarded_turn_analysis.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/guarded_turn_comparison.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/compare_turn.py
+```
+
 ## 실행 및 실차 적용 조건
 
 카메라 드라이버와 차체 TF는 기존 시스템에서 제공해야 한다. `publish_camera_mount:=true`를 선택하면 실측 mount 파일에서 `base_link` → `camera_link` 정적 TF를 발행한다. 같은 TF를 발행하는 이전 wrapper는 함께 사용하지 않는다. 장착 TF 발행은 센서 간 정렬의 실측 검증을 대신하지 않는다.
