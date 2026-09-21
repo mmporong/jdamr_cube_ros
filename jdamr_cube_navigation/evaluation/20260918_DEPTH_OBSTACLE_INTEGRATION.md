@@ -208,6 +208,10 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/analyze_box_alignment.py
 
 사용자가 종이 한 장을 놓은 뒤 `box_paper_01`로 추가 8초 정지 캡처를 수행했다. RGB 화면 맨 아래에 종이가 보였지만 depth 영상의 하단 220–239행에는 유효 값이 한 점도 없었다. 등록 뎁스의 해당 바닥 영역은 계속 비어 있어 바닥 평면을 구하지 않았다. 상태 표본 14/14 healthy, 처리 시간 p95 76.16 ms, 선택한 depth/scan 차이 99.53 ms였다. 이는 센서 수신 상태와 바닥 면의 측정 가능 여부가 별개임을 보여준다. 종이를 박스 옆으로 옮겨 RGB에서 전체가 보이도록 요청했으며, 첫 종이 관측만으로 보정하지 않는다.
 
+종이를 박스 왼쪽으로 옮긴 뒤 `box_paper_02_left`에 8초 관측을 추가했다. RGB 128개, depth 153개, scan 73개 수신, 상태 12/12 healthy, 처리 시간 p95 27.40 ms였다. 선택한 depth/scan 차이는 63.63 ms이고 원본 시각 TF는 첫 조회에 성공했다. 종이 주변 수동 사각형(u=60–130, v=190–235) 3,266픽셀 중 0.4–1.5 m 유효 깊이는 175개(5.36%)다. 이는 사각형 내 비율이지 종이 전체의 검출률이 아니다. 실제 점은 u=77–108, v=204–215의 좁은 영역에 몰렸으며 RGB에서 종이가 휘어 보인다.
+
+이 점을 무조건 바닥으로 가정해 평면을 맞추면 카메라 원점과 평면 간 거리가 0.392 m로 나와 확인된 렌즈 높이 0.215 m와 맞지 않는다. 상·하·좌·우 부분집합은 각각 0.303/0.331/0.428/0.342 m로 달라진다. 전체 평면 잔차 p95가 4.76 mm로 작더라도 이 자료가 올바른 바닥 기준면임을 뜻하지 않는다. 종이의 휨·작은 관측 면적·등록 및 내부 교정의 불확실성이 있어 원인을 하나로 단정하지 않았다. 추정값을 장착 높이나 TF에 반영하지 않았고 fusion 차단도 유지했다. 다음 관측이 필요하다면 같은 위치의 종이를 평평하게 고정하거나 단단한 무광 평판을 사용해야 한다. 단순히 종이를 계속 옮기는 방식으로 보정을 완료하지 않는다.
+
 ```text
 $HOME/jdamr_artifacts/depth_obstacles_20260921/box_candidate_selection.json
 $HOME/jdamr_artifacts/depth_obstacles_20260921/box_pose_candidate_03_ground/candidate.json
@@ -215,6 +219,12 @@ $HOME/jdamr_artifacts/depth_obstacles_20260921/box_pose_candidate_03_ground/comp
 $HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_01/capture.json
 $HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_01/capture.npz
 $HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_01/paper_rgb_depth.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_02_left/capture.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_02_left/capture.npz
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_02_left/selection.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_02_left/paper_plane.json
+$HOME/jdamr_artifacts/depth_obstacles_20260921/box_paper_02_left/paper_rgb_depth.png
+$HOME/jdamr_artifacts/depth_obstacles_20260921/analyze_paper_plane.py
 ```
 
 ## 실행 및 실차 적용 조건
