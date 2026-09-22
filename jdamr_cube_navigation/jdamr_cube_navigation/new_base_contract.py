@@ -15,7 +15,7 @@ VELOCITY_POLICY_RANGES = {
 }
 
 
-def validate_new_base_params(params, geometry):
+def validate_new_base_params(params, geometry, precision_parking=False):
     """Reject navigation parameters that violate the measured base contract."""
     front = geometry['front_to_wheel_axis']['value']
     rear = front - geometry['frame_length']['value']
@@ -286,14 +286,20 @@ def validate_new_base_params(params, geometry):
             and stopped_stop[1] < footprint[1]
             and stopped_stop[2] > footprint[2]):
         raise RuntimeError('new-base StopZone does not contain footprint')
-    if min(stopped_stop[0] - footprint[0],
+    front_reference = front if precision_parking else footprint[0]
+    if min(stopped_stop[0] - front_reference,
            footprint[1] - stopped_stop[1],
            stopped_stop[2] - footprint[2]) < 0.05 - 1e-6:
         raise RuntimeError('new-base StopZone margin is below 0.05m')
-    if not (forward_stop[0] - footprint[0] >= 0.05 - 1e-6
+    if not (forward_stop[0] - front_reference >= 0.05 - 1e-6
             and forward_stop[1] <= footprint[1]
             and abs(forward_stop[2] - footprint[2]) <= 1e-6):
         raise RuntimeError('new-base forward StopZone shape is invalid')
+    if precision_parking and (
+            not math.isclose(forward_stop[0], front + 0.05, abs_tol=1e-6)
+            or not math.isclose(stopped_stop[0], front + 0.05, abs_tol=1e-6)
+            or forward_stop[0] - footprint[0] < 0.02 - 1e-6):
+        raise RuntimeError('precision parking requires physical front clearance and padding')
     if not (footprint[1] - backward_stop[1] >= 0.05 - 1e-6
             and backward_stop[0] >= footprint[0]
             and abs(backward_stop[2] - footprint[2]) <= 1e-6):

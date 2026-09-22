@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 
 from ament_index_python.packages import get_package_share_directory
+from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
 from jdamr_cube_navigation.parking import (
     load_parking_contract, parking_controller_overrides,
 )
@@ -26,13 +27,20 @@ def _configure(context):
     package = Path(get_package_share_directory('jdamr_cube_navigation'))
     source = expanded_path(LaunchConfiguration('params_file').perform(context))
     document = yaml.safe_load(source.read_text(encoding='utf-8'))
-    contract = load_parking_contract(package / 'config/parking_contract.yaml')
+    contract_path = LaunchConfiguration(
+        'parking_contract', default=str(package / 'config/parking_contract.yaml'))
+    contract = load_parking_contract(Path(contract_path.perform(context)))
     controller = parking_controller_overrides(document, contract)
     if (registry.get('home') or {}).get('parking_direction') == 'reverse':
         controller = reverse_controller_overrides(controller)
         document['velocity_smoother']['ros__parameters']['min_velocity'][0] = (
             -contract['desired_linear_mps'])
     document['controller_server']['ros__parameters'] = controller
+    if LaunchConfiguration('precision_parking', default='false').perform(context) == 'true':
+        geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))
+                         / 'config/new_base_geometry.yaml')
+        document = apply_docking_stop_profile(
+            document, yaml.safe_load(geometry_path.read_text(encoding='utf-8')))
     with tempfile.NamedTemporaryFile(
             mode='w', prefix='jdamr_service_', suffix='.yaml',
             encoding='utf-8', delete=False) as stream:
@@ -54,6 +62,7 @@ def _configure(context):
             'discovery_range': LaunchConfiguration('discovery_range'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'autostart': 'true',
+            'precision_parking': LaunchConfiguration('precision_parking', default='false'),
             'use_composition': LaunchConfiguration(
                 'use_composition', default='false'),
             'coordinated_startup': LaunchConfiguration(
@@ -76,7 +85,11 @@ def generate_launch_description():
     """Load navigation only; named destination execution is a separate command."""
     package = Path(get_package_share_directory('jdamr_cube_navigation'))
     return LaunchDescription([
+        DeclareLaunchArgument('precision_parking', default_value='false',
+                              choices=['true', 'false']),
         DeclareLaunchArgument('registry', description='Taught service destination YAML'),
+        DeclareLaunchArgument('parking_contract', default_value=str(
+            package / 'config/parking_contract.yaml')),
         DeclareLaunchArgument('params_file', default_value=str(
             package / 'config/new_base_nav2_params.yaml')),
         DeclareLaunchArgument(

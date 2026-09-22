@@ -39,6 +39,7 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
+            'box_service = jdamr_cube_navigation.box_service:main',
             'frontier_explorer = jdamr_cube_navigation.frontier_explorer:main',
             'corridor_route = jdamr_cube_navigation.corridor_route:main',
             'goto_pose = jdamr_cube_navigation.goto_pose:main',

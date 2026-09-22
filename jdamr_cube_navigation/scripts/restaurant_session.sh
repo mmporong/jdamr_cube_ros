@@ -6,16 +6,19 @@ UNIT="jdamr-restaurant-navigation.service"
 WORKSPACE="${JDAMR_WORKSPACE:-$HOME/jdamr_ws}"
 REGISTRY="${JDAMR_RESTAURANT_REGISTRY:-}"
 PARAMS_FILE="${JDAMR_RESTAURANT_PARAMS:-}"
+PRECISION_PARKING=false
 
 usage() {
   cat <<'EOF'
 사용법:
   restaurant_session.sh status
   restaurant_session.sh start [--workspace PATH] [--registry PATH] [--params-file PATH]
+                              [--precision-parking]
   restaurant_session.sh stop
 
 start는 센서가 이미 실행 중인 Pi에서 식당 서비스용 Nav2 서버만 시작한다.
 초기 pose, NavigateToPose, FollowPath 등 이동 명령은 보내지 않는다.
+--precision-parking은 명시적으로 승인된 5 cm 박스 주차 시험에서만 사용한다.
 
 기본값:
   workspace   $HOME/jdamr_ws
@@ -126,8 +129,13 @@ PY
 }
 
 run_navigation() {
+  local parking_contract
   load_ros_environment
   validate_registry
+  parking_contract="$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation/config/parking_contract.yaml"
+  if [ "$PRECISION_PARKING" = true ]; then
+    parking_contract="$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation/config/box_parking_contract.yaml"
+  fi
   cd "$WORKSPACE" || die "workspace로 이동할 수 없다: $WORKSPACE"
   exec ros2 launch jdamr_cube_navigation restaurant_service.launch.py \
     "registry:=$REGISTRY" \
@@ -135,6 +143,8 @@ run_navigation() {
     navigation_profile:=new_base_candidate \
     use_composition:=false \
     coordinated_startup:=true \
+    "precision_parking:=$PRECISION_PARKING" \
+    "parking_contract:=$parking_contract" \
     use_box_observer:=false \
     discovery_range:=SUBNET
 }
@@ -153,9 +163,12 @@ start_navigation() {
   reject_conflicting_services
   check_ros_graph_and_sensors
 
-  local script_path run_user
+  local script_path run_user precision_argument=()
   script_path=$(readlink -f "${BASH_SOURCE[0]}") || die "스크립트 경로 확인 실패"
   run_user=$(id -un) || die "실행 사용자 확인 실패"
+  if [ "$PRECISION_PARKING" = true ]; then
+    precision_argument=(--precision-parking)
+  fi
   sudo -n systemd-run \
     --unit="$UNIT" --collect \
     --property="User=$run_user" \
@@ -168,6 +181,7 @@ start_navigation() {
     --working-directory="$WORKSPACE" \
     /bin/bash "$script_path" __run \
     --workspace "$WORKSPACE" --registry "$REGISTRY" --params-file "$PARAMS_FILE" \
+    "${precision_argument[@]}" \
     || die "$UNIT 기동 요청 실패"
 
   printf '%s\n' "$UNIT 기동 요청을 수락했다."
@@ -209,6 +223,10 @@ case "$COMMAND" in
             --params-file) PARAMS_FILE="$2" ;;
           esac
           shift 2
+          ;;
+        --precision-parking)
+          PRECISION_PARKING=true
+          shift
           ;;
         *) die "알 수 없는 인자: $1 (도움말: --help)" ;;
       esac

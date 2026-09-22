@@ -182,7 +182,8 @@ def _validate_new_base_params(context, revisit=False):
     geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))
                      / 'config' / 'new_base_geometry.yaml')
     geometry = yaml.safe_load(geometry_path.read_text(encoding='utf-8'))
-    validate_new_base_params(params, geometry)
+    validate_new_base_params(params, geometry, precision_parking=(
+        LaunchConfiguration('precision_parking', default='false').perform(context) == 'true'))
     return []
 
 
@@ -474,6 +475,8 @@ def generate_launch_description():
     package_share = get_package_share_directory('jdamr_cube_navigation')
     discovery_range = LaunchConfiguration('discovery_range')
     return LaunchDescription([
+        DeclareLaunchArgument('precision_parking', default_value='false',
+                              choices=['true', 'false']),
         DeclareLaunchArgument('use_composition', default_value='true',
                               choices=['true', 'false']),
         DeclareLaunchArgument(

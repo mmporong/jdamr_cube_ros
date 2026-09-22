@@ -115,6 +115,8 @@ def test_help_states_nav2_only_and_readiness_boundary(session_env):
     assert 'Nav2 서버만 시작' in result.stdout
     assert '초기 pose, NavigateToPose, FollowPath' in result.stdout
     assert '준비 완료를 뜻하지 않는다' in result.stdout
+    assert '--precision-parking' in result.stdout
+    assert '5 cm 박스 주차 시험' in result.stdout
     assert not session_env['log'].exists()
 
 
@@ -127,6 +129,7 @@ def test_start_uses_singleton_unit_and_non_composed_nav2(session_env):
     assert '--unit=jdamr-restaurant-navigation.service --collect' in commands
     assert '__run' in commands
     assert '--workspace ' + str(session_env['workspace']) in commands
+    assert '--precision-parking' not in commands
     assert 'NavigateToPose' not in commands
     assert 'FollowPath' not in commands
 
@@ -142,10 +145,37 @@ def test_internal_run_sources_overlay_and_launches_servers_without_action(sessio
     assert 'ros2 launch jdamr_cube_navigation restaurant_service.launch.py' in commands
     assert 'use_composition:=false' in commands
     assert 'coordinated_startup:=true' in commands
+    assert 'precision_parking:=false' in commands
+    assert '/config/parking_contract.yaml' in commands
+    assert '/config/box_parking_contract.yaml' not in commands
     assert 'use_box_observer:=false' in commands
     assert 'discovery_range:=SUBNET' in commands
     assert 'launch-env 12 SUBNET UDPv4 1' in commands
     assert 'initial_pose' not in commands
+
+
+def test_precision_parking_is_explicitly_propagated_and_uses_box_contract(
+        session_env):
+    started = _run(
+        session_env, 'start', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--precision-parking')
+    assert started.returncode == 0, started.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert '__run ' in commands
+    assert '--precision-parking' in commands
+
+    session_env['log'].write_text('', encoding='utf-8')
+    internal = _run(
+        session_env, '__run', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--precision-parking',
+        JDAMR_RESTAURANT_INTERNAL='1')
+    assert internal.returncode == 0, internal.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'precision_parking:=true' in commands
+    assert '/config/box_parking_contract.yaml' in commands
+    assert '/config/parking_contract.yaml' not in commands
 
 
 @pytest.mark.parametrize(
