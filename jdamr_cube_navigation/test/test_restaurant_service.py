@@ -147,6 +147,7 @@ def test_roundtrip_defaults_to_plan_only_and_twenty_second_box_dwell():
         'service', 'roundtrip', '--registry', '/tmp/r.yaml',
         '--table-id', 'table_02', '--log', '/tmp/r.jsonl'])
     assert not args.execute
+    assert args.table_ids == ['table_02']
     assert args.dwell_s == 20.0
     assert args.box_timeout_s == 45.0
 
@@ -172,6 +173,15 @@ def test_roundtrip_rejects_invalid_box_wait(dwell, timeout):
             'service', 'roundtrip', '--registry', '/tmp/r.yaml',
             '--table-id', 'table_02', '--log', '/tmp/r.jsonl',
             '--dwell-s', dwell, '--box-timeout-s', timeout])
+
+
+def test_roundtrip_rejects_duplicate_station_ids():
+    """An accidental duplicate cannot trigger the same station twice."""
+    with pytest.raises(SystemExit):
+        parse_args([
+            'service', 'roundtrip', '--registry', '/tmp/r.yaml',
+            '--table-id', 'table_02', '--table-id', 'table_02',
+            '--log', '/tmp/r.jsonl'])
 
 
 def stable_box():
@@ -214,6 +224,29 @@ def test_roundtrip_orders_destination_box_wait_and_home():
     node.wait_for_box.assert_called_once_with(20, 45)
     node.go_home.assert_called_once_with(execute=True)
     assert node.emit.call_args.args[0] == 'roundtrip_complete'
+
+
+def test_roundtrip_visits_multiple_stations_before_one_home_return():
+    """Each selected station completes its box dwell before the next goal."""
+    node = route()
+    node.registry['home'] = taught_pose('home_dock', (0, 0, 0), {})
+    node.visit = Mock(return_value=True)
+    node.wait_for_box = Mock(return_value=True)
+    node.go_home = Mock(return_value=True)
+    node.emit = Mock()
+
+    assert node.roundtrip(
+        ['kitchen_station', 'table_01'], execute=True,
+        dwell_s=20, box_timeout_s=45)
+
+    assert [call.args[0] for call in node.visit.call_args_list] == [
+        'kitchen_station', 'table_01']
+    assert node.wait_for_box.call_count == 2
+    node.go_home.assert_called_once_with(execute=True)
+    completed = [
+        call.kwargs['station_id'] for call in node.emit.call_args_list
+        if call.args[0] == 'station_complete']
+    assert completed == ['kitchen_station', 'table_01']
 
 
 def test_roundtrip_does_not_leave_destination_after_box_failure():

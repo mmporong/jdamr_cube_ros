@@ -39,7 +39,7 @@ ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=fal
 분리했다. 지도 기반 서비스 목적지와 이번 박스 상대 접근 계산은 별도 경로다.
 완성 전 양팔 서빙 로봇의 선행 왕복 검증은
 [서비스 위치 교시·충전소 복귀](evaluation/20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md)의
-`지도 생성 → home_dock 교시 → 목적지 교시 → 박스 관측·대기 → home_dock 복귀` 순서를
+`지도 생성 → home_dock 교시 → 목적지 교시 → 지점별 박스 관측·대기 → home_dock 복귀` 순서를
 사용한다. 이 왕복은 현재 베이스의 지도·주행·인지 상태기계를 검증하며, 충전 접점 체결이나
 팔 작업 성공을 뜻하지 않는다.
 

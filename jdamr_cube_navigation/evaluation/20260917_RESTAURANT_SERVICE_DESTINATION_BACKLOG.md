@@ -7,8 +7,9 @@
 - 구현 브랜치: `feat/restaurant-service-destinations`
 - `restaurant_service` 명령으로 사용하며 기존 주행의 기본값은 유지한다.
 - 구현·명령·현재 검증 범위: [서비스 위치 구현](20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md).
-- `home_dock` 교시와 `목적지 → 박스 안정 관측 20초 → home_dock` 왕복 상태기계를
-  추가했다. 코드·단위 시험 단계이며 새 지도에서의 실차 왕복은 아직 수행하지 않았다.
+- `home_dock` 교시와 `목적지별 이동·박스 안정 관측 20초 → home_dock` 다중 station
+  왕복 상태기계를 추가했다. 코드·단위 시험 단계이며 새 지도에서의 실차 왕복은 아직
+  수행하지 않았다.
 
 ## 주행 후 수정 목록
 

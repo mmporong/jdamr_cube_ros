@@ -561,19 +561,30 @@ class ServiceRoute(CorridorRoute):
         self.emit('home_arrived' if success else 'failed', confirmation=self.confirmation)
         return success
 
-    def roundtrip(self, table_id, execute=False, dwell_s=20.0,
+    def roundtrip(self, table_ids, execute=False, dwell_s=20.0,
                   box_timeout_s=45.0):
-        """Visit a box station, hold there, then return to the taught home pose."""
+        """Visit selected box stations in order, then return to taught home."""
+        destinations = [table_ids] if isinstance(table_ids, str) else list(table_ids)
+        if (not destinations or any(
+                not isinstance(item, str) or not item for item in destinations)):
+            raise ValueError('roundtrip requires at least one destination ID')
+        if len(destinations) != len(set(destinations)):
+            raise ValueError('roundtrip destination IDs must be unique')
         home = home_pose(self.registry)
-        self.emit('roundtrip_started', destination_id=table_id,
+        self.emit('roundtrip_started', destination_ids=destinations,
                   home_pose=[home[key] for key in ('x_m', 'y_m', 'yaw_rad')],
                   dwell_s=float(dwell_s))
-        if not self.visit(table_id, execute=execute):
-            self.emit('roundtrip_failed', phase='destination')
-            return False
-        if execute and not self.wait_for_box(dwell_s, box_timeout_s):
-            self.emit('roundtrip_failed', phase='box_wait')
-            return False
+        for index, table_id in enumerate(destinations):
+            self.emit('station_started', station_id=table_id, station_index=index)
+            if not self.visit(table_id, execute=execute):
+                self.emit('roundtrip_failed', phase='destination',
+                          station_id=table_id, station_index=index)
+                return False
+            if execute and not self.wait_for_box(dwell_s, box_timeout_s):
+                self.emit('roundtrip_failed', phase='box_wait',
+                          station_id=table_id, station_index=index)
+                return False
+            self.emit('station_complete', station_id=table_id, station_index=index)
         if not self.go_home(execute=execute):
             self.emit('roundtrip_failed', phase='home')
             return False
@@ -595,7 +606,11 @@ def parse_args(argv):
         subparser = commands.add_parser(command)
         subparser.add_argument('--registry', type=Path, required=True)
         subparser.add_argument('--log', type=Path, required=True)
-        if command != 'teach-home':
+        if command == 'roundtrip':
+            subparser.add_argument(
+                '--table-id', dest='table_ids', action='append', required=True,
+                help='Ordered destination ID; repeat this option for each station')
+        elif command != 'teach-home':
             subparser.add_argument('--table-id', required=True)
         if command == 'teach':
             subparser.add_argument('--pose-id', required=True)
@@ -632,6 +647,8 @@ def parse_args(argv):
                 or not math.isfinite(parsed.box_timeout_s)
                 or parsed.box_timeout_s <= parsed.dwell_s):
             parser.error('roundtrip box timeout must exceed a positive dwell')
+        if len(parsed.table_ids) != len(set(parsed.table_ids)):
+            parser.error('roundtrip destination IDs must be unique')
     return parsed
 
 
@@ -690,7 +707,7 @@ def main(args=None):
                     ok = node.visit(parsed.table_id, parsed.execute)
                 else:
                     ok = node.roundtrip(
-                        parsed.table_id, parsed.execute,
+                        parsed.table_ids, parsed.execute,
                         parsed.dwell_s, parsed.box_timeout_s)
             except Exception as error:
                 node.emit('failed', reason=f'{type(error).__name__}: {error}')

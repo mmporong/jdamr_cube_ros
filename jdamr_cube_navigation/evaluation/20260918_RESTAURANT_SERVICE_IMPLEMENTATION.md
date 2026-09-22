@@ -18,8 +18,9 @@
 
 완성 전 양팔 서빙 로봇의 선행 검증에서는 현재 JD-AMR 베이스를 같은 임무의 축소 실행기로
 사용한다. 새 2D 지도를 만든 뒤 시작 자세를 `home_dock`, 박스가 놓인 지점을 `table_01`,
-`table_02` 같은 이름으로 등록한다. 왕복 명령은 목적지 도착, 전면 박스의 안정 관측과 대기,
-시작 위치·방향 복귀를 순서대로 실행한다. 현재 `home_dock`은 지도 pose 이름이며 실제 충전
+`table_02` 같은 이름으로 등록한다. 왕복 명령은 선택한 목적지를 지정 순서대로 방문하며,
+각 지점의 전면 박스 안정 관측과 대기 후 시작 위치·방향으로 복귀한다. 현재 `home_dock`은
+지도 pose 이름이며 실제 충전
 접점, 충전 전류 또는 도킹 센서 성공을 판정하지 않는다.
 
 ```text
@@ -203,12 +204,22 @@ ros2 run jdamr_cube_navigation restaurant_service roundtrip \
   --table-id table_01 \
   --log "$HOME/jdamr_data/service/plan_roundtrip_table01.jsonl"
 
-# 실제 왕복
+# 실제 단일 station 왕복
 ros2 run jdamr_cube_navigation restaurant_service roundtrip \
   --registry "$HOME/jdamr_data/service/destinations.yaml" \
   --table-id table_01 --dwell-s 20 --box-timeout-s 45 --execute \
   --log "$HOME/jdamr_data/service/run_roundtrip_table01_$(date +%Y%m%dT%H%M%S).jsonl"
+
+# 주방 station과 손님 table을 순서대로 확인한 뒤 home 복귀
+ros2 run jdamr_cube_navigation restaurant_service roundtrip \
+  --registry "$HOME/jdamr_data/service/destinations.yaml" \
+  --table-id kitchen_station --table-id table_01 \
+  --dwell-s 20 --box-timeout-s 45 --execute \
+  --log "$HOME/jdamr_data/service/run_service_flow_$(date +%Y%m%dT%H%M%S).jsonl"
 ```
+
+`--table-id`는 방문 순서대로 반복할 수 있다. 각 station의 도착·박스 대기가 완료된 뒤에만
+다음 station으로 이동하며, 모든 station이 끝난 뒤 `home_dock` 목표를 한 번 새로 보낸다.
 
 복귀 성공은 `home_arrived`의 `position_error_m ≤ 0.05`, `|yaw_error_rad| ≤ 0.05236`,
 정지 hold 1초가 모두 만족된 경우다. 박스 분류나 목적지 ID를 영상으로 알아내는 기능은
