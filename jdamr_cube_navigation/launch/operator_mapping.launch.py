@@ -1,4 +1,4 @@
-"""Run operator-driven Cartographer mapping through the protected drive chain."""
+"""Run operator-driven Cartographer mapping with unrestricted manual drive."""
 
 import os
 from pathlib import Path
@@ -36,7 +36,7 @@ def _validate_physical_params(context):
 
 
 def generate_launch_description():
-    """Build a lean manual-mapping stack with one protected command path."""
+    """Build a lean manual-mapping stack without autonomous drive gates."""
     navigation_share = get_package_share_directory('jdamr_cube_navigation')
     cartographer_share = get_package_share_directory(
         'jdamr_cube_cartographer')
@@ -50,27 +50,9 @@ def generate_launch_description():
         convert_types=True,
     )
     configured_params = ParameterFile(rewritten_params, allow_substs=True)
-    tf_remaps = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
-
     cartographer = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             cartographer_share, 'launch', 'cartographer_real.launch.py')),
-    )
-    velocity_smoother = Node(
-        package='nav2_velocity_smoother',
-        executable='velocity_smoother',
-        name='velocity_smoother',
-        output='screen',
-        parameters=[configured_params, {'use_sim_time': False}],
-        remappings=tf_remaps + [('cmd_vel', 'cmd_vel_nav')],
-    )
-    collision_monitor = Node(
-        package='nav2_collision_monitor',
-        executable='collision_monitor',
-        name='collision_monitor',
-        output='screen',
-        parameters=[configured_params, {'use_sim_time': False}],
-        remappings=tf_remaps,
     )
     map_saver = Node(
         package='nav2_map_server',
@@ -87,19 +69,8 @@ def generate_launch_description():
         parameters=[{
             'autostart': True,
             'bond_timeout': 0.0,
-            'node_names': [
-                'velocity_smoother', 'collision_monitor', 'map_saver'],
+            'node_names': ['map_saver'],
             'use_sim_time': False,
-        }],
-    )
-    preflight = Node(
-        package='jdamr_cube_navigation',
-        executable='operator_mapping_preflight',
-        name='operator_mapping_preflight',
-        output='screen',
-        parameters=[{
-            'use_sim_time': False,
-            'params_file': params_file,
         }],
     )
     controller = Node(
@@ -108,17 +79,14 @@ def generate_launch_description():
         name='operator_mapping_controller',
         output='screen',
         parameters=[{
-            'output_topic': 'cmd_vel_nav',
+            'output_topic': 'cmd_vel',
             'port': controller_port,
-            'profile_label': (
-                'Cartographer 수동 매핑 · 속도 완화 · 충돌 감시 적용'),
-            'require_preflight': True,
+            'profile_label': 'Cartographer 수동 매핑 · 주행 차단 없음',
+            'require_preflight': False,
         }],
     )
 
-    required_nodes = (
-        velocity_smoother, collision_monitor, map_saver,
-        lifecycle_manager, preflight, controller)
+    required_nodes = (map_saver, lifecycle_manager, controller)
     shutdown_handlers = [
         RegisterEventHandler(OnProcessExit(
             target_action=node,
@@ -139,10 +107,7 @@ def generate_launch_description():
         OpaqueFunction(function=_validate_physical_params),
         *shutdown_handlers,
         cartographer,
-        velocity_smoother,
-        collision_monitor,
         map_saver,
         lifecycle_manager,
-        preflight,
         controller,
     ])

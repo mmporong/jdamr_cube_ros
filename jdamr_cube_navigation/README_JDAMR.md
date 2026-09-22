@@ -17,21 +17,18 @@
 
 방 전체를 자동 탐색하지 않고 필요한 서비스 구역만 수동으로 지도화할 때는
 `jdamr-operator-mapping.service`를 사용한다. 이 모드는 Cartographer, map saver,
-velocity smoother, Collision Monitor와 화이트톤 웹 조종기를 한 서비스로 실행한다.
-웹 조종기는 `/cmd_vel`에 바로 쓰지 않고
-`/cmd_vel_nav → /cmd_vel_smoothed → /cmd_vel` 순서로만 명령을 전달한다.
+화이트톤 웹 조종기를 한 서비스로 실행한다. 수동 조종 명령은 출발 점검, 방향별
+라이다 판정, velocity smoother와 Collision Monitor를 거치지 않고 `/cmd_vel`로
+전달한다. 버튼을 놓거나 브라우저 연결이 끊기면 0속도를 보내는 데드맨과 베이스
+드라이버·펌웨어 워치독은 유지한다.
 
 ```bash
 sudo systemctl start jdamr-operator-mapping.service
 ```
 
-같은 무선망에서 `http://jdamr.local:8080`을 연다. 출발 게이트는 필수 노드 중복,
-명령 토픽 소유권, 세 lifecycle 상태, scan·odom 주기와 최대 공백, map·TF·배터리,
-정지 상태, 파이 온도·현재 스로틀·저장 공간을 4Hz로 다시 판정한다. 하나라도 실패하면
-ROS 노드가 비영점 명령을 거부하고 화면에 첫 원인을 표시한다. 전체 조건이 통과한 뒤에도
-현재 scan이 Collision Monitor의 방향별 StopZone에서 3점 이상이면 해당 방향 버튼만
-비활성화한다. 따라서 근처 장애물 때문에 회전 명령이 즉시 보호 정지되는 상황을 출발 전에
-확인할 수 있다. 즉시 정지와 0속도 명령은 출발 게이트 상태와 무관하게 항상 허용한다.
+같은 무선망에서 `http://jdamr.local:8080`을 연다. 전진·후진·좌회전·우회전 버튼은
+센서 상태와 주변 장애물에 따라 비활성화되지 않는다. 이 모드는 작업자가 차체를 보면서
+지도를 생성할 때만 사용하며, 자율주행은 별도의 Nav2 보호 경로를 사용한다.
 
 빌드 후 환경을 source하고 Cartographer 및 하드웨어가 이미 실행 중인 상태에서 자율 매핑 launch를 실행한다.
 

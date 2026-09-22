@@ -8,9 +8,8 @@
   브라우저 100ms 킵얼라이브 → 이 노드 350ms 신선도 검사(초과 시 0 발행)
   → C++ 드라이버 400ms stale 정지 → 펌웨어 워치독 400ms
 
-기본 출력은 기존 단독 운전과 호환되는 ``cmd_vel``이다. 안전 수동 매핑에서는
-``output_topic:=cmd_vel_nav``로 실행해 velocity smoother와 Collision Monitor를
-반드시 통과시킨다.
+기본 출력은 기존 단독 운전과 호환되는 ``cmd_vel``이다. 수동 매핑 모드에서는
+운전자의 입력을 차단하지 않고 이 토픽으로 발행한다.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -65,7 +64,6 @@ PAGE = """<!DOCTYPE html>
            -webkit-user-select:none; user-select:none; cursor:pointer; }
   button:focus-visible { outline:3px solid #8ab7f5; outline-offset:2px; }
   button.on { background:var(--drive); border-color:var(--drive); color:#fff; }
-  button:disabled { opacity:.42; cursor:not-allowed; }
   #stop { background:var(--stop); border-color:var(--stop); color:#fff;
           font-size:.95rem; letter-spacing:.02em; }
   .speed { display:grid; grid-template-columns:auto 1fr auto; gap:12px;
@@ -94,7 +92,7 @@ PAGE = """<!DOCTYPE html>
   <h1>수동 지도 생성 조종기</h1>
   <p id="profile">제어 상태 확인 중</p>
   <div id="sync"><span id="lamp"></span><span id="syncText">파이 응답 확인 중</span></div>
-  <p id="preflight">출발 조건을 확인하고 있습니다.</p>
+  <p id="preflight">수동 주행 · 출발 조건 차단 없음</p>
 </header>
 <div id="grid">
   <span></span><button id="w" aria-label="전진">▲</button><span></span>
@@ -125,7 +123,6 @@ let sequence = 0;
 let pendingRequest = null;
 let latestAck = 0;
 let lastReplyAt = 0;
-let driveReady = false;
 function scale() { return document.getElementById("spd").value / 100; }
 function target() {
   let vx = 0, wz = 0;
@@ -158,9 +155,7 @@ function send() {
     const state = await response.json();
     if (!response.ok) {
       renderState(state);
-      const direction = (state.reason || "").split(":")[1];
-      const labels = {forward:"전진", backward:"후진", left:"좌회전", right:"우회전"};
-      setSync(false, direction ? `${labels[direction]} 방향 차단` : "출발 조건 차단");
+      setSync(false, "명령 순서 재동기화 중");
       return;
     }
     latestAck = Math.max(latestAck, state.accepted_sequence || 0);
@@ -196,23 +191,9 @@ function renderState(state) {
     : "정지";
   const fresh = state.command_fresh === true;
   const synced = latestAck >= sequence || !held.size;
-  driveReady = state.drive_ready === true;
-  const directions = state.preflight?.checks?.directions || {};
-  const directionKeys = {w:"forward", s:"backward", a:"left", d:"right"};
-  for (const [key, direction] of Object.entries(directionKeys))
-    document.getElementById(key).disabled =
-      !driveReady || directions[direction]?.clear !== true;
-  const blockers = state.preflight?.blockers || [];
-  const blockedDirections = Object.entries(directions)
-    .filter(([, value]) => value?.clear === false)
-    .map(([name]) => ({forward:"전진", backward:"후진", left:"좌회전", right:"우회전"})[name]);
-  document.getElementById("preflight").textContent = driveReady
-    ? (blockedDirections.length
-        ? `출발 조건 PASS · 라이다 차단: ${blockedDirections.join(", ")}`
-        : "출발 조건 PASS · 모든 방향 주행 가능")
-    : (blockers[0] || "출발 조건 확인 중 · 방향 입력 차단");
-  if (!driveReady) setSync(false, "출발 차단 · 원인 확인 중");
-  else if (fresh && synced)
+  document.getElementById("preflight").textContent =
+    "수동 주행 · 출발 조건 차단 없음";
+  if (fresh && synced)
     setSync(true, held.size ? "입력과 파이 명령 동기화" : "연결됨 · 정지 확인");
   else if (!held.size && !moving) setSync(true, "연결됨 · 정지 확인");
   else setSync(false, "명령 동기화 확인 중");
@@ -228,7 +209,7 @@ async function pollState() {
     setSync(false, "파이 연결 끊김 · 자동 정지");
   }
 }
-function press(k){ if(driveReady && !held.has(k)){ held.add(k); paint(); send(); } }
+function press(k){ if(!held.has(k)){ held.add(k); paint(); send(); } }
 function release(k){ if(held.delete(k)){ paint(); send(); } }
 setInterval(() => { if (held.size) send(); }, 100);   // 킵얼라이브
 document.addEventListener("keydown", e => {

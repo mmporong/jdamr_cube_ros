@@ -46,12 +46,12 @@ def test_scaled_command_rejects_nonfinite_values(value):
         scaled_command(value, 0.0, 0.15, 1.2)
 
 
-def test_page_exposes_fail_closed_preflight_state():
-    """The browser disables movement until live readiness passes."""
+def test_page_exposes_unrestricted_manual_state():
+    """The manual controller never disables a direction from preflight."""
     from jdamr_cube_node.web_teleop import PAGE
-    assert 'state.drive_ready === true' in PAGE
-    assert '출발 조건 확인 중 · 방향 입력 차단' in PAGE
-    assert 'button:disabled' in PAGE
+    assert '수동 주행 · 출발 조건 차단 없음' in PAGE
+    assert 'direction_blocked' not in PAGE
+    assert 'button:disabled' not in PAGE
 
 
 def test_nonzero_command_is_rejected_when_preflight_is_not_ready():
