@@ -11,6 +11,8 @@
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>nav2_costmap_2d</exec_depend>
   <exec_depend>jdamr_cube_vslam</exec_depend>
+  <exec_depend>jdamr_cube_cartographer</exec_depend>
+  <exec_depend>jdamr_cube_node</exec_depend>
   <exec_depend>ros2bag</exec_depend>
   <exec_depend>jdamr_cube_description</exec_depend>
   <exec_depend>jdamr_cube_gazebo</exec_depend>
