@@ -39,6 +39,19 @@
 실차용 지도·마스크·새 차체 파라미터는 기존 검증된 파일을 사용한다.
 자리 이동과 실차 실행은 사용자가 주행을 요청한 시점에 수행한다.
 
+파이에 새 navigation 커밋을 반영할 때는 저장소 루트에서 배포 스크립트를 사용한다.
+이 스크립트는 커밋의 패키지만 묶어 체크섬을 확인하고, 파이의 별도 작업공간에서
+빌드·테스트한 뒤 베이스를 정지해 주 작업공간에 반영한다. 실패하면 이전 소스·빌드·설치를
+복원하고 베이스를 다시 기동한다. ROS Jazzy 환경 스크립트와 충돌하는 `set -u`는 쓰지 않는다.
+
+```bash
+cd "$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros"
+bash scripts/deploy_navigation_to_pi.sh lim@jdamr.local <배포할-커밋>
+```
+
+작업 중인 미커밋 파일은 배포하지 않는다. 두 번째 인자는 실행 시작 시 전체 커밋 해시로
+고정되므로 배포 도중 브랜치가 바뀌어도 대상 소스는 달라지지 않는다.
+
 ```bash
 source /opt/ros/jazzy/setup.bash
 source "$HOME/jdamr_rgbd_ws/install/setup.bash"
