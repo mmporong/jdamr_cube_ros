@@ -70,6 +70,8 @@ def route():
     node.amcl_covariance = (0.001, 0.001)
     node.service_contract = load_service_contract(
         PACKAGE / 'config/restaurant_service_contract.yaml')
+    node.battery_voltage = 12.0
+    node.minimum_battery_v = node.service_contract['minimum_running_battery_v']
     node.live_grids = {}
     node.expected_grids = {}
     node.map_mismatch = None
@@ -911,6 +913,8 @@ def test_service_launch_adds_parking_without_changing_costmaps(
         assert arguments['map'] == '/maps/new_base_room.yaml'
         assert arguments['asset_registry'].perform(context) == '/registry.yaml'
         assert arguments['discovery_range'].perform(context) == discovery_range
+        assert arguments['use_composition'].perform(context) == 'false'
+        assert arguments['coordinated_startup'].perform(context) == 'true'
     finally:
         generated.unlink()
 
@@ -931,6 +935,30 @@ def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
     context = LaunchContext()
     declaration.execute(context)
     assert context.launch_configurations['discovery_range'] == 'SUBNET'
+
+
+def test_service_launch_defaults_to_ordered_standalone_startup(monkeypatch):
+    """Avoid parallel lifecycle transitions on the physical service stack."""
+    from launch.actions import DeclareLaunchArgument
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'service_launch_startup_defaults',
+        PACKAGE / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, 'get_package_share_directory', lambda _: str(PACKAGE))
+    description = module.generate_launch_description()
+    declarations = {
+        action.name: action for action in description.entities
+        if isinstance(action, DeclareLaunchArgument)
+        and action.name in {'use_composition', 'coordinated_startup'}
+    }
+    context = LaunchContext()
+    declarations['use_composition'].execute(context)
+    declarations['coordinated_startup'].execute(context)
+    assert context.launch_configurations['use_composition'] == 'false'
+    assert context.launch_configurations['coordinated_startup'] == 'true'
 
 
 def test_service_launch_keeps_box_observer_explicit():

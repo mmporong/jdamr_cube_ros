@@ -5,3 +5,11 @@ max_x_covariance_m2: 0.01
 max_y_covariance_m2: 0.01
 max_yaw_covariance_rad2: 0.030461741978670857
 physical_validation: NOT_PHYSICALLY_VALIDATED
+minimum_start_battery_v: 10.8
+minimum_running_battery_v: 10.5
+battery_policy_provenance:
+  status: CANDIDATE_NOT_LOAD_CALIBRATED
+  set_at: '2026-09-22'
+  valid_for: current_service_base_and_battery
+  evidence: evaluation/20260922_SERVICE_DEPARTURE_FAILURES.md#후속-실행-1634-목표-수락-후-배터리-저전압-취소
+  reason: Separate departure reserve from the existing running cutoff; not a state-of-charge estimate

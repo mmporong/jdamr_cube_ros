@@ -387,6 +387,7 @@ def test_standalone_keeps_components_parameters_and_required_shutdown(monkeypatc
         'map': '/tmp/reference-map.yaml', 'keepout_mask': '/tmp/reference-mask.yaml',
         'params_file': str(PARAMS), 'use_sim_time': 'false', 'autostart': 'false',
         'use_composition': 'false',
+        'coordinated_startup': 'true',
     })
     actions = module._launch_navigation(context)
     assert not any(isinstance(a, ComposableNodeContainer) for a in actions)
@@ -408,6 +409,101 @@ def test_standalone_keeps_components_parameters_and_required_shutdown(monkeypatc
     mask_params = evaluate_parameters(context, nodes[
         'keepout_filter_mask_server']._Node__parameters)
     assert mask_params[-2]['yaml_filename'] == '/tmp/reference-mask.yaml'
+
+
+def test_coordinated_startup_uses_one_ordered_required_manager(monkeypatch):
+    spec = importlib.util.spec_from_file_location('coordinated_nav', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, '_validate_new_base_params', lambda *a, **k: [])
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _name: str(ROOT / 'jdamr_cube_navigation'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_candidate',
+        'map': '/tmp/reference-map.yaml',
+        'keepout_mask': '/tmp/reference-mask.yaml',
+        'params_file': str(PARAMS),
+        'use_sim_time': 'false',
+        'autostart': 'true',
+        'use_composition': 'false',
+        'coordinated_startup': 'true',
+    })
+    actions = module._launch_navigation(context)
+    nodes = {a._Node__node_name: a for a in actions if isinstance(a, Node)}
+    manager_names = {
+        name for name in nodes if name.startswith('lifecycle_manager_')}
+    assert manager_names == {'lifecycle_manager_coordinated'}
+    manager = nodes['lifecycle_manager_coordinated']
+    manager_params = evaluate_parameters(
+        context, manager._Node__parameters)[0]
+    assert list(manager_params['node_names']) == [
+        'keepout_filter_mask_server',
+        'keepout_costmap_filter_info_server',
+        'map_server',
+        'amcl',
+        'controller_server',
+        'planner_server',
+        'velocity_smoother',
+        'collision_monitor',
+        'behavior_server',
+        'bt_navigator',
+    ]
+    exit_targets = {
+        action.event_handler._OnActionEventBase__action_matcher
+        for action in actions
+        if action.__class__.__name__ == 'RegisterEventHandler'
+    }
+    assert set(nodes.values()) == exit_targets
+
+
+def test_legacy_startup_keeps_three_independent_managers(monkeypatch):
+    spec = importlib.util.spec_from_file_location('legacy_nav', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, '_validate_new_base_params', lambda *a, **k: [])
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _name: str(ROOT / 'jdamr_cube_navigation'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_candidate',
+        'map': '/tmp/reference-map.yaml',
+        'keepout_mask': '/tmp/reference-mask.yaml',
+        'params_file': str(PARAMS),
+        'use_sim_time': 'false',
+        'autostart': 'false',
+        'use_composition': 'false',
+        'coordinated_startup': 'false',
+    })
+    actions = module._launch_navigation(context)
+    names = {
+        action._Node__node_name for action in actions
+        if isinstance(action, Node)
+        and action._Node__node_name.startswith('lifecycle_manager_')
+    }
+    assert names == {
+        'lifecycle_manager_keepout',
+        'lifecycle_manager_localization',
+        'lifecycle_manager_navigation',
+    }
+
+
+def test_core_defaults_to_legacy_independent_startup(monkeypatch):
+    from launch.actions import DeclareLaunchArgument
+
+    spec = importlib.util.spec_from_file_location('core_defaults', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _name: str(ROOT / 'jdamr_cube_navigation'))
+    description = module.generate_launch_description()
+    declaration = next(
+        action for action in description.entities
+        if isinstance(action, DeclareLaunchArgument)
+        and action.name == 'coordinated_startup')
+    context = LaunchContext()
+    declaration.execute(context)
+    assert context.launch_configurations['coordinated_startup'] == 'false'
 
 
 def test_revisit_loads_previous_wait_only_recovery_server(

@@ -54,7 +54,10 @@ def _configure(context):
             'discovery_range': LaunchConfiguration('discovery_range'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'autostart': 'true',
-            'use_composition': LaunchConfiguration('use_composition', default='true'),
+            'use_composition': LaunchConfiguration(
+                'use_composition', default='false'),
+            'coordinated_startup': LaunchConfiguration(
+                'coordinated_startup', default='true'),
         }.items(),
     )
     box_observer = IncludeLaunchDescription(
@@ -80,7 +83,9 @@ def generate_launch_description():
             'navigation_profile', default_value='new_base_candidate',
             choices=['new_base_candidate', 'new_base_revisit_candidate', 'corridor']),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
-        DeclareLaunchArgument('use_composition', default_value='true',
+        DeclareLaunchArgument('use_composition', default_value='false',
+                              choices=['true', 'false']),
+        DeclareLaunchArgument('coordinated_startup', default_value='true',
                               choices=['true', 'false']),
         DeclareLaunchArgument(
             'use_box_observer', default_value='false',

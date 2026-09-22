@@ -207,6 +207,8 @@ def _launch_navigation(context):
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    coordinated_startup = LaunchConfiguration(
+        'coordinated_startup', default='false').perform(context).lower() == 'true'
     selected_bt = os.path.join(package_share, 'behavior_trees', behavior_tree)
     protection = None
     if profile == 'obstacle_candidate':
@@ -397,6 +399,24 @@ def _launch_navigation(context):
             **lifecycle_bond,
         }],
     )
+    coordinated_lifecycle = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_coordinated',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'autostart': autostart,
+            'node_names': [
+                'keepout_filter_mask_server',
+                'keepout_costmap_filter_info_server',
+                'map_server',
+                'amcl',
+                *navigation_nodes,
+            ],
+            **lifecycle_bond,
+        }],
+    )
 
     # The container process surviving is not evidence that the nodes inside it
     # are alive, so the graph-level guard keeps that failure observable while
@@ -429,12 +449,13 @@ def _launch_navigation(context):
                 # Child costmaps need the complete YAML, as in the container.
                 parameters=[configured_params, *component.parameters],
                 remappings=component.remappings))
-    required_processes = [
-        *navigation_processes,
-        collision_monitor,
+    lifecycle_processes = ([coordinated_lifecycle] if coordinated_startup else [
         keepout_lifecycle,
         localization_lifecycle,
         navigation_lifecycle,
+    ])
+    required_processes = [
+        *navigation_processes, collision_monitor, *lifecycle_processes,
         liveness_guard,
     ]
     required_exit_handlers = [
@@ -455,6 +476,12 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_composition', default_value='true',
                               choices=['true', 'false']),
+        DeclareLaunchArgument(
+            'coordinated_startup', default_value='false',
+            choices=['true', 'false'],
+            description=(
+                'Activate keepout, localization and navigation in one '
+                'ordered lifecycle transaction')),
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
         DeclareLaunchArgument(

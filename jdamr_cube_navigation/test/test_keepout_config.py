@@ -798,10 +798,10 @@ def test_lifecycle_managers_tolerate_pi_service_latency():
     # The shared setting keeps all lifecycle managers on the same contract.
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
-    # Shared by all three lifecycle managers through one dict.
+    # Shared by the three legacy managers and the coordinated alternative.
     assert "'bond_timeout': 10.0" in source
     assert "'bond_respawn_max_duration': 20.0" in source
-    assert source.count('**lifecycle_bond') == 3
+    assert source.count('**lifecycle_bond') == 4
 
 
 def test_replay_guard_orders_odometry_against_scans():

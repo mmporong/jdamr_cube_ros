@@ -47,11 +47,14 @@ def load_service_contract(path):
     document = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
     if not isinstance(document, dict) or document.get('schema_version') != 1:
         raise ValueError('service confidence contract schema must be 1')
-    for key in ('max_x_covariance_m2', 'max_y_covariance_m2', 'max_yaw_covariance_rad2'):
+    for key in ('max_x_covariance_m2', 'max_y_covariance_m2', 'max_yaw_covariance_rad2',
+                'minimum_start_battery_v', 'minimum_running_battery_v'):
         value = document.get(key)
         if (isinstance(value, bool) or not isinstance(value, (float, int))
                 or not math.isfinite(value) or value <= 0.0):
             raise ValueError(f'{key} must be finite and positive')
+    if document['minimum_start_battery_v'] < document['minimum_running_battery_v']:
+        raise ValueError('departure battery threshold must not be below running cutoff')
     return document
 
 
@@ -149,6 +152,7 @@ class ServiceRoute(CorridorRoute):
         package = Path(get_package_share_directory('jdamr_cube_navigation'))
         self.service_contract = load_service_contract(
             package / 'config/restaurant_service_contract.yaml')
+        self.minimum_battery_v = self.service_contract['minimum_running_battery_v']
         self.max_amcl_covariance = (
             self.service_contract['max_x_covariance_m2'],
             self.service_contract['max_y_covariance_m2'])
@@ -407,6 +411,25 @@ class ServiceRoute(CorridorRoute):
                   goal_uuid=bytes(self.navigation_uuid.uuid).hex())
         return False
 
+    def _departure_battery_ready(self):
+        """Require reserve before a new action, without raising the in-motion cutoff."""
+        voltage_v = self.battery_voltage
+        threshold_v = self.service_contract['minimum_start_battery_v']
+        if (voltage_v is None or not math.isfinite(voltage_v)
+                or voltage_v < threshold_v):
+            self.emit('departure_blocked', reason='battery_departure_reserve',
+                      voltage_v=voltage_v if voltage_v is not None
+                      and math.isfinite(voltage_v) else None,
+                      minimum_start_battery_v=threshold_v,
+                      minimum_running_battery_v=self.minimum_battery_v)
+            return False
+        return True
+
+    def wait_until_ready(self, timeout=15.0):
+        """Check a departure reserve after fresh battery and sensor samples arrive."""
+        return (super().wait_until_ready(timeout=timeout)
+                and self._departure_battery_ready())
+
     def execute(self):
         """Bound transit and parking actions and retain their terminal result."""
         if not self.navigate.wait_for_server(timeout_sec=2.0):
@@ -414,6 +437,8 @@ class ServiceRoute(CorridorRoute):
         self.active_action_type = NavigateToPose
         for index, waypoint in enumerate(self.waypoints):
             if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
+                return False
+            if not self._departure_battery_ready():
                 return False
             goal = NavigateToPose.Goal()
             goal.pose = self._pose(index, waypoint)
@@ -726,6 +751,7 @@ class ServiceRoute(CorridorRoute):
     def _execute_reverse_path(self, path):
         """Keep reverse motion in controller → smoother → monitor → base."""
         if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
+                or not self._departure_battery_ready()
                 or not self.follow_reverse.wait_for_server(timeout_sec=2.0)):
             return False
         self.active_action_type = FollowPath
