@@ -8,6 +8,20 @@
 - `restaurant_service` 명령으로 사용하며 기존 주행의 기본값은 유지한다.
 - 구현·명령·현재 검증 범위: [서비스 위치 구현](20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md).
 
+## 주행 후 수정 목록
+
+- [ ] 임시 박스 관측 명령도 `jdamr-base.service`와 같은
+  `ROS_DOMAIN_ID=12`, `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`,
+  `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` 환경을 한 진입점에서 재사용하게 한다.
+  2026-09-22 첫 관측에서는 일부 환경만 지정해 `ros2 topic info`가 종료되지 않았고,
+  임시 관측 프로세스가 남았다. 주행 후 공통 환경 스크립트와 제한 시간·정리 동작을
+  회귀 테스트로 고정한다.
+- [ ] 같은 시험에서 박스가 RGB·Depth 중앙에 보이고 중앙 Depth 0.688m, 라이다 전방
+  0.757m가 수신됐지만 전면 평면 검출은 `no_box_surface_candidate`였다. 원본 RGB·Depth,
+  후보 평면의 크기·법선·인라이어 탈락 사유를 함께 기록하도록 진단값을 보강하고,
+  현재 박스 프레임으로 임계값을 재현한 뒤 수정한다. 검출 실패 상태에서는 박스 상대
+  주행을 다시 연결하지 않는다.
+
 ## 목표
 
 테이블 중심점이 아니라 로봇이 실제로 정차해야 하는 **서비스 pose**를 저장 지도 `map`
