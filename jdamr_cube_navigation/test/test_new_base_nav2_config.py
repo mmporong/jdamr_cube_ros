@@ -374,6 +374,42 @@ def test_jazzy_rewrite_seeds_only_the_revisit_home_pose():
         'amcl']['ros__parameters']['set_initial_pose'] is False
 
 
+def test_standalone_keeps_components_parameters_and_required_shutdown(monkeypatch):
+    spec = importlib.util.spec_from_file_location('standalone_nav', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, '_validate_new_base_params', lambda *a, **k: [])
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _name: str(ROOT / 'jdamr_cube_navigation'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_candidate',
+        'map': '/tmp/reference-map.yaml', 'keepout_mask': '/tmp/reference-mask.yaml',
+        'params_file': str(PARAMS), 'use_sim_time': 'false', 'autostart': 'false',
+        'use_composition': 'false',
+    })
+    actions = module._launch_navigation(context)
+    assert not any(isinstance(a, ComposableNodeContainer) for a in actions)
+    nodes = {a._Node__node_name: a for a in actions if isinstance(a, Node)}
+    assert {'amcl', 'map_server', 'controller_server', 'planner_server',
+            'velocity_smoother', 'bt_navigator', 'behavior_server',
+            'keepout_filter_mask_server', 'keepout_costmap_filter_info_server',
+            'collision_monitor', 'nav2_liveness_guard'} <= nodes.keys()
+    assert len(actions) == len(nodes) * 2  # every process has a required exit handler
+    controller = nodes['controller_server']
+    params = evaluate_parameters(context, controller._Node__parameters)
+    rewritten = yaml.safe_load(Path(params[0]).read_text())
+    assert rewritten['local_costmap']['local_costmap']['ros__parameters'][
+        'footprint'] == yaml.safe_load(PARAMS.read_text())[
+            'local_costmap']['local_costmap']['ros__parameters']['footprint']
+    assert ('cmd_vel', 'cmd_vel_nav') in [
+        (perform_substitutions(context, s), perform_substitutions(context, t))
+        for s, t in controller._Node__remappings]
+    mask_params = evaluate_parameters(context, nodes[
+        'keepout_filter_mask_server']._Node__parameters)
+    assert mask_params[-2]['yaml_filename'] == '/tmp/reference-mask.yaml'
+
+
 def test_revisit_loads_previous_wait_only_recovery_server(
         monkeypatch):
     spec = importlib.util.spec_from_file_location('new_base_launch', LAUNCH)

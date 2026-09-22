@@ -26,6 +26,7 @@ from launch.actions import RegisterEventHandler, SetEnvironmentVariable
 from launch.actions import Shutdown
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
+from launch.utilities import perform_substitutions
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode, ParameterFile
 from nav2_common.launch import RewrittenYaml
@@ -409,8 +410,27 @@ def _launch_navigation(context):
         arguments=['--required', ','.join(required_nodes)],
     )
 
+    navigation_processes = [container]
+    if LaunchConfiguration('use_composition', default='true').perform(context).lower() == 'false':
+        executables = {
+            'keepout_filter_mask_server': 'map_server',
+            'keepout_costmap_filter_info_server': 'costmap_filter_info_server',
+            'map_server': 'map_server', 'amcl': 'amcl',
+            'controller_server': 'controller_server', 'planner_server': 'planner_server',
+            'velocity_smoother': 'velocity_smoother', 'bt_navigator': 'bt_navigator',
+            'behavior_server': 'behavior_server',
+        }
+        navigation_processes = []
+        for component in keepout_components + nav2_components:
+            name = perform_substitutions(context, component.node_name)
+            navigation_processes.append(Node(
+                package=component.package, executable=executables[name],
+                name=name, output='screen',
+                # Child costmaps need the complete YAML, as in the container.
+                parameters=[configured_params, *component.parameters],
+                remappings=component.remappings))
     required_processes = [
-        container,
+        *navigation_processes,
         collision_monitor,
         keepout_lifecycle,
         localization_lifecycle,
@@ -433,6 +453,8 @@ def generate_launch_description():
     package_share = get_package_share_directory('jdamr_cube_navigation')
     discovery_range = LaunchConfiguration('discovery_range')
     return LaunchDescription([
+        DeclareLaunchArgument('use_composition', default_value='true',
+                              choices=['true', 'false']),
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
         DeclareLaunchArgument(
