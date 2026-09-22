@@ -53,6 +53,11 @@ def done(value):
     return future
 
 
+def publisher(name, namespace='/'):
+    """Describe one DDS publisher without creating a ROS graph."""
+    return SimpleNamespace(node_name=name, node_namespace=namespace)
+
+
 def route():
     """Create the service adapter without touching DDS or robot hardware."""
     node = object.__new__(ServiceRoute)
@@ -87,6 +92,59 @@ def route():
     node._navigation_ready = lambda **_: True
     node._guard_failure = lambda *_: None
     return node
+
+
+def test_startup_protection_retries_only_empty_discovery(monkeypatch):
+    node = route()
+    calls = {'cmd_vel': 0}
+
+    def publishers(topic):
+        name = {
+            '/cmd_vel': 'collision_monitor',
+            '/keepout_filter_mask': 'keepout_filter_mask_server',
+            '/keepout_costmap_filter_info': 'keepout_costmap_filter_info_server',
+        }[topic]
+        if topic == '/cmd_vel':
+            calls['cmd_vel'] += 1
+            if calls['cmd_vel'] == 1:
+                return []
+        return [publisher(name)]
+
+    node.get_publishers_info_by_topic = publishers
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    assert node._startup_protection_ready() is None
+    assert calls['cmd_vel'] == 2
+    spin.assert_called_once_with(node, timeout_sec=0.05)
+
+
+@pytest.mark.parametrize('actual', [
+    [publisher('_NODE_NAME_UNKNOWN_', '_NODE_NAMESPACE_UNKNOWN_')],
+    [publisher('collision_monitor'), publisher('unsafe_commander')],
+])
+def test_startup_protection_immediately_rejects_known_bad_publishers(
+        monkeypatch, actual):
+    node = route()
+    node.get_publishers_info_by_topic = lambda _topic: actual
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    failure = node._startup_protection_ready()
+    assert 'actual=' in failure
+    assert actual[0].node_name in failure
+    spin.assert_not_called()
+
+
+def test_startup_protection_reports_empty_publishers_after_bound(monkeypatch):
+    node = route()
+    node.get_publishers_info_by_topic = lambda _topic: []
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    failure = node._startup_protection_ready(discovery_timeout_s=0.0)
+    assert 'actual=[]' in failure
+    spin.assert_not_called()
 
 
 def handle(status=GoalStatus.STATUS_SUCCEEDED, error_code=0, future=None):

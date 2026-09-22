@@ -280,6 +280,47 @@ class ServiceRoute(CorridorRoute):
             raise RuntimeError('request interrupted, failed or timed out')
         return future.result()
 
+    @staticmethod
+    def _publisher_names(publishers):
+        names = []
+        for publisher in publishers:
+            namespace = getattr(publisher, 'node_namespace', '') or '/'
+            name = getattr(publisher, 'node_name', '<unknown>')
+            names.append(
+                f'/{name}' if namespace == '/'
+                else f'{namespace.rstrip("/")}/{name}')
+        return names
+
+    def _startup_protection_ready(self, discovery_timeout_s=2.5):
+        """Allow only an empty DDS graph to settle before the first motion."""
+        expected = {
+            '/cmd_vel': 'collision_monitor',
+            '/keepout_filter_mask': 'keepout_filter_mask_server',
+            '/keepout_costmap_filter_info':
+                'keepout_costmap_filter_info_server',
+        }
+        deadline_s = time.monotonic() + discovery_timeout_s
+        while True:
+            missing = None
+            for topic, node_name in expected.items():
+                publishers = self.get_publishers_info_by_topic(topic)
+                actual = self._publisher_names(publishers)
+                if not publishers:
+                    missing = (topic, node_name, actual)
+                    continue
+                if len(publishers) != 1 or publishers[0].node_name != node_name:
+                    return (
+                        f'{topic} publisher must be {node_name} only; '
+                        f'actual={actual}')
+            if missing is None:
+                return None
+            if self.stop_requested or time.monotonic() >= deadline_s:
+                topic, node_name, actual = missing
+                return (
+                    f'{topic} publisher must be {node_name} only; '
+                    f'actual={actual}')
+            rclpy.spin_once(self, timeout_sec=0.05)
+
     def verify_live_maps(self):
         """Require the running map servers to name the registered assets."""
         validate_registry(self.registry)
@@ -306,7 +347,7 @@ class ServiceRoute(CorridorRoute):
             if not isinstance(path, str) or not path:
                 raise RuntimeError(f'{node_name} yaml_filename is not a file')
             verify_identity(identity, path)
-        protection_error = self._revisit_protection_ready()
+        protection_error = self._startup_protection_ready()
         if protection_error:
             raise RuntimeError(protection_error)
 

@@ -75,6 +75,22 @@ def test_physical_candidate_is_accepted():
     assert controller['FollowPath']['rotate_to_heading_min_angle'] >= 1.57
 
 
+def test_explicit_footprint_margin_is_not_padded_twice():
+    from jdamr_cube_navigation.new_base_contract import validate_new_base_params
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    geometry = yaml.safe_load((
+        ROOT / 'jdamr_cube_description/config/new_base_geometry.yaml').read_text())
+    validate_new_base_params(document, geometry)
+    for name in ('local_costmap', 'global_costmap'):
+        params = document[name][name]['ros__parameters']
+        polygon = yaml.safe_load(params['footprint'])
+        assert params['footprint_padding'] == 0.0
+        assert max(p[0] for p in polygon) - geometry[
+            'front_to_wheel_axis']['value'] == pytest.approx(0.02)
+        assert max(p[1] for p in polygon) - geometry[
+            'wheel_outer_width']['value'] / 2 == pytest.approx(0.02)
+
+
 @pytest.mark.parametrize('tamper', [False, True])
 def test_named_saved_map_requires_matching_registry_hashes(tmp_path, tamper):
     from jdamr_cube_navigation.service_destinations import new_registry, save_registry
