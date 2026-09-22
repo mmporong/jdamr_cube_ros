@@ -72,6 +72,7 @@ def test_new_registry_binds_real_map_and_keepout_files(map_files):
         map_files['map_yaml'], map_files['keepout_yaml'])
 
     assert destinations.validate_registry(document) is document
+    assert document['home'] is None
     assert document['tables'] == []
     assert document['map'] == destinations.map_identity(map_files['map_yaml'])
     assert document['keepout'] == destinations.map_identity(
@@ -281,6 +282,40 @@ def test_add_pose_preserves_other_table(registry):
 
     assert updated['tables'][1] == untouched
     assert registry['tables'][1] == untouched
+
+
+def test_home_pose_is_taught_separately_from_tables(registry):
+    """The charging home retains x, y and yaw without changing destinations."""
+    tables = deepcopy(registry['tables'])
+    pose = destinations.taught_pose(
+        'home_dock', (-0.4, 0.2, -math.pi / 2), {'sample': 'home'},
+        approach_offset_m=0.7)
+
+    updated = destinations.set_home_pose(registry, pose)
+
+    assert destinations.home_pose(updated) == pose
+    assert updated['tables'] == tables
+    assert registry.get('home') is None
+
+
+def test_home_pose_requires_explicit_replace_and_unique_id(registry):
+    """A re-teach cannot silently replace home or duplicate a table pose ID."""
+    home = destinations.taught_pose('home_dock', (0, 0, 0), {})
+    updated = destinations.set_home_pose(registry, home)
+    with pytest.raises(ValueError, match='home already taught'):
+        destinations.set_home_pose(updated, home)
+    replacement = destinations.taught_pose('home_dock', (1, 2, 0.4), {})
+    assert destinations.home_pose(
+        destinations.set_home_pose(updated, replacement, replace=True))['x_m'] == 1
+    duplicate = destinations.taught_pose('table_1_primary', (0, 0, 0), {})
+    with pytest.raises(ValueError, match='duplicate service pose ID'):
+        destinations.set_home_pose(registry, duplicate)
+
+
+def test_roundtrip_requires_taught_home(registry):
+    """A table-only registry cannot invent a charging pose."""
+    with pytest.raises(ValueError, match='home is not taught'):
+        destinations.home_pose(registry)
 
 
 def test_route_config_applies_offset_along_taught_yaw(registry):

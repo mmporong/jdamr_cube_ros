@@ -12,7 +12,8 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import (
-    BLOCKED_PLAN_CODES, load_service_contract, parse_args, select_destination, ServiceRoute,
+    BLOCKED_PLAN_CODES, BoxDwell, load_service_contract, parse_args,
+    select_destination, ServiceRoute,
 )
 from jdamr_cube_navigation.service_destinations import route_config, taught_pose
 from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
@@ -138,6 +139,118 @@ def test_teach_parses_gap_without_enabling_motion():
     assert args.target_front_gap_m == 0.05
     assert args.measured_front_gap_m == 0.06
     assert not hasattr(args, 'execute')
+
+
+def test_roundtrip_defaults_to_plan_only_and_twenty_second_box_dwell():
+    """Planning is non-moving by default and retains the agreed station wait."""
+    args = parse_args([
+        'service', 'roundtrip', '--registry', '/tmp/r.yaml',
+        '--table-id', 'table_02', '--log', '/tmp/r.jsonl'])
+    assert not args.execute
+    assert args.dwell_s == 20.0
+    assert args.box_timeout_s == 45.0
+
+
+def test_teach_home_uses_named_dock_without_table_id():
+    """Home teaching is explicit and cannot be confused with a table pose."""
+    args = parse_args([
+        'service', 'teach-home', '--registry', '/tmp/r.yaml',
+        '--log', '/tmp/home.jsonl'])
+    assert args.pose_id == 'home_dock'
+    assert args.approach_offset_m == 0.7
+    assert not hasattr(args, 'table_id')
+    assert not hasattr(args, 'execute')
+
+
+@pytest.mark.parametrize(('dwell', 'timeout'), [
+    ('0', '45'), ('nan', '45'), ('20', '20'), ('20', '10'),
+])
+def test_roundtrip_rejects_invalid_box_wait(dwell, timeout):
+    """A box wait must be positive and finish before its timeout."""
+    with pytest.raises(SystemExit):
+        parse_args([
+            'service', 'roundtrip', '--registry', '/tmp/r.yaml',
+            '--table-id', 'table_02', '--log', '/tmp/r.jsonl',
+            '--dwell-s', dwell, '--box-timeout-s', timeout])
+
+
+def stable_box():
+    return {
+        'detected': True, 'stable': True, 'surface_kind': 'front',
+        'front_distance_m': 0.5, 'lateral_error_m': 0.01,
+        'edge_angle_deg': 1.0,
+    }
+
+
+def test_box_dwell_requires_continuous_fresh_front_detection():
+    """A stale or lost frame resets the full dwell instead of counting gaps."""
+    gate = BoxDwell(2.0, maximum_age_s=0.5)
+    assert gate.observe(1.0, 1.0, stable_box())['hold_s'] == 0.0
+    assert not gate.observe(2.0, 2.0, stable_box())['confirmed']
+    assert gate.observe(3.0, 3.0, stable_box())['confirmed']
+    assert not gate.observe(4.0, 3.0, stable_box())['confirmed']
+    assert gate.observe(5.0, 5.0, stable_box())['hold_s'] == 0.0
+
+
+def test_box_dwell_rejects_top_plane_and_nonfinite_geometry():
+    """The mission waits for a finite front face rather than any depth plane."""
+    gate = BoxDwell(1.0)
+    top = {**stable_box(), 'surface_kind': 'top'}
+    invalid = {**stable_box(), 'edge_angle_deg': math.nan}
+    assert gate.observe(1.0, 1.0, top)['reason'] == 'box_not_stable'
+    assert gate.observe(2.0, 2.0, invalid)['reason'] == 'box_observation_invalid'
+
+
+def test_roundtrip_orders_destination_box_wait_and_home():
+    """Home is attempted only after arrival and the complete box dwell."""
+    node = route()
+    node.registry['home'] = taught_pose('home_dock', (0, 0, 0), {})
+    node.visit = Mock(return_value=True)
+    node.wait_for_box = Mock(return_value=True)
+    node.go_home = Mock(return_value=True)
+    node.emit = Mock()
+    assert node.roundtrip('table_01', execute=True, dwell_s=20, box_timeout_s=45)
+    node.visit.assert_called_once_with('table_01', execute=True)
+    node.wait_for_box.assert_called_once_with(20, 45)
+    node.go_home.assert_called_once_with(execute=True)
+    assert node.emit.call_args.args[0] == 'roundtrip_complete'
+
+
+def test_roundtrip_does_not_leave_destination_after_box_failure():
+    """Missing box evidence prevents an unsupported successful return claim."""
+    node = route()
+    node.registry['home'] = taught_pose('home_dock', (0, 0, 0), {})
+    node.visit = Mock(return_value=True)
+    node.wait_for_box = Mock(return_value=False)
+    node.go_home = Mock()
+    node.emit = Mock()
+    assert not node.roundtrip('table_01', execute=True)
+    node.go_home.assert_not_called()
+    assert node.emit.call_args.kwargs['phase'] == 'box_wait'
+
+
+def test_go_home_plans_taught_pose_and_preserves_yaw_target():
+    """A plan-only home check uses the taught pose and never starts motion."""
+    node = route()
+    home = taught_pose('home_dock', (-0.5, 0.4, -1.2), {},
+                       approach_offset_m=0.7)
+    node.registry['home'] = home
+    node.verify_live_maps = Mock()
+    node.wait_until_ready = Mock(return_value=True)
+    node._parking_parameters_ready = Mock(return_value=True)
+    node.plan_pose = Mock(return_value={'ok': True, 'error_code': 0})
+    node.execute = Mock()
+    node.emit = Mock()
+
+    assert node.go_home(execute=False)
+
+    node.plan_pose.assert_called_once_with(home)
+    node.execute.assert_not_called()
+    selected = next(
+        call for call in node.emit.call_args_list
+        if call.args[0] == 'home_selected')
+    assert selected.kwargs['target_pose'] == [-0.5, 0.4, -1.2]
+    assert node.emit.call_args.args[0] == 'home_planned_only'
 
 
 @pytest.mark.parametrize('options', [
@@ -488,3 +601,19 @@ def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
     context = LaunchContext()
     declaration.execute(context)
     assert context.launch_configurations['discovery_range'] == 'SUBNET'
+
+
+def test_service_launch_keeps_box_observer_explicit():
+    """Ordinary table navigation stays light; round trips opt into RGB-D."""
+    from launch.actions import DeclareLaunchArgument
+    spec = importlib.util.spec_from_file_location(
+        'service_launch_box_observer',
+        PACKAGE / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    description = module.generate_launch_description()
+    declaration = next(
+        action for action in description.entities
+        if isinstance(action, DeclareLaunchArgument)
+        and action.name == 'use_box_observer')
+    assert declaration.default_value[0].text == 'false'

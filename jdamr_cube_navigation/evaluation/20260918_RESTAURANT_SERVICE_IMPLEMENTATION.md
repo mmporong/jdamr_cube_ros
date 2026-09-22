@@ -16,6 +16,21 @@
 측정값은 별도로 남긴다. Depth 상판 인지와 팔 작업 시작은 이번 베이스 도착 판정에
 포함하지 않았다. 카메라가 근거리에서 상판을 계속 볼 수 있다는 가정을 사용하지 않는다.
 
+완성 전 양팔 서빙 로봇의 선행 검증에서는 현재 JD-AMR 베이스를 같은 임무의 축소 실행기로
+사용한다. 새 2D 지도를 만든 뒤 시작 자세를 `home_dock`, 박스가 놓인 지점을 `table_01`,
+`table_02` 같은 이름으로 등록한다. 왕복 명령은 목적지 도착, 전면 박스의 안정 관측과 대기,
+시작 위치·방향 복귀를 순서대로 실행한다. 현재 `home_dock`은 지도 pose 이름이며 실제 충전
+접점, 충전 전류 또는 도킹 센서 성공을 판정하지 않는다.
+
+```text
+Cartographer 지도 생성·저장
+  → 저장 지도 + AMCL + Nav2 기동
+  → home_dock 및 박스 station 교시
+  → station 접근·5cm/3° 내부 자세 확인
+  → Depth 전면 박스 stable 관측을 20초 연속 유지
+  → home_dock 접근·5cm/3° 내부 자세 확인
+```
+
 ## 보존하는 동작
 
 - 기존 footprint, Keepout, Collision Monitor와 센서 상태 확인을 사용한다.
@@ -58,6 +73,26 @@ source "$HOME/jdamr_rgbd_ws/install/setup.bash"
 mkdir -p "$HOME/jdamr_data/service"
 ```
 
+### 0. 먼저 새 지도를 만든다
+
+현재 실차 데이터에서 비교 우세를 확인한 Cartographer를 지도 작성 백엔드로 유지한다.
+하드웨어·Cartographer가 실행된 파이에서 자율 매핑을 띄운 뒤 별도 명령으로 시작한다.
+`frontier_explorer` 단독 실행은 사용하지 않는다.
+
+```bash
+ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=false
+ros2 service call /autonomy/start std_srvs/srv/Trigger '{}'
+```
+
+탐색을 마치면 `stop`이 현재 목표 취소, 정지 확인, 지도 저장을 순서대로 처리한다. 상태의
+`save=succeeded`와 생성된 YAML·PGM을 확인한 뒤에만 저장 지도 주행으로 전환한다.
+
+```bash
+ros2 service call /autonomy/stop std_srvs/srv/Trigger '{}'
+ros2 topic echo --once /frontier_explorer/status
+ls -lt "$HOME"/maps/autonomous_*.yaml "$HOME"/maps/autonomous_*.pgm | head
+```
+
 1. 사용할 지도와 마스크를 지정해 빈 등록부를 만든다. 예시 변수에는 사용 중인 파일의
    전체 경로를 넣는다. 테이블 좌표를 임의의 숫자로 채우지 않는다.
 
@@ -74,8 +109,13 @@ ros2 run jdamr_cube_navigation restaurant_service init \
 ros2 launch jdamr_cube_navigation restaurant_service.launch.py \
   registry:="$HOME/jdamr_data/service/destinations.yaml" \
   params_file:="$SERVICE_NAV2_PARAMS" \
-  navigation_profile:=new_base_candidate
+  navigation_profile:=new_base_candidate \
+  use_box_observer:=true
 ```
+
+`use_box_observer:=true`는 속도 명령을 발행하지 않는 Depth 박스 관측기를 같은 launch에
+포함한다. 카메라 드라이버는 별도로 실행돼 있어야 한다. 단순 목적지 계획·교시만 할 때는
+기본값 `false`로 생략할 수 있지만, 실제 `roundtrip --execute`에는 관측기가 필요하다.
 
 `new_base_candidate`는 기존 launch의 새 차체 지도·마스크 검사(`new_base_` 파일명)를
 유지한다. 이전 복도 지도를 사용하는 세션은 기존처럼 `new_base_revisit_candidate`의
@@ -87,6 +127,20 @@ ros2 launch jdamr_cube_navigation restaurant_service.launch.py \
 `--ros-args -p use_sim_time:=true`를 붙인다. Nav2와 서비스 노드의 시간을 함께 맞춰야 한다.
 
 3. 로봇을 책상 앞 원하는 서비스 위치·방향으로 세우고 교시한다. 이 명령은 이동하지 않는다.
+
+먼저 지도 생성 때 정한 충전소 시작 자세에 로봇을 세우고 위치와 방향을 함께 교시한다.
+
+```bash
+ros2 run jdamr_cube_navigation restaurant_service teach-home \
+  --registry "$HOME/jdamr_data/service/destinations.yaml" \
+  --pose-id home_dock \
+  --log "$HOME/jdamr_data/service/teach_home.jsonl"
+```
+
+실제 충전 장치가 없으므로 이 pose는 귀환 기준점이다. 기체를 같은 방향으로 세운 상태에서
+교시하며, 다시 교시할 때만 `--replace`를 쓴다.
+
+그 다음 로봇을 박스가 있는 목적지 앞에 세우고 목적지를 교시한다.
 
 ```bash
 ros2 run jdamr_cube_navigation restaurant_service teach \
@@ -135,6 +189,30 @@ ros2 run jdamr_cube_navigation restaurant_service go \
   --table-id table_01 --execute \
   --log "$HOME/jdamr_data/service/visit_table01.jsonl"
 ```
+
+목적지 도착부터 박스 확인·대기·충전소 복귀까지 한 번에 실행하려면 `roundtrip`을 사용한다.
+기본값은 이동 없는 전체 경로 계획이며 `--execute`를 붙인 경우에만 움직인다. 목적지에서는
+`/box_parking/perception_status`의 전면 박스가 최신·안정 상태로 20초 연속 유지돼야 복귀한다.
+관측이 끊기면 대기 시간이 처음부터 다시 계산되고, 45초 안에 만족하지 못하면 그 자리에서
+실패 종료해 근거 없는 성공·복귀로 넘어가지 않는다.
+
+```bash
+# 이동 없는 목적지·복귀 경로 확인
+ros2 run jdamr_cube_navigation restaurant_service roundtrip \
+  --registry "$HOME/jdamr_data/service/destinations.yaml" \
+  --table-id table_01 \
+  --log "$HOME/jdamr_data/service/plan_roundtrip_table01.jsonl"
+
+# 실제 왕복
+ros2 run jdamr_cube_navigation restaurant_service roundtrip \
+  --registry "$HOME/jdamr_data/service/destinations.yaml" \
+  --table-id table_01 --dwell-s 20 --box-timeout-s 45 --execute \
+  --log "$HOME/jdamr_data/service/run_roundtrip_table01_$(date +%Y%m%dT%H%M%S).jsonl"
+```
+
+복귀 성공은 `home_arrived`의 `position_error_m ≤ 0.05`, `|yaw_error_rad| ≤ 0.05236`,
+정지 hold 1초가 모두 만족된 경우다. 박스 분류나 목적지 ID를 영상으로 알아내는 기능은
+아니며, 지도에서 선택한 목적지에 박스 형태의 전면이 안정적으로 존재하는지 확인한다.
 
 전체 작업의 최대 시간은 180초다. 이미 존재하는 로그에는 덮어쓰지 않으므로 실행마다 새
 이름을 지정한다. `arrived`는 베이스의 내부 추정 도착을 뜻한다. 팔에는 상판·컵 상태를

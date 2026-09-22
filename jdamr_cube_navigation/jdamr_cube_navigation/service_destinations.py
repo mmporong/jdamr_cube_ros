@@ -85,7 +85,7 @@ def new_registry(map_yaml, keepout_yaml):
     return {
         'schema_version': 1, 'frame_id': 'map', 'robot_base_frame': 'base_link',
         'map': map_identity(map_yaml), 'keepout': map_identity(keepout_yaml),
-        'tables': [],
+        'home': None, 'tables': [],
     }
 
 
@@ -162,6 +162,21 @@ def validate_registry(document, verify_files=True):
                 raise ValueError('target_front_gap_m must be positive')
         if 1 not in priorities:
             raise ValueError('primary pose (priority 1) required')
+    home = document.get('home')
+    if home is not None:
+        if not isinstance(home, dict):
+            raise ValueError('home must be a taught pose or null')
+        home_id = _identifier(home.get('id'))
+        if home_id in pose_ids:
+            raise ValueError('duplicate service pose ID')
+        for key in ('x_m', 'y_m', 'yaw_rad'):
+            _number(home.get(key), key)
+        offset_m = _number(home.get('approach_offset_m'), 'approach_offset_m')
+        if not 0.2 <= offset_m <= 2.0:
+            raise ValueError('approach_offset_m must be between 0.2 and 2.0')
+        teaching = home.get('teaching')
+        if not isinstance(teaching, dict) or teaching.get('source') != 'map_to_base_link_tf':
+            raise ValueError('home must retain teaching provenance')
     return document
 
 
@@ -263,6 +278,23 @@ def add_pose(document, table_id, pose, replace=False):
     poses.append(deepcopy(pose))
     poses.sort(key=lambda item: item['priority'])
     return validate_registry(result)
+
+
+def set_home_pose(document, pose, replace=False):
+    """Register one map-bound charging home without changing table poses."""
+    result = deepcopy(document)
+    if result.get('home') is not None and not replace:
+        raise ValueError('home already taught; use --replace to re-teach it')
+    result['home'] = deepcopy(pose)
+    return validate_registry(result)
+
+
+def home_pose(document):
+    """Return the taught charging home or fail before planning any motion."""
+    pose = document.get('home')
+    if pose is None:
+        raise ValueError('home is not taught')
+    return deepcopy(pose)
 
 
 def candidates(document, table_id):

@@ -13,6 +13,7 @@ from launch.actions import (
     DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction,
     RegisterEventHandler,
 )
+from launch.conditions import IfCondition
 from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -49,8 +50,16 @@ def _configure(context):
             'autostart': 'true',
         }.items(),
     )
+    box_observer = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(str(
+            package / 'launch/depth_box_parking.launch.py')),
+        condition=IfCondition(LaunchConfiguration('use_box_observer')),
+        launch_arguments={
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }.items(),
+    )
     return [RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(function=cleanup)])),
-            navigation]
+            navigation, box_observer]
 
 
 def generate_launch_description():
@@ -64,6 +73,10 @@ def generate_launch_description():
             'navigation_profile', default_value='new_base_candidate',
             choices=['new_base_candidate', 'new_base_revisit_candidate', 'corridor']),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
+        DeclareLaunchArgument(
+            'use_box_observer', default_value='false',
+            choices=['true', 'false'],
+            description='Start the perception-only RGB-D box observer'),
         DeclareLaunchArgument(
             'discovery_range', default_value='SUBNET',
             choices=['LOCALHOST', 'SUBNET'],

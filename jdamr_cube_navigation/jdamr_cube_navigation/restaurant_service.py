@@ -15,9 +15,10 @@ from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.corridor_route import _quaternion_yaw, AMCL_QOS, CorridorRoute
 from jdamr_cube_navigation.parking import load_parking_contract, ParkingHold
 from jdamr_cube_navigation.service_destinations import (
-    add_pose, candidates, front_gap_evidence, grid_signature, load_registry, map_grid_signature,
-    new_registry, route_config,
-    save_registry, taught_pose, validate_gap_measurement, validate_registry, verify_identity,
+    add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
+    map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
+    validate_gap_measurement,
+    validate_registry, verify_identity,
 )
 from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
 from nav_msgs.msg import OccupancyGrid
@@ -26,6 +27,7 @@ from rclpy.parameter import parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from rclpy.signals import SignalHandlerOptions
 from rclpy.utilities import remove_ros_args
+from std_msgs.msg import String
 from tf2_ros import TransformException
 import yaml
 
@@ -60,6 +62,50 @@ def select_destination(poses, plan):
         if result.get('error_code') not in BLOCKED_PLAN_CODES:
             break
     return None, attempts
+
+
+class BoxDwell:
+    """Confirm one continuously fresh, stable box observation window."""
+
+    def __init__(self, dwell_s, maximum_age_s=0.75):
+        if (isinstance(dwell_s, bool) or not isinstance(dwell_s, (int, float))
+                or not math.isfinite(dwell_s) or dwell_s <= 0.0):
+            raise ValueError('box dwell must be finite and positive')
+        if (isinstance(maximum_age_s, bool)
+                or not isinstance(maximum_age_s, (int, float))
+                or not math.isfinite(maximum_age_s) or maximum_age_s <= 0.0):
+            raise ValueError('box observation age must be finite and positive')
+        self.dwell_s = float(dwell_s)
+        self.maximum_age_s = float(maximum_age_s)
+        self.started_s = None
+
+    def observe(self, now_s, received_s, status):
+        """Return a fail-closed hold state for one parsed observer message."""
+        values = (now_s, received_s)
+        if (not isinstance(status, dict)
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) for value in values)
+                or now_s < received_s or now_s - received_s > self.maximum_age_s
+                or status.get('detected') is not True
+                or status.get('stable') is not True
+                or status.get('surface_kind') != 'front'):
+            self.started_s = None
+            return {'confirmed': False, 'hold_s': 0.0, 'reason': 'box_not_stable'}
+        for key in ('front_distance_m', 'lateral_error_m', 'edge_angle_deg'):
+            value = status.get(key)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                self.started_s = None
+                return {'confirmed': False, 'hold_s': 0.0,
+                        'reason': 'box_observation_invalid'}
+        if self.started_s is None:
+            self.started_s = float(now_s)
+        hold_s = max(0.0, float(now_s) - self.started_s)
+        return {
+            'confirmed': hold_s >= self.dwell_s,
+            'hold_s': hold_s,
+            'reason': 'box_dwell_complete' if hold_s >= self.dwell_s else 'box_dwell_active',
+        }
 
 
 class ServiceRoute(CorridorRoute):
@@ -98,12 +144,30 @@ class ServiceRoute(CorridorRoute):
         self.live_grids = {}
         self.expected_grids = {}
         self.map_mismatch = None
+        self.box_status = None
+        self.box_status_received_s = None
+        self.create_subscription(
+            String, '/box_parking/perception_status', self._box_callback, 10)
         for key, topic in (('map', '/map'), ('keepout', '/keepout_filter_mask')):
             self.create_subscription(
                 OccupancyGrid, topic,
                 lambda message, name=key: self._map_callback(name, message), AMCL_QOS)
         self.run_deadline_s = None
         self.create_timer(0.1, self._deadline_tick)
+
+    def _box_callback(self, message):
+        try:
+            document = json.loads(message.data)
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            self.box_status = None
+            self.box_status_received_s = None
+            return
+        if not isinstance(document, dict):
+            self.box_status = None
+            self.box_status_received_s = None
+            return
+        self.box_status = document
+        self.box_status_received_s = time.monotonic()
 
     def _deadline_tick(self):
         if self.run_deadline_s is not None and time.monotonic() >= self.run_deadline_s:
@@ -447,6 +511,75 @@ class ServiceRoute(CorridorRoute):
         self.emit('arrived' if success else 'failed', confirmation=self.confirmation)
         return success
 
+    def wait_for_box(self, dwell_s, timeout_s):
+        """Hold at the destination while the front box remains stably observed."""
+        gate = BoxDwell(dwell_s)
+        if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+                or not math.isfinite(timeout_s) or timeout_s <= dwell_s):
+            raise ValueError('box timeout must be finite and exceed dwell')
+        self.emit('box_wait_started', dwell_s=float(dwell_s), timeout_s=float(timeout_s))
+        deadline_s = time.monotonic() + float(timeout_s)
+        while not self.stop_requested and time.monotonic() < deadline_s:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            result = gate.observe(
+                time.monotonic(), self.box_status_received_s, self.box_status)
+            if result['confirmed']:
+                self.emit('box_wait_complete', **result, observation=self.box_status)
+                return True
+        self.emit('box_wait_failed', reason=(
+            self._guard_failure(False) or 'box_detection_timeout'))
+        return False
+
+    def go_home(self, execute=False, timeout_s=180.0):
+        """Plan and optionally execute the taught home pose with yaw verification."""
+        pose = home_pose(self.registry)
+        self.table_id = 'home_dock'
+        self.pose_id = pose['id']
+        self.selected_pose = pose
+        self.confirmation = None
+        self.run_deadline_s = time.monotonic() + timeout_s
+        self.verify_live_maps()
+        if not self.wait_until_ready(timeout=10.0):
+            raise RuntimeError('navigation data unavailable')
+        if not self._parking_parameters_ready():
+            raise RuntimeError('load the generated Parking controller parameters into Nav2')
+        planned = self.plan_pose(pose)
+        self.emit('home_planning', attempt=planned)
+        if not planned['ok']:
+            self.emit('failed', reason='home_not_planned')
+            return False
+        self.emit('home_selected',
+                  target_pose=[pose[key] for key in ('x_m', 'y_m', 'yaw_rad')],
+                  waypoints=route_config(self.registry, pose)['waypoints'],
+                  xy_tolerance_m=self.parking_contract['xy_tolerance_m'],
+                  yaw_tolerance_rad=self.parking_contract['yaw_tolerance_rad'])
+        if not execute:
+            self.emit('home_planned_only')
+            return True
+        self.verify_live_maps()
+        success = self.execute()
+        self.emit('home_arrived' if success else 'failed', confirmation=self.confirmation)
+        return success
+
+    def roundtrip(self, table_id, execute=False, dwell_s=20.0,
+                  box_timeout_s=45.0):
+        """Visit a box station, hold there, then return to the taught home pose."""
+        home = home_pose(self.registry)
+        self.emit('roundtrip_started', destination_id=table_id,
+                  home_pose=[home[key] for key in ('x_m', 'y_m', 'yaw_rad')],
+                  dwell_s=float(dwell_s))
+        if not self.visit(table_id, execute=execute):
+            self.emit('roundtrip_failed', phase='destination')
+            return False
+        if execute and not self.wait_for_box(dwell_s, box_timeout_s):
+            self.emit('roundtrip_failed', phase='box_wait')
+            return False
+        if not self.go_home(execute=execute):
+            self.emit('roundtrip_failed', phase='home')
+            return False
+        self.emit('roundtrip_complete' if execute else 'roundtrip_planned')
+        return True
+
 
 def parse_args(argv):
     """Keep registry maintenance, read-only planning and execution explicit."""
@@ -458,11 +591,12 @@ def parse_args(argv):
     initialize.add_argument('--registry', type=Path, required=True)
     listing = commands.add_parser('list')
     listing.add_argument('--registry', type=Path, required=True)
-    for command in ('teach', 'go'):
+    for command in ('teach', 'go', 'teach-home', 'roundtrip'):
         subparser = commands.add_parser(command)
         subparser.add_argument('--registry', type=Path, required=True)
-        subparser.add_argument('--table-id', required=True)
         subparser.add_argument('--log', type=Path, required=True)
+        if command != 'teach-home':
+            subparser.add_argument('--table-id', required=True)
         if command == 'teach':
             subparser.add_argument('--pose-id', required=True)
             subparser.add_argument('--priority', type=int, choices=(1, 2), default=1)
@@ -474,8 +608,15 @@ def parse_args(argv):
                                    help='Gap measured at this stationary teaching pose')
             subparser.add_argument('--gap-measurement-note',
                                    help='Measurement method and physical reference')
+        elif command == 'teach-home':
+            subparser.add_argument('--pose-id', default='home_dock')
+            subparser.add_argument('--approach-offset-m', type=float, default=0.7)
+            subparser.add_argument('--replace', action='store_true')
         else:
             subparser.add_argument('--execute', action='store_true')
+            if command == 'roundtrip':
+                subparser.add_argument('--dwell-s', type=float, default=20.0)
+                subparser.add_argument('--box-timeout-s', type=float, default=45.0)
     parsed = parser.parse_args(remove_ros_args(args=argv)[1:])
     if parsed.command == 'teach':
         try:
@@ -486,6 +627,11 @@ def parse_args(argv):
                 raise ValueError('target_front_gap_m must be finite and positive')
         except ValueError as error:
             parser.error(str(error))
+    if parsed.command == 'roundtrip':
+        if (not math.isfinite(parsed.dwell_s) or parsed.dwell_s <= 0.0
+                or not math.isfinite(parsed.box_timeout_s)
+                or parsed.box_timeout_s <= parsed.dwell_s):
+            parser.error('roundtrip box timeout must exceed a positive dwell')
     return parsed
 
 
@@ -515,15 +661,24 @@ def main(args=None):
             for signum in (signal.SIGINT, signal.SIGTERM):
                 handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
             try:
-                if parsed.command == 'teach':
-                    node.table_id, node.pose_id = parsed.table_id, parsed.pose_id
+                if parsed.command in ('teach', 'teach-home'):
+                    table_id = parsed.table_id if parsed.command == 'teach' else 'home_dock'
+                    node.table_id, node.pose_id = table_id, parsed.pose_id
                     node.verify_live_maps()
                     actual_pose, observation = node.capture_stationary_pose()
-                    pose = taught_pose(parsed.pose_id, actual_pose, observation,
-                                       parsed.priority, parsed.approach_offset_m,
-                                       parsed.measured_front_gap_m, parsed.gap_measurement_note,
-                                       parsed.target_front_gap_m)
-                    updated = add_pose(registry, parsed.table_id, pose, parsed.replace)
+                    if parsed.command == 'teach':
+                        pose = taught_pose(parsed.pose_id, actual_pose, observation,
+                                           parsed.priority, parsed.approach_offset_m,
+                                           parsed.measured_front_gap_m,
+                                           parsed.gap_measurement_note,
+                                           parsed.target_front_gap_m)
+                        updated = add_pose(
+                            registry, parsed.table_id, pose, parsed.replace)
+                    else:
+                        pose = taught_pose(
+                            parsed.pose_id, actual_pose, observation,
+                            approach_offset_m=parsed.approach_offset_m)
+                        updated = set_home_pose(registry, pose, parsed.replace)
                     # Detect an intervening edit before replacing the registry.
                     if load_registry(parsed.registry) != registry:
                         raise RuntimeError('registry changed during teaching; capture not saved')
@@ -531,8 +686,12 @@ def main(args=None):
                     node.selected_pose = pose
                     node.emit('taught', pose=pose)
                     ok = True
-                else:
+                elif parsed.command == 'go':
                     ok = node.visit(parsed.table_id, parsed.execute)
+                else:
+                    ok = node.roundtrip(
+                        parsed.table_id, parsed.execute,
+                        parsed.dwell_s, parsed.box_timeout_s)
             except Exception as error:
                 node.emit('failed', reason=f'{type(error).__name__}: {error}')
                 raise
