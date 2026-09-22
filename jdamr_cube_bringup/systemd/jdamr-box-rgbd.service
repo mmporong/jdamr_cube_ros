@@ -1,7 +1,8 @@
 [Unit]
-Description=JD-AMR registered RGB-D camera for box approach
-After=network-online.target
+Description=JD-AMR registered RGB-D camera
+After=network-online.target jdamr-astra-usb-recover.service
 Wants=network-online.target
+Wants=jdamr-astra-usb-recover.service
 Conflicts=jdamr-astra-camera.service
 
 [Service]
