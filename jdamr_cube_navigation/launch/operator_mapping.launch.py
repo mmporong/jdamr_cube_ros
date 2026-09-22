@@ -92,6 +92,16 @@ def generate_launch_description():
             'use_sim_time': False,
         }],
     )
+    preflight = Node(
+        package='jdamr_cube_navigation',
+        executable='operator_mapping_preflight',
+        name='operator_mapping_preflight',
+        output='screen',
+        parameters=[{
+            'use_sim_time': False,
+            'params_file': params_file,
+        }],
+    )
     controller = Node(
         package='jdamr_cube_node',
         executable='web_teleop',
@@ -102,12 +112,13 @@ def generate_launch_description():
             'port': controller_port,
             'profile_label': (
                 'Cartographer 수동 매핑 · 속도 완화 · 충돌 감시 적용'),
+            'require_preflight': True,
         }],
     )
 
     required_nodes = (
         velocity_smoother, collision_monitor, map_saver,
-        lifecycle_manager, controller)
+        lifecycle_manager, preflight, controller)
     shutdown_handlers = [
         RegisterEventHandler(OnProcessExit(
             target_action=node,
@@ -132,5 +143,6 @@ def generate_launch_description():
         collision_monitor,
         map_saver,
         lifecycle_manager,
+        preflight,
         controller,
     ])

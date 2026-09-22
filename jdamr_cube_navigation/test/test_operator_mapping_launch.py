@@ -26,3 +26,9 @@ def test_map_saver_and_required_shutdown_are_present():
     """The map can be saved and a failed required node stops the stack."""
     assert "executable='map_saver_server'" in LAUNCH
     assert 'required operator-mapping process exited' in LAUNCH
+
+
+def test_controller_is_gated_by_live_operator_preflight():
+    """Movement stays blocked until the live graph and sensors pass."""
+    assert "executable='operator_mapping_preflight'" in LAUNCH
+    assert "'require_preflight': True" in LAUNCH

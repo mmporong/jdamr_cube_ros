@@ -76,6 +76,8 @@ setup(
             'jdamr_cube_navigation.depth_obstacle_filter:main',
             'restaurant_service = '
             'jdamr_cube_navigation.restaurant_service:main',
+            'operator_mapping_preflight = '
+            'jdamr_cube_navigation.operator_mapping_preflight:main',
         ],
     },
 )

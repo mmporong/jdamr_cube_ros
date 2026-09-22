@@ -24,7 +24,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 
 DEFAULT_PORT = 8080
 DEFAULT_FRESH_SEC = 0.35  # 이 시간 안에 킵얼라이브 없으면 0 발행
@@ -55,6 +55,8 @@ PAGE = """<!DOCTYPE html>
   #lamp { width:10px; height:10px; border-radius:50%; background:#9aa7b8; }
   #sync.ok #lamp { background:var(--ok); box-shadow:0 0 0 4px #dff4ea; }
   #sync.bad #lamp { background:var(--stop); box-shadow:0 0 0 4px #fde8e8; }
+  #preflight { margin:9px 0 0; color:var(--muted); font-size:.78rem;
+               line-height:1.45; }
   #grid { display:grid; grid-template-columns:repeat(3, 92px);
           grid-template-rows:repeat(3, 84px); gap:10px; justify-content:center;
           padding:22px 16px 14px; }
@@ -63,6 +65,7 @@ PAGE = """<!DOCTYPE html>
            -webkit-user-select:none; user-select:none; cursor:pointer; }
   button:focus-visible { outline:3px solid #8ab7f5; outline-offset:2px; }
   button.on { background:var(--drive); border-color:var(--drive); color:#fff; }
+  button:disabled { opacity:.42; cursor:not-allowed; }
   #stop { background:var(--stop); border-color:var(--stop); color:#fff;
           font-size:.95rem; letter-spacing:.02em; }
   .speed { display:grid; grid-template-columns:auto 1fr auto; gap:12px;
@@ -91,6 +94,7 @@ PAGE = """<!DOCTYPE html>
   <h1>수동 지도 생성 조종기</h1>
   <p id="profile">제어 상태 확인 중</p>
   <div id="sync"><span id="lamp"></span><span id="syncText">파이 응답 확인 중</span></div>
+  <p id="preflight">출발 조건을 확인하고 있습니다.</p>
 </header>
 <div id="grid">
   <span></span><button id="w" aria-label="전진">▲</button><span></span>
@@ -121,6 +125,7 @@ let sequence = 0;
 let pendingRequest = null;
 let latestAck = 0;
 let lastReplyAt = 0;
+let driveReady = false;
 function scale() { return document.getElementById("spd").value / 100; }
 function target() {
   let vx = 0, wz = 0;
@@ -151,7 +156,13 @@ function send() {
     signal:controller.signal,
   }).then(async response => {
     const state = await response.json();
-    if (!response.ok) throw new Error(state.reason || `HTTP ${response.status}`);
+    if (!response.ok) {
+      renderState(state);
+      const direction = (state.reason || "").split(":")[1];
+      const labels = {forward:"전진", backward:"후진", left:"좌회전", right:"우회전"};
+      setSync(false, direction ? `${labels[direction]} 방향 차단` : "출발 조건 차단");
+      return;
+    }
     latestAck = Math.max(latestAck, state.accepted_sequence || 0);
     lastReplyAt = Date.now();
     const elapsed = Math.round(performance.now() - startedAt);
@@ -185,7 +196,23 @@ function renderState(state) {
     : "정지";
   const fresh = state.command_fresh === true;
   const synced = latestAck >= sequence || !held.size;
-  if (fresh && synced)
+  driveReady = state.drive_ready === true;
+  const directions = state.preflight?.checks?.directions || {};
+  const directionKeys = {w:"forward", s:"backward", a:"left", d:"right"};
+  for (const [key, direction] of Object.entries(directionKeys))
+    document.getElementById(key).disabled =
+      !driveReady || directions[direction]?.clear !== true;
+  const blockers = state.preflight?.blockers || [];
+  const blockedDirections = Object.entries(directions)
+    .filter(([, value]) => value?.clear === false)
+    .map(([name]) => ({forward:"전진", backward:"후진", left:"좌회전", right:"우회전"})[name]);
+  document.getElementById("preflight").textContent = driveReady
+    ? (blockedDirections.length
+        ? `출발 조건 PASS · 라이다 차단: ${blockedDirections.join(", ")}`
+        : "출발 조건 PASS · 모든 방향 주행 가능")
+    : (blockers[0] || "출발 조건 확인 중 · 방향 입력 차단");
+  if (!driveReady) setSync(false, "출발 차단 · 원인 확인 중");
+  else if (fresh && synced)
     setSync(true, held.size ? "입력과 파이 명령 동기화" : "연결됨 · 정지 확인");
   else if (!held.size && !moving) setSync(true, "연결됨 · 정지 확인");
   else setSync(false, "명령 동기화 확인 중");
@@ -201,7 +228,7 @@ async function pollState() {
     setSync(false, "파이 연결 끊김 · 자동 정지");
   }
 }
-function press(k){ if(!held.has(k)){ held.add(k); paint(); send(); } }
+function press(k){ if(driveReady && !held.has(k)){ held.add(k); paint(); send(); } }
 function release(k){ if(held.delete(k)){ paint(); send(); } }
 setInterval(() => { if (held.size) send(); }, 100);   // 킵얼라이브
 document.addEventListener("keydown", e => {
@@ -304,6 +331,10 @@ class TeleopNode(Node):
         self.declare_parameter('max_linear', DEFAULT_MAX_LIN)
         self.declare_parameter('max_angular', DEFAULT_MAX_ANG)
         self.declare_parameter('profile_label', '단독 수동 주행')
+        self.declare_parameter('require_preflight', False)
+        self.declare_parameter(
+            'preflight_topic', '/operator_mapping/preflight')
+        self.declare_parameter('preflight_stale_sec', 1.5)
         self.output_topic = str(
             self.get_parameter('output_topic').value)
         self.port = int(self.get_parameter('port').value)
@@ -312,6 +343,10 @@ class TeleopNode(Node):
         self.max_angular = float(self.get_parameter('max_angular').value)
         self.profile_label = str(
             self.get_parameter('profile_label').value)
+        self.require_preflight = bool(
+            self.get_parameter('require_preflight').value)
+        self.preflight_stale_sec = float(
+            self.get_parameter('preflight_stale_sec').value)
         self.pub = self.create_publisher(Twist, self.output_topic, 10)
         # 자동 프로브(motion_probe) 중단 신호. STOP 은 cmd_vel 0 만으로는 부족하다 —
         # 프로브가 15Hz 로 지령을 계속 밀면 우리 0 을 덮어쓰기 때문에, 프로브 자신에게
@@ -322,6 +357,15 @@ class TeleopNode(Node):
         self._wz = 0.0
         self._stamp = 0.0
         self._command_order = CommandOrder(self.fresh_sec)
+        self._preflight = None
+        self._preflight_stamp = 0.0
+        if self.require_preflight:
+            self.create_subscription(
+                String,
+                str(self.get_parameter('preflight_topic').value),
+                self._preflight_status,
+                10,
+            )
         self._publish_guard = self.create_guard_condition(
             self._publish_latest)
         self.create_timer(1.0 / PUB_HZ, self._tick)
@@ -330,6 +374,52 @@ class TeleopNode(Node):
         """Publish an immediate stop and abort any motion probe."""
         self._set_command(0.0, 0.0)
         self.abort_pub.publish(Empty())
+
+    def _preflight_status(self, message):
+        try:
+            document = json.loads(message.data)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(document, dict):
+            return
+        with self._lock:
+            self._preflight = document
+            self._preflight_stamp = time.monotonic()
+
+    def _drive_ready(self, now=None):
+        if not self.require_preflight:
+            return True
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            status = self._preflight
+            age = now - self._preflight_stamp
+        return (
+            isinstance(status, dict)
+            and status.get('ready') is True
+            and 0.0 <= age <= self.preflight_stale_sec
+        )
+
+    def _direction_ready(self, vx, wz):
+        if not self.require_preflight:
+            return True, ''
+        with self._lock:
+            status = self._preflight
+        directions = (
+            status.get('checks', {}).get('directions', {})
+            if isinstance(status, dict) else {})
+        required = []
+        if vx > 1e-9:
+            required.append('forward')
+        elif vx < -1e-9:
+            required.append('backward')
+        if wz > 1e-9:
+            required.append('left')
+        elif wz < -1e-9:
+            required.append('right')
+        for direction in required:
+            if directions.get(direction, {}).get('clear') is not True:
+                return False, direction
+        return True, ''
 
     def _set_command(self, vx, wz):
         linear_x, angular_z = scaled_command(
@@ -343,11 +433,18 @@ class TeleopNode(Node):
     def set_cmd(self, vx, wz, client_id='', sequence=0):
         """Accept only a newer command from the active browser client."""
         now = time.monotonic()
+        requested_motion = abs(float(vx)) > 1e-9 or abs(float(wz)) > 1e-9
+        if requested_motion and not self._drive_ready(now):
+            return False, 'preflight_not_ready'
+        direction_ready, blocked_direction = self._direction_ready(
+            float(vx), float(wz))
+        if requested_motion and not direction_ready:
+            return False, f'direction_blocked:{blocked_direction}'
         with self._lock:
             if not self._command_order.accept(client_id, sequence, now):
-                return False
+                return False, 'stale_or_inactive_client'
             self._set_command(vx, wz)
-        return True
+        return True, ''
 
     def snapshot(self):
         """Return the command state acknowledged by the ROS-side node."""
@@ -358,13 +455,33 @@ class TeleopNode(Node):
             vx = self._vx if fresh else 0.0
             wz = self._wz if fresh else 0.0
             accepted_sequence = self._command_order.sequence
+            preflight = self._preflight
+            preflight_age = (
+                None if not self._preflight_stamp
+                else now - self._preflight_stamp)
+        drive_ready = self._drive_ready(now)
+        if self.require_preflight and not drive_ready:
+            if isinstance(preflight, dict):
+                preflight = dict(preflight)
+                blockers = list(preflight.get('blockers') or [])
+                if (preflight_age is None
+                        or preflight_age > self.preflight_stale_sec):
+                    blockers.insert(0, '출발 점검 상태 수신 지연')
+                preflight['blockers'] = blockers
+            else:
+                preflight = {
+                    'ready': False,
+                    'blockers': ['출발 점검 대기'],
+                }
         return {
             'accepted_sequence': accepted_sequence,
             'angular_z': wz,
             'command_age_ms': None if age is None else round(age * 1000.0),
             'command_fresh': fresh,
+            'drive_ready': drive_ready,
             'linear_x': vx,
             'output_topic': self.output_topic,
+            'preflight': preflight,
             'profile_label': self.profile_label,
             'subscriber_count': self.pub.get_subscription_count(),
         }
@@ -442,14 +559,14 @@ def main():
             try:
                 n = int(self.headers.get('Content-Length', 0))
                 d = json.loads(self.rfile.read(n) or b'{}')
-                accepted = node.set_cmd(
+                accepted, reason = node.set_cmd(
                     d.get('vx', 0), d.get('wz', 0),
                     str(d.get('client_id', '')),
                     int(d.get('sequence', 0)))
                 state = node.snapshot()
                 state['accepted'] = accepted
                 if not accepted:
-                    state['reason'] = 'stale_or_inactive_client'
+                    state['reason'] = reason
                 body = json.dumps(state).encode()
                 self.send_response(200 if accepted else 409)
                 self.send_header('Content-Type', 'application/json')
