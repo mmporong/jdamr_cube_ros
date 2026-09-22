@@ -286,6 +286,137 @@ def test_go_home_plans_taught_pose_and_preserves_yaw_target():
     assert node.emit.call_args.args[0] == 'home_planned_only'
 
 
+def serving_route():
+    """Prepare an explicitly taught home and one table without ROS hardware."""
+    node = route()
+    node.registry['home'] = taught_pose('home_dock', (0, 0, 0), {})
+    node.registry['tables'] = [{
+        'table_id': 'table_01', 'enabled': True,
+        'service_poses': [taught_pose('table_01_main', (1, 0, 1.57), {})],
+    }]
+    return node
+
+
+@pytest.mark.parametrize('failed_step', [None, 0, 1, 2, 3, 4])
+def test_serving_sequence_stops_at_each_failed_phase(failed_step):
+    """No later goal is dispatched after failed parking or incomplete dwell."""
+    node = serving_route()
+    calls = []
+
+    def step(name):
+        calls.append(name)
+        return len(calls) - 1 != failed_step
+
+    node.go_home = lambda execute: step('home')
+    node.visit = lambda table_id, execute: step(table_id)
+    node.wait_parked = lambda seconds: step(('wait', seconds))
+    node.emit = Mock()
+    assert node.serve('table_01', execute=True) is (failed_step is None)
+    expected = ['home', ('wait', 5.0), 'table_01', ('wait', 5.0), 'home']
+    assert calls == (expected if failed_step is None else expected[:failed_step + 1])
+    assert node.emit.call_args.args[0] == (
+        'serving_complete' if failed_step is None else 'serving_failed')
+
+
+def test_serving_rejects_unknown_table_before_initial_home_motion():
+    """A wrong destination cannot move the robot toward home first."""
+    node = serving_route()
+    node.go_home = Mock()
+    with pytest.raises(ValueError, match='unknown table'):
+        node.serve('absent', execute=True)
+    node.go_home.assert_not_called()
+
+
+def test_serving_plan_skips_dwell_and_never_enables_execution():
+    """Preview checks endpoints and never claims a physical completed task."""
+    node = serving_route()
+    node.go_home = Mock(return_value=True)
+    node.visit = Mock(return_value=True)
+    node.wait_parked = Mock()
+    node.emit = Mock()
+    assert node.serve('table_01')
+    assert all(call.kwargs == {'execute': False}
+               for call in node.go_home.call_args_list)
+    node.visit.assert_called_once_with('table_01', execute=False)
+    node.wait_parked.assert_not_called()
+    assert node.emit.call_args.args[0] == 'serving_plan_checks_complete'
+
+
+def test_serving_operator_stop_prevents_next_goal():
+    """An operator stop during dwell never launches the table transit."""
+    node = serving_route()
+    node.go_home = Mock(return_value=True)
+    node.visit = Mock()
+
+    def hold(_seconds):
+        node.stop_requested = True
+        return True
+
+    node.wait_parked = hold
+    assert not node.serve('table_01', execute=True)
+    node.visit.assert_not_called()
+
+
+def test_serve_cli_selects_one_table_and_defaults_to_no_motion():
+    """The new workflow does not require a kitchen or pouring argument."""
+    args = parse_args(['service', 'serve', '--registry', '/tmp/r.yaml',
+                       '--table-id', 'table_01', '--log', '/tmp/s.jsonl'])
+    assert args.command == 'serve' and not args.execute
+    assert args.table_id == 'table_01'
+
+
+def test_wait_parked_uses_selected_pose_and_clears_previous_deadline():
+    """The dwell checks the taught yaw and does not inherit transit timeout."""
+    node = serving_route()
+    node.selected_pose = node.registry['tables'][0]['service_poses'][0]
+    node.run_deadline_s = 1.0
+    node._verify_parking_stop = Mock(return_value=True)
+    assert node.wait_parked(5.0)
+    assert node.run_deadline_s is None
+    node._verify_parking_stop.assert_called_once_with(
+        1, {'x': 1.0, 'y': 0.0, 'yaw': 1.57}, None, hold_s=5.0)
+
+
+@pytest.mark.parametrize('fresh', [True, False])
+def test_dwell_real_verifier_and_event_writer_without_action_handle(monkeypatch, fresh):
+    """Both dwell outcomes must log without inventing a completed goal handle."""
+    node = serving_route()
+    node.selected_pose = node.registry['tables'][0]['service_poses'][0]
+    node.parking_motion_revision = 0
+    node.parking_odom = None
+    node.parking_observation_diagnostics = None
+    clock = {'tick': 0}
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.corridor_route.time.monotonic',
+        lambda: clock['tick'] * 0.25)
+
+    def spin_once(_node, timeout_sec):
+        if timeout_sec:
+            clock['tick'] += 1
+            node.parking_odom = (
+                clock['tick'] * 0.25,
+                SimpleNamespace(sec=clock['tick'], nanosec=0), 0.0, 0.0)
+
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.corridor_route.rclpy.spin_once', spin_once)
+    node._parking_observation = lambda: {
+        'actual_pose': (1.0, 0.0, 1.57),
+        'linear_mps': 0.0, 'angular_radps': 0.0,
+        'cmd_linear_mps': 0.0, 'cmd_angular_radps': 0.0,
+        'sample_age_s': 0.01 if fresh else 1.0,
+    }
+    assert node.wait_parked(5.0) is fresh
+    records = [json.loads(line) for line in node.result_stream.getvalue().splitlines()]
+    assert [record['event'] for record in records] == [
+        'parked_dwell_started', 'parked_dwell_observation',
+        'parked_dwell_complete' if fresh else 'parked_dwell_failed',
+    ]
+    assert records[1]['goal_uuid'] is None
+    assert records[1]['confirmed'] is fresh
+    assert records[2]['confirmation']['confirmed'] is fresh
+    assert clock['tick'] * 0.25 >= 5.0
+
+
 @pytest.mark.parametrize('options', [
     ['--measured-front-gap-m', '0.05'], ['--gap-measurement-note', 'ruler'],
     ['--target-front-gap-m', 'nan'], ['--target-front-gap-m', '-1'],

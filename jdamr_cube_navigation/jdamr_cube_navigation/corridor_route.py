@@ -720,9 +720,15 @@ class CorridorRoute(Node):
             'sample_age_s': max(ages_s),
         }
 
-    def _verify_parking_stop(self, index, waypoint, handle):
+    def _verify_parking_stop(self, index, waypoint, handle, hold_s=None):
         """Confirm a bounded stationary pose window after Nav2 succeeds."""
-        contract = self.parking_contract
+        contract = dict(self.parking_contract)
+        if hold_s is not None:
+            if (isinstance(hold_s, bool) or not isinstance(hold_s, (int, float))
+                    or not math.isfinite(hold_s) or hold_s <= 0.0):
+                raise ValueError('parking dwell must be finite and positive')
+            contract['hold_s'] = float(hold_s)
+            contract['observation_timeout_s'] += float(hold_s)
         gate = ParkingHold(contract)
         deadline_s = time.monotonic() + contract['observation_timeout_s']
         last_stamp = None

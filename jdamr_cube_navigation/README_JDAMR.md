@@ -41,6 +41,29 @@ export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=false
 ```
 
+## 충전소 출발·단일 테이블 서빙
+
+`restaurant_service serve`는 충전소 정밀주차 → 5초 정지 유지 → 선택 테이블
+정밀주차 → 5초 정지 유지 → 동일 충전소 pose 복귀 순서로 동작한다. 물 따르기
+단계는 포함하지 않는다. 대기 중 위치·각도 이탈이나 움직임이 관측되면 대기 시간을
+다시 계산하고, 제한 시간 안에 정지가 확인되지 않으면 다음 지점으로 출발하지 않는다.
+충전소 또는 선택 테이블이 등록되지 않았으면 첫 이동 전에 종료한다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_ws/install/setup.bash"
+ros2 run jdamr_cube_navigation restaurant_service serve \
+  --registry "$HOME/jdamr_data/maps/20260922_manual_final_run2/service_destinations.yaml" \
+  --table-id table_01 --log "$HOME/jdamr_data/serve_table_01_plan.jsonl"
+```
+
+기본 명령은 현재 위치에서 목적지별 계획을 확인하며 이동하거나 대기하지 않는다.
+실행은 새 로그 경로와 `--execute`를 지정한다. 충전소와 테이블은 `teach-home`과
+`teach`로 각각 최종 위치·방향을 등록해야 한다. 이미지의 색상 영역 중심을
+정밀주차 pose로 간주하지 않는다. 1번 테이블의 90도 방향과 2번의 정면 방향은
+각각 교시한 최종 yaw에 담는다. 현재 기능은 지도 기반 주차 추정이며, 박스 면을
+센서로 추종해 차체 앞 간격 5cm를 보장하거나 충전을 감지하는 기능은 아니다.
+
 ## Depth 박스 정밀주차 관측
 
 2026-09-21 박스 전용 접근 실행부와 반복 출발 검증 절차를 폐기했다.

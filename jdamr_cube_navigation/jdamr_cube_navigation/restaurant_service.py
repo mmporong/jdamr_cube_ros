@@ -235,6 +235,15 @@ class ServiceRoute(CorridorRoute):
         self.get_logger().info('service_event ' + payload)
 
     def _route_event(self, event, route_index, handle, **fields):
+        if handle is None:
+            if event not in ('parking_estimate_confirmed', 'parking_not_confirmed'):
+                raise ValueError('goal lifecycle events require a goal handle')
+            # Dwell is an observation window, not another Nav2 action goal.
+            self.confirmation = fields
+            self.emit('parked_dwell_observation', observation_event=event,
+                      goal_uuid=None, waypoint_id=self.waypoints[route_index]['id'],
+                      **fields)
+            return
         super()._route_event(event, route_index, handle, **fields)
         if event == 'accepted':
             self.active_handle = handle
@@ -561,6 +570,48 @@ class ServiceRoute(CorridorRoute):
         self.emit('home_arrived' if success else 'failed', confirmation=self.confirmation)
         return success
 
+    def wait_parked(self, dwell_s=5.0):
+        """Count dwell only while the selected pose remains stopped and aligned."""
+        if self.selected_pose is None:
+            raise ValueError('parking dwell requires a selected destination')
+        index = len(self.waypoints) - 1
+        pose = self.selected_pose
+        waypoint = {'x': pose['x_m'], 'y': pose['y_m'], 'yaw': pose['yaw_rad']}
+        # A navigation deadline must not expire during the subsequent dwell.
+        self.run_deadline_s = None
+        self.emit('parked_dwell_started', dwell_s=dwell_s)
+        success = self._verify_parking_stop(index, waypoint, None, hold_s=dwell_s)
+        self.emit('parked_dwell_complete' if success else 'parked_dwell_failed',
+                  dwell_s=dwell_s, confirmation=self.confirmation)
+        return success
+
+    def serve(self, table_id, execute=False):
+        """Dock at home, hold five seconds, serve one table, then dock home."""
+        # Resolve every required destination before dispatching the first goal.
+        home_pose(self.registry)
+        candidates(self.registry, table_id)
+        self.emit('serving_started', selected_table=table_id, dwell_s=5.0,
+                  pour_stage=False, execute=execute)
+        steps = [
+            ('initial_home', lambda: self.go_home(execute=execute)),
+            ('home_dwell', lambda: self.wait_parked(5.0) if execute else True),
+            ('table', lambda: self.visit(table_id, execute=execute)),
+            ('table_dwell', lambda: self.wait_parked(5.0) if execute else True),
+            ('return_home', lambda: self.go_home(execute=execute)),
+        ]
+        for phase, action in steps:
+            if self.stop_requested:
+                self.emit('serving_failed', phase=phase, reason='operator_or_timeout')
+                return False
+            self.emit('serving_phase_started', phase=phase)
+            if not action():
+                self.emit('serving_failed', phase=phase)
+                return False
+        self.run_deadline_s = None
+        self.emit('serving_complete' if execute else 'serving_plan_checks_complete',
+                  selected_table=table_id, physical_accuracy='NOT_MEASURED')
+        return True
+
     def roundtrip(self, table_ids, execute=False, dwell_s=20.0,
                   box_timeout_s=45.0):
         """Visit selected box stations in order, then return to taught home."""
@@ -602,7 +653,7 @@ def parse_args(argv):
     initialize.add_argument('--registry', type=Path, required=True)
     listing = commands.add_parser('list')
     listing.add_argument('--registry', type=Path, required=True)
-    for command in ('teach', 'go', 'teach-home', 'roundtrip'):
+    for command in ('teach', 'go', 'teach-home', 'roundtrip', 'serve'):
         subparser = commands.add_parser(command)
         subparser.add_argument('--registry', type=Path, required=True)
         subparser.add_argument('--log', type=Path, required=True)
@@ -705,6 +756,8 @@ def main(args=None):
                     ok = True
                 elif parsed.command == 'go':
                     ok = node.visit(parsed.table_id, parsed.execute)
+                elif parsed.command == 'serve':
+                    ok = node.serve(parsed.table_id, parsed.execute)
                 else:
                     ok = node.roundtrip(
                         parsed.table_ids, parsed.execute,

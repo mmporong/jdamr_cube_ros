@@ -217,13 +217,14 @@ def test_odometry_excursion_is_not_erased_by_a_later_stopped_sample():
     assert route.parking_odom[2:] == (0.0, 0.0)
 
 
+@pytest.mark.parametrize('hold_s', [None, 5.0])
 @pytest.mark.parametrize('scenario,confirmed,earliest_s', [
     ('steady', True, 1.25), ('excursion', True, 1.75),
     ('regression', True, 2.0), ('stale_tf', False, 5.0),
     ('duplicate_stamp', False, 5.0),
 ])
 def test_real_post_goal_verifier_observation_sequences(
-        monkeypatch, scenario, confirmed, earliest_s):
+        monkeypatch, scenario, confirmed, earliest_s, hold_s):
     """Drive the actual verifier with fake callbacks, not a mocked verdict."""
     route = _route()
     route.parking_motion_revision = 0
@@ -258,8 +259,11 @@ def test_real_post_goal_verifier_observation_sequences(
         'sample_age_s': 1.0 if scenario == 'stale_tf' else 0.01,
     }
     assert CorridorRoute._verify_parking_stop(
-        route, 1, target, SimpleNamespace()) is confirmed
+        route, 1, target, SimpleNamespace(), hold_s=hold_s) is confirmed
     assert clock['now_s'] >= earliest_s
+    if hold_s is not None:
+        assert clock['now_s'] >= earliest_s + (4.0 if confirmed else 5.0)
+    assert route.parking_contract['hold_s'] == 1.0
     event = route._route_event.call_args
     assert event.args[0] == (
         'parking_estimate_confirmed' if confirmed else 'parking_not_confirmed')
