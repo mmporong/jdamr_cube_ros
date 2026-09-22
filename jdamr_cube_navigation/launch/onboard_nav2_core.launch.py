@@ -19,6 +19,7 @@ from jdamr_cube_navigation.mobile_manipulator_protection import (
 )
 from jdamr_cube_navigation.nav2_liveness_guard import DEFAULT_REQUIRED
 from jdamr_cube_navigation.new_base_contract import validate_new_base_params
+from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.actions import RegisterEventHandler, SetEnvironmentVariable
@@ -167,7 +168,13 @@ def _validate_new_base_params(context, revisit=False):
         _validate_revisit_reference(context)
     elif not (map_name.startswith('new_base_')
               and mask_name.startswith('new_base_')):
-        raise RuntimeError('new-base profile requires a new-base map and mask')
+        registry_path = LaunchConfiguration('asset_registry', default='').perform(context)
+        if not registry_path:
+            raise RuntimeError('new-base profile requires a new-base map and mask')
+        registry = load_registry(registry_path)
+        verify_identity(registry['map'], LaunchConfiguration('map').perform(context))
+        verify_identity(registry['keepout'],
+                        LaunchConfiguration('keepout_mask').perform(context))
     params_path = Path(os.path.expanduser(
         LaunchConfiguration('params_file').perform(context)))
     params = yaml.safe_load(params_path.read_text(encoding='utf-8'))
@@ -449,6 +456,8 @@ def generate_launch_description():
             default_value=os.path.join(
                 package_share, 'config', 'nav2_params.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
+        DeclareLaunchArgument('asset_registry', default_value='',
+                              description='Hash-bound named map and keepout registry'),
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument('revisit_initial_x', default_value='0.0'),
         DeclareLaunchArgument('revisit_initial_y', default_value='-0.1'),

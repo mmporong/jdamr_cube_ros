@@ -27,6 +27,25 @@ def test_trinary_pgm_matches_ros_grid_row_order_and_float_resolution(tmp_path):
         2, 2, 0.05, (1.1, -2.0, 0.3), [-1, 100, 100, 0])
 
 
+@pytest.mark.parametrize('yaw', [0.0, math.pi / 2, math.pi])
+def test_reverse_home_staging_is_in_front_of_taught_robot(registry, yaw):
+    pose = destinations.taught_pose('home_dock', (1.0, 2.0, yaw), {})
+    pose['parking_direction'] = 'reverse'
+    updated = destinations.set_home_pose(registry, pose)
+    route = destinations.route_config(updated, updated['home'])
+    approach, target = route['waypoints']
+    assert approach['x'] == pytest.approx(1.0 + .5 * math.cos(yaw))
+    assert approach['y'] == pytest.approx(2.0 + .5 * math.sin(yaw))
+    assert approach['yaw'] == target['yaw'] == yaw
+
+
+def test_home_rejects_invalid_parking_direction(registry):
+    pose = destinations.taught_pose('home_dock', (0.0, 0.0, 0.0), {})
+    pose['parking_direction'] = 'sideways'
+    with pytest.raises(ValueError, match='parking_direction'):
+        destinations.set_home_pose(registry, pose)
+
+
 @pytest.fixture
 def map_files(tmp_path):
     """Create real map and keepout YAML/image assets."""

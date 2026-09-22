@@ -36,21 +36,23 @@ REVISIT_BT = (ROOT / 'jdamr_cube_navigation/behavior_trees/'
 
 
 def _load_validator(path, map_name='new_base_live_20260915T1407.yaml',
-                    mask_name='new_base_live_20260915T1407_keepout.yaml'):
+                    mask_name='new_base_live_20260915T1407_keepout.yaml', registry=''):
     spec = importlib.util.spec_from_file_location('new_base_launch', LAUNCH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
     class FixedConfiguration:
-        def __init__(self, name):
+        def __init__(self, name, default=None):
             self.name = name
+            self.default = default
 
         def perform(self, _context):
             return {
                 'params_file': str(path),
                 'map': map_name,
                 'keepout_mask': mask_name,
-            }[self.name]
+                'asset_registry': registry,
+            }.get(self.name, self.default)
 
     module.LaunchConfiguration = FixedConfiguration
     module.get_package_share_directory = lambda _name: str(
@@ -71,6 +73,47 @@ def test_physical_candidate_is_accepted():
     assert controller['progress_checker']['required_movement_angle'] == 0.10
     assert controller['progress_checker']['movement_time_allowance'] == 10.0
     assert controller['FollowPath']['rotate_to_heading_min_angle'] >= 1.57
+
+
+@pytest.mark.parametrize('tamper', [False, True])
+def test_named_saved_map_requires_matching_registry_hashes(tmp_path, tamper):
+    from jdamr_cube_navigation.service_destinations import new_registry, save_registry
+    paths = []
+    for name in ('manual_map', 'manual_mask'):
+        image = tmp_path / (name + '.pgm')
+        image.write_bytes(b'P5\n2 2\n255\n' + bytes([254] * 4))
+        metadata = tmp_path / (name + '.yaml')
+        metadata.write_text(yaml.safe_dump({
+            'image': image.name, 'resolution': .05, 'origin': [0.0, 0.0, 0.0],
+            'negate': 0, 'occupied_thresh': .65, 'free_thresh': .196}))
+        paths.append(metadata)
+    registry = tmp_path / 'destinations.yaml'
+    save_registry(registry, new_registry(*paths))
+    validator = _load_validator(PARAMS, str(paths[0]), str(paths[1]), str(registry))
+    if tamper:
+        (tmp_path / 'manual_mask.pgm').write_bytes(b'P5\n2 2\n255\n' + bytes([0] * 4))
+        with pytest.raises(ValueError, match='mismatch'):
+            validator(None)
+    else:
+        assert validator(None) == []
+
+
+@pytest.mark.parametrize('minimum,valid', [(-.08, True), (0.0, False), (-.09, False)])
+def test_reverse_profile_requires_matching_bounded_smoother(tmp_path, minimum, valid):
+    from jdamr_cube_navigation.parking import load_parking_contract, parking_controller_overrides
+    from jdamr_cube_navigation.reverse_parking import reverse_controller_overrides
+    document = yaml.safe_load(PARAMS.read_text())
+    contract = load_parking_contract(ROOT / 'jdamr_cube_navigation/config/parking_contract.yaml')
+    document['controller_server']['ros__parameters'] = reverse_controller_overrides(
+        parking_controller_overrides(document, contract))
+    document['velocity_smoother']['ros__parameters']['min_velocity'][0] = minimum
+    path = tmp_path / 'reverse.yaml'
+    path.write_text(yaml.safe_dump(document))
+    if valid:
+        assert _load_validator(path)(None) == []
+    else:
+        with pytest.raises(RuntimeError, match='reverse'):
+            _load_validator(path)(None)
 
 
 def test_stop_zone_has_requested_geometric_margin():

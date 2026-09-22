@@ -64,6 +64,32 @@ ros2 run jdamr_cube_navigation restaurant_service serve \
 각각 교시한 최종 yaw에 담는다. 현재 기능은 지도 기반 주차 추정이며, 박스 면을
 센서로 추종해 차체 앞 간격 5cm를 보장하거나 충전을 감지하는 기능은 아니다.
 
+### 충전소 후면 주차
+
+충전소 pose에 `parking_direction: reverse`를 지정하면 최종 자세의 앞쪽에
+접근 지점을 만든다. 접근 지점에서 위치·방향·정지를 확인한 뒤, 실제 자세부터
+충전소까지 2.5cm 이하 간격의 후진 경로를 생성한다. `ParkingReverse`는
+기존 `Parking`을 복사하되 후진을 허용하고 제자리 방향 전환을 끈 별도 RPP
+컨트롤러다. `FollowPath` 명령은 기존 속도 평활화·충돌 방지·모터 경로를 거친다.
+
+후진 전 등록 지도와 Keepout에서 차체 외곽 전체를 검사하며, 미관측 셀과 지도
+밖도 통과시키지 않는다. 이후 Nav2의 실시간 비용맵 경로 검사와 제어기 충돌
+검사를 거친다. 이미 충전소 자세에 있으면 정지를 확인하고 불필요한 재진입은
+하지 않는다. 실패·취소 시 다음 미션으로 진행하지 않는다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_ws/install/setup.bash"
+ros2 run jdamr_cube_navigation restaurant_service home \
+  --registry "$HOME/jdamr_data/maps/20260922_manual_final_run2/service_destinations.yaml" \
+  --log "$HOME/jdamr_data/home_reverse_plan.jsonl"
+```
+
+위 명령은 계획 확인만 한다. 실행은 별도 로그와 `--execute`가 필요하다.
+후진 정렬·방향·거리 조건은 소프트웨어 검증 대상이며, 실차 반복 주차 오차나
+충전 접점 결합을 검증한 결과가 아니다. 전방 RGB-D는 후방 관측을 대신하지 않는다.
+후면 주차 시에도 지도·라이다 기반 충돌 방지를 유지한다.
+
 ## Depth 박스 정밀주차 관측
 
 2026-09-21 박스 전용 접근 실행부와 반복 출발 검증 절차를 폐기했다.

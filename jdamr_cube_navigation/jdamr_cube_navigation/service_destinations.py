@@ -139,6 +139,8 @@ def validate_registry(document, verify_files=True):
         for pose in poses:
             if not isinstance(pose, dict):
                 raise ValueError('service pose must be a mapping')
+            if pose.get('parking_direction', 'forward') != 'forward':
+                raise ValueError('table service poses require forward parking')
             pose_id = _identifier(pose.get('id'))
             if pose_id in pose_ids:
                 raise ValueError('duplicate service pose ID')
@@ -166,6 +168,8 @@ def validate_registry(document, verify_files=True):
     if home is not None:
         if not isinstance(home, dict):
             raise ValueError('home must be a taught pose or null')
+        if home.get('parking_direction', 'forward') not in ('forward', 'reverse'):
+            raise ValueError('home parking_direction must be forward or reverse')
         home_id = _identifier(home.get('id'))
         if home_id in pose_ids:
             raise ValueError('duplicate service pose ID')
@@ -311,6 +315,11 @@ def route_config(document, pose):
     """Build transit approach and final service pose using the taught yaw."""
     x_m, y_m, yaw_rad = (pose[key] for key in ('x_m', 'y_m', 'yaw_rad'))
     offset_m = pose['approach_offset_m']
+    direction = pose.get('parking_direction', 'forward')
+    if direction not in ('forward', 'reverse'):
+        raise ValueError('parking_direction must be forward or reverse')
+    if direction == 'reverse':
+        offset_m = -offset_m
     return {
         'frame_id': document['frame_id'],
         'waypoints': [

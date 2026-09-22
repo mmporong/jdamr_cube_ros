@@ -322,9 +322,26 @@ def validate_new_base_params(params, geometry):
     smoother = params['velocity_smoother']['ros__parameters']
     if smoother['max_velocity'][0] > 0.08:
         raise RuntimeError('new-base forward speed exceeds uncalibrated limit')
-    if smoother['min_velocity'][0] < 0.0:
-        raise RuntimeError('new-base autonomous profile cannot reverse')
     controller = params['controller_server']['ros__parameters']
+    reverse = controller.get('ParkingReverse')
+    minimum_velocity = smoother['min_velocity'][0]
+    if (type(minimum_velocity) not in (int, float)
+            or not math.isfinite(minimum_velocity)):
+        raise RuntimeError('new-base reverse velocity must be finite')
+    if reverse is None:
+        if minimum_velocity < 0.0:
+            raise RuntimeError('new-base autonomous profile cannot reverse')
+    elif (not isinstance(reverse, dict)
+          or 'ParkingReverse' not in controller.get('controller_plugins', [])
+          or reverse.get('allow_reversing') is not True
+          or reverse.get('use_rotate_to_heading') is not False
+          or reverse.get('use_collision_detection') is not True
+          or type(reverse.get('desired_linear_vel')) not in (int, float)
+          or not math.isfinite(reverse['desired_linear_vel'])
+          or not -0.08 <= minimum_velocity < 0.0
+          or not math.isclose(minimum_velocity, -reverse['desired_linear_vel'],
+                              abs_tol=1e-9)):
+        raise RuntimeError('new-base reverse parking controller/smoother mismatch')
     progress = controller['progress_checker']
     if (progress['plugin'] != 'nav2_controller::PoseProgressChecker'
             or progress.get('required_movement_angle') != 0.10):

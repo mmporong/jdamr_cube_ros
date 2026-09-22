@@ -1,6 +1,7 @@
 """Teach and visit named table service poses with existing Nav2 parking."""
 
 import argparse
+import ast
 import json
 import math
 from pathlib import Path
@@ -13,16 +14,19 @@ from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.corridor_route import _quaternion_yaw, AMCL_QOS, CorridorRoute
-from jdamr_cube_navigation.parking import load_parking_contract, ParkingHold
+from jdamr_cube_navigation.parking import load_parking_contract, ParkingHold, pose_errors
+from jdamr_cube_navigation.reverse_parking import reverse_waypoints, static_corridor_clear
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
     map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
     validate_gap_measurement,
     validate_registry, verify_identity,
 )
-from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
-from nav_msgs.msg import OccupancyGrid
+from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose
+from nav2_msgs.srv import IsPathValid
+from nav_msgs.msg import OccupancyGrid, Path as RosPath
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.parameter import parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from rclpy.signals import SignalHandlerOptions
@@ -134,6 +138,13 @@ class ServiceRoute(CorridorRoute):
             CancelGoal, 'navigate_to_pose/_action/cancel_goal')
         self.query_navigation = self.create_client(
             NavigateToPose.Impl.GetResultService, 'navigate_to_pose/_action/get_result')
+        self.follow_reverse = ActionClient(self, FollowPath, 'follow_path')
+        self.cancel_reverse = self.create_client(
+            CancelGoal, 'follow_path/_action/cancel_goal')
+        self.query_reverse = self.create_client(
+            FollowPath.Impl.GetResultService, 'follow_path/_action/get_result')
+        self.validate_reverse_path = self.create_client(IsPathValid, 'is_path_valid')
+        self.active_action_type = NavigateToPose
         self.amcl_yaw_covariance_rad2 = None
         package = Path(get_package_share_directory('jdamr_cube_navigation'))
         self.service_contract = load_service_contract(
@@ -295,10 +306,12 @@ class ServiceRoute(CorridorRoute):
         if protection_error:
             raise RuntimeError(protection_error)
 
-    def plan_pose(self, pose):
+    def plan_pose(self, pose, single=False):
         """Validate the entire approach before dispatching any motion goal."""
         self.pose_id = pose['id']
         self.config = route_config(self.registry, pose)
+        if single:
+            self.config['waypoints'] = self.config['waypoints'][-1:]
         self.waypoints = self.config['waypoints']
         if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
             return {'ok': False, 'reason': 'navigation_not_ready'}
@@ -363,17 +376,22 @@ class ServiceRoute(CorridorRoute):
         deadline_s = time.monotonic() + 5.0
         cancel_future = None
         query_future = None
+        action_type = getattr(self, 'active_action_type', NavigateToPose)
+        cancel_client = (self.cancel_reverse if action_type is FollowPath
+                         else self.cancel_navigation)
+        query_client = (self.query_reverse if action_type is FollowPath
+                        else self.query_navigation)
         while time.monotonic() < deadline_s:
-            if (self.cancel_navigation.service_is_ready()
+            if (cancel_client.service_is_ready()
                     and (cancel_future is None or cancel_future.done())):
                 request = CancelGoal.Request()
                 request.goal_info.goal_id = self.navigation_uuid
-                cancel_future = self.cancel_navigation.call_async(request)
-            if (self.query_navigation.service_is_ready()
+                cancel_future = cancel_client.call_async(request)
+            if (query_client.service_is_ready()
                     and (query_future is None or query_future.done())):
-                request = NavigateToPose.Impl.GetResultService.Request()
+                request = action_type.Impl.GetResultService.Request()
                 request.goal_id = self.navigation_uuid
-                query_future = self.query_navigation.call_async(request)
+                query_future = query_client.call_async(request)
             rclpy.spin_once(self, timeout_sec=0.1)
             if (query_future is not None and query_future.done()
                     and query_future.exception() is None):
@@ -393,6 +411,7 @@ class ServiceRoute(CorridorRoute):
         """Bound transit and parking actions and retain their terminal result."""
         if not self.navigate.wait_for_server(timeout_sec=2.0):
             return False
+        self.active_action_type = NavigateToPose
         for index, waypoint in enumerate(self.waypoints):
             if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
                 return False
@@ -550,8 +569,14 @@ class ServiceRoute(CorridorRoute):
         self.verify_live_maps()
         if not self.wait_until_ready(timeout=10.0):
             raise RuntimeError('navigation data unavailable')
-        if not self._parking_parameters_ready():
+        reverse = pose.get('parking_direction', 'forward') == 'reverse'
+        if not (self._parking_parameters_ready(reverse=True) if reverse
+                else self._parking_parameters_ready()):
             raise RuntimeError('load the generated Parking controller parameters into Nav2')
+        if reverse:
+            if not self._reverse_smoother_ready():
+                raise RuntimeError('reverse velocity is blocked or unbounded in smoother')
+            return self._go_home_reverse(pose, execute)
         planned = self.plan_pose(pose)
         self.emit('home_planning', attempt=planned)
         if not planned['ok']:
@@ -569,6 +594,174 @@ class ServiceRoute(CorridorRoute):
         success = self.execute()
         self.emit('home_arrived' if success else 'failed', confirmation=self.confirmation)
         return success
+
+    def _make_reverse_path(self, start, target):
+        points = reverse_waypoints(
+            start, target, xy_tolerance_m=self.parking_contract['xy_tolerance_m'],
+            yaw_tolerance_rad=self.parking_contract['yaw_tolerance_rad'])
+        path = RosPath()
+        path.poses = [self._pose(i, {'x': x, 'y': y, 'yaw': yaw})
+                      for i, (x, y, yaw) in enumerate(points)]
+        path.header = path.poses[0].header
+        return path
+
+    def _reverse_smoother_ready(self):
+        client = AsyncParameterClient(self, 'velocity_smoother')
+        if not client.wait_for_services(timeout_sec=2.0):
+            return False
+        response = self._wait(client.get_parameters(['min_velocity', 'max_velocity']), 2.0)
+        values = [parameter_value_to_python(v) for v in response.values]
+        if (len(values) != 2 or any(not isinstance(v, list) or len(v) != 3 for v in values)
+                or any(isinstance(x, bool) or not isinstance(x, (int, float))
+                       or not math.isfinite(x) for v in values for x in v)):
+            return False
+        limit = self.parking_contract['desired_linear_mps']
+        return (math.isclose(values[0][0], -limit, abs_tol=1e-9)
+                and 0.0 < values[1][0] <= limit)
+
+    def _reverse_path_valid(self, path):
+        points = [(item.pose.position.x, item.pose.position.y,
+                   _quaternion_yaw(item.pose.orientation)) for item in path.poses]
+        if not static_corridor_clear(
+                Path(self.registry['map']['yaml_path']),
+                Path(self.registry['keepout']['yaml_path']), points,
+                self._reverse_footprint()):
+            self.emit('reverse_path_checked', valid=False,
+                      reason='static_obstacle_unknown_keepout_or_map_boundary')
+            return False
+        if not self.validate_reverse_path.wait_for_service(timeout_sec=2.0):
+            raise RuntimeError('reverse path collision validation unavailable')
+        request = IsPathValid.Request()
+        request.path = path
+        result = self._wait(self.validate_reverse_path.call_async(request), 3.0)
+        self.emit('reverse_path_checked', valid=result.is_valid,
+                  invalid_pose_indices=list(result.invalid_pose_indices))
+        return result.is_valid and not result.invalid_pose_indices
+
+    def _reverse_footprint(self):
+        """Use matching runtime footprints, including their configured padding."""
+        footprints = []
+        for name in ('global_costmap/global_costmap', 'local_costmap/local_costmap'):
+            client = AsyncParameterClient(self, name)
+            if not client.wait_for_services(timeout_sec=2.0):
+                raise RuntimeError(f'{name} footprint unavailable')
+            response = self._wait(client.get_parameters(
+                ['footprint', 'footprint_padding', 'robot_base_frame']), 2.0)
+            values = [parameter_value_to_python(v) for v in response.values]
+            if len(values) != 3 or values[2] != 'base_footprint':
+                raise RuntimeError('reverse footprint frame mismatch')
+            polygon = ast.literal_eval(values[0]) if isinstance(values[0], str) else None
+            padding = values[1]
+            if (not isinstance(polygon, (tuple, list)) or len(polygon) < 3
+                    or isinstance(padding, bool) or not isinstance(padding, (int, float))
+                    or not math.isfinite(padding) or padding < 0.0):
+                raise RuntimeError('reverse footprint geometry unavailable')
+            if any(not isinstance(point, (tuple, list)) or len(point) != 2
+                   or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                          or not math.isfinite(v) for v in point) for point in polygon):
+                raise RuntimeError('reverse footprint geometry invalid')
+            footprints.append((polygon, padding))
+        if footprints[0] != footprints[1]:
+            raise RuntimeError('global and local footprints disagree')
+        polygon, padding = footprints[0]
+        # A bounding rectangle is conservative for the configured base polygon.
+        xmin = min(p[0] for p in polygon) - padding
+        xmax = max(p[0] for p in polygon) + padding
+        ymin = min(p[1] for p in polygon) - padding
+        ymax = max(p[1] for p in polygon) + padding
+        return [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+
+    def _go_home_reverse(self, pose, execute):
+        """Align outside the dock, then follow a bounded reverse path via Nav2."""
+        full_config = route_config(self.registry, pose)
+        self.config, self.waypoints = full_config, full_config['waypoints']
+        target = tuple(pose[key] for key in ('x_m', 'y_m', 'yaw_rad'))
+        actual = None
+        if (execute and getattr(self, 'parking_command', None) is not None
+                and getattr(self, 'parking_odom', None) is not None):
+            try:
+                actual = self._parking_observation()['actual_pose']
+            except (TransformException, ValueError) as error:
+                self.emit('home_stationary_shortcut_unavailable', reason=str(error))
+        if actual is not None:
+            distance, angle = pose_errors(target, actual)
+            if (distance <= self.parking_contract['xy_tolerance_m']
+                    and angle <= self.parking_contract['yaw_tolerance_rad']):
+                success = self._verify_parking_stop(1, self.waypoints[-1], None)
+                self.emit('home_arrived' if success else 'failed',
+                          already_at_home=True, confirmation=self.confirmation)
+                return success
+        stage = full_config['waypoints'][0]
+        stage_pose = {**pose, 'id': stage['id'], 'x_m': stage['x'], 'y_m': stage['y'],
+                      'parking_direction': 'forward'}
+        nominal_path = self._make_reverse_path((stage['x'], stage['y'], stage['yaw']), target)
+        if not self._reverse_path_valid(nominal_path):
+            return False
+        try:
+            planned = self.plan_pose(stage_pose, single=True)
+            self.emit('reverse_staging_planned', attempt=planned)
+            if not planned['ok']:
+                return False
+            if not execute:
+                self.emit('home_planned_only', parking_direction='reverse',
+                          final_path_validation='RECHECK_ACTUAL_PATH_AT_STAGING')
+                return True
+            if not self.execute():
+                return False
+        finally:
+            self.config, self.waypoints = full_config, full_config['waypoints']
+            self.pose_id = pose['id']
+        # The actual stationary staging pose, not an assumed waypoint, seeds
+        # the path. Reject misalignment before any reverse action is sent.
+        self.verify_live_maps()
+        actual, _evidence = self.capture_stationary_pose()
+        path = self._make_reverse_path(actual, target)
+        if not self._reverse_path_valid(path):
+            return False
+        success = self._execute_reverse_path(path)
+        self.emit('home_arrived' if success else 'failed',
+                  parking_direction='reverse', confirmation=self.confirmation)
+        return success
+
+    def _execute_reverse_path(self, path):
+        """Keep reverse motion in controller → smoother → monitor → base."""
+        if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
+                or not self.follow_reverse.wait_for_server(timeout_sec=2.0)):
+            return False
+        self.active_action_type = FollowPath
+        goal = FollowPath.Goal()
+        goal.path = path
+        goal.controller_id = 'ParkingReverse'
+        goal.goal_checker_id = 'parking_goal_checker'
+        goal.progress_checker_id = 'progress_checker'
+        self.navigation_uuid = FollowPath.Impl.SendGoalService.Request().goal_id
+        self.navigation_uuid.uuid = list(uuid.uuid4().bytes)
+        self.pending_goal = self.follow_reverse.send_goal_async(
+            goal, goal_uuid=self.navigation_uuid)
+        try:
+            handle = self._wait(self.pending_goal, 5.0)
+            self.pending_goal = None
+            if not handle.accepted:
+                return False
+            self._route_event('accepted', 1, handle, motion='reverse')
+            self.navigation_result = handle.get_result_async()
+            while not self.navigation_result.done():
+                rclpy.spin_once(self, timeout_sec=0.05)
+                if (self.stop_requested
+                        or not self._navigation_ready(require_fresh_amcl=False)):
+                    return False
+            wrapped = self.navigation_result.result()
+            self._route_event('result', 1, handle, motion='reverse',
+                              terminal_status_code=int(wrapped.status),
+                              nav2_error_code=int(wrapped.result.error_code))
+            self.navigation_result = None
+            if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
+                    or wrapped.result.error_code):
+                return False
+            return self._verify_parking_stop(1, self.waypoints[-1], handle)
+        finally:
+            if not self.finish_navigation():
+                raise RuntimeError('reverse action cancellation unconfirmed')
 
     def wait_parked(self, dwell_s=5.0):
         """Count dwell only while the selected pose remains stopped and aligned."""
@@ -653,7 +846,7 @@ def parse_args(argv):
     initialize.add_argument('--registry', type=Path, required=True)
     listing = commands.add_parser('list')
     listing.add_argument('--registry', type=Path, required=True)
-    for command in ('teach', 'go', 'teach-home', 'roundtrip', 'serve'):
+    for command in ('teach', 'go', 'teach-home', 'home', 'roundtrip', 'serve'):
         subparser = commands.add_parser(command)
         subparser.add_argument('--registry', type=Path, required=True)
         subparser.add_argument('--log', type=Path, required=True)
@@ -661,7 +854,7 @@ def parse_args(argv):
             subparser.add_argument(
                 '--table-id', dest='table_ids', action='append', required=True,
                 help='Ordered destination ID; repeat this option for each station')
-        elif command != 'teach-home':
+        elif command not in ('teach-home', 'home'):
             subparser.add_argument('--table-id', required=True)
         if command == 'teach':
             subparser.add_argument('--pose-id', required=True)
@@ -678,6 +871,8 @@ def parse_args(argv):
             subparser.add_argument('--pose-id', default='home_dock')
             subparser.add_argument('--approach-offset-m', type=float, default=0.7)
             subparser.add_argument('--replace', action='store_true')
+            subparser.add_argument('--parking-direction', choices=('forward', 'reverse'),
+                                   default='forward')
         else:
             subparser.add_argument('--execute', action='store_true')
             if command == 'roundtrip':
@@ -746,6 +941,7 @@ def main(args=None):
                         pose = taught_pose(
                             parsed.pose_id, actual_pose, observation,
                             approach_offset_m=parsed.approach_offset_m)
+                        pose['parking_direction'] = parsed.parking_direction
                         updated = set_home_pose(registry, pose, parsed.replace)
                     # Detect an intervening edit before replacing the registry.
                     if load_registry(parsed.registry) != registry:
@@ -758,6 +954,8 @@ def main(args=None):
                     ok = node.visit(parsed.table_id, parsed.execute)
                 elif parsed.command == 'serve':
                     ok = node.serve(parsed.table_id, parsed.execute)
+                elif parsed.command == 'home':
+                    ok = node.go_home(parsed.execute)
                 else:
                     ok = node.roundtrip(
                         parsed.table_ids, parsed.execute,

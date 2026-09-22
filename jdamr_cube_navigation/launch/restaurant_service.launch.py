@@ -7,6 +7,7 @@ from ament_index_python.packages import get_package_share_directory
 from jdamr_cube_navigation.parking import (
     load_parking_contract, parking_controller_overrides,
 )
+from jdamr_cube_navigation.reverse_parking import reverse_controller_overrides
 from jdamr_cube_navigation.service_destinations import expanded_path, load_registry
 from launch import LaunchDescription
 from launch.actions import (
@@ -27,6 +28,10 @@ def _configure(context):
     document = yaml.safe_load(source.read_text(encoding='utf-8'))
     contract = load_parking_contract(package / 'config/parking_contract.yaml')
     controller = parking_controller_overrides(document, contract)
+    if (registry.get('home') or {}).get('parking_direction') == 'reverse':
+        controller = reverse_controller_overrides(controller)
+        document['velocity_smoother']['ros__parameters']['min_velocity'][0] = (
+            -contract['desired_linear_mps'])
     document['controller_server']['ros__parameters'] = controller
     with tempfile.NamedTemporaryFile(
             mode='w', prefix='jdamr_service_', suffix='.yaml',
@@ -43,6 +48,7 @@ def _configure(context):
         launch_arguments={
             'map': registry['map']['yaml_path'],
             'keepout_mask': registry['keepout']['yaml_path'],
+            'asset_registry': LaunchConfiguration('registry'),
             'params_file': str(generated),
             'navigation_profile': LaunchConfiguration('navigation_profile'),
             'discovery_range': LaunchConfiguration('discovery_range'),

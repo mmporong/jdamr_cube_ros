@@ -16,8 +16,9 @@ from jdamr_cube_navigation.restaurant_service import (
     select_destination, ServiceRoute,
 )
 from jdamr_cube_navigation.service_destinations import route_config, taught_pose
-from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
+from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose
 from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Path as RosPath
 import pytest
 from rclpy.parameter import Parameter
 from rclpy.task import Future
@@ -377,6 +378,156 @@ def test_wait_parked_uses_selected_pose_and_clears_previous_deadline():
         1, {'x': 1.0, 'y': 0.0, 'yaw': 1.57}, None, hold_s=5.0)
 
 
+def reverse_route():
+    node = route()
+    node.registry['home'] = {
+        **taught_pose('home_dock', (0.0, 0.0, 0.0), {}, approach_offset_m=.7),
+        'parking_direction': 'reverse',
+    }
+    node.selected_pose = node.registry['home']
+    node.parking_command = (0.0, 0.0, 0.0)
+    node.parking_odom = (0.0, SimpleNamespace(sec=0, nanosec=0), 0.0, 0.0)
+    node._parking_observation = lambda: {'actual_pose': (1.2, 0.0, 0.0)}
+    node.verify_live_maps = Mock()
+    node.capture_stationary_pose = Mock(return_value=((.7, 0.0, 0.0), {}))
+    node._make_reverse_path = Mock(return_value=RosPath())
+    node._reverse_path_valid = Mock(return_value=True)
+    return node
+
+
+def test_home_cli_does_not_need_table_and_never_moves_by_default():
+    args = parse_args(['service', 'home', '--registry', '/tmp/r.yaml',
+                       '--log', '/tmp/h.jsonl'])
+    assert args.command == 'home' and not args.execute
+    args = parse_args(['service', 'teach-home', '--registry', '/tmp/r.yaml',
+                       '--log', '/tmp/t.jsonl', '--parking-direction', 'reverse'])
+    assert args.parking_direction == 'reverse'
+
+
+@pytest.mark.parametrize('failure', [None, 'path', 'plan', 'stage', 'reverse'])
+def test_reverse_home_stages_before_following_and_stops_on_failure(failure):
+    node = reverse_route()
+    events = []
+    node._reverse_path_valid = lambda path: failure != 'path'
+
+    def plan(pose, single):
+        events.append(('plan', pose['x_m'], single))
+        return {'ok': failure != 'plan'}
+
+    node.plan_pose = plan
+    node.execute = lambda: events.append(('stage',)) or failure != 'stage'
+    node._execute_reverse_path = lambda path: events.append(('reverse',)) or failure != 'reverse'
+    assert node._go_home_reverse(node.registry['home'], True) is (failure is None)
+    expected = [('plan', .7, True), ('stage',), ('reverse',)]
+    cut = {'path': 0, 'plan': 1, 'stage': 2, 'reverse': 3, None: 3}[failure]
+    assert events == expected[:cut]
+    assert node.waypoints[-1]['x'] == 0.0
+
+
+def test_already_home_confirms_without_departing_and_redocking():
+    node = reverse_route()
+    node._parking_observation = lambda: {'actual_pose': (.01, .01, .01)}
+    node._verify_parking_stop = Mock(return_value=True)
+    node.execute = Mock()
+    assert node._go_home_reverse(node.registry['home'], True)
+    node.execute.assert_not_called()
+    node._reverse_path_valid.assert_not_called()
+    node._verify_parking_stop.assert_called_once()
+
+
+def test_reverse_preview_has_no_motion_and_no_stationary_capture():
+    node = reverse_route()
+    node.plan_pose = Mock(return_value={'ok': True})
+    node.execute = Mock()
+    node._execute_reverse_path = Mock()
+    assert node._go_home_reverse(node.registry['home'], False)
+    node.execute.assert_not_called()
+    node._execute_reverse_path.assert_not_called()
+    node.capture_stationary_pose.assert_not_called()
+
+
+def test_reverse_cold_start_without_velocity_sample_can_reach_staging():
+    node = reverse_route()
+    node.parking_command = None
+    node._parking_observation = Mock(side_effect=ValueError('no command sample'))
+    node.plan_pose = Mock(return_value={'ok': True})
+    node.execute = Mock(return_value=True)
+    node._execute_reverse_path = Mock(return_value=True)
+    assert node._go_home_reverse(node.registry['home'], True)
+    node.execute.assert_called_once()
+    node._parking_observation.assert_not_called()
+
+
+@pytest.mark.parametrize('status,confirmed,success', [
+    (GoalStatus.STATUS_SUCCEEDED, True, True),
+    (GoalStatus.STATUS_SUCCEEDED, False, False),
+    (GoalStatus.STATUS_ABORTED, True, False),
+    (GoalStatus.STATUS_CANCELED, True, False),
+])
+def test_reverse_follow_path_preserves_verifier_and_terminal_outcome(status, confirmed, success):
+    node = reverse_route()
+    node.follow_reverse = Mock()
+    node.follow_reverse.send_goal_async.return_value = done(handle(status))
+    node._verify_parking_stop = Mock(return_value=confirmed)
+    path = RosPath()
+    assert node._execute_reverse_path(path) is success
+    goal = node.follow_reverse.send_goal_async.call_args.args[0]
+    assert goal.path == path and goal.controller_id == 'ParkingReverse'
+    assert goal.goal_checker_id == 'parking_goal_checker'
+    assert node.active_action_type is FollowPath
+    assert node.active_handle is None
+    assert node._verify_parking_stop.called is (status == GoalStatus.STATUS_SUCCEEDED)
+
+
+def test_reverse_lost_acceptance_uses_follow_path_cancel_and_query(monkeypatch):
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once',
+                        lambda *args, **kwargs: None)
+    node = reverse_route()
+    node.active_action_type = FollowPath
+    node.navigation_uuid = FollowPath.Impl.SendGoalService.Request().goal_id
+    node.cancel_reverse = Mock()
+    node.cancel_reverse.call_async.return_value = done(None)
+    node.query_reverse = Mock()
+    node.query_reverse.call_async.return_value = done(
+        SimpleNamespace(status=GoalStatus.STATUS_CANCELED))
+    node.cancel_navigation = Mock()
+    node.query_navigation = Mock()
+    assert node._cancel_navigation_uuid()
+    node.cancel_reverse.call_async.assert_called_once()
+    node.query_reverse.call_async.assert_called_once()
+    node.cancel_navigation.call_async.assert_not_called()
+
+
+@pytest.mark.parametrize('minimum,maximum,ready', [
+    (-.08, .08, True), (0.0, .08, False), (-.09, .08, False), (-.08, .2, False),
+])
+def test_reverse_checks_actual_smoother_velocity_bounds(monkeypatch, minimum, maximum, ready):
+    node = reverse_route()
+    client = Mock()
+    values = [Parameter('min_velocity', value=[minimum, 0.0, -.3]).get_parameter_value(),
+              Parameter('max_velocity', value=[maximum, 0.0, .3]).get_parameter_value()]
+    client.get_parameters.return_value = done(SimpleNamespace(values=values))
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.AsyncParameterClient',
+                        lambda *args: client)
+    assert node._reverse_smoother_ready() is ready
+
+
+def test_reverse_path_static_failure_never_calls_live_validator(monkeypatch):
+    node = route()
+    node.registry.update(map={'yaml_path': '/tmp/map.yaml'},
+                         keepout={'yaml_path': '/tmp/mask.yaml'})
+    node._reverse_footprint = lambda: [(-.3, -.3), (.1, -.3), (.1, .3), (-.3, .3)]
+    node.validate_reverse_path = Mock()
+    path = RosPath()
+    pose = PoseStamped()
+    pose.pose.orientation.w = 1.0
+    path.poses = [pose]
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.static_corridor_clear',
+                        lambda *args: False)
+    assert not node._reverse_path_valid(path)
+    node.validate_reverse_path.call_async.assert_not_called()
+
+
 @pytest.mark.parametrize('fresh', [True, False])
 def test_dwell_real_verifier_and_event_writer_without_action_handle(monkeypatch, fresh):
     """Both dwell outcomes must log without inventing a completed goal handle."""
@@ -712,7 +863,9 @@ def test_arrival_evidence_retains_final_errors():
 
 
 @pytest.mark.parametrize('discovery_range', ['SUBNET', 'LOCALHOST'])
-def test_service_launch_adds_parking_without_changing_costmaps(monkeypatch, discovery_range):
+@pytest.mark.parametrize('reverse', [False, True])
+def test_service_launch_adds_parking_without_changing_costmaps(
+        monkeypatch, discovery_range, reverse):
     """Construct launch parameters without starting nodes or moving a robot."""
     from launch import LaunchContext
     spec = importlib.util.spec_from_file_location(
@@ -721,6 +874,7 @@ def test_service_launch_adds_parking_without_changing_costmaps(monkeypatch, disc
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, 'get_package_share_directory', lambda _: str(PACKAGE))
     monkeypatch.setattr(module, 'load_registry', lambda _: {
+        'home': {'parking_direction': 'reverse' if reverse else 'forward'},
         'map': {'yaml_path': '/maps/new_base_room.yaml'},
         'keepout': {'yaml_path': '/maps/new_base_mask.yaml'}})
     context = LaunchContext()
@@ -739,11 +893,23 @@ def test_service_launch_adds_parking_without_changing_costmaps(monkeypatch, disc
         assert controller['Parking']['desired_linear_vel'] == 0.08
         assert controller['Parking']['use_collision_detection']
         assert controller['parking_goal_checker']['xy_goal_tolerance'] == 0.05
+        if reverse:
+            assert controller['ParkingReverse']['allow_reversing'] is True
+            assert controller['ParkingReverse']['use_rotate_to_heading'] is False
+            assert controller['ParkingReverse']['use_collision_detection'] is True
+            assert output['velocity_smoother']['ros__parameters']['min_velocity'][0] == -.08
+            controller['controller_plugins'].remove('ParkingReverse')
+            del controller['ParkingReverse']
+            output['velocity_smoother']['ros__parameters']['min_velocity'][0] = 0.0
+        else:
+            assert 'ParkingReverse' not in controller
+            assert output['velocity_smoother']['ros__parameters']['min_velocity'][0] == 0.0
         controller['controller_plugins'].remove('Parking')
         controller['goal_checker_plugins'].remove('parking_goal_checker')
         del controller['Parking'], controller['parking_goal_checker']
         assert output == original
         assert arguments['map'] == '/maps/new_base_room.yaml'
+        assert arguments['asset_registry'].perform(context) == '/registry.yaml'
         assert arguments['discovery_range'].perform(context) == discovery_range
     finally:
         generated.unlink()

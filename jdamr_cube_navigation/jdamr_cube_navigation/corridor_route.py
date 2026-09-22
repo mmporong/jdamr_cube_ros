@@ -628,7 +628,7 @@ class CorridorRoute(Node):
             f'length={length:.3f}m')
         return True
 
-    def _parking_parameters_ready(self):
+    def _parking_parameters_ready(self, reverse=False):
         """Reject missing or mismatched opt-in plugins before any route goal."""
         contract = self.parking_contract
         expected = {
@@ -653,6 +653,14 @@ class CorridorRoute(Node):
             'Parking.allow_reversing': False,
             'Parking.use_collision_detection': True,
         }
+        if reverse:
+            expected['controller_plugins'] = ['Parking', 'ParkingReverse']
+            expected.update({
+                key.replace('Parking.', 'ParkingReverse.'): value
+                for key, value in list(expected.items()) if key.startswith('Parking.')
+            })
+            expected['ParkingReverse.use_rotate_to_heading'] = False
+            expected['ParkingReverse.allow_reversing'] = True
         if not self.parking_parameters.wait_for_services(timeout_sec=2.0):
             self.get_logger().error('parking controller parameters unavailable')
             return False
