@@ -5,8 +5,8 @@ import time
 
 from jdamr_cube_node.web_teleop import (
     CommandOrder,
-    TeleopNode,
     scaled_command,
+    TeleopNode,
 )
 
 import pytest

@@ -1,13 +1,13 @@
 """Publish a fail-closed readiness contract for operator-driven mapping."""
 
+from collections import deque
 import json
 import math
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import time
-from collections import deque
-from pathlib import Path
 
 from lifecycle_msgs.srv import GetState
 
