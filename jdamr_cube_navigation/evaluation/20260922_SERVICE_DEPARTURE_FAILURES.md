@@ -4,7 +4,7 @@
 
 - 시각 기준: Asia/Seoul. 기록 범위는 이번 오후 출발 준비와 실패한 실행 시도다.
 - 목표: 충전소 후면 주차 → 5초 대기 → 1번 테이블 주변 이동 → 박스 면 기준 정밀 접근 → 5초 대기 → 충전소 복귀·후면 주차.
-- 주행 완료 아님. 이번 실행 시도에서 NavigateToPose/FollowPath 목표 수락 또는 실제 주행 성공을 확인하지 못했다.
+- 주행 완료 아님. 16:24까지는 목표 수락 전 실패했고, 16:34 후속 시도에서는 목표 수락·이동 후 저전압으로 취소됐다. 아래 후속 실행 기록을 함께 읽는다.
 - 16:24 확인: Pi `jdamr-restaurant-navigation.service` inactive. 실행 중인 corridor_route/home 명령 프로세스도 발견되지 않았다.
 - 지도 원본, Keepout, 충전소 pose, 센서 bag은 보존했다. 이번 실패를 박스 충돌 또는 장애물 감속 사례로 분류하지 않는다.
 
@@ -44,7 +44,7 @@
   - `navigation_shutdown_excerpt.log`: Pi journal에서 발췌한 heartbeat·guard·종료 로그.
   - `table_01_observation_route.yaml`: 영역 관측을 위한 경유점. 최종 주차 pose가 아님.
   - `SESSION.yaml`, `assets/`: 실행 전 지도·마스크·설정과 상태.
-  - `bag/`: 16:14:46부터 센서·TF·위치·명령·경로 토픽 기록 요청. 실제 토픽별 수신량은 정상 종료 후 확인할 것. 이전 주행 기록을 소급 복원한 것이 아님.
+  - `bag/`: 16:14:46~16:36:17, 1,291.400881654초, 119,663개 메시지로 정상 종료. odom 63,310개, scan 11,568개, plan 8개를 원본 순회로 확인했다. 이전 주행 기록을 소급 복원한 것이 아님.
 - 문서의 CLI 오류와 timeout은 이번 도구 실행 출력에서 확인했다. 모든 CLI stdout을 별도 파일로 저장하지는 못했으므로 재현 로그 전체가 있다고 주장하지 않는다.
 
 ## 재발 방지 및 남은 작업
@@ -63,3 +63,44 @@
 - RViz 화면에서 초기 텍스트 공백이 과도하고 지도 가장자리가 잘림. 짧은 라벨과 view scale로 수정. 최초 표시 화면은 `rviz_before_label_adjustment.png`로 구분했다.
 - RViz shader warning과 LaserScan TF 지연 메시지도 관측됐으나 D09의 원인으로 확정하지 않았다.
 - 노드 구성·빌드 완료를 실제 출발 가능 또는 박스 접근 완료처럼 안내한 것은 잘못이었다. 이후 보고는 코드 반영 / 실행부 active / 목표 수락 / 실제 이동 / 주차 완료를 구분한다.
+
+## 후속 실행: 16:34 목표 수락 후 배터리 저전압 취소
+
+앞의 `목표 수락 전 실패`는 16:24까지의 상태다. 후속 시도에서는 상태가 달라졌다.
+
+- `accce91`: 선택형 `use_composition=false`를 추가해 공통 container 대신 Nav2 서버를 개별 프로세스로 실행했다. 지도·마스킹 설정·충돌 모니터·lifecycle·liveness guard와 required-exit 종료 처리는 유지했다. 관련 테스트 186개와 독립 리뷰를 통과했다. 최초 DDS/heartbeat 장애 원인을 해결했다고 단정하지 않는다.
+- 16:34:17: 경로 116 poses, 길이 2.918m 계획 성공. `home_exit` 목표 UUID `44704344af014d51be8551331c422c04` 수락.
+- 16:34:22: 첫 경유점까지 남은 거리 0.79m, 배터리 10.55V 피드백. 초기 목표 직선 거리는 약 1.016m였으나 두 값을 빼 실측 이동 거리로 기록하지 않는다.
+- **D12 / 16:34:23**: 배터리 10.464V < 설정 하한 10.500V → 목표 취소 요청. Nav2 `Goal canceled`, controller `Cancellation was successful. Stopping the robot.` 확인. 하한은 변경하지 않았다.
+- 종료 후 일회성 odom/TF 관측 명령은 출력 없이 timeout. 이후 저장 bag 원본에서 16:36:17.616 마지막 odom의 선속도·각속도 0을 확인했다. controller 취소 로그 외에 속도 관측 근거도 확보했다.
+- 16:34:17~16:34:25의 odom 397개에서 첫·마지막 위치 차이는 0.297818m다. 바퀴 odom 추정 변위이며 외부 실측 이동 거리나 주차 정확도가 아니다.
+- **D13 / 16:34:24~25**: global/local costmap의 `KeepoutFilter: Filter mask was not received` 경고가 남았다. 마스킹 파일 검증이나 RViz 표시를 실제 필터 수신 증거로 간주하면 안 된다. 다음 출발 전 실시간 필터 수신을 복구해야 한다.
+- 이후 배터리 소모를 줄이기 위해 이번에 시작한 navigation/RGB-D 서비스에 중지 요청을 보냈다. 기본 베이스 서비스는 건드리지 않았다.
+- 근거: 실행 폴더 `table01_low_battery.log`. 목표 수락은 확인됐지만 테이블 도착·박스 정밀주차·충전소 복귀는 완료하지 못했다.
+
+## 재발 방지 변경과 검증 범위
+
+| 대상 | 반영한 변경 | 검증 범위 / 남은 조건 |
+|---|---|---|
+| ROS setup과 `set -u` 충돌 | `restaurant_session.sh`에서 nounset을 끈 상태로 ROS·workspace setup을 읽고 실패를 확인 | shell mock으로 미정의 변수 setup 및 실패 종료 검증. 서비스 시작이나 실물 이동을 수행한 테스트가 아님 |
+| 매번 다른 임시 시작 명령, 중복 Nav2 | 단일 session 스크립트에서 registry·base·중복 노드·센서 토픽 확인 후 고정 unit으로 Nav2만 시작 | `active`를 위치 추정·출발 준비 완료로 안내하지 않음. 초기 pose와 주행 action은 발행하지 않음 |
+| D09 공통 container 장애 영향 | 식당 서비스 기본값을 개별 프로세스 실행으로 변경 | 프로세스 경계 분리. 최초 heartbeat/DDS 장애 원인 해결 또는 실차 재발 없음으로 주장하지 않음 |
+| D13 mask 준비 실패 후 다른 서버만 활성화 | 식당 서비스는 lifecycle manager 하나로 mask → filter info → map → AMCL → 주행 서버를 순서대로 관리 | mask configure 실패 시 뒤 단계 활성화가 진행되지 않는 구성. 실제 costmap 수신 여부는 다음 실차에서 확인해야 함 |
+| D12 출발 직후 전압 하락 | 식당 미션의 새 전진/후진 action 전 출발 기준 10.8V, 주행 중 기존 하한 10.5V 유지 | 경계값·비유한 값·목표 미전송 회귀 테스트. 10.8V는 부하 시험으로 보정되지 않은 후보 정책이며 잔량 추정이나 완주 보장이 아님 |
+| 자료 재생 중 실물 토픽 혼입 | RViz 기록 재생은 LOCALHOST/domain 78, 표시 토픽만 허용 | 속도·action·서비스 요청 재생 제외. domain 12 실차와 분리 |
+
+### D13 추가 원인 근거
+
+- Pi journal 16:33:17: mask server가 올바른 YAML/PGM(177×149)을 읽었다.
+- 16:33:18: `/keepout_filter_mask_server/change_state` 응답 전송이 RMW timeout으로 실패했다. keepout lifecycle의 활성화 완료는 확인되지 않았다.
+- 별도 manager의 local/global costmap은 기동했고, 16:34:24~25에 mask 미수신 경고를 냈다. 세 manager가 독립적으로 시작해 마스킹 준비 실패와 주행 서버 활성화가 함께 존재할 수 있었다.
+- 토픽 설정은 양쪽 모두 `/keepout_costmap_filter_info` → `/keepout_filter_mask`로 일치한다. 단순 토픽 오타로 분류하지 않는다.
+- [Nav2 Jazzy KeepoutFilter 원본](https://raw.githubusercontent.com/ros-navigation/navigation2/1.3.12/nav2_costmap_2d/plugins/costmap_filters/keepout_filter.cpp)은 mask가 없으면 경고 후 필터 처리를 반환한다. RViz에 저장 마스크가 보이는 것만으로 실제 필터 수신을 증명할 수 없다.
+- 최초 RMW 응답 timeout 자체의 원인은 미확정이다. 순차 기동은 불완전한 준비 상태의 전파를 막는 수정이지 통신 장애 전체를 제거했다는 주장이 아니다.
+
+### 재개 시 유지할 조건
+
+- 충전 중에는 Nav2·목표 action을 자동 재시작하지 않는다.
+- 기체를 옮겼다면 과거 출발 pose를 자동 재사용하지 않는다. 실제 배치와 현재 위치 추정을 맞춘다.
+- D01/D02 박스 면 기반 최종 제어 연결과 실차 후면 주차 검증은 미완료다. 코드·표시 준비를 미션 성공으로 보고하지 않는다.
+- `restaurant_session.sh start`는 서버 기동 요청만 수행한다. 충전 완료와 초기 위치 확인 뒤 별도 미션 실행을 요청한다.
