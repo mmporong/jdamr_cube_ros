@@ -291,8 +291,9 @@ def test_onboard_core_loads_only_corridor_required_nav2_processes():
         assert omitted not in source
     # Wait is an explicit candidate-only dependency, not a baseline server.
     assert "'navigation_profile', default_value='corridor'" in source
-    assert "if profile in {'obstacle_candidate', 'obstacle_base_candidate'}:" \
+    assert "if profile in {'obstacle_candidate', 'obstacle_base_candidate'," \
         in source
+    assert "'new_base_candidate', 'new_base_revisit_candidate'}:" in source
     assert "'obstacle_base_candidate'" in source
     assert "'behavior_plugins': ['wait']" in source
     assert "'navigate_to_pose_corridor_fail_fast.xml'" in source
@@ -518,7 +519,7 @@ def test_confirmed_roundtrip_route_keeps_outbound_turnaround_and_return():
     assert config['max_route_start_distance_m'] == 1.0
     assert config['max_resume_start_distance_m'] == 6.0
     assert len(waypoints) == 20
-    assert waypoints[0]['id'] == 'outbound_02m'
+    assert waypoints[0]['id'] == 'outbound_01m'
     assert waypoints[9]['id'] == 'turnaround'
     assert waypoints[-1] == {'id': 'home', 'x': 0.0, 'y': -0.1}
 
@@ -797,10 +798,10 @@ def test_lifecycle_managers_tolerate_pi_service_latency():
     # The shared setting keeps all lifecycle managers on the same contract.
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
-    # Shared by all three lifecycle managers through one dict.
+    # Shared by the three legacy managers and the coordinated alternative.
     assert "'bond_timeout': 10.0" in source
     assert "'bond_respawn_max_duration': 20.0" in source
-    assert source.count('**lifecycle_bond') == 3
+    assert source.count('**lifecycle_bond') == 4
 
 
 def test_replay_guard_orders_odometry_against_scans():
@@ -877,8 +878,11 @@ def test_autorun_never_drives_without_passing_every_gate():
     before_departure = source.split('say "출발"', 1)[0]
     assert before_departure.count('if [ -e "$ABORT_FILE" ]; then') >= 2
     assert source.index('배치 완료로 간주') < source.index('Nav2 와 기록 기동')
-    # Resource evidence must be scored before either no-execute success or a
-    # real route launch can be reported.
+    # The corridor baseline retains the soak gate.  New-base revisit records
+    # metrics but does not block a physical run on an optional soak criterion.
+    assert '재주행: 자원 soak 게이트 생략' in source
+    assert 'if [ "$NAVIGATION_PROFILE" != new_base_revisit_candidate ]; then' \
+        in source
     assert '--evaluate "$A/$RUN_ID.per_process.tsv"' in source
     assert source.count('ros2 run jdamr_cube_navigation soak_metrics') == 2
     assert source.count('--cores "$(nproc)"') == 2
@@ -974,9 +978,9 @@ def test_onboard_core_uses_composition_with_a_liveness_guard():
     for plugin in ('nav2_amcl::AmclNode',
                    'nav2_controller::ControllerServer',
                    'nav2_planner::PlannerServer',
-                   'nav2_bt_navigator::BtNavigator',
-                   'nav2_collision_monitor::CollisionMonitor'):
+                   'nav2_bt_navigator::BtNavigator'):
         assert plugin in source, plugin
+    assert 'nav2_collision_monitor::CollisionMonitor' not in source
 
     # Every server the route executor depends on must be watched.
     for name in ('amcl', 'controller_server', 'planner_server',

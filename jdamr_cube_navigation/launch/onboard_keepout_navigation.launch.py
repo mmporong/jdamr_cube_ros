@@ -67,6 +67,9 @@ def generate_launch_description():
     keepout_mask = LaunchConfiguration('keepout_mask')
     params_file = LaunchConfiguration('params_file')
     navigation_profile = LaunchConfiguration('navigation_profile')
+    revisit_initial_x = LaunchConfiguration('revisit_initial_x')
+    revisit_initial_y = LaunchConfiguration('revisit_initial_y')
+    revisit_initial_yaw = LaunchConfiguration('revisit_initial_yaw')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     record_bag = LaunchConfiguration('record_bag')
@@ -79,6 +82,9 @@ def generate_launch_description():
             'keepout_mask': keepout_mask,
             'params_file': params_file,
             'navigation_profile': navigation_profile,
+            'revisit_initial_x': revisit_initial_x,
+            'revisit_initial_y': revisit_initial_y,
+            'revisit_initial_yaw': revisit_initial_yaw,
             'discovery_range': 'SUBNET',
             'use_sim_time': use_sim_time,
             'autostart': autostart,
@@ -115,33 +121,31 @@ def generate_launch_description():
 
     return LaunchDescription([
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
-        # Sensor publishers remain LOCALHOST-only.  On the current Jazzy /
-        # Fast DDS build, a SUBNET participant on the same host receives their
-        # user data in both directions while a LOCALHOST participant only
-        # discovers endpoint names.  The field observation belongs in the
-        # evaluation report; this comment pins the asymmetric boundary.
+        # 센서 bringup은 LOCALHOST, Nav2·기록은 SUBNET이다. 이 혼합
+        # 구성으로 2026-09-10 방해물 주행 20/20 목표를 완주했다.
         SetEnvironmentVariable(
             'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
         DeclareLaunchArgument(
             'map',
-            default_value=os.path.expanduser(
-                '~/maps/autonomous_20260826T161908.yaml')),
+            default_value='',
+            description='새 차체 지도 YAML을 반드시 명시한다'),
         DeclareLaunchArgument(
             'keepout_mask',
-            default_value=os.path.expanduser(
-                '~/maps/autonomous_20260826T161908_keepout_multi.yaml')),
+            default_value='',
+            description='새 지도와 정합한 Keepout 마스크 YAML을 반드시 명시한다'),
         DeclareLaunchArgument(
             'params_file',
             default_value=os.path.join(
-                package_share, 'config', 'nav2_params.yaml')),
+                package_share, 'config', 'new_base_nav2_params.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
-        DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('autostart', default_value='false'),
+        DeclareLaunchArgument('revisit_initial_x', default_value='0.0'),
+        DeclareLaunchArgument('revisit_initial_y', default_value='-0.1'),
+        DeclareLaunchArgument('revisit_initial_yaw', default_value='0.0'),
         DeclareLaunchArgument(
-            'navigation_profile', default_value='corridor',
-            choices=[
-                'corridor', 'obstacle_candidate',
-                'obstacle_base_candidate'],
-            description='Select the same navigation profile for the route runner'),
+            'navigation_profile', default_value='new_base_candidate',
+            choices=['new_base_candidate', 'new_base_revisit_candidate'],
+            description='새 차체 지도 또는 고정된 기존 지도 재방문만 허용한다'),
         DeclareLaunchArgument(
             'record_bag', default_value='true',
             description='Record essential full-rate evidence on the robot'),

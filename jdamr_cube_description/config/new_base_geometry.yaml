@@ -1,0 +1,67 @@
+schema_version: 1
+claim_scope: installed_lower_base_without_arms_or_payload
+no_external_protrusions_confirmed_on: 2026-09-15
+frame_length:
+  value: 0.340
+  unit: m
+  measured_at: 2026-09-09
+  valid_for: current_bimanual_lower_frame
+  source: bimanual-robot/docs/20260909_하단프레임_실물치수_모델링기록.md
+frame_width:
+  value: 0.450
+  unit: m
+  measured_at: 2026-09-09
+  valid_for: current_bimanual_lower_frame
+  source: bimanual-robot/docs/20260909_하단프레임_실물치수_모델링기록.md
+wheel_outer_width:
+  value: 0.540
+  unit: m
+  measured_at: 2026-09-09
+  valid_for: current_bimanual_lower_frame_and_wheels
+  source: bimanual-robot/docs/20260909_하단프레임_실물치수_모델링기록.md
+wheel_center_separation:
+  value: 0.510
+  unit: m
+  measured_at: 2026-09-15
+  valid_for: current_bimanual_lower_frame_and_wheels
+  source: user_tape_measurement
+front_to_wheel_axis:
+  value: 0.065
+  unit: m
+  measured_at: 2026-09-15
+  valid_for: current_bimanual_lower_frame_and_wheels
+  source: user_tape_measurement
+wheel_radius_initial:
+  value: 0.0329
+  unit: m
+  measured_at: 2026-08-14
+  valid_for: same_wheel_as_prior_jdamr_before_new_load_recalibration
+  source: jdamr_prior_drive_calibration_and_user_same_wheel_confirmation
+  status: initial_not_new_chassis_calibrated
+laser_translation:
+  value: [-0.010, 0.000, 0.150]
+  unit: m
+  measured_at: 2026-09-15
+  valid_for: current_g4_mount_from_wheel_axis_ground_projection
+  source: user_tape_measurement
+laser_yaw:
+  value: 3.141592653589793
+  unit: rad
+  measured_at: 2026-09-15
+  valid_for: current_g4_mount_orientation_candidate
+  source: user_orientation_estimate
+  status: verify_against_scan_directions
+wheel_visual_width:
+  value: 0.030
+  unit: m
+  derived_at: 2026-09-15
+  valid_for: current_bimanual_lower_frame_and_wheels
+  source: derived_from_wheel_outer_width_minus_center_separation
+  status: derived_symmetric_visual_proxy_not_independent_tape_measurement
+rear_caster_lateral_positions:
+  value: [-0.215, 0.215]
+  unit: m
+  modeled_at: 2026-09-09
+  valid_for: current_rear_caster_contact_projection_proxy
+  source: outer_profile_centerline_design_proxy
+  status: actual_mounting_offset_unmeasured

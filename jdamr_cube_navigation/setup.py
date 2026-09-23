@@ -1,7 +1,7 @@
 """Package and console-entry configuration for jdamr_cube_navigation."""
 
-import os
 from glob import glob
+import os
 
 from setuptools import setup
 
@@ -39,6 +39,7 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
+            'box_service = jdamr_cube_navigation.box_service:main',
             'frontier_explorer = jdamr_cube_navigation.frontier_explorer:main',
             'corridor_route = jdamr_cube_navigation.corridor_route:main',
             'goto_pose = jdamr_cube_navigation.goto_pose:main',
@@ -70,6 +71,16 @@ setup(
             'jdamr_cube_navigation.g005_frontier_observer:main',
             'g005_frontier_coordinator = '
             'jdamr_cube_navigation.g005_frontier_coordinator:main',
+            'depth_box_parking = '
+            'jdamr_cube_navigation.depth_box_parking:main',
+            'depth_obstacle_filter = '
+            'jdamr_cube_navigation.depth_obstacle_filter:main',
+            'restaurant_service = '
+            'jdamr_cube_navigation.restaurant_service:main',
+            'service_visualization = '
+            'jdamr_cube_navigation.service_visualization:main',
+            'operator_mapping_preflight = '
+            'jdamr_cube_navigation.operator_mapping_preflight:main',
         ],
     },
 )

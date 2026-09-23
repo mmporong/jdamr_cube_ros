@@ -37,6 +37,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_protocol test/test_protocol.cpp)
   target_include_directories(test_protocol PRIVATE include)
   target_compile_features(test_protocol PRIVATE cxx_std_17)
+
+  ament_add_gtest(test_geometry test/test_geometry.cpp)
+  target_include_directories(test_geometry PRIVATE include)
+  target_compile_features(test_geometry PRIVATE cxx_std_17)
 endif()
 
 ament_package()

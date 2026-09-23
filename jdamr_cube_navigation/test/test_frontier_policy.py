@@ -6,6 +6,7 @@ import inspect
 import textwrap
 import threading
 import time
+from types import SimpleNamespace
 
 from jdamr_cube_navigation.frontier_core import (
     FrontierCandidate, FrontierConfig, GridMap)
@@ -213,9 +214,9 @@ def test_probe_abort_cancels_and_never_auto_resumes():
     assert policy.resume(HEALTHY)[0]
 
 
-def test_stall_and_recovery_failure_blacklist_before_reselection():
-    """Navigation failures blacklist their region before reselection."""
-    policy = ExplorerPolicy(stall_timeout=5.0, max_recoveries=1)
+def test_stall_failure_blacklists_before_reselection():
+    """A stalled navigation goal is blacklisted before reselection."""
+    policy = ExplorerPolicy(stall_timeout=5.0)
     navigating(policy, now=10.0)
     decision = policy.tick(15.0, HEALTHY, generation=7)
     assert decision.cancel_goal
@@ -224,14 +225,144 @@ def test_stall_and_recovery_failure_blacklist_before_reselection():
     assert policy.blacklist[0].x == 1.0
     assert policy.blacklist[0].generation == 7
 
-    assert policy.begin_validation(candidate(3.0, 4.0))
-    assert policy.navigation_started(20.0)
-    decision = policy.feedback(
-        20.1, 2.0, recoveries=2, generation=7)
-    assert decision.cancel_goal
-    assert len(policy.blacklist) == 2
-    assert policy.blacklist[1].generation == 7
+
+def test_two_consecutive_goal_failures_latch_paused():
+    """A second failed frontier cannot start another autonomous attempt."""
+    policy = ExplorerPolicy(max_consecutive_failures=2)
+    navigating(policy, now=10.0)
+
+    first = policy.fail_goal(11.0, generation=7, reason='first failure')
+    assert first.cancel_goal
     assert policy.state == ExplorerState.SELECT
+
+    assert policy.begin_validation(candidate(3.0, 4.0))
+    assert policy.navigation_started(12.0)
+    second = policy.fail_goal(13.0, generation=7, reason='second failure')
+
+    assert second.cancel_goal
+    assert policy.state == ExplorerState.PAUSED
+    assert 'consecutive navigation failures' in second.fault
+    assert len(policy.blacklist) == 2
+
+
+def test_navigation_success_resets_consecutive_failure_budget():
+    """A successful goal starts a new bounded failure budget."""
+    policy = ExplorerPolicy(max_consecutive_failures=2)
+    navigating(policy, now=10.0)
+    policy.fail_goal(11.0, generation=7, reason='first failure')
+    assert policy.begin_validation(candidate(3.0, 4.0))
+    assert policy.navigation_started(12.0)
+    policy.navigation_succeeded()
+
+    assert policy.begin_validation(candidate(5.0, 6.0))
+    assert policy.navigation_started(13.0)
+    decision = policy.fail_goal(
+        14.0, generation=7, reason='failure after success')
+
+    assert policy.state == ExplorerState.SELECT
+    assert decision.fault == 'failure after success'
+
+
+def test_repeated_collision_interventions_latch_paused_without_new_goal():
+    """Three collision-control episodes without progress cancel the goal."""
+    policy = ExplorerPolicy(max_collision_interventions=3)
+    navigating(policy, now=10.0)
+
+    assert not policy.collision_intervention('FootprintApproach').fault
+    assert not policy.collision_intervention('FootprintApproach').fault
+    decision = policy.collision_intervention('FootprintApproach')
+
+    assert decision.cancel_goal
+    assert policy.state == ExplorerState.PAUSED
+    assert 'repeated collision intervention' in decision.fault
+
+
+def test_meaningful_progress_resets_collision_intervention_count():
+    """Measured goal-distance reduction clears earlier interventions."""
+    policy = ExplorerPolicy(max_collision_interventions=3)
+    navigating(policy, now=10.0)
+    policy.feedback(10.1, 3.0, recoveries=0)
+    policy.collision_intervention('FootprintApproach')
+    policy.collision_intervention('FootprintApproach')
+
+    policy.feedback(10.4, 2.9, recoveries=0)
+    decision = policy.collision_intervention('FootprintApproach')
+
+    assert not decision.cancel_goal
+    assert policy.state == ExplorerState.NAVIGATE
+
+
+def test_collision_state_callback_counts_distinct_hazard_episodes():
+    """Repeated copies of one state do not inflate intervention count."""
+    explorer = object.__new__(FrontierExplorer)
+    explorer.policy = ExplorerPolicy(max_collision_interventions=3)
+    navigating(explorer.policy, now=10.0)
+    explorer._collision_action = 0
+    explorer._collision_polygon = ''
+    explorer._collision_action_since = float('-inf')
+    now = iter((10.1, 10.2, 10.3, 10.4, 10.5))
+    explorer._monotonic = lambda: next(now)
+    decisions = []
+    explorer._apply = decisions.append
+    approach = frontier_explorer_module.CollisionMonitorState.APPROACH
+    slowdown = frontier_explorer_module.CollisionMonitorState.SLOWDOWN
+    stop = frontier_explorer_module.CollisionMonitorState.STOP
+
+    explorer._on_collision_state(SimpleNamespace(
+        action_type=approach, polygon_name='FootprintApproach'))
+    explorer._on_collision_state(SimpleNamespace(
+        action_type=approach, polygon_name='FootprintApproach'))
+    explorer._on_collision_state(SimpleNamespace(
+        action_type=slowdown, polygon_name='SlowdownZone'))
+    explorer._on_collision_state(SimpleNamespace(
+        action_type=approach, polygon_name='FootprintApproach'))
+    explorer._on_collision_state(SimpleNamespace(
+        action_type=stop, polygon_name='StopZone'))
+
+    assert len(decisions) == 3
+    assert decisions[-1].cancel_goal
+    assert explorer.policy.state == ExplorerState.PAUSED
+
+
+def test_persistent_collision_stop_latches_navigation():
+    """A continuous StopZone state cancels navigation after one second."""
+    explorer = object.__new__(FrontierExplorer)
+    explorer.policy = ExplorerPolicy()
+    navigating(explorer.policy, now=10.0)
+    explorer._collision_action = (
+        frontier_explorer_module.CollisionMonitorState.STOP)
+    explorer._collision_polygon = 'StopZone'
+    explorer._collision_action_since = 10.0
+    explorer.get_parameter = lambda name: SimpleNamespace(
+        value=1.0 if name == 'collision_stop_latch_seconds' else 3.0)
+    decisions = []
+    explorer._apply = decisions.append
+
+    explorer._check_persistent_collision(10.99)
+    assert decisions == []
+    explorer._check_persistent_collision(11.0)
+
+    assert decisions[-1].cancel_goal
+    assert explorer.policy.state == ExplorerState.PAUSED
+    assert decisions[-1].fault == (
+        'collision intervention persisted: STOP/StopZone')
+
+
+def test_nav2_recovery_count_does_not_extend_stall_deadline():
+    """A recovery counter increase is not evidence of robot progress."""
+    policy = ExplorerPolicy(stall_timeout=5.0)
+    navigating(policy, now=20.0)
+    policy.feedback(20.1, 2.0, recoveries=0, generation=7)
+
+    decision = policy.feedback(
+        25.0, 2.0, recoveries=1, generation=7)
+
+    assert not decision.cancel_goal
+    assert not decision.fault
+    assert not policy.blacklist
+    assert policy.state == ExplorerState.NAVIGATE
+    assert not policy.tick(25.09, HEALTHY).cancel_goal
+    assert policy.tick(25.1, HEALTHY).cancel_goal
 
 
 def test_progress_resets_stall_clock():
@@ -997,6 +1128,37 @@ def test_cmd_vel_owner_requires_root_collision_monitor_exclusively():
     assert not command_owner_is_collision_monitor([spoofed_monitor])
     assert not command_owner_is_collision_monitor(
         [root_monitor, root_teleop])
+
+
+def test_cmd_vel_owner_graph_query_is_cached_for_one_second():
+    class Publisher:
+        node_name = 'collision_monitor'
+        node_namespace = '/'
+
+    class Probe:
+        now = 10.0
+        calls = 0
+        publishers = [Publisher()]
+        _command_owner_checked = -float('inf')
+        _command_owner_valid = False
+
+        def _monotonic(self):
+            return self.now
+
+        def get_publishers_info_by_topic(self, topic):
+            assert topic == '/cmd_vel'
+            self.calls += 1
+            return self.publishers
+
+    probe = Probe()
+    assert FrontierExplorer._command_owner_ok(probe)
+    probe.now = 10.5
+    probe.publishers = []
+    assert FrontierExplorer._command_owner_ok(probe)
+    assert probe.calls == 1
+    probe.now = 11.0
+    assert not FrontierExplorer._command_owner_ok(probe)
+    assert probe.calls == 2
 
 
 def test_status_can_reuse_tick_readiness_without_a_second_graph_pass(

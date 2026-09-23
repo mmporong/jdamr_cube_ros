@@ -1,0 +1,85 @@
+#!/bin/bash
+# Retry only the Astra S hub port when boot-time USB enumeration fails.
+set -eo pipefail
+
+usb_id="${ASTRA_USB_ID:-2bc5:0402}"
+port_disable="${ASTRA_USB_PORT_DISABLE:-/sys/bus/usb/devices/1-1:1.0/1-1-port2/disable}"
+initial_wait_s="${ASTRA_USB_INITIAL_WAIT_S:-8}"
+port_off_s="${ASTRA_USB_PORT_OFF_S:-2}"
+recovery_wait_s="${ASTRA_USB_RECOVERY_WAIT_S:-12}"
+retry_count="${ASTRA_USB_RETRY_COUNT:-2}"
+lsusb_bin="${LSUSB_BIN:-/usr/bin/lsusb}"
+sleep_bin="${SLEEP_BIN:-/usr/bin/sleep}"
+
+for value in "$initial_wait_s" "$port_off_s" "$recovery_wait_s" "$retry_count"; do
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "Astra USB timing and retry values must be nonnegative integers" >&2
+    exit 2
+  fi
+done
+
+camera_present() {
+  "$lsusb_bin" -d "$usb_id" >/dev/null 2>&1
+}
+
+wait_for_camera() {
+  remaining_s="$1"
+  while [ "$remaining_s" -gt 0 ]; do
+    camera_present && return 0
+    "$sleep_bin" 1
+    remaining_s=$((remaining_s - 1))
+  done
+  camera_present
+}
+
+port_disabled=0
+reenable_port() {
+  if [ "$port_disabled" = 1 ]; then
+    if printf '0' >"$port_disable"; then
+      port_disabled=0
+      return 0
+    fi
+    echo "Astra USB port re-enable failed: $port_disable" >&2
+    return 1
+  fi
+  return 0
+}
+finish() {
+  status="$?"
+  trap - EXIT
+  if ! reenable_port && [ "$status" -eq 0 ]; then
+    status=1
+  fi
+  exit "$status"
+}
+trap finish EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if wait_for_camera "$initial_wait_s"; then
+  echo "Astra USB device already present: $usb_id"
+  exit 0
+fi
+if [ ! -w "$port_disable" ]; then
+  echo "Astra USB port control is unavailable: $port_disable" >&2
+  exit 1
+fi
+
+attempt=1
+while [ "$attempt" -le "$retry_count" ]; do
+  echo "Astra USB recovery attempt $attempt/$retry_count on $port_disable"
+  port_disabled=1
+  printf '1' >"$port_disable"
+  "$sleep_bin" "$port_off_s"
+  printf '0' >"$port_disable"
+  port_disabled=0
+  if wait_for_camera "$recovery_wait_s"; then
+    echo "Astra USB recovery succeeded: $usb_id"
+    exit 0
+  fi
+  attempt=$((attempt + 1))
+done
+
+echo "Astra USB recovery failed after $retry_count attempts" >&2
+exit 1

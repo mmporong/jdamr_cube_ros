@@ -1,0 +1,18 @@
+[Unit]
+Description=Recover Astra S USB enumeration before robot services
+After=systemd-udev-trigger.service
+Before=jdamr-box-rgbd.service jdamr-base.service
+
+[Service]
+Type=oneshot
+Environment=ASTRA_USB_ID=2bc5:0402
+Environment=ASTRA_USB_PORT_DISABLE=/sys/bus/usb/devices/1-1:1.0/1-1-port2/disable
+Environment=ASTRA_USB_INITIAL_WAIT_S=8
+Environment=ASTRA_USB_PORT_OFF_S=2
+Environment=ASTRA_USB_RECOVERY_WAIT_S=12
+Environment=ASTRA_USB_RETRY_COUNT=2
+ExecStart=/usr/local/sbin/jdamr-astra-usb-recover
+TimeoutStartSec=45
+
+[Install]
+WantedBy=multi-user.target

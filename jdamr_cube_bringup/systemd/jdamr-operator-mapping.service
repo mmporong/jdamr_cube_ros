@@ -1,0 +1,22 @@
+[Unit]
+Description=JD-AMR protected operator mapping and web controller
+After=network-online.target jdamr-base.service
+Wants=network-online.target
+Requires=jdamr-base.service
+Conflicts=jdamr-webteleop.service
+
+[Service]
+Type=simple
+User=lim
+Environment=ROS_DOMAIN_ID=12
+Environment=ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+Environment=FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash; source /home/lim/jdamr_ws/install/setup.bash; exec ros2 launch jdamr_cube_navigation operator_mapping.launch.py'
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

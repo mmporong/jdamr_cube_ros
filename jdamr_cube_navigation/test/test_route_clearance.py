@@ -1,12 +1,11 @@
-"""Regression tests that the corridor route physically fits the corridor."""
+"""Check waypoint lines against known walls and keepouts, not Nav2 feasibility."""
 
 # On 2026-09-03 the first leg aborted with "collision ahead" because the
-# waypoints ran within 0.06-0.18m of mapped walls, inside the 0.20m inscribed
-# radius, so the robot's own footprint cells read as lethal.  Nothing was
-# blocking the corridor.  These tests keep a route from being committed when
-# it does not physically fit, without needing the robot.
+# waypoints ran within the robot footprint of mapped walls.  Saved-map unknown
+# cells and rotation feasibility still require a Nav2 planning-only preflight.
 
 import math
+import json
 from pathlib import Path
 
 import pytest
@@ -15,11 +14,12 @@ import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 ROUTE = PACKAGE_ROOT / 'config' / 'corridor_roundtrip.autonomous_20260826.yaml'
+NEW_BASE_PARAMS = PACKAGE_ROOT / 'config' / 'new_base_nav2_params.yaml'
 
-# Footprint [[0.23, 0.20], ...] -> the inscribed radius is the half width.
-INSCRIBED_RADIUS_M = 0.20
-# Margin over the inscribed radius so a small heading error is not a collision.
-REQUIRED_CLEARANCE_M = 0.35
+_footprint = json.loads(yaml.safe_load(NEW_BASE_PARAMS.read_text())[
+    'local_costmap']['local_costmap']['ros__parameters']['footprint'])
+INSCRIBED_RADIUS_M = max(abs(point[1]) for point in _footprint)
+REQUIRED_CLEARANCE_M = INSCRIBED_RADIUS_M + 0.10
 RESOLUTION = 0.05
 
 
@@ -69,7 +69,7 @@ def _clearance(hit, x, y, cap):
 
 
 def _segments(config):
-    previous = (0.0, 0.0, 'start')
+    previous = (config['start_pose']['x'], config['start_pose']['y'], 'start')
     for waypoint in config['waypoints']:
         yield previous, (waypoint['x'], waypoint['y'], waypoint['id'])
         previous = (waypoint['x'], waypoint['y'], waypoint['id'])
@@ -86,7 +86,7 @@ def _worst_along(hit, start, end, cap):
 
 
 def test_every_segment_clears_the_inscribed_radius():
-    """A route inside the inscribed radius reads as a collision to the controller."""
+    """Nominal lines must clear known occupied cells; unknown is checked by Nav2."""
     config, map_image, _, origin = _map_files()
     hit = _sampler(map_image, origin, lambda value: value <= 200)
 
@@ -98,7 +98,7 @@ def test_every_segment_clears_the_inscribed_radius():
 
 
 def test_no_segment_enters_a_keepout_zone():
-    """The stair branches must stay unreachable from the planned route."""
+    """Nominal lines must not enter the stair keepout mask."""
     config, _, mask_image, origin = _map_files()
     hit = _sampler(mask_image, origin, lambda value: value < 100)
 

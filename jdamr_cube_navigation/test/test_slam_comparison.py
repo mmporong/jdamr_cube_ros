@@ -168,6 +168,7 @@ def test_map_statistics_preserves_unknown_cells_and_square_units(tmp_path):
     result = map_statistics(metadata)
 
     assert result['occupied_cells'] == 1
+    assert result['resolution_m'] == pytest.approx(0.05)
     assert result['free_cells'] == 1
     assert result['unknown_cells'] == 2
     assert result['occupied_area_m2'] == pytest.approx(0.0025)
@@ -231,6 +232,25 @@ def test_backend_selection_requires_two_distinct_completed_backends():
     }
 
 
+def test_backend_selection_defers_a_two_cell_closure_near_tie():
+    """A centimetre-scale closed-loop gap cannot decide the backend."""
+    records = [
+        {'backend': 'a', 'start_to_end_m': 0.095,
+         'deviation_from_amcl': {'rms_m': 0.627},
+         'map': {'resolution_m': 0.05}},
+        {'backend': 'b', 'start_to_end_m': 0.133,
+         'deviation_from_amcl': {'rms_m': 5.775},
+         'map': {'resolution_m': 0.05}},
+    ]
+
+    result = comparison_summary(records)
+
+    assert result['selected_backend'] is None
+    assert result['reason'] == 'closure_near_tie'
+    assert result['closed_loop_consistency_winner'] is None
+    assert result['saved_map_reference_consistency_winner'] == 'a'
+
+
 def test_comparison_rejects_mixed_source_bags():
     """Backends are comparable only when their source bag is identical."""
     records = [
@@ -248,6 +268,21 @@ def test_comparison_rejects_mixed_source_bags():
 
     assert 'all results must use one identical source bag hash' in errors
     assert 'all results must use one identical source bag name' in errors
+
+
+def test_comparison_rejects_different_trajectory_timestamp_sets():
+    """Shared source input alone does not align the candidate sample sets."""
+    records = [
+        {'backend': label, 'source_bag': 'same.mcap',
+         'source_bag_sha256': 'same',
+         'trajectory_timestamp_sha256': timestamp_hash,
+         'start_to_end_m': 0.1, 'deviation_from_amcl': {'rms_m': 0.5},
+         'map': {}, 'map_yaml': f'{label}.yaml'}
+        for label, timestamp_hash in [('a', 'first'), ('b', 'second')]
+    ]
+
+    assert 'trajectory timestamp sample sets differ' in (
+        comparison_precondition_errors(records))
 
 
 def test_comparison_main_refuses_missing_map_without_writing_outputs(tmp_path):
@@ -291,6 +326,27 @@ def test_report_labels_amcl_as_reference_instead_of_ground_truth():
     assert 'ATE/RPE가 아니다' in report
 
 
+def test_report_distinguishes_one_backend_with_two_configs():
+    """Cartographer A/B must not be labelled as two different algorithms."""
+    records = [
+        {'backend': label, 'estimated_length_m': 80.0,
+         'start_to_end_m': closure,
+         'deviation_from_amcl': {'rms_m': rms, 'max_m': rms * 2},
+         'map': {'resolution_m': 0.05, 'extent_m': extent}}
+        for label, closure, rms, extent in [
+            ('cartographer', 0.095, 0.627, [45.0, 10.1]),
+            ('real_v2', 0.133, 5.775, [23.25, 8.7]),
+        ]
+    ]
+
+    report = render_report(records, comparison_kind='config')
+
+    assert '# 동일 MCAP Cartographer 설정 비교' in report
+    assert '두 실행은 모두 Cartographer이며 설정만 달리했다' in report
+    assert '| 설정/조건 |' in report
+    assert '자동 선택을 보류한다' in report
+
+
 def test_report_defers_selection_when_consistency_criteria_disagree():
     """A split decision must be described as deferred, never as None."""
     records = [
@@ -326,8 +382,29 @@ def test_report_does_not_exaggerate_a_near_tie_in_loop_closure():
 
     report = render_report(records)
 
-    assert '1.000m와 1.010m로 수치상 유사' in report
+    assert 'a 1.000m, b 1.010m로 수치상 유사' in report
+    assert '자동 선택을 보류한다' in report
     assert '1.01배 작고' not in report
+
+
+def test_report_does_not_turn_centimetre_closure_gap_into_a_ratio_win():
+    """A tiny denominator must not market centimetres as a large gain."""
+    records = [
+        {'backend': 'a', 'estimated_length_m': 80.0,
+         'start_to_end_m': 0.095,
+         'deviation_from_amcl': {'rms_m': 0.627, 'max_m': 1.1},
+         'map': {'extent_m': [45.0, 10.0]}},
+        {'backend': 'b', 'estimated_length_m': 81.0,
+         'start_to_end_m': 0.133,
+         'deviation_from_amcl': {'rms_m': 5.775, 'max_m': 10.8},
+         'map': {'extent_m': [23.0, 8.0]}},
+    ]
+
+    report = render_report(records)
+
+    assert 'a 0.095m, b 0.133m로 수치상 유사' in report
+    assert '자동 선택을 보류한다' in report
+    assert '1.4배 작고' not in report
 
 
 def _harness_source():

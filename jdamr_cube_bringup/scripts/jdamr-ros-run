@@ -1,0 +1,30 @@
+#!/bin/bash
+# Run bounded physical-robot ROS commands with the Pi transport contract.
+set -eo pipefail
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: jdamr-ros-run TIMEOUT_SECONDS COMMAND [ARG ...]" >&2
+  exit 2
+fi
+
+timeout_s="$1"
+shift
+if [[ ! "$timeout_s" =~ ^[1-9][0-9]*$ ]]; then
+  echo "TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+fi
+
+ros_setup="${JDAMR_ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
+workspace_setup="${JDAMR_WORKSPACE_SETUP:-$HOME/jdamr_ws/install/setup.bash}"
+if [ ! -r "$ros_setup" ] || [ ! -r "$workspace_setup" ]; then
+  echo "ROS setup file is unavailable" >&2
+  exit 1
+fi
+
+source "$ros_setup"
+source "$workspace_setup"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-12}"
+export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
+export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+
+exec timeout --signal=TERM --kill-after=2s "${timeout_s}s" "$@"

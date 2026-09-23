@@ -471,6 +471,62 @@ datasets:
   exclusion_reasons:
   - recorder transport-loss counters were not captured
   - LiDAR object class and person identity were not measured
+- dataset_id: new_base_revisit_20260916_wide_start
+  role: new_base_revisit_roundtrip
+  qualification: PARTIAL_SUCCESS
+  protocol_qualified: false
+  uri: $HOME/jdamr_artifacts/new_base_revisit_20260916_wide_start
+  storage:
+    identifier: mcap
+    relative_file: new_base_revisit_20260916_wide_start_0.mcap
+    size_bytes: 157187787
+    sha256: 345108e92a8811026515fc21ec481945f375dd2c01eda35776621535199f71d8
+    metadata_sha256: 75ea24fd85a2455d5f7814a940f1009f0a1ce31107a22cb5d8b46cdbca84ab80
+  capture:
+    started_at_unix_ns: 1789522200284444613
+    duration_ns: 1091849245534
+    message_count: 186865
+    ros_distro: jazzy
+    clock_mode: wall
+  outcome: 새 차체의 저장지도·Keepout 재방문 20/20 완주, Nav2 복구 0회. 주행 구간 첫·마지막 AMCL 표본 간 차이 0.132m, 지정 home 대비 마지막 표본 차이 0.329m. 외부 GT와 새 지도 품질은 별도 판정 대기
+  topics:
+  - {name: /amcl_pose, type: geometry_msgs/msg/PoseWithCovarianceStamped, messages: 293, reliability: reliable, durability: transient_local}
+  - {name: /battery_state, type: sensor_msgs/msg/BatteryState, messages: 1092, reliability: reliable, durability: volatile}
+  - {name: /cmd_vel, type: geometry_msgs/msg/Twist, messages: 21488, reliability: reliable, durability: volatile}
+  - {name: /cmd_vel_nav, type: geometry_msgs/msg/Twist, messages: 10766, reliability: reliable, durability: volatile}
+  - {name: /collision_monitor_state, type: nav2_msgs/msg/CollisionMonitorState, messages: 0, reliability: reliable, durability: volatile}
+  - {name: /imu/data_raw, type: sensor_msgs/msg/Imu, messages: 54591, reliability: best_effort, durability: volatile}
+  - {name: /navigate_to_pose/_action/status, type: action_msgs/msg/GoalStatusArray, messages: 40, reliability: reliable, durability: transient_local}
+  - {name: /odom, type: nav_msgs/msg/Odometry, messages: 54592, reliability: reliable, durability: volatile}
+  - {name: /plan, type: nav_msgs/msg/Path, messages: 1054, reliability: reliable, durability: volatile}
+  - {name: /scan, type: sensor_msgs/msg/LaserScan, messages: 10562, reliability: reliable, durability: volatile}
+  - {name: /tf, type: tf2_msgs/msg/TFMessage, messages: 32386, reliability: reliable, durability: volatile}
+  - {name: /tf_static, type: tf2_msgs/msg/TFMessage, messages: 1, reliability: reliable, durability: transient_local}
+  integrity:
+    inspector: python-mcap-1.4.0
+    full_message_iteration: PASS
+    iterated_message_count: 186865
+    chunk_crc: {chunks_with_crc: 147, total_chunks: 147}
+    data_section_crc: 1084959453
+    summary_crc: 231097955
+    message_index: {records: 1338}
+    chunk_index: {records: 147}
+  gates:
+    full_message_iteration: PASS
+    recorder_finalized: PASS
+    chunk_crc: PASS
+    data_section_crc: PASS
+    summary_crc: PASS
+    message_index: PASS
+    required_evidence_present: PASS
+    transport_loss_zero: UNKNOWN
+  recorder:
+    transport_loss: UNKNOWN
+  exclusion_reasons:
+  - recorder transport-loss counters were not captured
+  - /collision_monitor_state observations were not recorded
+  - wheel odometry returns 32.6604m away from its start in a physical roundtrip
+  - offline Cartographer map quality and LiDAR obstacle classes are not yet verified
 - dataset_id: slam_advance_noexecute_20260911T1110
   role: onboard_static_soak
   qualification: DIAGNOSTIC_ONLY

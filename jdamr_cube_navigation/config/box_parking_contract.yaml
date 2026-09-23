@@ -1,0 +1,16 @@
+schema_version: 1
+reference_frame: map
+robot_base_frame: base_link
+# Candidate control tolerances; not measured physical accuracy.
+xy_tolerance_m: 0.01
+yaw_tolerance_deg: 1.0
+stopped_linear_mps: 0.01
+stopped_angular_radps: 0.02
+hold_s: 1.0
+observation_timeout_s: 5.0
+sample_max_age_s: 0.5
+desired_linear_mps: 0.04
+min_approach_linear_mps: 0.01
+rotate_angular_radps: 0.2
+target_basis: USER_ACCEPTED_TARGET
+physical_validation: NOT_PHYSICALLY_VALIDATED

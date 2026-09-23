@@ -16,6 +16,7 @@ from jdamr_cube_navigation.corridor_route import (
 from jdamr_cube_navigation.parking import (
     load_parking_contract, parking_controller_overrides,
 )
+from jdamr_cube_navigation.reverse_parking import reverse_controller_overrides
 from nav_msgs.msg import Odometry
 import pytest
 from rclpy.parameter import Parameter
@@ -147,16 +148,19 @@ def test_original_route_never_runs_parking_verification():
                for call in route.navigate.send_goal_async.call_args_list)
 
 
+@pytest.mark.parametrize('reverse', [False, True])
 @pytest.mark.parametrize('mismatch', [
     None, 'Parking.stateful', 'parking_goal_checker.xy_goal_tolerance',
     'Parking.use_collision_detection', 'controller_plugins',
     'Parking.regulated_linear_scaling_min_speed',
 ])
 def test_runtime_parameter_check_rejects_missing_or_relaxed_configuration(
-        mismatch):
+        mismatch, reverse):
     """Validate effective runtime parameters before the first route goal."""
     route = _route()
     values = parking_controller_overrides(_document(), _contract())
+    if reverse:
+        values = reverse_controller_overrides(values)
     flat = {}
     for name, value in values.items():
         if isinstance(value, dict):
@@ -173,7 +177,7 @@ def test_runtime_parameter_check_rejects_missing_or_relaxed_configuration(
         _completed_future(SimpleNamespace(values=[
             Parameter(name, value=flat.get(name)).get_parameter_value()
             for name in names])))
-    assert route._parking_parameters_ready() is (mismatch is None)
+    assert route._parking_parameters_ready(reverse=reverse) is (mismatch is None)
 
 
 def test_quaternion_conversion_validates_input_and_preserves_yaw():
@@ -205,6 +209,10 @@ def test_odometry_excursion_is_not_erased_by_a_later_stopped_sample():
     route = _route()
     route.parking_motion_revision = 0
     route.samples = {}
+    route.odom_last_pose = None
+    route.odom_total_distance_m = 0.0
+    route.amcl_motion_distance_m = 0.0
+    route.amcl_motion_rotation_rad = 0.0
     message = Odometry()
     message.twist.twist.linear.x = 0.1
     route._odom_callback(message)
@@ -213,13 +221,14 @@ def test_odometry_excursion_is_not_erased_by_a_later_stopped_sample():
     assert route.parking_odom[2:] == (0.0, 0.0)
 
 
+@pytest.mark.parametrize('hold_s', [None, 5.0])
 @pytest.mark.parametrize('scenario,confirmed,earliest_s', [
     ('steady', True, 1.25), ('excursion', True, 1.75),
     ('regression', True, 2.0), ('stale_tf', False, 5.0),
     ('duplicate_stamp', False, 5.0),
 ])
 def test_real_post_goal_verifier_observation_sequences(
-        monkeypatch, scenario, confirmed, earliest_s):
+        monkeypatch, scenario, confirmed, earliest_s, hold_s):
     """Drive the actual verifier with fake callbacks, not a mocked verdict."""
     route = _route()
     route.parking_motion_revision = 0
@@ -254,8 +263,11 @@ def test_real_post_goal_verifier_observation_sequences(
         'sample_age_s': 1.0 if scenario == 'stale_tf' else 0.01,
     }
     assert CorridorRoute._verify_parking_stop(
-        route, 1, target, SimpleNamespace()) is confirmed
+        route, 1, target, SimpleNamespace(), hold_s=hold_s) is confirmed
     assert clock['now_s'] >= earliest_s
+    if hold_s is not None:
+        assert clock['now_s'] >= earliest_s + (4.0 if confirmed else 5.0)
+    assert route.parking_contract['hold_s'] == 1.0
     event = route._route_event.call_args
     assert event.args[0] == (
         'parking_estimate_confirmed' if confirmed else 'parking_not_confirmed')

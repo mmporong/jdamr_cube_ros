@@ -15,6 +15,21 @@
 
 ## 실행과 수동 제어
 
+방 전체를 자동 탐색하지 않고 필요한 서비스 구역만 수동으로 지도화할 때는
+`jdamr-operator-mapping.service`를 사용한다. 이 모드는 Cartographer, map saver,
+화이트톤 웹 조종기를 한 서비스로 실행한다. 수동 조종 명령은 출발 점검, 방향별
+라이다 판정, velocity smoother와 Collision Monitor를 거치지 않고 `/cmd_vel`로
+전달한다. 버튼을 놓거나 브라우저 연결이 끊기면 0속도를 보내는 데드맨과 베이스
+드라이버·펌웨어 워치독은 유지한다.
+
+```bash
+sudo systemctl start jdamr-operator-mapping.service
+```
+
+같은 무선망에서 `http://jdamr.local:8080`을 연다. 전진·후진·좌회전·우회전 버튼은
+센서 상태와 주변 장애물에 따라 비활성화되지 않는다. 이 모드는 작업자가 차체를 보면서
+지도를 생성할 때만 사용하며, 자율주행은 별도의 Nav2 보호 경로를 사용한다.
+
 빌드 후 환경을 source하고 Cartographer 및 하드웨어가 이미 실행 중인 상태에서 자율 매핑 launch를 실행한다.
 
 ```bash
@@ -25,6 +40,114 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-LOCALHOST
 export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 ros2 launch jdamr_cube_navigation autonomous_mapping.launch.py use_sim_time:=false
 ```
+
+## 충전소 출발·단일 테이블 서빙
+
+`restaurant_service serve`는 충전소 정밀주차 → 5초 정지 유지 → 선택 테이블
+정밀주차 → 5초 정지 유지 → 동일 충전소 pose 복귀 순서로 동작한다. 물 따르기
+단계는 포함하지 않는다. 대기 중 위치·각도 이탈이나 움직임이 관측되면 대기 시간을
+다시 계산하고, 제한 시간 안에 정지가 확인되지 않으면 다음 지점으로 출발하지 않는다.
+충전소 또는 선택 테이블이 등록되지 않았으면 첫 이동 전에 종료한다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_ws/install/setup.bash"
+ros2 run jdamr_cube_navigation restaurant_service serve \
+  --registry "$HOME/jdamr_data/maps/20260922_manual_final_run2/service_destinations.yaml" \
+  --table-id table_01 --log "$HOME/jdamr_data/serve_table_01_plan.jsonl"
+```
+
+기본 명령은 현재 위치에서 목적지별 계획을 확인하며 이동하거나 대기하지 않는다.
+실행은 새 로그 경로와 `--execute`를 지정한다. 충전소와 테이블은 `teach-home`과
+`teach`로 각각 최종 위치·방향을 등록해야 한다. 이미지의 색상 영역 중심을
+정밀주차 pose로 간주하지 않는다. 1번 테이블의 90도 방향과 2번의 정면 방향은
+각각 교시한 최종 yaw에 담는다. 현재 기능은 지도 기반 주차 추정이며, 박스 면을
+센서로 추종해 차체 앞 간격 5cm를 보장하거나 충전을 감지하는 기능은 아니다.
+
+### 충전소 후면 주차
+
+충전소 pose에 `parking_direction: reverse`를 지정하면 최종 자세의 앞쪽에
+접근 지점을 만든다. 접근 지점에서 위치·방향·정지를 확인한 뒤, 실제 자세부터
+충전소까지 2.5cm 이하 간격의 후진 경로를 생성한다. `ParkingReverse`는
+기존 `Parking`을 복사하되 후진을 허용하고 제자리 방향 전환을 끈 별도 RPP
+컨트롤러다. `FollowPath` 명령은 기존 속도 평활화·충돌 방지·모터 경로를 거친다.
+
+후진 전 등록 지도와 Keepout에서 차체 외곽 전체를 검사하며, 미관측 셀과 지도
+밖도 통과시키지 않는다. 이후 Nav2의 실시간 비용맵 경로 검사와 제어기 충돌
+검사를 거친다. 이미 충전소 자세에 있으면 정지를 확인하고 불필요한 재진입은
+하지 않는다. 실패·취소 시 다음 미션으로 진행하지 않는다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$HOME/jdamr_ws/install/setup.bash"
+ros2 run jdamr_cube_navigation restaurant_service home \
+  --registry "$HOME/jdamr_data/maps/20260922_manual_final_run2/service_destinations.yaml" \
+  --log "$HOME/jdamr_data/home_reverse_plan.jsonl"
+```
+
+위 명령은 계획 확인만 한다. 실행은 별도 로그와 `--execute`가 필요하다.
+후진 정렬·방향·거리 조건은 소프트웨어 검증 대상이며, 실차 반복 주차 오차나
+충전 접점 결합을 검증한 결과가 아니다. 전방 RGB-D는 후방 관측을 대신하지 않는다.
+후면 주차 시에도 지도·라이다 기반 충돌 방지를 유지한다.
+
+## Depth 박스 정밀주차 관측
+
+2026-09-21 박스 전용 접근 실행부와 반복 출발 검증 절차를 폐기했다.
+[실차 실패 및 폐기 기록](evaluation/archive/20260921_BOX_APPROACH_SHADOW.md)은
+분석용 보관 자료이며, 그 안의 이전 실행 명령은 사용하지 않는다.
+기존 Nav2·지도 기반 서비스 목적지 기능과 속도를 발행하지 않는 Depth 관측기는 유지한다.
+이 정리로 테이블 앞 5cm 정차가 구현되거나 검증된 것은 아니다.
+
+테이블별 목적지는 `map` 좌표계의 이름 있는 서비스 pose로 교시하며, 구현 범위와 데이터
+형식은 [식당 서비스 목적지 등록 후속 작업](evaluation/20260917_RESTAURANT_SERVICE_DESTINATION_BACKLOG.md)에
+분리했다. 지도 기반 서비스 목적지와 이번 박스 상대 접근 계산은 별도 경로다.
+완성 전 양팔 서빙 로봇의 선행 왕복 검증은
+[서비스 위치 교시·충전소 복귀](evaluation/20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md)의
+`지도 생성 → home_dock 교시 → 목적지 교시 → 지점별 박스 관측·대기 → home_dock 복귀` 순서를
+사용한다. 이 왕복은 현재 베이스의 지도·주행·인지 상태기계를 검증하며, 충전 접점 체결이나
+팔 작업 성공을 뜻하지 않는다.
+
+박스 앞 정밀주차의 1단계는 태그 없이 Depth에서 보이는 평면을 검출한다. 현재 낮은 카메라
+위치에서는 상판보다 전면이 안정적으로 보이므로 `surface_mode=front`를 사용한다. 카메라를
+높인 뒤에는 `surface_mode=top`으로 바꿔 같은 관측 구조를 사용할 수 있다. 검출기는 카메라
+optical frame 기준 박스 전면 거리, 좌우 오차, 평면 각도, 폭·높이와 신뢰도를
+`/box_parking/perception_status`에 JSON으로 발행한다. 8개 연속 관측의 거리·좌우·각도
+분산이 설정 범위 안에 들어와야 `stable=true`가 된다.
+
+이 노드는 관측 전용이다. `/cmd_vel`을 발행하지 않고 `control_ready=false`를 유지하므로
+로봇을 움직이지 않는다. 박스를 실제로 반복 검출하고 카메라 외부 파라미터와 정지 오차를
+실측하기 전에는 정밀 접근 제어에 연결하지 않는다. 이후 제어 단계는 Nav2가 박스 근처의
+대기 위치까지 이동하고, 안정화된 Depth 상대 오차로 마지막 구간만 저속 보정하며, 2D
+라이다와 Collision Monitor는 충돌 정지를 담당하는 구조로 결합한다.
+
+```bash
+cd "$HOME/jdamr_rgbd_ws"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+export ROS_DOMAIN_ID=12
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+ros2 launch jdamr_cube_navigation depth_box_parking.launch.py
+ros2 topic echo --full-length /box_parking/perception_status
+```
+
+실차 파이의 배포 워크스페이스는 `$HOME/jdamr_ws`다. 2026-09-17 정지 장면에서 관측
+노드만 추가로 실행했을 때 토픽은 평균 4.609 Hz였고, 박스가 없는 장면은
+`reason=no_box_surface_candidate`로 거부했다. 같은 위치에 박스를 둔 뒤 전면 검출은 거리
+0.762m, 우측 편차 약 0.0224m, 평면 각도 약 -1.05°, 폭 약 0.321m, 높이 약 0.186m,
+신뢰도 약 0.97로 연속 `stable=true`를 유지했다. 이는 정지 상태의 상대 자세 관측
+증거이며 방향 제어 또는 5cm 주차 성능의 증거는 아니다.
+
+같은 날 박스를 카메라 오른쪽으로 옮긴 방향 부호 시험에서는 전진 명령 없이
+`angular.z=-0.05rad/s`를 2초간 발행했다. 시험 전 웹 조종기를 중지해 `/cmd_vel`
+발행자를 시험 노드 하나로 제한했고, 종료 시 0속도를 반복 발행했다. 박스 우측 편차는
+0.1284m에서 0.0391m로 약 69.5% 감소해 우회전 부호를 확인했다. 평면 각도는 -2.34°에서
++3.63°로 변했으므로, 최종 주차는 제자리 회전 하나로 처리하지 않고 전진 곡선으로 중심선에
+접근한 뒤 평면 각도를 별도로 맞춰야 한다. 이 시험은 방향 부호 검증이며 연속 폐루프 제어나
+최종 정지 정확도 검증은 아니다.
+
+차체 앞면과 카메라 렌즈면이 같은 현재 장착에서 물리 간격 5cm를 목표로 할 때의 센서
+사각지대 계산, Depth→라이다 전환과 근거리 센서 대안은
+[Depth 박스 정밀주차 설계](evaluation/20260917_DEPTH_BOX_PARKING_DESIGN.md)를 따른다.
 
 ## 저장 지도 자율주행의 금지구역
 

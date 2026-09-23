@@ -7,9 +7,9 @@
 laser_joint 가 서로 다른 값으로 이중 발행되던 것(조사기록 E7)을,
 라이다 노드를 직접 띄우고 frame_id 를 URDF 링크(laser_link)로 맞춰 없앤다.
 
-바퀴 제원은 실측 후 런치 인자로 넘긴다 (안 넘기면 드라이버가 경고):
+바퀴 제원은 런치 인자로 넘긴다:
   ros2 launch jdamr_cube_bringup real_bringup.launch.py \
-      wheel_radius:=0.0XX wheel_separation:=0.3XX
+      wheel_radius:=0.0329 wheel_separation:=0.510
 
 연결 구성 (2026-08-14 실물 확정):
   ESP32 ↔ 파이 = 40핀 헤더 UART(/dev/ttyS0) — USB 케이블 불필요.
@@ -28,7 +28,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     urdf_file = os.path.join(
-        get_package_share_directory('jdamr_cube_description'), 'urdf', 'jdamr_cube.urdf')
+        get_package_share_directory('jdamr_cube_description'), 'urdf', 'new_base_real.urdf')
     with open(urdf_file, 'r') as f:
         robot_description = f.read()
 
@@ -36,15 +36,17 @@ def generate_launch_description():
     lidar_port = LaunchConfiguration('lidar_port')
     wheel_radius = LaunchConfiguration('wheel_radius')
     wheel_separation = LaunchConfiguration('wheel_separation')
+    wheel_radius_ratio = LaunchConfiguration('wheel_radius_ratio')
 
     return LaunchDescription([
         # 이 파이의 Fast DDS SHM user-data 경로는 discovery 후 데이터가
         # 전달되지 않는다. 노드를 띄우기 전에 UDP-only로 고정한다.
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
-        # 실차 제어 토픽은 파이 내부에서만 교환한다. 시각 검토는 주행 뒤
-        # bag을 재생해 무선 상태가 센서·제어 콜백을 막지 않게 한다.
+        # Base sensors, Cartographer and Nav2 must use one discovery scope.
+        # A LOCALHOST/SUBNET split intermittently hid /tf and Collision
+        # Monitor lifecycle services during autonomous-mapping startup.
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ydlidar_g4',
@@ -53,10 +55,14 @@ def generate_launch_description():
                               description=(
                                   '바퀴 반지름 [m] — 2026-08-14 주행 캘리브레이션 확정'
                                   '(자 실측 지름 65mm와 일치)')),
-        DeclareLaunchArgument('wheel_separation', default_value='0.1836',
+        DeclareLaunchArgument('wheel_separation', default_value='0.510',
                               description=(
-                                  '유효 트레드 [m] — 주행 캘리브레이션 확정. '
-                                  '기하 중심거리는 0.20m이나 접지면 효과로 유효값이 작다')),
+                                  '새 차체 바퀴 중심 간 실측 기하 거리 [m]. '
+                                  '회전 시험 뒤 유효 트레드를 별도 보정한다')),
+        DeclareLaunchArgument('wheel_radius_ratio', default_value='1.0',
+                              description=(
+                                  '오른쪽/왼쪽 유효 바퀴 반지름 비. '
+                                  '측정 주행 전에는 1.0 유지')),
 
         # URDF 가 모든 고정 TF(base_footprint→base_link→laser_link…)의 단일 출처
         Node(
@@ -86,6 +92,7 @@ def generate_launch_description():
                 'port': base_port,
                 'wheel_radius': wheel_radius,
                 'wheel_separation': wheel_separation,
+                'wheel_radius_ratio': wheel_radius_ratio,
                 'base_frame': 'base_footprint',
                 'imu_frame': 'base_link',   # 보드가 base_link 에 장착 — 전용 imu_link 추가 전까지
                 # /odom은 50Hz 유지, TF만 20Hz로 제한해 Pi의 Nav2 fan-out 부하를 줄인다.

@@ -1,14 +1,22 @@
 """Static regression tests for the physical-robot mapping safety envelope."""
 
 import ast
+import importlib.util
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+from launch import LaunchContext
+from launch.actions import (
+    DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable)
+from launch.utilities import perform_substitutions
+from launch_ros.actions import Node
+import pytest
 import yaml
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PARAMS_PATH = PACKAGE_ROOT / 'config' / 'nav2_params.yaml'
+NEW_BASE_PARAMS_PATH = PACKAGE_ROOT / 'config' / 'new_base_nav2_params.yaml'
 LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'autonomous_mapping.launch.py'
 NAVIGATION_LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
 URDF_PATH = (
@@ -120,11 +128,45 @@ def test_physical_navigation_launches_force_fastdds_udp_transport():
     _assert_udp_transport_call(add_actions[0].args[0])
 
 
-def test_autonomous_mapping_keeps_dds_off_the_wifi_interface():
+def test_autonomous_mapping_uses_the_proven_sensor_transport_scope():
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        module, 'get_package_share_directory',
+        lambda _name: str(PACKAGE_ROOT))
+    try:
+        entities = module.generate_launch_description().entities
+    finally:
+        monkeypatch.undo()
+    discovery = next(
+        entity for entity in entities
+        if isinstance(entity, DeclareLaunchArgument)
+        and entity.name == 'discovery_range')
+    assert discovery.default_value[0].text == 'SUBNET'
+    environment = next(
+        entity for entity in entities
+        if isinstance(entity, SetEnvironmentVariable)
+        and perform_substitutions(LaunchContext(), entity.name)
+        == 'ROS_AUTOMATIC_DISCOVERY_RANGE')
+    assert entities.index(discovery) < entities.index(environment)
+    context = LaunchContext()
+    discovery.execute(context)
+    environment.execute(context)
+    assert context.environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'SUBNET'
+    context = LaunchContext()
+    context.launch_configurations['discovery_range'] = 'LOCALHOST'
+    discovery.execute(context)
+    environment.execute(context)
+    assert context.environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'LOCALHOST'
+
+
+def test_autonomous_mapping_defaults_to_new_base_geometry():
     source = LAUNCH_PATH.read_text(encoding='utf-8')
 
-    ast.parse(source)
-    assert "'ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'" in source
+    assert "package_share, 'config', 'new_base_nav2_params.yaml'" in source
 
 
 def test_controller_uses_forward_only_collision_aware_rpp():
@@ -137,11 +179,11 @@ def test_controller_uses_forward_only_collision_aware_rpp():
     assert controller['rotate_to_heading_angular_vel'] <= 0.7
 
 
-def test_velocity_smoother_clamps_forward_and_angular_velocity():
-    smoother = _node_params(_params(), 'velocity_smoother')
+def test_velocity_smoother_disables_reverse_recovery_and_limits_turn_rate():
+    config = yaml.safe_load(NEW_BASE_PARAMS_PATH.read_text(encoding='utf-8'))
+    smoother = _node_params(config, 'velocity_smoother')
 
-    assert smoother['min_velocity'][0] == 0.0, (
-        'physical mapping must not command reverse linear velocity')
+    assert smoother['min_velocity'][0] == 0.0
     assert smoother['max_velocity'][0] <= 0.18
     assert abs(smoother['min_velocity'][2]) <= 0.7
     assert smoother['max_velocity'][2] <= 0.7
@@ -222,14 +264,16 @@ def test_collision_monitor_has_stop_slowdown_and_two_second_approach():
     assert actions['slowdown']['slowdown_ratio'] >= 0.60
 
 
-def test_mapping_behavior_tree_is_forward_only_but_keeps_safe_recoveries():
+def test_mapping_behavior_tree_recovery_does_not_move_the_robot():
     tree = ET.parse(BT_PATH)
     element_names = {element.tag for element in tree.iter()}
     selector = tree.find('.//GoalCheckerSelector')
     follow_path = tree.find('.//FollowPath')
 
-    assert 'BackUp' not in element_names
-    assert 'Spin' in element_names
+    assert tree.getroot().find('.//RecoveryNode').attrib[
+        'number_of_retries'] == '1'
+    assert tree.find('.//BackUp') is None
+    assert tree.findall('.//Spin') == []
     assert 'Wait' in element_names
     assert selector is not None
     assert selector.attrib['default_goal_checker'] == 'general_goal_checker'
@@ -243,7 +287,11 @@ def test_mapping_launch_uses_navigation_only_with_safe_defaults():
 
     assert 'bringup_launch.py' not in source, (
         'mapping must not start AMCL/map_server through bringup_launch.py')
-    assert 'navigation_launch.py' in source
+    for package in (
+            'nav2_controller', 'nav2_planner', 'nav2_behaviors',
+            'nav2_velocity_smoother', 'nav2_collision_monitor',
+            'nav2_bt_navigator'):
+        assert f"'{package}'" in source
     assert "executable='frontier_explorer'" in source
     assert "executable='map_saver_server'" in source
     assert "name='lifecycle_manager_map_saver'" in source
@@ -264,43 +312,105 @@ def test_mapping_launch_uses_navigation_only_with_safe_defaults():
     assert ast.literal_eval(defaults['default_value']) == 'false'
 
 
-def test_nav2_uses_isolated_processes_for_physical_reliability():
+def test_mapping_physical_custom_params_use_new_base_contract(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE_ROOT if name == 'jdamr_cube_navigation'
+        else PACKAGE_ROOT.parent / 'jdamr_cube_description'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'params_file': str(PARAMS_PATH),
+        'use_sim_time': 'false',
+    })
+
+    with pytest.raises(RuntimeError, match='footprint is smaller'):
+        module._validate_physical_params(context)
+
+
+def test_mapping_simulation_allows_legacy_params(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, 'validate_new_base_params',
+        lambda _params, _geometry: pytest.fail('simulation invoked validator'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'params_file': '/missing/legacy-sim.yaml',
+        'use_sim_time': 'true',
+    })
+
+    assert module._validate_physical_params(context) == []
+
+
+def test_mapping_validation_action_precedes_every_node(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        'autonomous_mapping_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE_ROOT if name == 'jdamr_cube_navigation'
+        else PACKAGE_ROOT.parent / 'jdamr_cube_description'))
+
+    entities = module.generate_launch_description().entities
+    validator_index = next(
+        index for index, entity in enumerate(entities)
+        if isinstance(entity, OpaqueFunction)
+        and entity._OpaqueFunction__function is
+        module._validate_physical_params)
+    first_node_index = next(
+        index for index, entity in enumerate(entities)
+        if isinstance(entity, Node))
+    assert validator_index < first_node_index
+
+
+def test_nav2_uses_an_isolated_component_container_for_physical_reliability():
     source = LAUNCH_PATH.read_text(encoding='utf-8')
 
-    assert "executable='component_container_isolated'" not in source
-    assert "'use_composition': 'False'" in source
-    assert "'container_name': 'nav2_container'" not in source
+    assert "executable='component_container_isolated'" in source
+    assert "name='nav2_mapping_container'" in source
+    assert source.count("'bond_timeout': 0.0") == 2
+    assert "executable='nav2_liveness_guard'" in source
+    assert "package='nav2_collision_monitor'" in source
+    assert "executable='collision_monitor'" in source
 
 
-def test_include_launch_arguments_never_receive_parameter_file_objects():
+def test_collision_monitor_is_not_composed_with_the_planner():
     syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
-    includes = [
+    composed_plugins = [
+        ast.literal_eval(node.args[1])
+        for node in ast.walk(syntax)
+        if isinstance(node, ast.Call)
+        and _call_name(node) == 'ComposableNode'
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+    ]
+    assert 'nav2_collision_monitor::CollisionMonitor' not in composed_plugins
+
+
+def test_composed_nodes_receive_the_rewritten_parameter_file():
+    syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
+    components = [
         node for node in ast.walk(syntax)
         if isinstance(node, ast.Call) and
-        _call_name(node) == 'IncludeLaunchDescription'
+        _call_name(node) == 'ComposableNode'
     ]
 
-    assert includes, 'expected a Nav2 IncludeLaunchDescription'
-    for include in includes:
-        argument = next(
-            keyword.value for keyword in include.keywords
-            if keyword.arg == 'launch_arguments')
-        dictionary = argument.func.value if (
-            isinstance(argument, ast.Call) and
-            isinstance(argument.func, ast.Attribute) and
-            argument.func.attr == 'items') else argument
-        assert isinstance(dictionary, ast.Dict)
-        for value in dictionary.values:
-            assert not (
-                isinstance(value, ast.Call) and
-                _call_name(value) == 'ParameterFile'), (
-                    'Include launch arguments accept substitutions, not '
-                    'ParameterFile objects')
-            assert not (
-                isinstance(value, ast.Name) and
-                value.id == 'configured_params'), (
-                    'configured_params is a ParameterFile and cannot be '
-                    'passed to IncludeLaunchDescription')
+    assert components
+    factory = next(
+        node for node in ast.walk(syntax)
+        if isinstance(node, ast.FunctionDef) and node.name == 'component')
+    parameters = next(
+        keyword.value for node in ast.walk(factory)
+        if isinstance(node, ast.Call) and _call_name(node) == 'ComposableNode'
+        for keyword in node.keywords if keyword.arg == 'parameters')
+    assert any(
+        isinstance(item, ast.Name) and item.id == 'configured_params'
+        for item in parameters.elts)
 
 
 def test_docking_velocity_is_remapped_before_navigation_launch():

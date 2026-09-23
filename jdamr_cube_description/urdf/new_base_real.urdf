@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<robot name="new_base_real">
+  <link name="base_footprint"/>
+  <link name="base_link"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="lower_front_rail_link">
+    <visual><geometry><box size="0.020 0.450 0.020"/></geometry></visual>
+    <collision><geometry><box size="0.020 0.450 0.020"/></geometry></collision>
+  </link>
+  <joint name="lower_front_rail_joint" type="fixed">
+    <parent link="base_link"/><child link="lower_front_rail_link"/>
+    <origin xyz="0.055 0 0.050" rpy="0 0 0"/>
+  </joint>
+  <link name="lower_rear_rail_link">
+    <visual><geometry><box size="0.020 0.450 0.020"/></geometry></visual>
+    <collision><geometry><box size="0.020 0.450 0.020"/></geometry></collision>
+  </link>
+  <joint name="lower_rear_rail_joint" type="fixed">
+    <parent link="base_link"/><child link="lower_rear_rail_link"/>
+    <origin xyz="-0.265 0 0.050" rpy="0 0 0"/>
+  </joint>
+  <link name="lower_left_rail_link">
+    <visual><geometry><box size="0.300 0.020 0.020"/></geometry></visual>
+    <collision><geometry><box size="0.300 0.020 0.020"/></geometry></collision>
+  </link>
+  <joint name="lower_left_rail_joint" type="fixed">
+    <parent link="base_link"/><child link="lower_left_rail_link"/>
+    <origin xyz="-0.105 0.215 0.050" rpy="0 0 0"/>
+  </joint>
+  <link name="lower_right_rail_link">
+    <visual><geometry><box size="0.300 0.020 0.020"/></geometry></visual>
+    <collision><geometry><box size="0.300 0.020 0.020"/></geometry></collision>
+  </link>
+  <joint name="lower_right_rail_joint" type="fixed">
+    <parent link="base_link"/><child link="lower_right_rail_link"/>
+    <origin xyz="-0.105 -0.215 0.050" rpy="0 0 0"/>
+  </joint>
+
+  <link name="left_wheel_link">
+    <visual><origin rpy="1.5707963268 0 0"/><geometry><cylinder radius="0.0329" length="0.030"/></geometry></visual>
+    <collision><origin rpy="1.5707963268 0 0"/><geometry><cylinder radius="0.0329" length="0.030"/></geometry></collision>
+  </link>
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/><child link="left_wheel_link"/>
+    <origin xyz="0 0.255 0.0329" rpy="0 0 0"/><axis xyz="0 1 0"/>
+  </joint>
+  <link name="right_wheel_link">
+    <visual><origin rpy="1.5707963268 0 0"/><geometry><cylinder radius="0.0329" length="0.030"/></geometry></visual>
+    <collision><origin rpy="1.5707963268 0 0"/><geometry><cylinder radius="0.0329" length="0.030"/></geometry></collision>
+  </link>
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/><child link="right_wheel_link"/>
+    <origin xyz="0 -0.255 0.0329" rpy="0 0 0"/><axis xyz="0 1 0"/>
+  </joint>
+
+  <link name="rear_left_caster_contact_projection"/>
+  <joint name="rear_left_caster_contact_joint" type="fixed">
+    <parent link="base_link"/><child link="rear_left_caster_contact_projection"/>
+    <origin xyz="-0.215 0.215 0" rpy="0 0 0"/>
+  </joint>
+  <link name="rear_right_caster_contact_projection"/>
+  <joint name="rear_right_caster_contact_joint" type="fixed">
+    <parent link="base_link"/><child link="rear_right_caster_contact_projection"/>
+    <origin xyz="-0.215 -0.215 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="laser_link"/>
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/><child link="laser_link"/>
+    <origin xyz="-0.010 0 0.150" rpy="0 0 3.141592653589793"/>
+  </joint>
+</robot>

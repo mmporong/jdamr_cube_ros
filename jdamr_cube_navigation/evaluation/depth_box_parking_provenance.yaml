@@ -1,0 +1,112 @@
+schema_version: 1
+as_of: '2026-09-21'
+
+measurements:
+  box_front_clearance_user_confirmation_20260921:
+    value: 0.82
+    unit: m
+    measured_at: '2026-09-21'
+    valid_for: 사용자가 출발 위치로 옮긴 직후의 박스와 현재 차체
+    method: '사용자 확인: "82 정확하다"; 측정 도구와 불확도는 확인되지 않음'
+    reference: 직전 질문의 차체 맨 앞면부터 박스 전면까지 거리
+    status: USER_CONFIRMED_SINGLE_POSE
+    paired_depth_observation_m: 0.824
+    paired_depth_observation_stamp_s: 1789975314.4542272
+    claim_scope: 현재 정지 위치의 거리 일치 확인; 카메라 자세·동적 제동·정차 정확도 검증 아님
+
+  depth_camera_front_plane_offset:
+    value: 0.0
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: 현재 차체와 전면 장착 Depth 카메라
+    method: 사용자 확인 — 카메라 렌즈면과 차체 앞면이 같은 평면
+    status: USER_REPORTED
+
+  g4_lidar_front_setback:
+    value: 0.075
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: 현재 차체와 G4 라이다 장착 위치
+    method: 사용자 줄자 측정 — 차체 앞면에서 라이다 중심까지 75 mm
+    status: USER_REPORTED
+
+  g4_reported_range_min:
+    value: 0.28
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: ydlidar_g4_node가 발행한 현재 /scan
+    method: sensor_msgs/msg/LaserScan.range_min 실시간 확인
+    source: /scan
+    status: RUNTIME_REPORTED
+
+  g4_4khz_datasheet_range_min:
+    value: 0.12
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: YDLIDAR G4 4 kHz sample-rate mode
+    method: 제조사 데이터시트 사양 확인
+    source: https://www.ydlidar.com/Public/upload/files/2022-06-21/YDLIDAR%20G4%20Data%20sheet%20V2.0(220411).pdf
+    status: DATASHEET_NOT_SENSOR_VALIDATED
+
+  depth_algorithm_minimum:
+    value: 0.35
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: config/depth_box_parking.yaml
+    method: 박스 평면 검출 후보의 소프트웨어 허용 하한
+    status: CONFIGURED_NOT_SENSOR_VALIDATED
+
+targets:
+  requested_front_clearance:
+    value: 0.05
+    unit: m
+    measured_at: '2026-09-17'
+    valid_for: 박스 앞 정밀주차 목표
+    method: 사용자 목표
+    status: TARGET_NOT_VALIDATED
+
+hardware_interfaces:
+  raspberry_pi:
+    model: Raspberry Pi 4 Model B Rev 1.4
+    observed_at: '2026-09-17'
+    status: RUNTIME_REPORTED
+  base_uart:
+    device: /dev/ttyS0
+    use: 베이스 제어보드
+    status: REPOSITORY_AND_RUNTIME_CONFIRMED
+  g4_usb_serial:
+    device: /dev/ttyUSB0
+    stable_alias: /dev/ydlidar_g4
+    use: YDLIDAR G4
+    status: RUNTIME_REPORTED
+  astra_usb:
+    usb_id: 2bc5:0402
+    use: Orbbec Astra S
+    status: RUNTIME_REPORTED
+  usb3_controller:
+    observed_devices: 0
+    method: lsusb -t
+    note: 물리적으로 비어 있는 포트 수와 전력 여유는 조립 상태에서 별도 확인
+    status: RUNTIME_REPORTED
+  i2c_header_bus:
+    device: /dev/i2c-1
+    config: dtparam=i2c_arm=on
+    note: General Driver가 40핀 헤더를 점유하므로 노출 단자 또는 패스스루 필요
+    status: RUNTIME_REPORTED_PHYSICAL_ACCESS_UNVERIFIED
+
+candidate_sensors:
+  final_range:
+    model: VL53L4CD breakout
+    role: Depth와 G4의 근거리 한계 이후 최종 이격거리 측정
+    interface: I2C
+    minimum_range:
+      value: 0.001
+      unit: m
+    maximum_range:
+      value: 1.2
+      unit: m
+    maximum_rate:
+      value: 100
+      unit: Hz
+    source: https://www.st.com/en/imaging-and-photonics-solutions/vl53l4cd.html
+    status: CANDIDATE_NOT_PURCHASED_NOT_VALIDATED
