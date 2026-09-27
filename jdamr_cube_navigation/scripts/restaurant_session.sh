@@ -63,6 +63,7 @@ load_ros_environment() {
   set -u
 
   export ROS_DOMAIN_ID=12
+  export ROS_LOCALHOST_ONLY=0
   export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
   export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 }
@@ -128,14 +129,52 @@ PY
   fi
 }
 
+parking_contract_path() {
+  local name=parking_contract.yaml
+  if [ "$PRECISION_PARKING" = true ]; then
+    name=box_parking_contract.yaml
+  fi
+  printf '%s/config/%s' \
+    "$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation" "$name"
+}
+
+session_identity() {
+  local asset_hashes digest parking_contract
+  parking_contract=$(parking_contract_path)
+  absolute_file "$parking_contract" "주차 contract"
+  asset_hashes=$(sha256sum -- "$REGISTRY" "$PARAMS_FILE" "$parking_contract" \
+    "${BASH_SOURCE[0]}") || \
+    die "세션 설정 해시 계산 실패"
+  digest=$(printf '%s\0' "$WORKSPACE" "$REGISTRY" "$PARAMS_FILE" \
+    "$PRECISION_PARKING" "$asset_hashes" | sha256sum) || \
+    die "세션 식별자 계산 실패"
+  printf '%s' "${digest%% *}"
+}
+
+reuse_active_navigation() {
+  local identity="$1" snapshot line state="" environment="" expected
+  snapshot=$(systemctl show "$UNIT" --property=ActiveState --property=Environment) || \
+    die "$UNIT 실행 설정 조회 실패"
+  while IFS= read -r line; do
+    case "$line" in
+      ActiveState=*) state="${line#ActiveState=}" ;;
+      Environment=*) environment="${line#Environment=}" ;;
+    esac
+  done <<<"$snapshot"
+  [ "$state" = active ] || die "$UNIT가 실행 중이 아니다: ${state:-상태 미수신}"
+  expected="JDAMR_RESTAURANT_SESSION_ID=$identity"
+  if [[ " $environment " != *" $expected "* ]]; then
+    die "$UNIT 실행 설정을 확인할 수 없거나 요청과 다르다; 기존 세션을 변경하지 않았다"
+  fi
+  printf '%s\n' "$UNIT가 같은 설정으로 실행 중이다. 재시작하지 않았다."
+  printf '%s\n' "이는 주행 준비 완료 판정이 아니다. 초기 위치나 이동 명령을 보내지 않았다."
+}
+
 run_navigation() {
   local parking_contract
   load_ros_environment
   validate_registry
-  parking_contract="$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation/config/parking_contract.yaml"
-  if [ "$PRECISION_PARKING" = true ]; then
-    parking_contract="$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation/config/box_parking_contract.yaml"
-  fi
+  parking_contract=$(parking_contract_path)
   cd "$WORKSPACE" || die "workspace로 이동할 수 없다: $WORKSPACE"
   exec ros2 launch jdamr_cube_navigation restaurant_service.launch.py \
     "registry:=$REGISTRY" \
@@ -156,11 +195,14 @@ start_navigation() {
   load_ros_environment
   validate_registry
 
+  local identity
+  identity=$(session_identity) || die "세션 식별자 생성 실패"
   system_service_state jdamr-base.service || die "jdamr-base.service가 active가 아니다; 이 스크립트는 베이스를 시작하지 않는다"
-  if system_service_state "$UNIT"; then
-    die "$UNIT가 이미 active다; singleton 세션을 중복 시작하지 않는다"
-  fi
   reject_conflicting_services
+  if system_service_state "$UNIT"; then
+    reuse_active_navigation "$identity"
+    return
+  fi
   check_ros_graph_and_sensors
 
   local script_path run_user precision_argument=()
@@ -178,6 +220,7 @@ start_navigation() {
     --setenv="HOME=$HOME" \
     --setenv="ROS_DISTRO=${ROS_DISTRO:-jazzy}" \
     --setenv=JDAMR_RESTAURANT_INTERNAL=1 \
+    --setenv="JDAMR_RESTAURANT_SESSION_ID=$identity" \
     --working-directory="$WORKSPACE" \
     /bin/bash "$script_path" __run \
     --workspace "$WORKSPACE" --registry "$REGISTRY" --params-file "$PARAMS_FILE" \

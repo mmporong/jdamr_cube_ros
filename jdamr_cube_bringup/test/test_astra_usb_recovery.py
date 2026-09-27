@@ -1,8 +1,8 @@
 """Validate the boot-time Astra USB recovery contract without USB hardware."""
 
 import os
-import subprocess
 from pathlib import Path
+import subprocess
 
 
 PACKAGE = Path(__file__).resolve().parents[1]

@@ -292,7 +292,7 @@ class ServiceRoute(CorridorRoute):
         return names
 
     def _startup_protection_ready(self, discovery_timeout_s=2.5):
-        """Allow only an empty DDS graph to settle before the first motion."""
+        """Wait for unresolved DDS identities, never for a known conflict."""
         expected = {
             '/cmd_vel': 'collision_monitor',
             '/keepout_filter_mask': 'keepout_filter_mask_server',
@@ -301,6 +301,8 @@ class ServiceRoute(CorridorRoute):
         }
         deadline_s = time.monotonic() + discovery_timeout_s
         while True:
+            if self.stop_requested:
+                return 'publisher discovery interrupted before motion'
             missing = None
             for topic, node_name in expected.items():
                 publishers = self.get_publishers_info_by_topic(topic)
@@ -308,10 +310,25 @@ class ServiceRoute(CorridorRoute):
                 if not publishers:
                     missing = (topic, node_name, actual)
                     continue
-                if len(publishers) != 1 or publishers[0].node_name != node_name:
+                if len(publishers) != 1:
                     return (
                         f'{topic} publisher must be {node_name} only; '
                         f'actual={actual}')
+                publisher = publishers[0]
+                name = getattr(publisher, 'node_name', None)
+                namespace = getattr(publisher, 'node_namespace', None)
+                unresolved_name = name in (None, '', '_NODE_NAME_UNKNOWN_')
+                unresolved_namespace = namespace in (
+                    None, '', '_NODE_NAMESPACE_UNKNOWN_')
+                if ((not unresolved_name and name != node_name)
+                        or (not unresolved_namespace and namespace != '/')):
+                    return (
+                        f'{topic} publisher must be /{node_name} only; '
+                        f'actual={actual}')
+                if unresolved_name or unresolved_namespace:
+                    missing = (topic, node_name, actual)
+            if self.stop_requested:
+                return 'publisher discovery interrupted before motion'
             if missing is None:
                 return None
             if self.stop_requested or time.monotonic() >= deadline_s:

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -32,6 +33,8 @@ def session_env(tmp_path):
     registry.write_text('schema_version: 1\n', encoding='utf-8')
     params = share / 'config/new_base_nav2_params.yaml'
     params.write_text('controller_server: {}\n', encoding='utf-8')
+    for contract in ('parking_contract.yaml', 'box_parking_contract.yaml'):
+        (share / 'config' / contract).write_text('schema_version: 1\n', encoding='utf-8')
     ros_setup.write_text(
         'test -z "$MOCK_SETUP_UNDEFINED"\nexport MOCK_ROS_SETUP=1\n',
         encoding='utf-8',
@@ -44,6 +47,11 @@ def session_env(tmp_path):
 printf 'systemctl %s\n' "$*" >> "$MOCK_LOG"
 if [ "$1" = status ]; then exit "${MOCK_STATUS_RC:-0}"; fi
 if [ "$1" = stop ]; then exit 0; fi
+if [ "$1" = show ]; then
+  printf 'ActiveState=%s\nEnvironment=%s\n' \
+    "${MOCK_SHOW_ACTIVE_STATE:-active}" "${MOCK_UNIT_ENV:-}"
+  exit "${MOCK_SHOW_RC:-0}"
+fi
 if [ "$1" = is-active ]; then
   service="${@: -1}"
   case " ${MOCK_ACTIVE_SERVICES:-jdamr-base.service} " in
@@ -63,6 +71,7 @@ elif [ "$1" = launch ]; then
   printf 'launch-env %s %s %s %s\n' "$ROS_DOMAIN_ID" \
     "$ROS_AUTOMATIC_DISCOVERY_RANGE" "$FASTDDS_BUILTIN_TRANSPORTS" \
     "${MOCK_OVERLAY_SETUP:-}" >> "$MOCK_LOG"
+  printf 'localhost %s\n' "${ROS_LOCALHOST_ONLY:-unset}" >> "$MOCK_LOG"
 fi
 """)
     _executable(bin_dir / 'python3', r"""
@@ -212,9 +221,146 @@ def test_start_rejects_existing_singleton_unit(session_env):
             'jdamr-base.service jdamr-restaurant-navigation.service'),
     )
     assert result.returncode == 4
-    assert 'singleton 세션을 중복 시작하지 않는다' in result.stderr
+    assert '실행 설정을 확인할 수 없거나 요청과 다르다' in result.stderr
     commands = session_env['log'].read_text(encoding='utf-8')
     assert 'systemd-run ' not in commands
+
+
+def _started_identity(session_env):
+    result = _start(session_env)
+    assert result.returncode == 0, result.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    match = re.search(r'--setenv=(JDAMR_RESTAURANT_SESSION_ID=[a-f0-9]{64})', commands)
+    assert match is not None
+    session_env['log'].write_text('', encoding='utf-8')
+    return match.group(1)
+
+
+def test_repeated_start_reuses_matching_active_session_without_restart(session_env):
+    identity = _started_identity(session_env)
+    result = _start(
+        session_env,
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV='HOME=/tmp ' + identity,
+    )
+    assert result.returncode == 0, result.stderr
+    assert '같은 설정으로 실행 중' in result.stdout
+    assert '주행 준비 완료 판정이 아니다' in result.stdout
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+    assert 'ros2 ' not in commands
+
+
+def test_matching_active_session_does_not_bypass_conflicting_mapping_service(session_env):
+    identity = _started_identity(session_env)
+    result = _start(
+        session_env,
+        MOCK_ACTIVE_SERVICES=(
+            'jdamr-base.service jdamr-restaurant-navigation.service '
+            'jdamr-cartographer-session.service'),
+        MOCK_UNIT_ENV=identity,
+    )
+    assert result.returncode == 4
+    assert 'jdamr-cartographer-session.service 실행 중' in result.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+def test_active_session_with_changed_params_is_not_reused(session_env):
+    identity = _started_identity(session_env)
+    session_env['params'].write_text('controller_server: {changed: true}\n', encoding='utf-8')
+    result = _start(
+        session_env,
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV=identity,
+    )
+    assert result.returncode == 4
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+def test_active_session_with_changed_registry_is_not_reused(session_env):
+    identity = _started_identity(session_env)
+    session_env['registry'].write_text('schema_version: 1\nhome: changed\n', encoding='utf-8')
+    result = _start(
+        session_env,
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV=identity,
+    )
+    assert result.returncode == 4
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+def test_active_session_with_changed_parking_contract_is_not_reused(session_env):
+    identity = _started_identity(session_env)
+    contract = session_env['params'].parent / 'parking_contract.yaml'
+    contract.write_text('schema_version: 1\nxy_tolerance_m: 0.01\n', encoding='utf-8')
+    result = _start(
+        session_env,
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV=identity,
+    )
+    assert result.returncode == 4
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+def test_active_session_show_failure_never_restarts(session_env):
+    identity = _started_identity(session_env)
+    result = _start(
+        session_env,
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV=identity, MOCK_SHOW_RC='1',
+    )
+    assert result.returncode == 4
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+def test_active_session_stopped_during_inspection_is_not_reused(session_env):
+    identity = _started_identity(session_env)
+    result = _start(
+        session_env,
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV=identity, MOCK_SHOW_ACTIVE_STATE='inactive',
+    )
+    assert result.returncode == 4
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+def test_precision_request_does_not_reuse_normal_active_session(session_env):
+    identity = _started_identity(session_env)
+    result = _run(
+        session_env, 'start', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--precision-parking',
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV=identity,
+    )
+    assert result.returncode == 4
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+def test_internal_run_clears_inherited_localhost_isolation(session_env):
+    result = _run(
+        session_env, '__run', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], JDAMR_RESTAURANT_INTERNAL='1', ROS_LOCALHOST_ONLY='1',
+    )
+    assert result.returncode == 0, result.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'localhost 0' in commands
 
 
 def test_registry_validation_failure_prevents_start(session_env):

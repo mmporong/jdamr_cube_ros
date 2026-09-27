@@ -104,3 +104,24 @@
 - 기체를 옮겼다면 과거 출발 pose를 자동 재사용하지 않는다. 실제 배치와 현재 위치 추정을 맞춘다.
 - D01/D02 박스 면 기반 최종 제어 연결과 실차 후면 주차 검증은 미완료다. 코드·표시 준비를 미션 성공으로 보고하지 않는다.
 - `restaurant_session.sh start`는 서버 기동 요청만 수행한다. 충전 완료와 초기 위치 확인 뒤 별도 미션 실행을 요청한다.
+
+## 2026-09-27 주행 전 로컬 보완
+
+이 절은 위 표의 당시 실패 상태와 이후 코드 변경을 구분한다. 실물 이동이나 주차 성공 기록이 아니다.
+
+| 반복 조건 | 변경 | 확인 범위 |
+|---|---|---|
+| DDS 발행자 이름·namespace가 아직 미확인인 상태 | 빈 그래프와 미확인 identity는 기존 2.5초 한도 안에서 재조회. 정상 root namespace의 단일 발행자로 확인된 뒤에만 통과 | 정상 발견 전환·영구 미확인·시간 초과·다른 namespace·중복 발행자 테스트. 지속되는 `_NODE_NAME_UNKNOWN_`의 근본 원인은 미확정 |
+| 발견 검사 도중 중단 요청 | 검사 시작 및 성공 반환 직전에 중단 요청을 확인 | 마지막 graph 조회 중 중단 요청이 발생해도 성공하지 않는 회귀 테스트 |
+| 같은 세션에 `start`를 반복해 이미 active 오류 발생 | 충돌 서비스를 확인하고 실행 중인 unit의 상태와 설정 식별자를 한 응답에서 확인해 같은 설정만 재사용. 식별자는 workspace·registry·params·정밀주차 모드·선택 주차 contract·실행 스크립트를 포함 | 충돌 서비스 실행·설정 변경·조회 실패·조회 중 inactive 전환은 재사용하지 않음. 기존 unit에는 자동 stop/restart를 보내지 않음 |
+| 이전 셸의 LOCALHOST 설정 상속 | 식당 세션에서 `ROS_LOCALHOST_ONLY=0`, domain 12, SUBNET, UDPv4 설정 | mock launch 환경 검사. 기존 DDS/heartbeat 장애 전체를 해결했다는 근거는 아님 |
+| Astra 부팅 복구가 소스에만 존재하고 패키지 설치에 누락 | bringup 패키지에 scripts 및 systemd/drop-in을 포함. 설치 스크립트는 helper·recovery unit·base drop-in 설치 후 daemon-reload와 recovery enable만 수행 | 소스/설치 레이아웃·반복 설치·실패 전파·USB/서비스 상태 무변경을 mock으로 검증. 설치만으로 RGB-D 데이터 수신을 보장하지 않음 |
+
+### 검증과 재개 경계
+
+- navigation의 세션·미션·배터리·박스 접근·기체 제원·Keepout 관련 테스트와 bringup 패키지 테스트를 실행했다. 변경 코드 lint, shell 문법, 두 패키지 colcon build 및 설치된 복구 자산 경로를 확인했다.
+- 검사에 실물 action·속도 명령·서비스 재시작·USB 포트 토글은 포함하지 않았다. 설치 테스트는 임시 디렉터리와 명령 mock을 사용했다.
+- Pi SSH `192.168.0.159`는 `No route to host`였다. hostname 조회와 등록된 Tailscale peer에서도 대체 Pi 주소를 확보하지 못했다. 원격 반영·설치·재부팅 검증은 수행하지 않았다.
+- 마지막 실차의 충돌 예측 중단(`104 PATIENCE_EXCEEDED`)은 미해결이다. 실제 발행 footprint, 현재 costmap 및 Keepout 경계가 있어야 당시 충돌 판정을 대조할 수 있다. 패딩 설정 변경과 소프트웨어 테스트 통과를 실차 출발 성공으로 기록하지 않는다.
+- 설치 명령은 Pi에서 `$HOME/jdamr_ws/install/jdamr_cube_bringup/lib/jdamr_cube_bringup/install_astra_boot_recovery.sh`를 사용한다. 실행 중인 베이스나 카메라를 재시작하지 않으며, 기존 고정 USB 포트가 현재 배선과 일치하는지는 별도로 확인해야 한다.
+- `restaurant_session.sh start`의 성공은 같은 설정의 프로세스 재사용 또는 기동 요청 수락이다. 초기 위치 설정·센서 수신·실차 주행 완료와 구분한다.

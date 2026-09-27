@@ -1,8 +1,8 @@
 """Validate bounded ROS command execution for the physical Pi."""
 
 import os
-import subprocess
 from pathlib import Path
+import subprocess
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
