@@ -58,6 +58,23 @@ def publisher(name, namespace='/'):
     return SimpleNamespace(node_name=name, node_namespace=namespace)
 
 
+@pytest.mark.parametrize('command_publisher', [None, 'web_teleop', 'collision_monitor'])
+def test_prepare_identity_allows_absent_command_but_never_other_publishers(
+        command_publisher):
+    node = route()
+    expected = {
+        '/cmd_vel': ([publisher(command_publisher)] if command_publisher else []),
+        '/keepout_filter_mask': [publisher('keepout_filter_mask_server')],
+        '/keepout_costmap_filter_info': [publisher('keepout_costmap_filter_info_server')],
+    }
+    node.get_publishers_info_by_topic = lambda topic: expected[topic]
+    failure = node._startup_protection_ready(
+        discovery_timeout_s=0.0, require_command_path=False)
+    assert (failure is None) == (command_publisher != 'web_teleop')
+    strict = node._startup_protection_ready(discovery_timeout_s=0.0)
+    assert (strict is None) == (command_publisher == 'collision_monitor')
+
+
 def route():
     """Create the service adapter without touching DDS or robot hardware."""
     node = object.__new__(ServiceRoute)

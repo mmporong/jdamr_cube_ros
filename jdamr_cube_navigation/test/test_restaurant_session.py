@@ -66,6 +66,11 @@ printf 'ros2 %s\n' "$*" >> "$MOCK_LOG"
 if [ "$1 $2 $3" = "node list --no-daemon" ]; then
   printf '%b' "${MOCK_NODES:-/robot_state_publisher\\n/base_driver\\n}"
 elif [ "$1 $2 $3" = "topic list --no-daemon" ]; then
+  if [ "${MOCK_TOPICS_DELAYED:-0}" = 1 ] && [ ! -e "$MOCK_LOG.topics_seen" ]; then
+    touch "$MOCK_LOG.topics_seen"
+    printf '/odom\n/tf\n'
+    exit 0
+  fi
   printf '%b' "${MOCK_TOPICS:-/scan\\n/odom\\n/tf\\n}"
 elif [ "$1" = launch ]; then
   printf 'launch-env %s %s %s %s\n' "$ROS_DOMAIN_ID" \
@@ -361,6 +366,38 @@ def test_internal_run_clears_inherited_localhost_isolation(session_env):
     assert result.returncode == 0, result.stderr
     commands = session_env['log'].read_text(encoding='utf-8')
     assert 'localhost 0' in commands
+
+
+def test_prepare_only_starts_localization_without_navigation_activation(session_env):
+    result = _run(
+        session_env, '__run', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--prepare-only',
+        JDAMR_RESTAURANT_INTERNAL='1')
+    assert result.returncode == 0, result.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'coordinated_startup:=false' in commands
+    assert 'navigation_autostart:=false' in commands
+    assert 'NavigateToPose' not in commands
+    assert 'FollowPath' not in commands
+
+
+def test_prepare_flag_survives_systemd_dispatch(session_env):
+    result = _run(
+        session_env, 'start', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--prepare-only')
+    assert result.returncode == 0, result.stderr
+    assert '--prepare-only' in session_env['log'].read_text(encoding='utf-8')
+
+
+def test_missing_first_discovery_retries_before_rejecting_sensor(session_env):
+    result = _start(session_env, MOCK_TOPICS_DELAYED='1')
+    assert result.returncode == 0, result.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'topic list --no-daemon --spin-time 5' in commands
+    assert sum(line.startswith('systemd-run --unit=')
+               for line in commands.splitlines()) == 1
 
 
 def test_registry_validation_failure_prevents_start(session_env):

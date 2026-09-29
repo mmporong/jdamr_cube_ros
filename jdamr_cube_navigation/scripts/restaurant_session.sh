@@ -7,6 +7,7 @@ WORKSPACE="${JDAMR_WORKSPACE:-$HOME/jdamr_ws}"
 REGISTRY="${JDAMR_RESTAURANT_REGISTRY:-}"
 PARAMS_FILE="${JDAMR_RESTAURANT_PARAMS:-}"
 PRECISION_PARKING=false
+PREPARE_ONLY=false
 
 usage() {
   cat <<'EOF'
@@ -14,11 +15,14 @@ usage() {
   restaurant_session.sh status
   restaurant_session.sh start [--workspace PATH] [--registry PATH] [--params-file PATH]
                               [--precision-parking]
+                              [--prepare-only]
   restaurant_session.sh stop
 
 start는 센서가 이미 실행 중인 Pi에서 식당 서비스용 Nav2 서버만 시작한다.
 초기 pose, NavigateToPose, FollowPath 등 이동 명령은 보내지 않는다.
 --precision-parking은 명시적으로 승인된 5 cm 박스 주차 시험에서만 사용한다.
+--prepare-only는 지도·AMCL만 활성화하고 Nav2 이동 실행부는 미활성 상태로 준비한다.
+배치 후 위치추정 확인을 마친 뒤 navigation lifecycle startup이 필요하다.
 
 기본값:
   workspace   $HOME/jdamr_ws
@@ -111,6 +115,15 @@ check_ros_graph_and_sensors() {
   for topic in /scan /odom /tf; do
     grep -qx "$topic" <<<"$topics" || missing="$missing $topic"
   done
+  if [ -n "$missing" ]; then
+    # A short first discovery sample can miss a running sensor after teardown.
+    topics=$(timeout 15 ros2 topic list --no-daemon --spin-time 5 2>/dev/null) || \
+      die "ROS 토픽 재조회 실패: 센서 연결을 확인할 것"
+    missing=""
+    for topic in /scan /odom /tf; do
+      grep -qx "$topic" <<<"$topics" || missing="$missing $topic"
+    done
+  fi
   [ -z "$missing" ] || die "센서 진단 실패: 다음 토픽이 없다:$missing (jdamr-base.service와 센서 상태 확인)"
   printf '센서 진단: /scan /odom /tf 발견 (데이터 품질이나 주행 준비 완료 판정은 아님)\n'
 }
@@ -146,7 +159,7 @@ session_identity() {
     "${BASH_SOURCE[0]}") || \
     die "세션 설정 해시 계산 실패"
   digest=$(printf '%s\0' "$WORKSPACE" "$REGISTRY" "$PARAMS_FILE" \
-    "$PRECISION_PARKING" "$asset_hashes" | sha256sum) || \
+    "$PRECISION_PARKING" "$PREPARE_ONLY" "$asset_hashes" | sha256sum) || \
     die "세션 식별자 계산 실패"
   printf '%s' "${digest%% *}"
 }
@@ -172,6 +185,11 @@ reuse_active_navigation() {
 
 run_navigation() {
   local parking_contract
+  local coordinated=true navigation_autostart=true
+  if [ "$PREPARE_ONLY" = true ]; then
+    coordinated=false
+    navigation_autostart=false
+  fi
   load_ros_environment
   validate_registry
   parking_contract=$(parking_contract_path)
@@ -181,7 +199,8 @@ run_navigation() {
     "params_file:=$PARAMS_FILE" \
     navigation_profile:=new_base_candidate \
     use_composition:=false \
-    coordinated_startup:=true \
+    "coordinated_startup:=$coordinated" \
+    "navigation_autostart:=$navigation_autostart" \
     "precision_parking:=$PRECISION_PARKING" \
     "parking_contract:=$parking_contract" \
     use_box_observer:=false \
@@ -205,11 +224,14 @@ start_navigation() {
   fi
   check_ros_graph_and_sensors
 
-  local script_path run_user precision_argument=()
+  local script_path run_user precision_argument=() prepare_argument=()
   script_path=$(readlink -f "${BASH_SOURCE[0]}") || die "스크립트 경로 확인 실패"
   run_user=$(id -un) || die "실행 사용자 확인 실패"
   if [ "$PRECISION_PARKING" = true ]; then
     precision_argument=(--precision-parking)
+  fi
+  if [ "$PREPARE_ONLY" = true ]; then
+    prepare_argument=(--prepare-only)
   fi
   sudo -n systemd-run \
     --unit="$UNIT" --collect \
@@ -224,7 +246,7 @@ start_navigation() {
     --working-directory="$WORKSPACE" \
     /bin/bash "$script_path" __run \
     --workspace "$WORKSPACE" --registry "$REGISTRY" --params-file "$PARAMS_FILE" \
-    "${precision_argument[@]}" \
+    "${precision_argument[@]}" "${prepare_argument[@]}" \
     || die "$UNIT 기동 요청 실패"
 
   printf '%s\n' "$UNIT 기동 요청을 수락했다."
@@ -269,6 +291,10 @@ case "$COMMAND" in
           ;;
         --precision-parking)
           PRECISION_PARKING=true
+          shift
+          ;;
+        --prepare-only)
+          PREPARE_ONLY=true
           shift
           ;;
         *) die "알 수 없는 인자: $1 (도움말: --help)" ;;

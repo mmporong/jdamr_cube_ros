@@ -291,7 +291,8 @@ class ServiceRoute(CorridorRoute):
                 else f'{namespace.rstrip("/")}/{name}')
         return names
 
-    def _startup_protection_ready(self, discovery_timeout_s=2.5):
+    def _startup_protection_ready(self, discovery_timeout_s=2.5,
+                                  require_command_path=True):
         """Wait for unresolved DDS identities, never for a known conflict."""
         expected = {
             '/cmd_vel': 'collision_monitor',
@@ -308,6 +309,8 @@ class ServiceRoute(CorridorRoute):
                 publishers = self.get_publishers_info_by_topic(topic)
                 actual = self._publisher_names(publishers)
                 if not publishers:
+                    if topic == '/cmd_vel' and not require_command_path:
+                        continue
                     missing = (topic, node_name, actual)
                     continue
                 if len(publishers) != 1:
@@ -338,7 +341,7 @@ class ServiceRoute(CorridorRoute):
                     f'actual={actual}')
             rclpy.spin_once(self, timeout_sec=0.05)
 
-    def verify_live_maps(self):
+    def verify_live_maps(self, require_command_path=True):
         """Require the running map servers to name the registered assets."""
         validate_registry(self.registry)
         self.expected_grids = {
@@ -368,7 +371,8 @@ class ServiceRoute(CorridorRoute):
             if not isinstance(path, str) or not path:
                 raise RuntimeError(f'{node_name} yaml_filename is not a file')
             verify_identity(identity, path)
-        protection_error = self._startup_protection_ready()
+        protection_error = self._startup_protection_ready(
+            require_command_path=require_command_path)
         if protection_error:
             raise RuntimeError(protection_error)
 

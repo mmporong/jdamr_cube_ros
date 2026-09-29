@@ -208,8 +208,13 @@ def _launch_navigation(context):
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    navigation_autostart = LaunchConfiguration(
+        'navigation_autostart', default=autostart)
     coordinated_startup = LaunchConfiguration(
         'coordinated_startup', default='false').perform(context).lower() == 'true'
+    if (coordinated_startup
+            and navigation_autostart.perform(context) != autostart.perform(context)):
+        raise RuntimeError('separate navigation autostart requires independent lifecycle managers')
     selected_bt = os.path.join(package_share, 'behavior_trees', behavior_tree)
     protection = None
     if profile == 'obstacle_candidate':
@@ -395,7 +400,7 @@ def _launch_navigation(context):
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'autostart': autostart,
+            'autostart': navigation_autostart,
             'node_names': navigation_nodes,
             **lifecycle_bond,
         }],
@@ -511,6 +516,9 @@ def generate_launch_description():
         DeclareLaunchArgument('asset_registry', default_value='',
                               description='Hash-bound named map and keepout registry'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('navigation_autostart',
+                              default_value=LaunchConfiguration('autostart'),
+                              choices=['true', 'false']),
         DeclareLaunchArgument('revisit_initial_x', default_value='0.0'),
         DeclareLaunchArgument('revisit_initial_y', default_value='-0.1'),
         DeclareLaunchArgument('revisit_initial_yaw', default_value='0.0'),

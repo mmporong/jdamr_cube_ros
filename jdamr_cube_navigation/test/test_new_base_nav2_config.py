@@ -65,6 +65,13 @@ def test_physical_candidate_is_accepted():
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     assert document['amcl']['ros__parameters']['set_initial_pose'] is False
     assert document['amcl']['ros__parameters']['transform_tolerance'] == 1.0
+    amcl = document['amcl']['ros__parameters']
+    # At the candidate maximum speed, request translation updates at least
+    # once per second rather than waiting 0.25 / 0.08 = 3.125 seconds.
+    assert amcl['update_min_d'] / 0.08 <= 1.0
+    assert amcl['update_min_a'] / 0.3 <= 1.0
+    assert 0 < amcl['update_min_d'] <= 0.05
+    assert 0 < amcl['update_min_a'] <= 0.05
     assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.08
     controller = document['controller_server']['ros__parameters']
     assert controller['progress_checker']['plugin'] == (
@@ -502,6 +509,35 @@ def test_legacy_startup_keeps_three_independent_managers(monkeypatch):
         'lifecycle_manager_localization',
         'lifecycle_manager_navigation',
     }
+
+
+@pytest.mark.parametrize('coordinated', ['false', 'true'])
+def test_prepare_mode_does_not_activate_navigation_before_localization(
+        monkeypatch, coordinated):
+    spec = importlib.util.spec_from_file_location('prepared_nav', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, '_validate_new_base_params', lambda *a, **k: [])
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _: str(ROOT / 'jdamr_cube_navigation'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_candidate',
+        'map': '/tmp/reference-map.yaml', 'keepout_mask': '/tmp/reference-mask.yaml',
+        'params_file': str(PARAMS), 'use_sim_time': 'false',
+        'autostart': 'true', 'navigation_autostart': 'false',
+        'use_composition': 'false', 'coordinated_startup': coordinated,
+    })
+    if coordinated == 'true':
+        with pytest.raises(RuntimeError, match='independent lifecycle'):
+            module._launch_navigation(context)
+        return
+    nodes = {a._Node__node_name: a for a in module._launch_navigation(context)
+             if isinstance(a, Node)}
+    for name in ('keepout', 'localization', 'navigation'):
+        params = evaluate_parameters(
+            context, nodes['lifecycle_manager_' + name]._Node__parameters)
+        assert params[0]['autostart'] is (name != 'navigation')
 
 
 def test_core_defaults_to_legacy_independent_startup(monkeypatch):

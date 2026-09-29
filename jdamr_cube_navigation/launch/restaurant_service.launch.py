@@ -62,6 +62,8 @@ def _configure(context):
             'discovery_range': LaunchConfiguration('discovery_range'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'autostart': 'true',
+            'navigation_autostart': LaunchConfiguration(
+                'navigation_autostart', default='true'),
             'precision_parking': LaunchConfiguration('precision_parking', default='false'),
             'use_composition': LaunchConfiguration(
                 'use_composition', default='false'),
@@ -99,6 +101,8 @@ def generate_launch_description():
         DeclareLaunchArgument('use_composition', default_value='false',
                               choices=['true', 'false']),
         DeclareLaunchArgument('coordinated_startup', default_value='true',
+                              choices=['true', 'false']),
+        DeclareLaunchArgument('navigation_autostart', default_value='true',
                               choices=['true', 'false']),
         DeclareLaunchArgument(
             'use_box_observer', default_value='false',
