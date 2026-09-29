@@ -131,10 +131,12 @@ def test_help_states_nav2_only_and_readiness_boundary(session_env):
     assert '준비 완료를 뜻하지 않는다' in result.stdout
     assert '--precision-parking' in result.stdout
     assert '5 cm 박스 주차 시험' in result.stdout
+    assert '--use-composition true|false' in result.stdout
+    assert '비교 진단용 폴백' in result.stdout
     assert not session_env['log'].exists()
 
 
-def test_start_uses_singleton_unit_and_non_composed_nav2(session_env):
+def test_start_uses_singleton_unit_and_composed_nav2_by_default(session_env):
     result = _start(session_env)
     assert result.returncode == 0, result.stderr
     assert '기동 요청을 수락했다' in result.stdout
@@ -143,6 +145,7 @@ def test_start_uses_singleton_unit_and_non_composed_nav2(session_env):
     assert '--unit=jdamr-restaurant-navigation.service --collect' in commands
     assert '__run' in commands
     assert '--workspace ' + str(session_env['workspace']) in commands
+    assert '--use-composition true' in commands
     assert '--precision-parking' not in commands
     assert 'NavigateToPose' not in commands
     assert 'FollowPath' not in commands
@@ -157,7 +160,7 @@ def test_internal_run_sources_overlay_and_launches_servers_without_action(sessio
     assert result.returncode == 0, result.stderr
     commands = session_env['log'].read_text(encoding='utf-8')
     assert 'ros2 launch jdamr_cube_navigation restaurant_service.launch.py' in commands
-    assert 'use_composition:=false' in commands
+    assert 'use_composition:=true' in commands
     assert 'coordinated_startup:=true' in commands
     assert 'precision_parking:=false' in commands
     assert '/config/parking_contract.yaml' in commands
@@ -231,8 +234,12 @@ def test_start_rejects_existing_singleton_unit(session_env):
     assert 'systemd-run ' not in commands
 
 
-def _started_identity(session_env):
-    result = _start(session_env)
+def _started_identity(session_env, *args):
+    result = _run(
+        session_env, 'start', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], *args,
+    )
     assert result.returncode == 0, result.stderr
     commands = session_env['log'].read_text(encoding='utf-8')
     match = re.search(r'--setenv=(JDAMR_RESTAURANT_SESSION_ID=[a-f0-9]{64})', commands)
@@ -355,6 +362,76 @@ def test_precision_request_does_not_reuse_normal_active_session(session_env):
     commands = session_env['log'].read_text(encoding='utf-8')
     assert 'systemd-run ' not in commands
     assert 'systemctl stop ' not in commands
+
+
+def test_composition_selection_survives_systemd_dispatch_and_internal_run(
+        session_env):
+    started = _run(
+        session_env, 'start', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--use-composition', 'false')
+    assert started.returncode == 0, started.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert '__run ' in commands
+    assert '--use-composition false' in commands
+
+    session_env['log'].write_text('', encoding='utf-8')
+    internal = _run(
+        session_env, '__run', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--use-composition', 'false',
+        JDAMR_RESTAURANT_INTERNAL='1')
+    assert internal.returncode == 0, internal.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'use_composition:=false' in commands
+
+
+def test_composition_selection_changes_session_identity(session_env):
+    composed_identity = _started_identity(session_env)
+    standalone_identity = _started_identity(
+        session_env, '--use-composition', 'false')
+    assert standalone_identity != composed_identity
+
+
+def test_active_session_with_different_composition_is_not_reused(session_env):
+    composed_identity = _started_identity(session_env)
+    result = _run(
+        session_env, 'start', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--use-composition', 'false',
+        MOCK_ACTIVE_SERVICES=(
+            'jdamr-base.service jdamr-restaurant-navigation.service'),
+        MOCK_UNIT_ENV=composed_identity,
+    )
+    assert result.returncode == 4
+    assert '요청과 다르다' in result.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+@pytest.mark.parametrize('value', ['', 'yes', 'TRUE', '0'])
+def test_composition_selection_rejects_invalid_value(session_env, value):
+    args = ['start', '--workspace', session_env['workspace'],
+            '--registry', session_env['registry'], '--params-file',
+            session_env['params'], '--use-composition']
+    if value:
+        args.append(value)
+    result = _run(session_env, *args)
+    assert result.returncode == 4
+    assert '--use-composition' in result.stderr
+    assert not session_env['log'].exists()
+
+
+def test_transport_default_overrides_inherited_environment(session_env):
+    result = _run(
+        session_env, '__run', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], JDAMR_RESTAURANT_INTERNAL='1',
+        FASTDDS_BUILTIN_TRANSPORTS='DEFAULT')
+    assert result.returncode == 0, result.stderr
+    commands = session_env['log'].read_text(encoding='utf-8')
+    assert 'launch-env 12 SUBNET UDPv4 1' in commands
 
 
 def test_internal_run_clears_inherited_localhost_isolation(session_env):

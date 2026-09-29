@@ -1,6 +1,7 @@
 """Approach a mapped table region, then park using a fresh observed box face."""
 
 import argparse
+from itertools import islice
 import json
 import math
 from pathlib import Path
@@ -34,6 +35,42 @@ class BoxServiceRoute(ServiceRoute):
     def _scan_callback(self, message):
         super()._scan_callback(message)
         self.last_scan = message
+
+    @staticmethod
+    def _json_scan_ranges(ranges, limit=9000):
+        """Bound one raw scan and replace non-finite values for JSON evidence."""
+        values = list(islice(iter(ranges), limit + 1))
+        return [
+            (float(value) if not isinstance(value, bool)
+             and isinstance(value, (int, float)) and math.isfinite(value)
+             else None)
+            for value in values[:limit]
+        ], len(values) > limit
+
+    @staticmethod
+    def _json_scalar(value):
+        """Return one finite numeric scalar suitable for strict JSON."""
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            return None
+        return float(value)
+
+    @classmethod
+    def _json_evidence(cls, value):
+        """Normalize nested evidence without changing its measured content."""
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, dict):
+            return {str(key): cls._json_evidence(item)
+                    for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._json_evidence(item) for item in value]
+        isoformat = getattr(value, 'isoformat', None)
+        if callable(isoformat):
+            return isoformat()
+        return str(value)
 
     @staticmethod
     def _polygon(value):
@@ -119,6 +156,7 @@ class BoxServiceRoute(ServiceRoute):
         cutoff_s = self.get_clock().now().nanoseconds * 1e-9
         deadline_s = time.monotonic() + timeout_s
         last_failure = 'no_stable_box'
+        rejected_observation_stamps = set()
         while not self.stop_requested and time.monotonic() < deadline_s:
             rclpy.spin_once(self, timeout_sec=0.05)
             if not self._navigation_ready(require_fresh_amcl=False):
@@ -149,13 +187,49 @@ class BoxServiceRoute(ServiceRoute):
                 if (not math.isfinite(scan_stamp_s) or scan_age_s < 0.0
                         or scan_age_s > 0.5):
                     raise ValueError('LiDAR scan is stale or future-dated')
-                witness = witness_box_face_with_lidar(
-                    scan.ranges, angle_min=scan.angle_min,
-                    angle_increment=scan.angle_increment,
-                    range_min=scan.range_min, range_max=scan.range_max,
-                    geometry=self.box_geometry, depth_target=target,
-                    robot_pose=dict(zip(
-                        ('x_m', 'y_m', 'yaw_rad'), robot_pose)))
+                robot_pose_document = dict(zip(
+                    ('x_m', 'y_m', 'yaw_rad'), robot_pose))
+                diagnostics = {}
+                try:
+                    scan_frame = scan.header.frame_id
+                    if scan_frame != 'laser_link':
+                        raise ValueError(
+                            'LiDAR scan frame must be measured laser_link')
+                    witness = witness_box_face_with_lidar(
+                        scan.ranges, angle_min=scan.angle_min,
+                        angle_increment=scan.angle_increment,
+                        range_min=scan.range_min, range_max=scan.range_max,
+                        geometry=self.box_geometry, depth_target=target,
+                        robot_pose=robot_pose_document,
+                        diagnostics=diagnostics)
+                except ValueError as error:
+                    last_failure = str(error)
+                    observation_stamp = observation['stamp_s']
+                    if observation_stamp not in rejected_observation_stamps:
+                        rejected_observation_stamps.add(observation_stamp)
+                        raw_ranges, ranges_truncated = self._json_scan_ranges(
+                            scan.ranges)
+                        self.emit(
+                            'box_lidar_witness_rejected',
+                            observation=self._json_evidence(observation),
+                            target=self._json_evidence(target),
+                            robot_pose=self._json_evidence(
+                                robot_pose_document),
+                            camera_mount=self._json_evidence(camera_mount),
+                            box_geometry=self._json_evidence(
+                                self.box_geometry),
+                            scan_frame=scan_frame,
+                            scan_stamp_s=scan_stamp_s,
+                            scan_angle_min=self._json_scalar(scan.angle_min),
+                            scan_angle_increment=self._json_scalar(
+                                scan.angle_increment),
+                            scan_range_min=self._json_scalar(scan.range_min),
+                            scan_range_max=self._json_scalar(scan.range_max),
+                            scan_ranges=raw_ranges,
+                            scan_ranges_truncated=ranges_truncated,
+                            diagnostics=self._json_evidence(diagnostics),
+                            reason=last_failure)
+                    continue
                 face = witness['fused_face_center_map_xy_m']
                 outward = witness['outward_normal_map_xy']
                 center_offset_m = front_extent_m + gap_m

@@ -512,8 +512,9 @@ def test_legacy_startup_keeps_three_independent_managers(monkeypatch):
 
 
 @pytest.mark.parametrize('coordinated', ['false', 'true'])
+@pytest.mark.parametrize('composition', ['false', 'true'])
 def test_prepare_mode_does_not_activate_navigation_before_localization(
-        monkeypatch, coordinated):
+        monkeypatch, coordinated, composition):
     spec = importlib.util.spec_from_file_location('prepared_nav', LAUNCH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -526,18 +527,25 @@ def test_prepare_mode_does_not_activate_navigation_before_localization(
         'map': '/tmp/reference-map.yaml', 'keepout_mask': '/tmp/reference-mask.yaml',
         'params_file': str(PARAMS), 'use_sim_time': 'false',
         'autostart': 'true', 'navigation_autostart': 'false',
-        'use_composition': 'false', 'coordinated_startup': coordinated,
+        'use_composition': composition, 'coordinated_startup': coordinated,
     })
     if coordinated == 'true':
         with pytest.raises(RuntimeError, match='independent lifecycle'):
             module._launch_navigation(context)
         return
-    nodes = {a._Node__node_name: a for a in module._launch_navigation(context)
+    actions = module._launch_navigation(context)
+    nodes = {a._Node__node_name: a for a in actions
              if isinstance(a, Node)}
     for name in ('keepout', 'localization', 'navigation'):
         params = evaluate_parameters(
             context, nodes['lifecycle_manager_' + name]._Node__parameters)
         assert params[0]['autostart'] is (name != 'navigation')
+    assert 'collision_monitor' in nodes
+    assert 'nav2_liveness_guard' in nodes
+    containers = [a for a in actions if isinstance(a, ComposableNodeContainer)]
+    assert len(containers) == (1 if composition == 'true' else 0)
+    if composition == 'true':
+        assert 'controller_server' not in nodes
 
 
 def test_core_defaults_to_legacy_independent_startup(monkeypatch):

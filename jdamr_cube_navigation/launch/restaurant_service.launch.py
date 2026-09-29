@@ -66,7 +66,7 @@ def _configure(context):
                 'navigation_autostart', default='true'),
             'precision_parking': LaunchConfiguration('precision_parking', default='false'),
             'use_composition': LaunchConfiguration(
-                'use_composition', default='false'),
+                'use_composition', default='true'),
             'coordinated_startup': LaunchConfiguration(
                 'coordinated_startup', default='true'),
         }.items(),
@@ -98,7 +98,7 @@ def generate_launch_description():
             'navigation_profile', default_value='new_base_candidate',
             choices=['new_base_candidate', 'new_base_revisit_candidate', 'corridor']),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
-        DeclareLaunchArgument('use_composition', default_value='false',
+        DeclareLaunchArgument('use_composition', default_value='true',
                               choices=['true', 'false']),
         DeclareLaunchArgument('coordinated_startup', default_value='true',
                               choices=['true', 'false']),

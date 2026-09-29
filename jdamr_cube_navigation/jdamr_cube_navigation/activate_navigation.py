@@ -1,18 +1,21 @@
 """Activate prepared Nav2 servers after stationary localization is confirmed."""
 
 import argparse
+import math
 from pathlib import Path
 import time
 
-from lifecycle_msgs.msg import State
-from lifecycle_msgs.srv import GetState
-from nav2_msgs.srv import ManageLifecycleNodes
-import rclpy
-
+from geometry_msgs.msg import PoseWithCovarianceStamped
+from jdamr_cube_navigation.corridor_route import AMCL_QOS
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import ServiceRoute
 from jdamr_cube_navigation.service_destinations import load_registry
-
+from lifecycle_msgs.msg import State
+from lifecycle_msgs.srv import GetState
+from nav2_msgs.srv import ManageLifecycleNodes, SetInitialPose
+import rclpy
+from std_srvs.srv import Empty
+import yaml
 
 LOCALIZATION_NODES = (
     'map_server', 'amcl', 'keepout_filter_mask_server',
@@ -20,6 +23,31 @@ LOCALIZATION_NODES = (
 NAVIGATION_NODES = (
     'controller_server', 'planner_server', 'behavior_server',
     'bt_navigator', 'velocity_smoother', 'collision_monitor')
+INITIAL_POSE_FIELDS = (
+    'frame_id', 'x_m', 'y_m', 'yaw_rad', 'covariance_x_m2',
+    'covariance_y_m2', 'covariance_yaw_rad2')
+
+
+def load_initial_pose(path):
+    """Load one explicit measured pose without filling missing values."""
+    document = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
+    if not isinstance(document, dict):
+        raise ValueError('initial pose document must be a mapping')
+    missing = [name for name in INITIAL_POSE_FIELDS if name not in document]
+    if missing:
+        raise ValueError('initial pose fields missing: ' + ', '.join(missing))
+    if document['frame_id'] != 'map':
+        raise ValueError('initial pose frame_id must be map')
+    for name in INITIAL_POSE_FIELDS[1:]:
+        value = document[name]
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            raise ValueError(name + ' must be finite')
+    for name in ('covariance_x_m2', 'covariance_y_m2',
+                 'covariance_yaw_rad2'):
+        if document[name] <= 0.0:
+            raise ValueError(name + ' must be positive')
+    return {name: document[name] for name in INITIAL_POSE_FIELDS}
 
 
 def require_active(node, names, state_id=State.PRIMARY_STATE_ACTIVE, wait=None):
@@ -29,11 +57,101 @@ def require_active(node, names, state_id=State.PRIMARY_STATE_ACTIVE, wait=None):
         try:
             if not client.wait_for_service(timeout_sec=5.0):
                 raise RuntimeError(name + ' lifecycle service unavailable')
-            response = (wait or node._wait)(client.call_async(GetState.Request()), 5.0)
+            waiter = wait or node._wait
+            deadline_s = time.monotonic() + 5.0
+            response = None
+            for attempt in range(2):
+                remaining_s = deadline_s - time.monotonic()
+                if remaining_s <= 0.0:
+                    raise RuntimeError(name + ' lifecycle response timed out')
+                timeout_s = (min(2.0, remaining_s)
+                             if attempt == 0 else remaining_s)
+                future = client.call_async(GetState.Request())
+                try:
+                    response = waiter(future, timeout_s)
+                except RuntimeError as error:
+                    incomplete = not future.done()
+                    if incomplete:
+                        client.remove_pending_request(future)
+                    if (attempt == 0 and incomplete
+                            and not node.stop_requested
+                            and time.monotonic() < deadline_s):
+                        node.get_logger().warning(
+                            f'lifecycle read timeout: node={name} attempt=1/2; '
+                            f'retrying GetState within the original 5s response budget; '
+                            f'error={error}')
+                        continue
+                    raise
+                break
             if response is None or response.current_state.id != state_id:
                 raise RuntimeError(name + ' lifecycle state unconfirmed')
         finally:
             node.destroy_client(client)
+
+
+def initialize_localization(node, initial_pose, timeout_s=8.0):
+    """Set an explicit pose and require a post-ACK AMCL pose sample."""
+    require_active(node, LOCALIZATION_NODES)
+    node.verify_live_maps(require_command_path=False)
+    latest_stamp_s = [None]
+
+    def observe(message):
+        stamp = message.header.stamp
+        latest_stamp_s[0] = stamp.sec + stamp.nanosec * 1e-9
+
+    subscription = node.create_subscription(
+        PoseWithCovarianceStamped, '/amcl_pose', observe, AMCL_QOS)
+    initial_client = node.create_client(SetInitialPose, '/set_initial_pose')
+    update_client = node.create_client(Empty, '/request_nomotion_update')
+    try:
+        if node.stop_requested:
+            raise RuntimeError('initialization interrupted')
+        if not initial_client.wait_for_service(timeout_sec=timeout_s):
+            raise RuntimeError('AMCL set_initial_pose service unavailable')
+        if not update_client.wait_for_service(timeout_sec=timeout_s):
+            raise RuntimeError('AMCL nomotion update service unavailable')
+        message = PoseWithCovarianceStamped()
+        message.header.frame_id = initial_pose['frame_id']
+        message.header.stamp = node.get_clock().now().to_msg()
+        message.pose.pose.position.x = initial_pose['x_m']
+        message.pose.pose.position.y = initial_pose['y_m']
+        message.pose.pose.orientation.z = math.sin(
+            initial_pose['yaw_rad'] / 2.0)
+        message.pose.pose.orientation.w = math.cos(
+            initial_pose['yaw_rad'] / 2.0)
+        message.pose.covariance[0] = initial_pose['covariance_x_m2']
+        message.pose.covariance[7] = initial_pose['covariance_y_m2']
+        message.pose.covariance[35] = initial_pose['covariance_yaw_rad2']
+        request = SetInitialPose.Request()
+        request.pose = message
+        response = node._wait(initial_client.call_async(request), timeout_s)
+        if response is None:
+            raise RuntimeError('AMCL initialization response unconfirmed')
+        ack_ros_s = node.get_clock().now().nanoseconds * 1e-9
+        deadline_s = time.monotonic() + timeout_s
+        next_update_s = 0.0
+        update_future = None
+        while time.monotonic() < deadline_s:
+            if node.stop_requested:
+                raise RuntimeError('initialization interrupted')
+            if (latest_stamp_s[0] is not None
+                    and latest_stamp_s[0] > ack_ros_s):
+                return
+            now_s = time.monotonic()
+            if update_future is not None and update_future.done():
+                if (update_future.exception() is not None
+                        or update_future.result() is None):
+                    raise RuntimeError('AMCL nomotion update unconfirmed')
+                update_future = None
+            if update_future is None and now_s >= next_update_s:
+                update_future = update_client.call_async(Empty.Request())
+                next_update_s = now_s + .2
+            rclpy.spin_once(node, timeout_sec=.05)
+        raise RuntimeError('fresh AMCL pose missing after initialization ACK')
+    finally:
+        node.destroy_client(initial_client)
+        node.destroy_client(update_client)
+        node.destroy_subscription(subscription)
 
 
 def rollback_navigation(node, client):
@@ -96,19 +214,29 @@ def activate_prepared(node):
         node.destroy_client(client)
 
 
+def initialize_and_activate(node, initial_pose=None):
+    """Optionally initialize AMCL before the unchanged activation gates."""
+    if initial_pose is not None:
+        initialize_localization(node, initial_pose)
+    activate_prepared(node)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--registry', required=True, type=Path)
     parser.add_argument('--parking-contract', required=True, type=Path)
     parser.add_argument('--log', required=True, type=Path)
+    parser.add_argument('--initial-pose', type=Path)
     args = parser.parse_args(argv)
     registry = load_registry(args.registry)
     contract = load_parking_contract(args.parking_contract)
+    initial_pose = (load_initial_pose(args.initial_pose)
+                    if args.initial_pose is not None else None)
     with args.log.open('x', encoding='utf-8') as stream:
         rclpy.init()
         node = ServiceRoute(registry, contract, stream)
         try:
-            activate_prepared(node)
+            initialize_and_activate(node, initial_pose)
             return 0
         except RuntimeError as error:
             node.emit('activation_failed', reason=str(error))

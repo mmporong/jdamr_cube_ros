@@ -1,6 +1,7 @@
 """Verify bounded table transit and face-based parking without hardware."""
 
 from copy import deepcopy
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -185,7 +186,7 @@ def _observer_node(monkeypatch, *, scan=True, observation_stamp=10.1):
         'control_ready': False,
     }
     node.last_scan = (SimpleNamespace(
-        header=SimpleNamespace(stamp=_stamp(10.1)),
+        header=SimpleNamespace(stamp=_stamp(10.1), frame_id='laser_link'),
         ranges=[0.5] * 10, angle_min=-0.1, angle_increment=0.02,
         range_min=0.05, range_max=12.0) if scan else None)
     clock_values = iter((10.0, 10.2))
@@ -212,6 +213,92 @@ def _observer_node(monkeypatch, *, scan=True, observation_stamp=10.1):
             'provenance': 'LIDAR_DEPTH_FACE_AGREEMENT_NOT_EXTERNAL_ACCURACY',
         }))
     return node
+
+
+def test_lidar_witness_rejection_records_replayable_scan_once(monkeypatch):
+    node = _observer_node(monkeypatch)
+    node.last_scan.ranges = [0.5, math.inf, math.nan, 0.6]
+
+    def reject(*_args, diagnostics, **_kwargs):
+        diagnostics.update({
+            'valid_scan_points': 2,
+            'support_count': 1,
+            'plane_band_only_count': 1,
+            'tangent_band_only_count': 2,
+            'closest_normal_distance_m': 0.07,
+        })
+        raise ValueError('LiDAR face support is below five points')
+
+    monkeypatch.setattr(box_service, 'witness_box_face_with_lidar', reject)
+    spin_count = 0
+
+    def spin(*_args, **_kwargs):
+        nonlocal spin_count
+        spin_count += 1
+        if spin_count == 2:
+            node.stop_requested = True
+
+    monkeypatch.setattr(box_service.rclpy, 'spin_once', spin)
+    clock_values = iter((10.0, 10.2, 10.2))
+    node.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(
+            nanoseconds=int(next(clock_values) * 1e9)))
+    with pytest.raises(RuntimeError, match='below five'):
+        node.observe_target({'height_m': 0.215}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    rejected = [call for call in node.emit.call_args_list
+                if call.args == ('box_lidar_witness_rejected',)]
+    assert len(rejected) == 1
+    evidence = rejected[0].kwargs
+    assert evidence['scan_frame'] == 'laser_link'
+    assert evidence['scan_ranges'] == [0.5, None, None, 0.6]
+    assert evidence['scan_ranges_truncated'] is False
+    assert evidence['diagnostics']['support_count'] == 1
+    assert evidence['observation']['stamp_s'] == 10.1
+    assert evidence['target']['face_center_map_xy_m'] == [0.5, 0.0]
+    assert evidence['robot_pose'] == {'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0}
+    assert evidence['camera_mount'] == {'height_m': 0.215}
+    assert evidence['box_geometry'] == BoxServiceRoute._json_evidence(
+        node.box_geometry)
+    assert evidence['reason'] == 'LiDAR face support is below five points'
+
+
+def test_wrong_lidar_frame_is_rejected_before_witness(monkeypatch):
+    node = _observer_node(monkeypatch)
+    node.last_scan.header.frame_id = 'base_link'
+    monkeypatch.setattr(
+        box_service.rclpy, 'spin_once',
+        lambda *_a, **_k: setattr(node, 'stop_requested', True))
+    with pytest.raises(RuntimeError, match='measured laser_link'):
+        node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    box_service.witness_box_face_with_lidar.assert_not_called()
+    assert node.emit.call_args.args == ('box_lidar_witness_rejected',)
+    assert node.emit.call_args.kwargs['scan_frame'] == 'base_link'
+
+
+def test_nonfinite_scan_scalar_keeps_original_rejection_reason(monkeypatch):
+    node = _observer_node(monkeypatch)
+    node.last_scan.angle_min = math.nan
+    box_service.witness_box_face_with_lidar.side_effect = ValueError(
+        'angle_min must be finite')
+    monkeypatch.setattr(
+        box_service.rclpy, 'spin_once',
+        lambda *_a, **_k: setattr(node, 'stop_requested', True))
+    with pytest.raises(RuntimeError, match='angle_min must be finite'):
+        node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    assert node.emit.call_count == 1
+    evidence = node.emit.call_args.kwargs
+    assert evidence['scan_angle_min'] is None
+    assert evidence['reason'] == 'angle_min must be finite'
+    json.dumps(evidence, allow_nan=False)
+
+
+def test_scan_evidence_is_bounded_to_nine_thousand_ranges():
+    values, truncated = BoxServiceRoute._json_scan_ranges(
+        (float(index) for index in range(9001)))
+    assert len(values) == 9000
+    assert values[0] == 0.0
+    assert values[-1] == 8999.0
+    assert truncated is True
 
 
 def test_fused_lidar_face_recomputes_final_goal_and_preserves_provenance(

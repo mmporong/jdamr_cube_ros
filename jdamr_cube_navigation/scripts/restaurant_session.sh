@@ -8,6 +8,7 @@ REGISTRY="${JDAMR_RESTAURANT_REGISTRY:-}"
 PARAMS_FILE="${JDAMR_RESTAURANT_PARAMS:-}"
 PRECISION_PARKING=false
 PREPARE_ONLY=false
+USE_COMPOSITION=true
 
 usage() {
   cat <<'EOF'
@@ -16,12 +17,15 @@ usage() {
   restaurant_session.sh start [--workspace PATH] [--registry PATH] [--params-file PATH]
                               [--precision-parking]
                               [--prepare-only]
+                              [--use-composition true|false]
   restaurant_session.sh stop
 
 start는 센서가 이미 실행 중인 Pi에서 식당 서비스용 Nav2 서버만 시작한다.
 초기 pose, NavigateToPose, FollowPath 등 이동 명령은 보내지 않는다.
 --precision-parking은 명시적으로 승인된 5 cm 박스 주차 시험에서만 사용한다.
 --prepare-only는 지도·AMCL만 활성화하고 Nav2 이동 실행부는 미활성 상태로 준비한다.
+--use-composition은 Nav2 서버 실행 방식을 선택한다. 기본값은 완주 검증에 사용한 true이며,
+false는 독립 프로세스 비교 진단용 폴백이다.
 배치 후 위치추정 확인을 마친 뒤 navigation lifecycle startup이 필요하다.
 
 기본값:
@@ -159,7 +163,8 @@ session_identity() {
     "${BASH_SOURCE[0]}") || \
     die "세션 설정 해시 계산 실패"
   digest=$(printf '%s\0' "$WORKSPACE" "$REGISTRY" "$PARAMS_FILE" \
-    "$PRECISION_PARKING" "$PREPARE_ONLY" "$asset_hashes" | sha256sum) || \
+    "$PRECISION_PARKING" "$PREPARE_ONLY" "$USE_COMPOSITION" \
+    "$asset_hashes" | sha256sum) || \
     die "세션 식별자 계산 실패"
   printf '%s' "${digest%% *}"
 }
@@ -198,7 +203,7 @@ run_navigation() {
     "registry:=$REGISTRY" \
     "params_file:=$PARAMS_FILE" \
     navigation_profile:=new_base_candidate \
-    use_composition:=false \
+    "use_composition:=$USE_COMPOSITION" \
     "coordinated_startup:=$coordinated" \
     "navigation_autostart:=$navigation_autostart" \
     "precision_parking:=$PRECISION_PARKING" \
@@ -246,6 +251,7 @@ start_navigation() {
     --working-directory="$WORKSPACE" \
     /bin/bash "$script_path" __run \
     --workspace "$WORKSPACE" --registry "$REGISTRY" --params-file "$PARAMS_FILE" \
+    --use-composition "$USE_COMPOSITION" \
     "${precision_argument[@]}" "${prepare_argument[@]}" \
     || die "$UNIT 기동 요청 실패"
 
@@ -296,6 +302,14 @@ case "$COMMAND" in
         --prepare-only)
           PREPARE_ONLY=true
           shift
+          ;;
+        --use-composition)
+          [ $# -ge 2 ] || die "$1 값이 필요하다"
+          case "$2" in
+            true|false) USE_COMPOSITION="$2" ;;
+            *) die "--use-composition 값은 true 또는 false여야 한다: $2" ;;
+          esac
+          shift 2
           ;;
         *) die "알 수 없는 인자: $1 (도움말: --help)" ;;
       esac

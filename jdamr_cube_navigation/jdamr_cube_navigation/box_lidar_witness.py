@@ -71,8 +71,24 @@ def _angle_difference(first, second):
 
 def witness_box_face_with_lidar(
         ranges, *, angle_min, angle_increment, range_min, range_max,
-        geometry, depth_target, robot_pose):
+        geometry, depth_target, robot_pose, diagnostics=None):
     """Confirm local LiDAR/depth face agreement without claiming accuracy."""
+    if diagnostics is not None:
+        if not isinstance(diagnostics, dict):
+            raise ValueError('diagnostics must be a mapping')
+        diagnostics.clear()
+        diagnostics.update({
+            'minimum_support': MINIMUM_SUPPORT,
+            'maximum_candidate_plane_distance_m':
+                MAX_CANDIDATE_PLANE_DISTANCE_M,
+            'maximum_tangent_half_width_m': MAX_TANGENT_HALF_WIDTH_M,
+            'minimum_tangent_spread_m': MINIMUM_TANGENT_SPREAD_M,
+            'maximum_residual_rms_m': MAXIMUM_RESIDUAL_RMS_M,
+            'maximum_normal_yaw_difference_rad':
+                MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD,
+            'maximum_median_normal_offset_m':
+                MAXIMUM_MEDIAN_NORMAL_OFFSET_M,
+        })
     angle_min = _finite(angle_min, 'angle_min')
     angle_increment = _finite(angle_increment, 'angle_increment')
     range_min = _finite(range_min, 'range_min')
@@ -118,6 +134,8 @@ def witness_box_face_with_lidar(
                             raw_range * math.sin(angle)))
     if not scan_points:
         raise ValueError('scan has no valid ranges')
+    if diagnostics is not None:
+        diagnostics['valid_scan_points'] = len(scan_points)
     base_points = _rotate(scan_points, laser_yaw)
     base_points += np.array((laser_x, laser_y))
     map_points = _rotate(base_points, robot_yaw)
@@ -126,9 +144,16 @@ def witness_box_face_with_lidar(
     relative = map_points - face
     normal_offsets = relative @ depth_normal
     tangent_offsets = relative @ tangent
-    selected = map_points[
-        (np.abs(normal_offsets) <= MAX_CANDIDATE_PLANE_DISTANCE_M)
-        & (np.abs(tangent_offsets) <= MAX_TANGENT_HALF_WIDTH_M)]
+    plane_band = np.abs(normal_offsets) <= MAX_CANDIDATE_PLANE_DISTANCE_M
+    tangent_band = np.abs(tangent_offsets) <= MAX_TANGENT_HALF_WIDTH_M
+    selected = map_points[plane_band & tangent_band]
+    if diagnostics is not None:
+        diagnostics.update({
+            'plane_band_only_count': int(np.count_nonzero(plane_band)),
+            'tangent_band_only_count': int(np.count_nonzero(tangent_band)),
+            'support_count': int(len(selected)),
+            'closest_normal_distance_m': float(np.min(np.abs(normal_offsets))),
+        })
     if len(selected) < MINIMUM_SUPPORT:
         raise ValueError('LiDAR face support is below five points')
 
@@ -149,6 +174,15 @@ def witness_box_face_with_lidar(
     fitted_yaw = math.atan2(fitted_normal[1], fitted_normal[0])
     depth_yaw = math.atan2(depth_normal[1], depth_normal[0])
     yaw_difference_rad = _angle_difference(fitted_yaw, depth_yaw)
+    if diagnostics is not None:
+        diagnostics.update({
+            'residual_rms_m': residual_rms_m,
+            'tangent_spread_m': tangent_spread_m,
+            'median_normal_offset_m': median_normal_offset_m,
+            'normal_yaw_difference_rad': yaw_difference_rad,
+            'fitted_normal_map_xy': tuple(
+                float(value) for value in fitted_normal),
+        })
 
     if tangent_spread_m < MINIMUM_TANGENT_SPREAD_M:
         raise ValueError('LiDAR face tangent spread is too narrow')

@@ -1117,7 +1117,7 @@ def test_service_launch_adds_parking_without_changing_costmaps(
         assert arguments['map'] == '/maps/new_base_room.yaml'
         assert arguments['asset_registry'].perform(context) == '/registry.yaml'
         assert arguments['discovery_range'].perform(context) == discovery_range
-        assert arguments['use_composition'].perform(context) == 'false'
+        assert arguments['use_composition'].perform(context) == 'true'
         assert arguments['coordinated_startup'].perform(context) == 'true'
     finally:
         generated.unlink()
@@ -1141,8 +1141,8 @@ def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
     assert context.launch_configurations['discovery_range'] == 'SUBNET'
 
 
-def test_service_launch_defaults_to_ordered_standalone_startup(monkeypatch):
-    """Avoid parallel lifecycle transitions on the physical service stack."""
+def test_service_launch_defaults_to_composed_ordered_startup(monkeypatch):
+    """Keep the verified composed stack while preserving ordered activation."""
     from launch.actions import DeclareLaunchArgument
     from launch import LaunchContext
     spec = importlib.util.spec_from_file_location(
@@ -1161,7 +1161,7 @@ def test_service_launch_defaults_to_ordered_standalone_startup(monkeypatch):
     context = LaunchContext()
     declarations['use_composition'].execute(context)
     declarations['coordinated_startup'].execute(context)
-    assert context.launch_configurations['use_composition'] == 'false'
+    assert context.launch_configurations['use_composition'] == 'true'
     assert context.launch_configurations['coordinated_startup'] == 'true'
 
 
