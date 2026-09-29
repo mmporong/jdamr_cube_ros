@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped
+from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import (
     BLOCKED_PLAN_CODES, BoxDwell, load_service_contract, parse_args,
@@ -764,7 +765,12 @@ def test_search_checks_installed_spin_profile(
     assert node._search_parameters_ready() is ready
 
 
-def test_search_timeout_cancels_accepted_spin(monkeypatch):
+@pytest.mark.parametrize('guard_failure,operator_stop,repositionable', [
+    (None, False, True), ('scan stale: age=1s', False, False),
+    (None, True, False),
+])
+def test_search_timeout_cancels_accepted_spin(
+        monkeypatch, guard_failure, operator_stop, repositionable):
     node = route()
     node.spin_search = Mock()
     pending = Future()
@@ -775,8 +781,13 @@ def test_search_timeout_cancels_accepted_spin(monkeypatch):
     clock = {'now': 0.0}
     monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.time.monotonic',
                         lambda: clock['now'])
-    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once',
-                        lambda *args, **kwargs: clock.update(now=clock['now'] + 21.0))
+
+    def spin_once(*args, **kwargs):
+        clock['now'] += 21.0
+        node.stop_requested = operator_stop
+        node._guard_failure = lambda *_: guard_failure
+
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin_once)
 
     def cancel(handle, reason):
         assert handle is accepted
@@ -786,6 +797,7 @@ def test_search_timeout_cancels_accepted_spin(monkeypatch):
     assert not node.search_rotation(math.pi / 6)
     assert node.active_handle is None
     assert node.capture_stationary_pose.call_count == 1
+    assert node.last_search_error_code == (Spin.Result.TIMEOUT if repositionable else None)
 
 
 def test_repeated_spin_profile_reads_do_not_accumulate_ros_clients(monkeypatch):
@@ -1015,6 +1027,70 @@ def test_verified_maps_reuse_asset_audit_but_keep_live_identity_and_command_chec
     node.live_grids = {'map': 'changed', 'keepout': 'b'}
     with pytest.raises(RuntimeError, match='changed'):
         node.verify_live_maps()
+
+
+def test_map_audit_cache_is_created_by_first_call_not_seeded_by_test(monkeypatch):
+    node = route()
+    node.registry = {'map': {'yaml_path': 'map'}, 'keepout': {'yaml_path': 'mask'}}
+    node.live_grids = {'map': 'map', 'keepout': 'mask'}
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    validate = Mock()
+    monkeypatch.setattr(module + 'validate_registry', validate)
+    monkeypatch.setattr(module + 'map_grid_signature', lambda path: path)
+    monkeypatch.setattr(module + 'verify_identity', Mock())
+    node._read_parameters = Mock(side_effect=lambda name, _: SimpleNamespace(values=[
+        Parameter('yaml_filename', value='map' if name == 'map_server' else 'mask')
+        .get_parameter_value()]))
+    node._startup_protection_ready = Mock(return_value=None)
+    node.verify_live_maps(require_command_path=False)
+    node.verify_live_maps()
+    assert node._read_parameters.call_count == 2
+    validate.assert_called_once()
+    assert [call.kwargs for call in node._startup_protection_ready.call_args_list] == [
+        {'require_command_path': False}, {'require_command_path': True}]
+
+
+def test_input_gap_between_waypoints_recovers_without_restarting_completed_leg():
+    node = route()
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = lambda *_, **__: done(handle())
+    node._navigation_ready = Mock(side_effect=[True, False, True])
+    node._guard_failure = Mock(return_value='scan stale: age=1s')
+    node._wait_for_input_recovery = Mock(side_effect=node._input_gap_recoverable)
+    assert node.execute(final_parking=False)
+    assert node.navigate.send_goal_async.call_count == 2
+    node._wait_for_input_recovery.assert_called_once_with('scan stale: age=1s')
+
+
+@pytest.mark.parametrize('entry', ['service', 'corridor', 'spin', 'reverse'])
+@pytest.mark.parametrize('reason,stopped,retry', [
+    ('scan stale: age=1s', False, True),
+    ('scan stale: age=1s', True, False),
+    ('battery low: voltage=10.4V', False, False),
+    (None, False, False),
+])
+def test_action_boundary_marks_only_recoverable_input_gaps(entry, reason, stopped, retry):
+    node = route()
+    node.navigate = Mock()
+    node.spin_search = Mock()
+    node.follow_reverse = Mock()
+    node._resume_waypoint_index = 0
+    node._retry_guard_reason = None
+    node.stop_requested = stopped
+    node._navigation_ready = lambda **_: False
+    node._guard_failure = lambda *_: reason
+    if entry == 'service':
+        result = node._execute_service_once(final_parking=False, alignment=False)
+    elif entry == 'corridor':
+        result = CorridorRoute._execute_route_once(node)
+    elif entry == 'spin':
+        result = node._search_rotation_once(math.pi / 6)
+    else:
+        result = node._execute_reverse_once(RosPath())
+    assert not result
+    assert node._retry_guard_reason == (reason if retry else None)
+    for client in (node.navigate, node.spin_search, node.follow_reverse):
+        client.send_goal_async.assert_not_called()
 
 
 @pytest.mark.parametrize('execute', [False, True])
@@ -1471,8 +1547,9 @@ def test_service_launch_adds_parking_without_changing_costmaps(
         generated.unlink()
 
 
-def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
-    """Use the same discovery scope as the physical keepout wrapper."""
+@pytest.mark.parametrize('override,expected', [(None, 'LOCALHOST'), ('SUBNET', 'SUBNET')])
+def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch, override, expected):
+    """Match onboard sensors by default and retain explicit network overrides."""
     from launch.actions import DeclareLaunchArgument
     from launch import LaunchContext
     spec = importlib.util.spec_from_file_location(
@@ -1485,8 +1562,10 @@ def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
                        if isinstance(action, DeclareLaunchArgument)
                        and action.name == 'discovery_range')
     context = LaunchContext()
+    if override is not None:
+        context.launch_configurations['discovery_range'] = override
     declaration.execute(context)
-    assert context.launch_configurations['discovery_range'] == 'SUBNET'
+    assert context.launch_configurations['discovery_range'] == expected
 
 
 def test_precision_launch_matches_box_contract_speed_and_search_capability(monkeypatch):

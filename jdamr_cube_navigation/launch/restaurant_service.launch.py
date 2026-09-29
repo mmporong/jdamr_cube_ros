@@ -118,7 +118,7 @@ def generate_launch_description():
             choices=['true', 'false'],
             description='Start the perception-only RGB-D box observer'),
         DeclareLaunchArgument(
-            'discovery_range', default_value='SUBNET',
+            'discovery_range', default_value='LOCALHOST',
             choices=['LOCALHOST', 'SUBNET'],
             description='Match the physical onboard navigation sensor discovery scope'),
         OpaqueFunction(function=_configure),

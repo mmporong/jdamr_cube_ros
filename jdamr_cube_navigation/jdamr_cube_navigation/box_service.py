@@ -322,9 +322,10 @@ class BoxServiceRoute(ServiceRoute):
             last_failure, retryable=last_failure_retryable)
 
     def _reposition_search(self):
-        """Try one planned nearby view after a confirmed collision-blocked Spin."""
+        """Try one planned nearby view after a collision or timeout Spin result."""
         if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
-                or getattr(self, 'last_search_error_code', None) != Spin.Result.COLLISION_AHEAD):
+                or getattr(self, 'last_search_error_code', None) not in (
+                    Spin.Result.COLLISION_AHEAD, Spin.Result.TIMEOUT)):
             return False
         actual, _ = self.capture_stationary_pose()
         # These are candidate waypoints, not open-loop displacement commands.

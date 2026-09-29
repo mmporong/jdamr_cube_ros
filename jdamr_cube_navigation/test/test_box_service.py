@@ -198,12 +198,13 @@ def test_collision_blocked_search_can_reposition_once_and_continue(mission):
     mission._reposition_search.assert_called_once()
 
 
-def test_search_reposition_requires_collision_result_and_valid_planned_path(mission):
+@pytest.mark.parametrize('error_name', ['COLLISION_AHEAD', 'TIMEOUT'])
+def test_search_reposition_requires_recoverable_result_and_valid_path(mission, error_name):
     from nav2_msgs.action import Spin
     mission.last_search_error_code = Spin.Result.TF_ERROR
     assert not mission._reposition_search()
     mission.plan_pose.assert_not_called()
-    mission.last_search_error_code = Spin.Result.COLLISION_AHEAD
+    mission.last_search_error_code = getattr(Spin.Result, error_name)
     mission.plan_pose.side_effect = [{'ok': False}, {'ok': True}]
     assert mission._reposition_search()
     assert mission.plan_pose.call_count == 2

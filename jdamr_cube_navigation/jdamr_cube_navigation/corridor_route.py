@@ -880,6 +880,9 @@ class CorridorRoute(Node):
                 self.get_logger().error(
                     'navigation guard blocked next goal: '
                     f'{self._guard_failure(False) or "operator stop"}')
+                reason = self._guard_failure(False)
+                if not self.stop_requested and self._input_gap_recoverable(reason):
+                    self._retry_guard_reason = reason
                 return False
             goal = NavigateToPose.Goal()
             if getattr(self, 'navigation_profile', None) == (

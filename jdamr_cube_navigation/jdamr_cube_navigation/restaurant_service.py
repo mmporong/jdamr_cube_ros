@@ -368,9 +368,9 @@ class ServiceRoute(CorridorRoute):
 
     def verify_live_maps(self, require_command_path=True):
         """Require the running map servers to name the registered assets."""
-        identity = json.dumps(
+        registry_identity = json.dumps(
             {name: self.registry[name] for name in ('map', 'keepout')}, sort_keys=True)
-        if getattr(self, '_verified_map_identity', None) == identity:
+        if getattr(self, '_verified_map_identity', None) == registry_identity:
             if self.map_mismatch or self.live_grids != self.expected_grids:
                 raise RuntimeError(self.map_mismatch or 'live map/keepout changed')
             failure = self._startup_protection_ready(require_command_path=require_command_path)
@@ -410,7 +410,7 @@ class ServiceRoute(CorridorRoute):
             raise RuntimeError(protection_error)
         # Cache the verified assets for this executor, not sensor freshness or
         # permission to drive. Map callbacks still stop on changed grid content.
-        self._verified_map_identity = identity
+        self._verified_map_identity = registry_identity
 
     def plan_pose(self, pose, single=False):
         """Validate the entire approach before dispatching any motion goal."""
@@ -554,6 +554,9 @@ class ServiceRoute(CorridorRoute):
                 continue
             self._resume_waypoint_index = index
             if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
+                reason = self._guard_failure(False)
+                if not self.stop_requested and self._input_gap_recoverable(reason):
+                    self._retry_guard_reason = reason
                 return False
             if not self._departure_battery_ready():
                 return False
@@ -643,8 +646,13 @@ class ServiceRoute(CorridorRoute):
                 or not math.isfinite(delta_yaw_rad)
                 or not 0.0 < abs(delta_yaw_rad) <= math.pi / 6 + 1e-9):
             raise ValueError('search rotation must be finite and at most 30 degrees')
-        if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
-                or not self._departure_battery_ready()
+        if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
+            reason = self._guard_failure(False)
+            if not self.stop_requested and self._input_gap_recoverable(reason):
+                self._retry_guard_reason = reason
+            self.emit('search_rotation_failed', reason=reason or 'operator_stop')
+            return False
+        if (not self._departure_battery_ready()
                 or not self.spin_search.wait_for_server(timeout_sec=2.0)
                 or not self._search_parameters_ready()):
             self.emit('search_rotation_failed', reason='spin_profile_or_navigation_unavailable')
@@ -677,7 +685,11 @@ class ServiceRoute(CorridorRoute):
                 rclpy.spin_once(self, timeout_sec=0.05)
                 if (self.stop_requested or time.monotonic() >= deadline_s
                         or not self._navigation_ready(require_fresh_amcl=False)):
-                    reason = self._guard_failure(False) or 'operator_or_spin_timeout'
+                    guard_failure = self._guard_failure(False)
+                    reason = guard_failure or 'operator_or_spin_timeout'
+                    if (not self.stop_requested and not guard_failure
+                            and time.monotonic() >= deadline_s):
+                        self.last_search_error_code = Spin.Result.TIMEOUT
                     self.emit('search_rotation_failed', reason=reason)
                     if (not self.stop_requested and time.monotonic() < deadline_s
                             and self._input_gap_recoverable(reason)):
@@ -998,8 +1010,12 @@ class ServiceRoute(CorridorRoute):
         if not self.waypoints:
             raise ValueError('reverse execution requires a target waypoint')
         target_index = len(self.waypoints) - 1
-        if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
-                or not self._departure_battery_ready()
+        if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
+            reason = self._guard_failure(False)
+            if not self.stop_requested and self._input_gap_recoverable(reason):
+                self._retry_guard_reason = reason
+            return False
+        if (not self._departure_battery_ready()
                 or not self.follow_reverse.wait_for_server(timeout_sec=2.0)):
             return False
         self.active_action_type = FollowPath

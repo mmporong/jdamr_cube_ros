@@ -142,6 +142,30 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 
 파이 반영: 변경 파일을 기존 소스에 반영하고 navigation 패키지 빌드, `box_service --help`, 실행 모듈 구문 확인을 완료했다. 원본 백업은 파이 `$HOME/jdamr_data/development_flow_20260929_T8eNdh/before.tar.gz`, 반영 목록은 같은 디렉터리의 `changed_paths.txt`다. 주행 세션은 inactive를 유지했고 베이스 MainPID 17643은 변경되지 않았다. 새 정렬 goal checker·BT 설정은 다음 Nav2 세션 시작 때 로드된다. 실행 중 센서·모터 서비스 재시작이나 이동 명령은 없었다.
 
+## 13. 개발 우선 변경의 실행 경로 추가 검증
+
+사용자 요청에 따라 cb21ce1의 구현을 다시 확인했다. 앞선 629개 테스트 통과만으로 반영이 충분했다고 볼 수 없었다. 다음 네 가지 누락을 확인해 수정했다.
+
+| 확인된 문제와 근거 | 수정 및 확인 |
+|---|---|
+| 지도 검사 캐시 키 문자열을 서버 확인 반복문의 지도 dict가 덮어썼다. 첫 호출부터 두 번 실행하니 parameter 조회가 기대 2회가 아니라 4회였다. 기존 테스트는 캐시를 미리 넣어 이 결함을 놓쳤다. | 캐시 키 변수를 분리. 첫 호출에서 생성한 캐시를 두 번째 호출이 재사용하는 검사를 추가했다. 실제 grid 변경과 명령 경로 확인은 유지한다. |
+| action 수행 중 입력 공백은 재개했지만 다음 waypoint 발행 직전 공백은 재개 이유를 기록하지 않고 종료했다. 첫 waypoint 성공 후 다음 입력만 늦추면 전체 실행이 실패했다. | 일반 경로·테이블 경로·Spin·후진의 action 시작 경계에도 기존 입력 회복 분기를 연결. 완료 waypoint를 건너뛰는 전환과 사용자 정지·저전압 미재개를 확인했다. |
+| 탐색 Spin의 COLLISION_AHEAD만 관측 위치 변경 대상이었다. 로컬 20초 제한으로 취소하면 오류 코드가 None이어서 이 분기에 진입하지 못했다. | 정상 입력·사용자 정지 아님을 확인한 로컬 만료를 TIMEOUT으로 기록한다. 취소 terminal 확인 후 COLLISION_AHEAD 또는 TIMEOUT에 한해 기존 앞·뒤 20cm 후보 계획을 1회 시도한다. TIMEOUT을 충돌 원인 확정으로 해석하지 않는다. |
+| 세션 셸은 LOCALHOST였으나 별도 restaurant_service.launch.py 기본값은 SUBNET이었다. | 현재 온보드 센서와 같은 LOCALHOST로 통일. 명시적인 SUBNET 옵션이 보존되는 것도 검사했다. |
+
+검증 근거:
+
+- 수정 전 새 재현 검사에서 지도 캐시·waypoint 경계 두 실패를 확인하고 수정 후 통과했다.
+- 관련 14개 테스트 파일에서 651개 통과. 변경 Python/launch/test 6개 파일 ament_flake8 통과, 로컬 navigation 빌드 통과.
+- 로컬 변경과 기존 파이 실행 소스가 cb21ce1 기준으로 일치하는지 대조한 후 여섯 파일만 백업·반영했다. 파이 navigation 빌드와 설치된 Python 모듈 import가 통과했다. 설치된 Spin TIMEOUT 값은 701이다.
+- 파이 백업: `$HOME/jdamr_data/development_verify_20260929_ENEC2Z/before.tar.gz`. 같은 디렉터리에 반영 목록·SHA-256·빌드 로그를 보존했다.
+- 반영 전후 주행 서비스는 system/user 모두 inactive, 베이스 MainPID는 17643으로 같았다. 센서·모터 서비스 재시작, action 실행, 속도 명령 발행은 하지 않았다.
+- 독립 리뷰 에이전트는 thread limit으로 생성되지 않았다. 작성 후 별도 로컬 diff·회귀 검증 패스를 수행했으며 독립 승인으로 표기하지 않는다.
+
+`ros-graph-triage`는 이번에 진단 절차로 실행하지 않고 지침 내용을 검토했다. 모터 제어·제동 실행부가 아닌 TF·통신·Nav2 최초 장애를 좁히는 읽기 전용 지침이며, 안전 차단만을 목적으로 하는 스킬은 아니므로 삭제하지 않았다. PKM 원본과 Codex 설치본의 `allow_implicit_invocation: false`, 저장소의 출발 자동 적용 금지를 확인했다. 이번 변경에서 새 스킬·검수 단계·출발 조건을 추가하지 않았다.
+
+남은 검증 범위: 실차 주차 완료·주행 지연 감소는 측정하지 않았다. 반복 센서 지연의 근본 원인, Nav2 실행 중 비활성화 재발 여부, 박스 면 후보 변경 문제까지 해결됐다는 증거는 아니다. 위 네 코드 결함의 수정 및 반영과 실차 태스크 성공을 구분한다.
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.
