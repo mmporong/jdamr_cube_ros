@@ -166,6 +166,68 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 
 남은 검증 범위: 실차 주차 완료·주행 지연 감소는 측정하지 않았다. 반복 센서 지연의 근본 원인, Nav2 실행 중 비활성화 재발 여부, 박스 면 후보 변경 문제까지 해결됐다는 증거는 아니다. 위 네 코드 결함의 수정 및 반영과 실차 태스크 성공을 구분한다.
 
+## 14. 정지 캡처·관측 입력 공백·계획 끝점·박스 이탈 복귀 (2026-09-30, Claude 인계 후)
+
+인계 문서 `20260930_CLAUDE_HANDOFF.md` §4의 미수정 두 경로와, 이어받으며 보존 기록에서 새로 확인한 실행 경로 결함을 수정했다. 계획은 OMC ralplan 합의(Planner·Architect·Critic 3회차, 정오표 반영 v4.1)를 거쳤다. 이 절은 소프트웨어 수정과 파이 반영까지의 기록이며 **실차 주행은 하지 않았다.** 5 cm 주차·복귀 성공은 주장하지 않는다.
+
+### 14.1 확정 사실과 근거
+
+| 사실 | 근거 |
+|---|---|
+| AMCL은 odom 축별 변위가 0.05 m/0.05 rad를 넘을 때만 갱신·발행한다. 정지 중에는 `/amcl_pose` 없이 map→odom TF만 scan마다 재발행한다. 그래서 같은 프로세스에서 15 s 넘게 정지한 뒤 `capture_stationary_pose()`와 `wait_until_ready()`의 guard(True)가 TF가 정상이어도 `AMCL pose stale`로 막혔다 | nav2_amcl 1.3.12 소스, `new_base_nav2_params.yaml` update_min_d/a, 합성 재현(인계 §4-A) |
+| 새 프로세스는 TRANSIENT_LOCAL `/amcl_pose`를 받는 순간 나이가 0이다. 막히는 것은 같은 프로세스 안의 긴 정지 뒤다 | `_amcl_callback` 수신 시각 기준 |
+| `observe_target()`은 입력 공백 1회에 회복 없이 종료했다 | 인계 §4-B 재현 |
+| `observe_target()`은 같은 관측 status를 매 반복 다시 평가했다. 수신 뒤 나이가 0.5 s를 넘으면 신선도 실패로 판정이 덮여, 보존 bag 기준 창 끝의 약 27 %가 재시도 불가로 끝났다 | 보존 MCAP status 563건 재계산 |
+| 관측 transit BT의 기본 goal checker는 방향을 보지 않는 `position_goal_checker`다. 9/29 네 관측 실행은 모두 (1.446, 0.243)에서 실제 yaw 61.7°였고, 영역 표지 (1.896, 0.303)는 카메라 반시야각 약 29° 밖이었다. 번갈아 나온 앞면 후보는 다른 면이었을 가능성이 크다(지정 박스 식별은 미확정) | 보존 MCAP 재투영, BT XML |
+| NavFn tolerance 0.5에서 `plan_pose()`는 목표에서 0.15–0.26 m 떨어진 곳에서 끝나는 경로도 성공으로 받았다 | 실제 지도 오프라인 planner 비교 |
+| KeepoutFilter 출력은 팽창되지 않고 unknown 셀을 FREE로 덮어쓴다. 점 로봇 플래너가 keepout 경계에 중심을 붙여 계획한다. 깊이로 계산한 박스 면 후보는 keepout 띠(y ≥ 0.619) 안이라 5 cm 목표가 keepout 안에 떨어진다 | 같은 오프라인 비교 |
+| 박스 앞 5 cm 정지 자세에서는 LiDAR(range_min 0.28 m)와 깊이(최소 0.35 m) 모두 면을 보지 못한다. 그 자리의 제자리 회전은 collision monitor가 막지 못한다 | provenance, `new_base_geometry.yaml` |
+| 정밀 세션은 box 계약으로 Parking·ParkingReverse를 띄우는데 `restaurant_service`는 일반 계약 파일을 고정으로 읽어, 같은 세션의 `home --execute`가 이동 전에 결정적으로 실패했다 | launch·CLI 코드 |
+| 9/29 실행 중 한 번은 관측 위치로 가던 중 AMCL x 공분산이 0.0102 m²(한계 0.01)로 잠깐 넘어 재개 경로 없이 끝났다. 주행 중 공분산은 수렴 뒤 0.002–0.009 m²였다 | 파이 events.jsonl, 보존 MCAP `/amcl_pose` |
+
+보존 로그에는 `AMCL pose stale`·`stationary teaching unavailable` 종료 기록이 없다. 위 AMCL 나이 결함을 과거 출발 실패의 원인이라고 단정하지 않는다.
+
+### 14.2 조치 (커밋 `2fbed38`)
+
+| 결정 | 내용 |
+|---|---|
+| D1 | `ServiceRoute._guard_failure(True)`는 마지막 AMCL pose 이후 odom 축별 변위가 AMCL 갱신 임계 이하이고 map→base_link TF가 0.5 s 이내일 때만 메시지 나이 조건을 면제한다. 공분산·지도·배터리 등 나머지 검사는 그대로다. 초기화 전·이동 후·TF 정지·미래 시각은 계속 거부한다 |
+| D2 | 관측 중 입력 공백은 함수당 1회 기존 회복으로 기다린 뒤 새 정지 pose와 새 cutoff로 다시 관측한다. 실패는 plain `RuntimeError`라 탐색 회전으로 이어지지 않는다. status는 stamp별로 한 번만 평가한다. 판정을 만든 지연은 회전 대신 무이동 재관측 1회로 처리한다 |
+| D3 | `_verify_parking_stop()`은 입력 공백에 명령 없이 1회 재확인한다. box 계획 시점 공백은 공백 전 목표를 버리고 다시 관측한다 |
+| D4 | 이동 중 공분산 초과는 코드를 바꾸지 않았다. 초과 시 경로 중간에 멈추고 재개 경로가 없다. 운영자 조치는 로봇을 충전소로 옮긴 뒤 세션부터 다시 시작하는 한 가지다 |
+| D5 | `box_service --return-home --return-timeout-s <s>`: 최종 접근 성공 뒤 검증된 5 s 대기 → 박스 이탈 → 충전소 복귀를 한 실행기에서 이어간다. 복귀 도킹은 충전소 계약(5 cm/3°)으로 판정한다. `--task-timeout-s`로 테이블 구간 예산을 받는다(기본 240 s) |
+| D6 | 관측 전 카메라 자세·영역 방위·시야 포함 여부·거리를 기록하는 무이동 진단 이벤트를 남긴다 |
+| D7 | `plan_pose()`는 경로 끝이 goal checker 허용오차 밖이면 `goal_not_reachable_within_tolerance`로 실패한다. box transit preflight도 같은 검사를 한다 |
+| D8 | 이탈은 박스 면에서 0.565 m(StopZone 회전 반경 0.43 + 여유)까지 직선 후진한다. 검증은 현재 차체 앞쪽 띠를 뺀 꼬리로 한다(직선 후진은 그 띠를 다시 쓰지 않는다). 재시도는 이미 후진한 거리만큼 띠를 줄인다. 이탈 전 방향·거리 타당성을 확인하고, 실패 사유는 `box_escape_*`로 남긴다 |
+| D9 | 관측 실패 시 최근 status 16개·정지 pose·scan·mount를 묶은 증거 이벤트를 남긴다. 새 이벤트는 `allow_nan=False`로 직렬화할 수 있고, 증거 기록 실패가 제어 흐름 예외를 바꾸지 않는다 |
+
+`restaurant_service home`만 `--parking-contract`를 받는다. 박스 앞 약 0.6 m 안에서는 이 단독 복귀를 쓰지 말라는 안내를 도움말에 넣었다(센서가 그 거리의 면을 보지 못한다).
+
+### 14.3 검증
+
+- 테스트를 먼저 작성했다. 수정 전 HEAD `5ab15ee`에서 회귀 테스트 49건이 계획한 사유(`HEADFAIL[Tn]`)로 실패했고, 하네스 오류·수집 오류는 0건이었다. 기존 테스트는 모두 통과했다.
+- 수정 후: 핵심 5개 파일 434건, 관련 24개 스위트 934건이 통과했다.
+- 변이 M1–M12가 모두 지정 테스트에서 검출됐다. M2에서 살아남은 세 사례(지도 불일치·사용자 정지)는 앞선 `stop_requested` 경로 때문에 도달할 수 없는 등가 사례다.
+- 독립 코드 리뷰에서 차단 결함은 없었다. 지적된 이탈 재시도 검증 구멍, 이탈 전 타당성, 복귀 checker 확인 순서 등은 테스트를 먼저 실패시킨 뒤 고쳤다.
+- 변경 파일의 flake8·pep257 위반은 0건이다. 패키지 전체의 기존 flake8 위반 29건은 HEAD와 같다.
+- PC와 파이에서 `colcon build --packages-select jdamr_cube_navigation`이 통과했다.
+
+### 14.4 파이 반영
+
+- 반영 전 파이 런타임 3파일은 `5ab15ee`와 같았다. 백업·반영 기록: 파이 `$HOME/jdamr_data/development_verify_20260930_ad77a4/`(`before.tar.gz`, `changed_paths.txt`, `build.log`, `deployed_sha256.txt`, `no_motion_cli_check.txt`).
+- PC 커밋, 파이 소스, 파이 설치 site-packages의 런타임 3파일 SHA-256이 모두 같다.
+- 베이스 MainPID는 반영 전후 44342로 같고, 주행 서비스는 inactive를 유지했다. Nav2 기동·action·속도 명령은 없었다.
+- 무이동 점검: 새 CLI 옵션, `--return-timeout-s` 없는 `--return-home` 거부, departure_mask_v2 registry·경로의 지도 식별 일치, 계약·카메라 장착 로드를 확인했다.
+- 운영 관찰: 2026-09-30 06:52–06:56에 무인 보안 업데이트(openssl·curl·expat·sudo 등, ROS 패키지 아님)가 라이브러리 교체 뒤 `jdamr-base`·`jdamr-box-observer`·`jdamr-box-rgbd`·ssh·네트워크 서비스를 재시작했다. 새 커널 6.8.0-1065가 설치되어 재부팅을 기다린다(실행 중 1064). 주행 중 같은 재시작이 일어나면 태스크가 끊긴다. 업데이트 정책은 사용자 결정 사항으로 남긴다.
+
+### 14.5 남은 항목 (출발 전 Phase 2, 사용자 답변 필요)
+
+- 지정 박스의 실제 위치와 붙을 면: 현재 데이터로는 면 후보가 keepout 안이라 최종 접근 계획이 끝점 검사에서 실패한다. 답변에 따라 region·관측 waypoint·keepout 사본을 만들고, 실측 면 선분·LiDAR 잡음 0–0.02 m·줄자 ±0.01 m 조합을 오프라인으로 검증한 뒤 출발한다.
+- 관측 지점 옆 지도에 없는 물체(폭 약 0.32 m)의 유지 여부, 이동 중 공분산 정책, 실제 충전소와 registry home_dock(route 시작점과 0.2 m 차이)의 일치 여부.
+- 첫 주행은 진단 성격이 크다. 5 cm 간격과 0.05 m costmap 격자가 겹쳐 최종 접근이 목표 직전에 멈출 수 있다(격자 모델 추론).
+- 권고(설정 변경 없음): inflation_radius 0.42 m 이상은 오프라인에서 NavFn 여유를 늘렸고 불가능해진 목표가 없었다. keepout 마스크를 차체 여유만큼 팽창하는 것도 권한다. 플래너는 NavFn을 유지한다(Smac Hybrid는 Ackermann용, 비원형 차동의 공식 권장인 Lattice는 이 지도에서 큰 루프·keepout 침범을 보였다). 정밀 세션 footprint 앞변(물리 0.065 m) 또는 costmap 해상도 0.025 m는 사용자 선택 항목이다. 파이는 대기 중에도 74–78 °C라 냉각을 권한다.
+- 근거 자료 보존(PC): `$HOME/jdamr_data/claude_phase1_20260930/`(합의 계획·검토, 박스 면·지연 분석, 오프라인 planner 비교, HEAD 실패 증명, 변이·리뷰 기록).
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.
