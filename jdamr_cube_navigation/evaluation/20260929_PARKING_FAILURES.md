@@ -179,7 +179,7 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 | `observe_target()`은 입력 공백 1회에 회복 없이 종료했다 | 인계 §4-B 재현 |
 | `observe_target()`은 같은 관측 status를 매 반복 다시 평가했다. 수신 뒤 나이가 0.5 s를 넘으면 신선도 실패로 판정이 덮여, 보존 bag 기준 창 끝의 약 27 %가 재시도 불가로 끝났다 | 보존 MCAP status 563건 재계산 |
 | 관측 transit BT의 기본 goal checker는 방향을 보지 않는 `position_goal_checker`다. 9/29 네 관측 실행은 모두 (1.446, 0.243)에서 실제 yaw 61.7°였고, 영역 표지 (1.896, 0.303)는 카메라 반시야각 약 29° 밖이었다. 번갈아 나온 앞면 후보는 다른 면이었을 가능성이 크다(지정 박스 식별은 미확정) | 보존 MCAP 재투영, BT XML |
-| NavFn tolerance 0.5에서 `plan_pose()`는 목표에서 0.15–0.26 m 떨어진 곳에서 끝나는 경로도 성공으로 받았다 | 실제 지도 오프라인 planner 비교 |
+| 플래너 tolerance 0.5에서 `plan_pose()`는 목표에서 떨어진 곳에서 끝나는 경로도 성공으로 받았다(플래너 비교 범위 0.15–0.26 m, 현재 NavFn은 0.15 m) | 실제 지도 오프라인 planner 비교 |
 | KeepoutFilter 출력은 팽창되지 않고 unknown 셀을 FREE로 덮어쓴다. 점 로봇 플래너가 keepout 경계에 중심을 붙여 계획한다. 깊이로 계산한 박스 면 후보는 keepout 띠(y ≥ 0.619) 안이라 5 cm 목표가 keepout 안에 떨어진다 | 같은 오프라인 비교 |
 | 박스 앞 5 cm 정지 자세에서는 LiDAR(range_min 0.28 m)와 깊이(최소 0.35 m) 모두 면을 보지 못한다. 그 자리의 제자리 회전은 collision monitor가 막지 못한다 | provenance, `new_base_geometry.yaml` |
 | 정밀 세션은 box 계약으로 Parking·ParkingReverse를 띄우는데 `restaurant_service`는 일반 계약 파일을 고정으로 읽어, 같은 세션의 `home --execute`가 이동 전에 결정적으로 실패했다 | launch·CLI 코드 |
@@ -224,7 +224,11 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 
 - 지정 박스의 실제 위치와 붙을 면: 현재 데이터로는 면 후보가 keepout 안이라 최종 접근 계획이 끝점 검사에서 실패한다. 답변에 따라 region·관측 waypoint·keepout 사본을 만들고, 실측 면 선분·LiDAR 잡음 0–0.02 m·줄자 ±0.01 m 조합을 오프라인으로 검증한 뒤 출발한다.
 - 관측 지점 옆 지도에 없는 물체(폭 약 0.32 m)의 유지 여부, 이동 중 공분산 정책, 실제 충전소와 registry home_dock(route 시작점과 0.2 m 차이)의 일치 여부.
-- 첫 주행은 진단 성격이 크다. 5 cm 간격과 0.05 m costmap 격자가 겹쳐 최종 접근이 목표 직전에 멈출 수 있다(격자 모델 추론).
+- 첫 주행은 진단 성격이 크다. 5 cm 간격과 0.05 m costmap 격자가 겹쳐 최종 접근이 목표 직전에 멈출 수 있다. 면 셀과 2 cm 잡음을 둔 격자 모델에서 최종 목표 셀이 inscribed가 되는 비율은 면이 지도 축과 평행할 때 약 20 %, 30° 기울면 약 80 %였다(추론, 실측 아님).
+- 이탈 시작 자세에서 RPP 현재 자세 충돌 검사가 접근 중 남은 costmap 면 셀과 겹치면 `box_escape_failed`로 멈춘다(fail-closed). ObstacleLayer footprint clearing이 이 셀을 지우는지는 실차에서 확인하지 않았다.
+- 활성화 단계의 공분산 통과는 `/request_nomotion_update` 반복 뒤의 값이라 위치추정 품질의 독립 증거가 아니다.
+- status를 stamp별로 한 번만 평가하면서, HEAD가 같은 status를 0.5 s 안의 새 scan으로 LiDAR witness에 다시 넣던 암묵적 재시도도 사라졌다. 첫 주행에서 `box_lidar_witness_rejected` 빈도를 본다.
+- 리뷰에서 보류한 알려진 한계(회복 뒤 cutoff의 시간축 혼합, D1 참조 시점 서술, 잘못된 관측기 JSON의 침묵 판정, 정밀 세션 전진 home 미지원 등)는 보존 폴더의 `review/code_review_phase1.md`에 있다.
 - 권고(설정 변경 없음): inflation_radius 0.42 m 이상은 오프라인에서 NavFn 여유를 늘렸고 불가능해진 목표가 없었다. keepout 마스크를 차체 여유만큼 팽창하는 것도 권한다. 플래너는 NavFn을 유지한다(Smac Hybrid는 Ackermann용, 비원형 차동의 공식 권장인 Lattice는 이 지도에서 큰 루프·keepout 침범을 보였다). 정밀 세션 footprint 앞변(물리 0.065 m) 또는 costmap 해상도 0.025 m는 사용자 선택 항목이다. 파이는 대기 중에도 74–78 °C라 냉각을 권한다.
 - 근거 자료 보존(PC): `$HOME/jdamr_data/claude_phase1_20260930/`(합의 계획·검토, 박스 면·지연 분석, 오프라인 planner 비교, HEAD 실패 증명, 변이·리뷰 기록).
 
