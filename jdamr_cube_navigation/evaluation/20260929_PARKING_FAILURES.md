@@ -224,7 +224,7 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 
 - 지정 박스의 실제 위치와 붙을 면: 현재 데이터로는 면 후보가 keepout 안이라 최종 접근 계획이 끝점 검사에서 실패한다. 답변에 따라 region·관측 waypoint·keepout 사본을 만들고, 실측 면 선분·LiDAR 잡음 0–0.02 m·줄자 ±0.01 m 조합을 오프라인으로 검증한 뒤 출발한다.
 - 관측 지점 옆 지도에 없는 물체(폭 약 0.32 m)의 유지 여부, 이동 중 공분산 정책, 실제 충전소와 registry home_dock(route 시작점과 0.2 m 차이)의 일치 여부.
-- 첫 주행은 진단 성격이 크다. 5 cm 간격과 0.05 m costmap 격자가 겹쳐 최종 접근이 목표 직전에 멈출 수 있다. 면 셀과 2 cm 잡음을 둔 격자 모델에서 최종 목표 셀이 inscribed가 되는 비율은 면이 지도 축과 평행할 때 약 20 %, 30° 기울면 약 80 %였다(추론, 실측 아님).
+- 첫 주행은 진단 성격이 크다. 5 cm 간격과 0.05 m costmap 격자가 겹쳐 최종 접근이 목표 직전에 멈출 수 있다. 면 셀과 2 cm 잡음을 둔 격자 모델(추론, 실측 아님)에서 최종 자세 footprint 외곽선이 면 셀과 겹쳐 목표 직전에 멈출 비율은 면이 지도 축과 평행해도 약 80 %였다(잡음 없이 면 셀만이면 0° 40 %, 30°·45° 80–96 %). 최종 목표 셀 자체가 inscribed가 되어 끝점 검사가 이동 전에 `goal_not_reachable_within_tolerance`로 거부할 비율은 0° 약 20 %, 15° 36 %, 30° 80 %, 45° 60 %였다.
 - 이탈 시작 자세에서 RPP 현재 자세 충돌 검사가 접근 중 남은 costmap 면 셀과 겹치면 `box_escape_failed`로 멈춘다(fail-closed). ObstacleLayer footprint clearing이 이 셀을 지우는지는 실차에서 확인하지 않았다.
 - 활성화 단계의 공분산 통과는 `/request_nomotion_update` 반복 뒤의 값이라 위치추정 품질의 독립 증거가 아니다.
 - status를 stamp별로 한 번만 평가하면서, HEAD가 같은 status를 0.5 s 안의 새 scan으로 LiDAR witness에 다시 넣던 암묵적 재시도도 사라졌다. 첫 주행에서 `box_lidar_witness_rejected` 빈도를 본다.
