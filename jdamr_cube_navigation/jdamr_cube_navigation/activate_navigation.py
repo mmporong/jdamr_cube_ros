@@ -89,15 +89,36 @@ def require_active(node, names, state_id=State.PRIMARY_STATE_ACTIVE, wait=None):
             node.destroy_client(client)
 
 
-def initialize_localization(node, initial_pose, timeout_s=8.0):
-    """Set an explicit pose and require a post-ACK AMCL pose sample."""
+def initialize_localization(
+        node, initial_pose, timeout_s=8.0, covariance_limits=None):
+    """Set an explicit pose and require a usable post-ACK AMCL sample."""
+    if covariance_limits is not None:
+        try:
+            covariance_limits = tuple(covariance_limits)
+        except TypeError as error:
+            raise ValueError(
+                'covariance_limits must contain x, y, and yaw limits') from error
+        if len(covariance_limits) != 3 or any(
+                isinstance(limit, bool)
+                or not isinstance(limit, (int, float))
+                or not math.isfinite(limit) or limit <= 0.0
+                for limit in covariance_limits):
+            raise ValueError(
+                'covariance_limits must contain three finite positive values')
     require_active(node, LOCALIZATION_NODES)
     node.verify_live_maps(require_command_path=False)
-    latest_stamp_s = [None]
+    latest_sample = [None]
 
     def observe(message):
         stamp = message.header.stamp
-        latest_stamp_s[0] = stamp.sec + stamp.nanosec * 1e-9
+        covariance = (None if covariance_limits is None else (
+            float(message.pose.covariance[0]),
+            float(message.pose.covariance[7]),
+            float(message.pose.covariance[35])))
+        latest_sample[0] = (
+            stamp.sec + stamp.nanosec * 1e-9,
+            covariance,
+        )
 
     subscription = node.create_subscription(
         PoseWithCovarianceStamped, '/amcl_pose', observe, AMCL_QOS)
@@ -131,12 +152,20 @@ def initialize_localization(node, initial_pose, timeout_s=8.0):
         deadline_s = time.monotonic() + timeout_s
         next_update_s = 0.0
         update_future = None
+        fresh_pose_seen = False
         while time.monotonic() < deadline_s:
             if node.stop_requested:
                 raise RuntimeError('initialization interrupted')
-            if (latest_stamp_s[0] is not None
-                    and latest_stamp_s[0] > ack_ros_s):
-                return
+            if latest_sample[0] is not None:
+                stamp_s, covariance = latest_sample[0]
+                if stamp_s > ack_ros_s:
+                    fresh_pose_seen = True
+                    if covariance_limits is None or all(
+                            math.isfinite(value) and value >= 0.0
+                            and value <= limit
+                            for value, limit in zip(
+                                covariance, covariance_limits)):
+                        return
             now_s = time.monotonic()
             if update_future is not None and update_future.done():
                 if (update_future.exception() is not None
@@ -147,6 +176,9 @@ def initialize_localization(node, initial_pose, timeout_s=8.0):
                 update_future = update_client.call_async(Empty.Request())
                 next_update_s = now_s + .2
             rclpy.spin_once(node, timeout_sec=.05)
+        if fresh_pose_seen and covariance_limits is not None:
+            raise RuntimeError(
+                'AMCL covariance did not converge after initialization ACK')
         raise RuntimeError('fresh AMCL pose missing after initialization ACK')
     finally:
         node.destroy_client(initial_client)
@@ -217,7 +249,13 @@ def activate_prepared(node):
 def initialize_and_activate(node, initial_pose=None):
     """Optionally initialize AMCL before the unchanged activation gates."""
     if initial_pose is not None:
-        initialize_localization(node, initial_pose)
+        covariance_limits = (
+            node.max_amcl_covariance[0],
+            node.max_amcl_covariance[1],
+            node.service_contract['max_yaw_covariance_rad2'],
+        )
+        initialize_localization(
+            node, initial_pose, covariance_limits=covariance_limits)
     activate_prepared(node)
 
 

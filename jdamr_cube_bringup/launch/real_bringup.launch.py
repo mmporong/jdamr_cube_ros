@@ -45,8 +45,11 @@ def generate_launch_description():
         # Base sensors, Cartographer and Nav2 must use one discovery scope.
         # A LOCALHOST/SUBNET split intermittently hid /tf and Collision
         # Monitor lifecycle services during autonomous-mapping startup.
+        DeclareLaunchArgument('discovery_range', default_value='SUBNET',
+                              choices=['LOCALHOST', 'SUBNET']),
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '0'),
         SetEnvironmentVariable(
-            'ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET'),
+            'ROS_AUTOMATIC_DISCOVERY_RANGE', LaunchConfiguration('discovery_range')),
         DeclareLaunchArgument('base_port', default_value='/dev/ttyS0',
                               description='ESP32 시리얼 — 40핀 헤더 UART (실물 확정)'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ydlidar_g4',

@@ -459,6 +459,49 @@ def test_prepare_only_starts_localization_without_navigation_activation(session_
     assert 'FollowPath' not in commands
 
 
+@pytest.mark.parametrize('scope', ['LOCALHOST', 'SUBNET'])
+def test_discovery_selection_survives_dispatch_and_internal_run(session_env, scope):
+    arguments = ('--workspace', session_env['workspace'], '--registry',
+                 session_env['registry'], '--params-file', session_env['params'],
+                 '--discovery-range', scope)
+    started = _run(session_env, 'start', *arguments)
+    assert started.returncode == 0, started.stderr
+    assert '--discovery-range ' + scope in session_env['log'].read_text()
+    internal = _run(session_env, '__run', *arguments,
+                    JDAMR_RESTAURANT_INTERNAL='1', ROS_LOCALHOST_ONLY='1')
+    assert internal.returncode == 0, internal.stderr
+    commands = session_env['log'].read_text()
+    assert 'discovery_range:=' + scope in commands
+    assert f'launch-env 12 {scope} UDPv4 1' in commands
+    assert 'localhost 0' in commands
+
+
+def test_discovery_mismatch_does_not_reuse_active_session(session_env):
+    identity = _started_identity(session_env)
+    result = _run(
+        session_env, 'start', '--workspace', session_env['workspace'],
+        '--registry', session_env['registry'], '--params-file',
+        session_env['params'], '--discovery-range', 'LOCALHOST',
+        MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
+        MOCK_UNIT_ENV=identity)
+    assert result.returncode == 4
+    assert '요청과 다르다' in result.stderr
+    commands = session_env['log'].read_text()
+    assert 'systemd-run ' not in commands
+    assert 'systemctl stop ' not in commands
+
+
+@pytest.mark.parametrize('value', ['', 'local', 'localHost', 'ALL'])
+def test_discovery_selection_rejects_invalid_values(session_env, value):
+    args = ['start', '--discovery-range']
+    if value:
+        args.append(value)
+    result = _run(session_env, *args)
+    assert result.returncode == 4
+    assert '--discovery-range' in result.stderr
+    assert not session_env['log'].exists()
+
+
 def test_prepare_flag_survives_systemd_dispatch(session_env):
     result = _run(
         session_env, 'start', '--workspace', session_env['workspace'],

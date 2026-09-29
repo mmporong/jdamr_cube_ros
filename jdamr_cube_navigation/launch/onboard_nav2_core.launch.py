@@ -492,12 +492,13 @@ def generate_launch_description():
                 'ordered lifecycle transaction')),
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '0'),
         DeclareLaunchArgument(
             'discovery_range', default_value='LOCALHOST',
             choices=['LOCALHOST', 'SUBNET'],
             description=(
-                'The physical wrapper selects SUBNET to consume LOCALHOST '
-                'sensor publishers on this host')),
+                'Use the same discovery scope as onboard sensors and the '
+                'route executor; LOCALHOST excludes remote ROS clients')),
         SetEnvironmentVariable(
             'ROS_AUTOMATIC_DISCOVERY_RANGE', discovery_range),
         DeclareLaunchArgument(

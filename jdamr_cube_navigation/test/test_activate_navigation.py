@@ -33,6 +33,36 @@ def initial_pose():
     }
 
 
+def converging_initialization_node():
+    """Return a node whose AMCL service calls complete immediately."""
+    initial_client = Mock()
+    update_client = Mock()
+    initial_client.wait_for_service.return_value = True
+    update_client.wait_for_service.return_value = True
+    update_future = Future()
+    update_future.set_result(SimpleNamespace())
+    update_client.call_async.return_value = update_future
+    node = Mock()
+    node.stop_requested = False
+    node.create_client.side_effect = [initial_client, update_client]
+    node._wait.return_value = SimpleNamespace()
+    request_time = SimpleNamespace(
+        to_msg=lambda: SimpleNamespace(sec=99, nanosec=0))
+    ack_time = SimpleNamespace(nanoseconds=100_000_000_000)
+    node.get_clock.return_value.now.side_effect = [request_time, ack_time]
+    return node, initial_client, update_client
+
+
+def amcl_pose(stamp_s, covariance):
+    values = [0.0] * 36
+    values[0], values[7], values[35] = covariance
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(sec=stamp_s, nanosec=0)),
+        pose=SimpleNamespace(covariance=values),
+    )
+
+
 def test_initial_pose_loader_requires_every_explicit_field(tmp_path):
     path = tmp_path / 'pose.yaml'
     pose = initial_pose()
@@ -117,6 +147,7 @@ def test_initialization_uses_service_ack_and_post_ack_amcl_stamp(monkeypatch):
     assert request.pose.pose.covariance[0] == .1
     assert request.pose.pose.covariance[7] == .2
     assert request.pose.pose.covariance[35] == .03
+    assert initial_client.call_async.call_count == 1
     update_client.call_async.assert_called()
     node.destroy_subscription.assert_called_once()
     assert [item.args[0] for item in node.destroy_client.call_args_list] == [
@@ -190,13 +221,129 @@ def test_initialization_rejects_amcl_stamp_equal_to_ack(monkeypatch):
         module.initialize_localization(node, initial_pose(), timeout_s=1.0)
 
 
+def test_initialization_keeps_nomotion_updates_until_covariance_converges(
+        monkeypatch):
+    monkeypatch.setattr(module, 'require_active', Mock())
+    node, initial_client, update_client = converging_initialization_node()
+    now_s = [0.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now_s[0])
+    covariance_samples = iter([
+        (0.25, 0.25, 0.0685),
+        (0.04, 0.03, 0.04),
+        (0.0065, 0.0046, 0.0034),
+    ])
+
+    def spin_once(_node, timeout_sec):
+        assert timeout_sec == .05
+        callback = node.create_subscription.call_args.args[2]
+        callback(amcl_pose(101, next(covariance_samples)))
+        now_s[0] += .1
+
+    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+
+    module.initialize_localization(
+        node, initial_pose(), timeout_s=1.0,
+        covariance_limits=(.01, .01, .03))
+
+    assert initial_client.call_async.call_count == 1
+    assert update_client.call_async.call_count == 2
+
+
+def test_initialization_fails_before_startup_when_covariance_never_converges(
+        monkeypatch):
+    monkeypatch.setattr(module, 'require_active', Mock())
+    node, _initial_client, update_client = converging_initialization_node()
+    node.max_amcl_covariance = (.01, .01)
+    node.service_contract = {'max_yaw_covariance_rad2': .03}
+    now_s = [0.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now_s[0])
+
+    def spin_once(_node, timeout_sec):
+        callback = node.create_subscription.call_args.args[2]
+        callback(amcl_pose(101, (0.25, 0.25, 0.0685)))
+        now_s[0] += .1
+
+    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+    activate = Mock()
+    monkeypatch.setattr(module, 'activate_prepared', activate)
+
+    with pytest.raises(RuntimeError, match='covariance did not converge'):
+        module.initialize_and_activate(node, initial_pose())
+
+    activate.assert_not_called()
+    assert 1 < update_client.call_async.call_count <= 40
+
+
+def test_initialization_stop_during_covariance_convergence(monkeypatch):
+    monkeypatch.setattr(module, 'require_active', Mock())
+    node, _initial_client, _update_client = converging_initialization_node()
+    now_s = [0.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now_s[0])
+
+    def spin_once(_node, timeout_sec):
+        callback = node.create_subscription.call_args.args[2]
+        callback(amcl_pose(101, (0.25, 0.25, 0.0685)))
+        node.stop_requested = True
+        now_s[0] += .1
+
+    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+
+    with pytest.raises(RuntimeError, match='initialization interrupted'):
+        module.initialize_localization(
+            node, initial_pose(), timeout_s=1.0,
+            covariance_limits=(.01, .01, .03))
+
+
+@pytest.mark.parametrize('bad_value', [float('nan'), float('inf'), -0.01])
+def test_initialization_rejects_nonfinite_or_negative_covariance(
+        monkeypatch, bad_value):
+    monkeypatch.setattr(module, 'require_active', Mock())
+    node, _initial_client, _update_client = converging_initialization_node()
+    now_s = [0.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now_s[0])
+
+    def spin_once(_node, timeout_sec):
+        callback = node.create_subscription.call_args.args[2]
+        callback(amcl_pose(101, (bad_value, .001, .001)))
+        now_s[0] += .1
+
+    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+
+    with pytest.raises(RuntimeError, match='covariance did not converge'):
+        module.initialize_localization(
+            node, initial_pose(), timeout_s=.3,
+            covariance_limits=(.01, .01, .03))
+
+
+@pytest.mark.parametrize('limits', [
+    (), (.01,), (.01, .01), (.01, .01, .03, .04),
+    (.01, .01, float('nan')), (.01, float('inf'), .03),
+    (.01, 0.0, .03), (.01, -0.01, .03), (.01, True, .03),
+])
+def test_initialization_rejects_invalid_covariance_limits_before_pose_request(
+        monkeypatch, limits):
+    active = Mock()
+    monkeypatch.setattr(module, 'require_active', active)
+    node = Mock()
+
+    with pytest.raises(ValueError, match='three finite positive values'):
+        module.initialize_localization(
+            node, initial_pose(), covariance_limits=limits)
+
+    active.assert_not_called()
+    node.create_client.assert_not_called()
+
+
 def test_initialization_failure_never_reaches_navigation_startup(monkeypatch):
     initialize = Mock(side_effect=RuntimeError('fresh AMCL pose missing'))
     activate = Mock()
     monkeypatch.setattr(module, 'initialize_localization', initialize)
     monkeypatch.setattr(module, 'activate_prepared', activate)
+    node = Mock()
+    node.max_amcl_covariance = (.01, .01)
+    node.service_contract = {'max_yaw_covariance_rad2': .03}
     with pytest.raises(RuntimeError, match='fresh AMCL pose missing'):
-        module.initialize_and_activate(Mock(), initial_pose())
+        module.initialize_and_activate(node, initial_pose())
     activate.assert_not_called()
 
 

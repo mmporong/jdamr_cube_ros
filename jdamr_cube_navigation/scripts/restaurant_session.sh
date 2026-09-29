@@ -9,6 +9,7 @@ PARAMS_FILE="${JDAMR_RESTAURANT_PARAMS:-}"
 PRECISION_PARKING=false
 PREPARE_ONLY=false
 USE_COMPOSITION=true
+DISCOVERY_RANGE=SUBNET
 
 usage() {
   cat <<'EOF'
@@ -18,6 +19,7 @@ usage() {
                               [--precision-parking]
                               [--prepare-only]
                               [--use-composition true|false]
+                              [--discovery-range LOCALHOST|SUBNET]
   restaurant_session.sh stop
 
 start는 센서가 이미 실행 중인 Pi에서 식당 서비스용 Nav2 서버만 시작한다.
@@ -26,6 +28,8 @@ start는 센서가 이미 실행 중인 Pi에서 식당 서비스용 Nav2 서버
 --prepare-only는 지도·AMCL만 활성화하고 Nav2 이동 실행부는 미활성 상태로 준비한다.
 --use-composition은 Nav2 서버 실행 방식을 선택한다. 기본값은 완주 검증에 사용한 true이며,
 false는 독립 프로세스 비교 진단용 폴백이다.
+--discovery-range는 베이스·카메라·관측기·실행기와 동일하게 설정해야 한다.
+LOCALHOST에서는 다른 PC의 ROS 구독이 연결되지 않는다.
 배치 후 위치추정 확인을 마친 뒤 navigation lifecycle startup이 필요하다.
 
 기본값:
@@ -72,7 +76,7 @@ load_ros_environment() {
 
   export ROS_DOMAIN_ID=12
   export ROS_LOCALHOST_ONLY=0
-  export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+  export ROS_AUTOMATIC_DISCOVERY_RANGE="$DISCOVERY_RANGE"
   export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 }
 
@@ -104,7 +108,7 @@ reject_conflicting_services() {
 check_ros_graph_and_sensors() {
   local nodes topics conflict missing="" topic
   if ! nodes=$(timeout 15 ros2 node list --no-daemon --spin-time 2 2>/dev/null); then
-    die "ROS 노드 목록 조회 실패: domain 12/SUBNET 센서 연결을 확인할 것"
+    die "ROS 노드 목록 조회 실패: domain 12/$DISCOVERY_RANGE 센서 연결을 확인할 것"
   fi
   conflict=$(grep -E \
     '(^|/)(amcl|map_server|controller_server|planner_server|bt_navigator|behavior_server|waypoint_follower|velocity_smoother|collision_monitor|slam_toolbox|lifecycle_manager_localization|lifecycle_manager_navigation)$|cartographer' \
@@ -163,7 +167,7 @@ session_identity() {
     "${BASH_SOURCE[0]}") || \
     die "세션 설정 해시 계산 실패"
   digest=$(printf '%s\0' "$WORKSPACE" "$REGISTRY" "$PARAMS_FILE" \
-    "$PRECISION_PARKING" "$PREPARE_ONLY" "$USE_COMPOSITION" \
+    "$PRECISION_PARKING" "$PREPARE_ONLY" "$USE_COMPOSITION" "$DISCOVERY_RANGE" \
     "$asset_hashes" | sha256sum) || \
     die "세션 식별자 계산 실패"
   printf '%s' "${digest%% *}"
@@ -209,7 +213,7 @@ run_navigation() {
     "precision_parking:=$PRECISION_PARKING" \
     "parking_contract:=$parking_contract" \
     use_box_observer:=false \
-    discovery_range:=SUBNET
+    "discovery_range:=$DISCOVERY_RANGE"
 }
 
 start_navigation() {
@@ -252,6 +256,7 @@ start_navigation() {
     /bin/bash "$script_path" __run \
     --workspace "$WORKSPACE" --registry "$REGISTRY" --params-file "$PARAMS_FILE" \
     --use-composition "$USE_COMPOSITION" \
+    --discovery-range "$DISCOVERY_RANGE" \
     "${precision_argument[@]}" "${prepare_argument[@]}" \
     || die "$UNIT 기동 요청 실패"
 
@@ -308,6 +313,14 @@ case "$COMMAND" in
           case "$2" in
             true|false) USE_COMPOSITION="$2" ;;
             *) die "--use-composition 값은 true 또는 false여야 한다: $2" ;;
+          esac
+          shift 2
+          ;;
+        --discovery-range)
+          [ $# -ge 2 ] || die "$1 값이 필요하다"
+          case "$2" in
+            LOCALHOST|SUBNET) DISCOVERY_RANGE="$2" ;;
+            *) die "--discovery-range 값은 LOCALHOST 또는 SUBNET이어야 한다: $2" ;;
           esac
           shift 2
           ;;
