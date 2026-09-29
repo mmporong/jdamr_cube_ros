@@ -1,22 +1,31 @@
 """Verify bounded table transit and face-based parking without hardware."""
 
 from copy import deepcopy
+import inspect
 import json
 import math
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped
 from jdamr_cube_navigation import box_service
 from jdamr_cube_navigation.box_service import BoxServiceRoute, parse_args
+from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
+from nav2_msgs.action import ComputePathThroughPoses
 import pytest
+from rclpy.task import Future
+from rclpy.time import Time
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PARAMS = ROOT / 'jdamr_cube_navigation/config/new_base_nav2_params.yaml'
 GEOMETRY = ROOT / 'jdamr_cube_description/config/new_base_geometry.yaml'
+BOX_CONTRACT = ROOT / 'jdamr_cube_navigation/config/box_parking_contract.yaml'
 
 
 @pytest.fixture
@@ -412,8 +421,10 @@ def test_wrong_lidar_frame_is_rejected_before_witness(monkeypatch):
     with pytest.raises(RuntimeError, match='measured laser_link'):
         node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
     box_service.witness_box_face_with_lidar.assert_not_called()
-    assert node.emit.call_args.args == ('box_lidar_witness_rejected',)
-    assert node.emit.call_args.kwargs['scan_frame'] == 'base_link'
+    rejected = [call for call in node.emit.call_args_list
+                if call.args == ('box_lidar_witness_rejected',)]
+    assert rejected
+    assert rejected[-1].kwargs['scan_frame'] == 'base_link'
 
 
 def test_nonfinite_scan_scalar_keeps_original_rejection_reason(monkeypatch):
@@ -428,8 +439,10 @@ def test_nonfinite_scan_scalar_keeps_original_rejection_reason(monkeypatch):
                        match='angle_min must be finite') as caught:
         node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
     assert caught.value.retryable is False
-    assert node.emit.call_count == 1
-    evidence = node.emit.call_args.kwargs
+    rejected = [call for call in node.emit.call_args_list
+                if call.args == ('box_lidar_witness_rejected',)]
+    assert len(rejected) == 1
+    evidence = rejected[0].kwargs
     assert evidence['scan_angle_min'] is None
     assert evidence['reason'] == 'angle_min must be finite'
     json.dumps(evidence, allow_nan=False)
@@ -456,7 +469,8 @@ def test_fused_lidar_face_recomputes_final_goal_and_preserves_provenance(
     assert result['lidar_witness']['support_count'] == 8
     assert result['candidate_trial'] is True
     assert result['physical_accuracy'] == 'NOT_EXTERNALLY_MEASURED'
-    node.emit.assert_called_once()
+    assert [call.args for call in node.emit.call_args_list].count(
+        ('box_target_observed',)) == 1
 
 
 def test_observation_consumer_requires_explicit_candidate(monkeypatch):
@@ -627,3 +641,234 @@ def test_live_precision_profile_matches_generated_candidate(monkeypatch, polygon
         else nested(name) for name in names])
     assert not node._precision_collision_ready(geometry)
     node._wait = original_wait
+
+
+def _done(value):
+    future = Future()
+    future.set_result(value)
+    return future
+
+
+def _transit_planner(node, end_xy):
+    """Answer route preflight with one successful plan that ends at end_xy."""
+    result = ComputePathThroughPoses.Result()
+    start, finish = PoseStamped(), PoseStamped()
+    finish.pose.position.x, finish.pose.position.y = end_xy
+    result.path.poses = [start, finish]
+    wrapped = SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED, result=result)
+    node.compute = Mock()
+    node.compute.wait_for_server.return_value = True
+    node.compute.send_goal_async.return_value = _done(SimpleNamespace(
+        accepted=True, get_result_async=lambda: _done(wrapped)))
+    node.navigation_profile = 'obstacle_base_candidate'
+    node.get_logger = lambda: Mock()
+    node.get_clock = lambda: SimpleNamespace(now=lambda: Time(nanoseconds=10 ** 12))
+    route = box_service.load_route('route')
+    route['waypoints'] = [
+        {'id': 'home_exit', 'x': -0.255, 'y': 0.2, 'yaw': 1.61},
+        {'id': 'table_01_observation', 'x': 1.45, 'y': 0.25, 'yaw': 0.0}]
+    del node.preflight
+    return route
+
+
+def test_t17_box_preflight_rejects_transit_end_shortfall(mission):
+    """Reject a transit plan that ends 0.26 m short of the observation pose."""
+    _transit_planner(mission, (1.19, 0.25))
+    result = invoke(mission, execute=False)
+    failed = [call.kwargs for call in mission.emit.call_args_list
+              if call.args == ('failed',) and call.kwargs.get('phase') == 'preflight']
+    assert result is False and failed, (
+        f'HEADFAIL[T17]: 0.26 m transit end shortfall passed preflight ({result})')
+    assert failed[0]['end_error_m'] == pytest.approx(0.26)
+    mission.execute.assert_not_called()
+
+
+def test_t17_corridor_preflight_keeps_same_end_shortfall(mission):
+    """Keep the base corridor preflight verdict for the same short plan."""
+    route = _transit_planner(mission, (1.19, 0.25))
+    mission.config, mission.waypoints = route, route['waypoints']
+    assert CorridorRoute.preflight(mission) is True
+
+
+def _latency_limited(reason='stale_or_future_depth'):
+    error = box_service.BoxObservationUnavailable(reason, retryable=False)
+    error.latency_limited = True
+    return error
+
+
+def _search(node):
+    return node._observe_with_search(
+        {}, 0.065, 0.45, (1, 0), 0.6, phase='face_alignment', search_enabled=True,
+        search_budget=box_service.BoxSearchBudget())
+
+
+@pytest.mark.parametrize('case', ['ok', 'twice', 'stop'])
+def test_t20_latency_reobserve(mission, case):
+    """Re-observe one latency-limited window in place; never after a stop."""
+    target = mission.observe_target.return_value
+    if case == 'ok':
+        mission.observe_target.side_effect = [_latency_limited(), target]
+        try:
+            result = _search(mission)
+        except box_service.BoxObservationUnavailable as error:
+            raise AssertionError(
+                f'HEADFAIL[T20]: latency-limited window was not re-observed: '
+                f'{error.reason}') from error
+        assert result is target
+        assert mission.observe_target.call_count == 2
+        assert [call.args for call in mission.emit.call_args_list].count(
+            ('box_observation_latency_reobserve',)) == 1
+    elif case == 'twice':
+        mission.observe_target.side_effect = [_latency_limited(), _latency_limited()]
+        with pytest.raises(box_service.BoxObservationUnavailable) as caught:
+            _search(mission)
+        assert mission.observe_target.call_count == 2, (
+            f'HEADFAIL[T20]: observations={mission.observe_target.call_count}')
+        assert caught.value.retryable is False
+    else:
+        mission.stop_requested = True
+        mission.observe_target.side_effect = [
+            box_service.BoxObservationUnavailable('no_stable_box', retryable=True), target]
+        try:
+            _search(mission)
+            raised = None
+        except box_service.BoxObservationUnavailable as error:
+            raised = error
+        assert (mission.search_rotation.call_count == 0
+                and mission.observe_target.call_count == 1), (
+            f'HEADFAIL[T20]: stop request rotated={mission.search_rotation.call_count} '
+            f'observed={mission.observe_target.call_count}')
+        assert raised is not None
+        failed = [call.kwargs for call in mission.emit.call_args_list
+                  if call.args == ('box_observation_failed',)]
+        assert failed and failed[-1]['stop_requested'] is True
+    mission.search_rotation.assert_not_called()
+
+
+RETURN_ARGS = [
+    '--registry', '/r', '--approach-route', '/a', '--camera-mount', '/c',
+    '--geometry', '/g', '--log', '/l', '--parking-contract', '/p',
+    '--table-id', 'table_01', '--region-xy', '1.896', '0.303',
+]
+
+
+def _parse_new(tag, argv):
+    try:
+        return parse_args(argv)
+    except SystemExit as error:
+        raise AssertionError(f'NEW[{tag}]: parser rejected {argv[-4:]}') from error
+
+
+def test_t28_return_cli_requires_explicit_timeouts():
+    """Require --execute and an explicit return budget for the home return."""
+    execute = [*RETURN_ARGS, '--execute', '--candidate-trial']
+    args = _parse_new('T28', [*execute, '--return-home', '--return-timeout-s', '500'])
+    assert args.return_home is True and args.return_timeout_s == 500.0
+    assert args.task_timeout_s == 240.0
+    assert _parse_new('T28', [*execute, '--task-timeout-s', '300']).task_timeout_s == 300.0
+    for invalid in ([*execute, '--return-home'],
+                    [*RETURN_ARGS, '--return-home', '--return-timeout-s', '500'],
+                    [*execute, '--return-home', '--return-timeout-s', 'nan'],
+                    [*execute, '--task-timeout-s', '0']):
+        with pytest.raises(SystemExit):
+            parse_args(invalid)
+
+
+def test_t28_failed_visit_never_returns_home(monkeypatch, tmp_path):
+    """Dwell and return only after a confirmed approach; exit 0 needs every step."""
+    for name in ('registry', 'mount', 'geometry', 'route'):
+        (tmp_path / f'{name}.yaml').write_text('{}\n')
+    argv = ['--registry', str(tmp_path / 'registry.yaml'),
+            '--approach-route', str(tmp_path / 'route.yaml'),
+            '--camera-mount', str(tmp_path / 'mount.yaml'),
+            '--geometry', str(tmp_path / 'geometry.yaml'),
+            '--parking-contract', str(BOX_CONTRACT), '--table-id', 'table_01',
+            '--region-xy', '1.896', '0.303', '--execute', '--candidate-trial',
+            '--return-home', '--return-timeout-s', '500']
+    _parse_new('T28', [*argv, '--log', str(tmp_path / 'probe.jsonl')])
+    monkeypatch.setattr(box_service, 'load_registry', lambda _path: {'home': {}})
+    monkeypatch.setattr(box_service.rclpy, 'init', lambda **_kwargs: None)
+    monkeypatch.setattr(box_service.rclpy, 'shutdown', lambda **_kwargs: None)
+    created = []
+
+    class Route:
+        visit_ok = False
+
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self.visit_observed_box = Mock(return_value=Route.visit_ok)
+            self.dwell_and_return_home = Mock(return_value=True)
+            self.go_home = Mock(return_value=True)
+            self.finish_navigation = Mock(return_value=True)
+            self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+            created.append(self)
+
+    monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
+    for visit_ok, expected in ((False, 1), (True, 0)):
+        Route.visit_ok = visit_ok
+        log = tmp_path / f'visit_{visit_ok}.jsonl'
+        assert box_service.main([*argv, '--log', str(log)]) == expected
+    failed, succeeded = created
+    failed.dwell_and_return_home.assert_not_called()
+    failed.go_home.assert_not_called()
+    succeeded.dwell_and_return_home.assert_called_once_with(5.0, 500.0)
+    assert succeeded.visit_observed_box.call_args.kwargs['task_timeout_s'] == 240.0
+    assert succeeded.kwargs['home_contract']['xy_tolerance_m'] == 0.05
+
+
+def test_t28_final_execute_releases_task_deadline(mission):
+    """Release the task deadline after the final execute, before final capture."""
+    assert 'task_timeout_s' in inspect.signature(
+        BoxServiceRoute.visit_observed_box).parameters, 'NEW[T28]: no task_timeout_s'
+    seen = []
+    mission.execute.side_effect = lambda **_kwargs: seen.append(
+        ('execute', mission.run_deadline_s)) or True
+    poses = iter([((0, 0, 0), {}), ((0.885, 0, 0), {})])
+
+    def capture(*_args, **_kwargs):
+        seen.append(('capture', getattr(mission, 'run_deadline_s', None)))
+        return next(poses)
+
+    mission.capture_stationary_pose = Mock(side_effect=capture)
+    started_s = time.monotonic()
+    assert mission.visit_observed_box(
+        'route', {}, {'front_to_wheel_axis': {'value': 0.065},
+                      'wheel_outer_width': {'value': 0.540}},
+        'table_01', (1, 0), 0.6, execute=True, candidate_trial=True,
+        task_timeout_s=300.0)
+    assert [kind for kind, _deadline in seen] == [
+        'capture', 'execute', 'execute', 'execute', 'capture']
+    deadlines = [deadline for kind, deadline in seen if kind == 'execute']
+    assert deadlines[0] - started_s == pytest.approx(300.0, abs=5.0)
+    assert seen[-1] == ('capture', None)
+    assert mission.selected_pose['id'] == 'final_approach'
+
+
+def test_l9_home_contract_load_failure_uses_failure_path(monkeypatch, tmp_path, capsys):
+    """Report an invalid dock contract through main's JSON failure path."""
+    for name in ('registry', 'mount', 'geometry', 'route'):
+        (tmp_path / f'{name}.yaml').write_text('{}\n')
+    share = tmp_path / 'share'
+    (share / 'config').mkdir(parents=True)
+    (share / 'config/parking_contract.yaml').write_text('{}\n')
+    argv = ['--registry', str(tmp_path / 'registry.yaml'),
+            '--approach-route', str(tmp_path / 'route.yaml'),
+            '--camera-mount', str(tmp_path / 'mount.yaml'),
+            '--geometry', str(tmp_path / 'geometry.yaml'),
+            '--parking-contract', str(BOX_CONTRACT), '--table-id', 'table_01',
+            '--region-xy', '1.896', '0.303', '--log', str(tmp_path / 'run.jsonl')]
+    monkeypatch.setattr(box_service, 'get_package_share_directory', lambda _name: str(share))
+    monkeypatch.setattr(box_service, 'load_registry', lambda _path: {'home': {}})
+    monkeypatch.setattr(box_service.rclpy, 'init', lambda **_kwargs: None)
+    monkeypatch.setattr(box_service.rclpy, 'shutdown', lambda **_kwargs: None)
+    created = []
+    monkeypatch.setattr(box_service, 'BoxServiceRoute',
+                        lambda *args, **kwargs: created.append(kwargs))
+    try:
+        code = box_service.main(argv)
+    except ValueError as error:
+        raise AssertionError(f'REVIEW[L9]: dock contract error escaped main: {error}') from error
+    assert code == 1
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(lines[-1])['failed'].startswith('parking contract keys invalid')
+    assert created == []

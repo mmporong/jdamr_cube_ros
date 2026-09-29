@@ -55,6 +55,9 @@ GOAL_STATUS_NAMES = {
     GoalStatus.STATUS_CANCELED: 'STATUS_CANCELED',
     GoalStatus.STATUS_ABORTED: 'STATUS_ABORTED',
 }
+# A transit goal is judged by the position/general goal checkers' xy
+# tolerance; test_t13 pins this value to new_base_nav2_params.yaml.
+TRANSIT_PLAN_END_TOLERANCE_M = 0.15
 
 
 def _expanded_path(value, parent=None):
@@ -671,6 +674,8 @@ class CorridorRoute(Node):
         self.get_logger().info(
             f'route preflight passed: poses={len(result.path.poses)} '
             f'length={length:.3f}m')
+        end = result.path.poses[-1].pose.position
+        self.preflight_path_end_xy = (end.x, end.y)
         return True
 
     def _parking_parameters_ready(self, reverse=False):
@@ -773,9 +778,10 @@ class CorridorRoute(Node):
             'sample_age_s': max(ages_s),
         }
 
-    def _verify_parking_stop(self, index, waypoint, handle, hold_s=None):
+    def _verify_parking_stop(self, index, waypoint, handle, hold_s=None,
+                             contract=None):
         """Confirm a bounded stationary pose window after Nav2 succeeds."""
-        contract = dict(self.parking_contract)
+        contract = dict(contract or self.parking_contract)
         if hold_s is not None:
             if (isinstance(hold_s, bool) or not isinstance(hold_s, (int, float))
                     or not math.isfinite(hold_s) or hold_s <= 0.0):
@@ -786,6 +792,7 @@ class CorridorRoute(Node):
         deadline_s = time.monotonic() + contract['observation_timeout_s']
         last_stamp = None
         motion_revision = self.parking_motion_revision
+        input_recovery_reason = None
         result = {'confirmed': False, 'reason': 'NO_FRESH_OBSERVATION',
                   'physical_accuracy': 'NOT_MEASURED'}
         while time.monotonic() < deadline_s and not self.stop_requested:
@@ -799,7 +806,19 @@ class CorridorRoute(Node):
                 gate = ParkingHold(contract)
                 motion_revision = self.parking_motion_revision
             if not self._navigation_ready(require_fresh_amcl=False):
-                result['reason'] = self._guard_failure(False)
+                reason = self._guard_failure(False)
+                # One recoverable input gap restarts the whole stationary
+                # window without a command; nothing observed before it counts.
+                if (input_recovery_reason is None and not self.stop_requested
+                        and self._input_gap_recoverable(reason)
+                        and self._wait_for_input_recovery(reason)):
+                    input_recovery_reason = reason
+                    gate = ParkingHold(contract)
+                    deadline_s = time.monotonic() + contract['observation_timeout_s']
+                    last_stamp = None
+                    motion_revision = self.parking_motion_revision
+                    continue
+                result['reason'] = reason
                 break
             if self.parking_odom is None:
                 continue
@@ -827,12 +846,12 @@ class CorridorRoute(Node):
                 self._route_event(
                     'parking_estimate_confirmed', index, handle,
                     observation_ages_s=self.parking_observation_diagnostics,
-                    **result)
+                    input_recovery_reason=input_recovery_reason, **result)
                 return True
         self._route_event(
             'parking_not_confirmed', index, handle,
             observation_ages_s=self.parking_observation_diagnostics,
-            **result)
+            input_recovery_reason=input_recovery_reason, **result)
         return False
 
     def _feedback(self, route_index, message):

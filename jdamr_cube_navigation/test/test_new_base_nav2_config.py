@@ -1151,3 +1151,68 @@ def test_explicit_scan_source_is_allowed_for_safety_polygons(tmp_path):
     valid = tmp_path / 'explicit_polygon_sources.yaml'
     valid.write_text(yaml.safe_dump(document), encoding='utf-8')
     assert _load_validator(valid)(None) == []
+
+
+def test_t12_amcl_quiet_constants_match_amcl_update_rule():
+    """Pin the quiet AMCL exemption to AMCL's own update thresholds."""
+    from jdamr_cube_navigation import restaurant_service
+    amcl = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))['amcl']['ros__parameters']
+    axis_m = getattr(restaurant_service, 'AMCL_QUIET_MAX_AXIS_M', None)
+    yaw_rad = getattr(restaurant_service, 'AMCL_QUIET_MAX_YAW_RAD', None)
+    assert axis_m is not None and yaw_rad is not None, 'NEW[T12]: quiet AMCL constants'
+    assert axis_m == amcl['update_min_d']
+    assert yaw_rad == amcl['update_min_a']
+    assert amcl['resample_interval'] == 1
+
+
+def test_t13_transit_end_tolerance_matches_goal_checkers():
+    """Pin the transit plan-end tolerance to the transit goal checkers."""
+    from jdamr_cube_navigation import corridor_route
+    controller = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))[
+        'controller_server']['ros__parameters']
+    tolerance_m = getattr(corridor_route, 'TRANSIT_PLAN_END_TOLERANCE_M', None)
+    assert tolerance_m is not None, 'NEW[T13]: TRANSIT_PLAN_END_TOLERANCE_M'
+    assert tolerance_m == controller['position_goal_checker']['xy_goal_tolerance']
+    assert tolerance_m == controller['general_goal_checker']['xy_goal_tolerance']
+
+
+def test_t29_escape_constants_match_geometry():
+    """Derive the box escape clearance, excluded band and path contract."""
+    from jdamr_cube_navigation import box_service
+    from jdamr_cube_navigation.parking import MAXIMUM_CONTRACT_VALUES
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    clearance_m = getattr(box_service, 'ESCAPE_CLEARANCE_M', None)
+    exclude_m = getattr(box_service, 'ESCAPE_VALIDATION_EXCLUDE_M', None)
+    contract = getattr(box_service, 'ESCAPE_PATH_CONTRACT', None)
+    assert None not in (clearance_m, exclude_m, contract), 'NEW[T29]: escape constants'
+    rotation = yaml.safe_load(document['collision_monitor']['ros__parameters'][
+        'StopZone']['rotation']['points'])
+    assert max(math.hypot(*point) for point in rotation) + 0.1 <= clearance_m
+    resolutions = {document[name][name]['ros__parameters']['resolution']
+                   for name in ('global_costmap', 'local_costmap')}
+    assert resolutions == {0.05}
+    resolution_m = resolutions.pop()
+    assert exclude_m == pytest.approx(
+        math.ceil((math.sqrt(2.0) * resolution_m + 0.01) / 0.025) * 0.025)
+    assert exclude_m == pytest.approx(0.10)
+    assert contract == {
+        'xy_tolerance_m': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
+        'yaw_tolerance_rad': math.radians(MAXIMUM_CONTRACT_VALUES['yaw_tolerance_deg'])}
+
+
+def test_t30_observer_timing_matches_provenance():
+    """Pin the observer silence threshold to its recorded status timing."""
+    from jdamr_cube_navigation import box_service
+    provenance = yaml.safe_load((
+        ROOT / 'jdamr_cube_navigation/evaluation/depth_box_parking_provenance.yaml'
+    ).read_text(encoding='utf-8'))
+    timing = provenance['measurements'].get('observer_status_timing_20260929')
+    silent_s = getattr(box_service, 'OBSERVER_SILENT_S', None)
+    assert timing is not None and silent_s is not None, 'NEW[T30]: observer timing'
+    assert timing['unit'] == 's'
+    assert timing['value'] < silent_s
+    assert timing['derived']['observer_silent_s'] == silent_s
+    observer = yaml.safe_load((
+        ROOT / 'jdamr_cube_navigation/config/depth_box_parking.yaml'
+    ).read_text(encoding='utf-8'))['jdamr_depth_box_parking']['ros__parameters']
+    assert isinstance(observer['stable_frames'], int) and observer['stable_frames'] >= 1

@@ -1,6 +1,7 @@
 """Exercise service routing with ROS messages and in-memory action peers."""
 
 import importlib.util
+import inspect
 import io
 import json
 import math
@@ -13,7 +14,7 @@ from geometry_msgs.msg import PoseStamped, TransformStamped
 from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import (
-    BLOCKED_PLAN_CODES, BoxDwell, load_service_contract, parse_args,
+    BLOCKED_PLAN_CODES, BoxDwell, load_service_contract, main, parse_args,
     select_destination, ServiceRoute,
 )
 from jdamr_cube_navigation.service_destinations import route_config, taught_pose
@@ -23,6 +24,7 @@ from nav_msgs.msg import Path as RosPath
 import pytest
 from rclpy.parameter import Parameter
 from rclpy.task import Future
+from rclpy.time import Time
 import yaml
 
 
@@ -1110,6 +1112,8 @@ def test_alternate_selection_retains_waypoints_and_gap_evidence(execute):
     failed.error_code = ComputePathThroughPoses.Result.GOAL_OCCUPIED
     successful = ComputePathThroughPoses.Result()
     successful.path.poses = [PoseStamped()]
+    successful.path.poses[-1].pose.position.x = 3.0
+    successful.path.poses[-1].pose.position.y = 4.0
     node.compute = Mock()
     node.compute.send_goal_async.side_effect = [
         done(SimpleNamespace(accepted=True, get_result_async=lambda: done(
@@ -1675,3 +1679,183 @@ def test_service_launch_keeps_box_observer_explicit():
         if isinstance(action, DeclareLaunchArgument)
         and action.name == 'use_box_observer')
     assert declaration.default_value[0].text == 'false'
+
+
+PLANNED_POSE = {'id': 'main', 'x_m': 1.0, 'y_m': 2.0, 'yaw_rad': 0.4,
+                'approach_offset_m': 0.5}
+
+
+def _planned_route(end_xy, contract='config/parking_contract.yaml'):
+    """Run the real plan_pose against a planner path ending at end_xy."""
+    node = route()
+    del node._pose
+    node.parking_contract = load_parking_contract(PACKAGE / contract)
+    node.get_clock = lambda: SimpleNamespace(now=lambda: Time(nanoseconds=10 ** 12))
+    result = ComputePathThroughPoses.Result()
+    start, finish = PoseStamped(), PoseStamped()
+    finish.pose.position.x, finish.pose.position.y = end_xy
+    result.path.poses = [start, finish]
+    wrapped = SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED, result=result)
+    node.compute = Mock()
+    node.compute.wait_for_server.return_value = True
+    node.compute.send_goal_async.return_value = done(SimpleNamespace(
+        accepted=True, get_result_async=lambda: done(wrapped)))
+    return node
+
+
+def test_t16a_plan_end_shortfall_is_not_success():
+    """Reject an error-free plan that ends 0.15 m short of the final goal."""
+    planned = _planned_route((0.85, 2.0)).plan_pose(PLANNED_POSE)
+    assert planned['ok'] is False, f'HEADFAIL[T16a]: truncated plan accepted: {planned}'
+    assert planned['reason'] == 'goal_not_reachable_within_tolerance'
+    assert planned['end_error_m'] == pytest.approx(0.15)
+    assert planned['end_tolerance_m'] == pytest.approx(0.05)
+
+
+def test_t16b_nonfinite_plan_end_is_not_success():
+    """Reject a non-finite plan end and keep the result strict JSON."""
+    planned = _planned_route((math.nan, 2.0)).plan_pose(PLANNED_POSE)
+    assert planned['ok'] is False, f'HEADFAIL[T16b]: non-finite plan end accepted: {planned}'
+    assert planned['end_error_m'] is None
+    json.dumps(planned, allow_nan=False)
+
+
+def test_t16c_exact_plan_end_remains_success():
+    """Keep the bench-proven exact plan end successful."""
+    planned = _planned_route((1.0, 2.0)).plan_pose(PLANNED_POSE)
+    assert planned['ok'] is True
+    assert planned['reason'] == 'planned'
+
+
+def test_t16d_alignment_plan_end_tolerance():
+    """Judge intermediate alignment plans with the 0.05 m alignment checker."""
+    assert 'end_tolerance_m' in inspect.signature(ServiceRoute.plan_pose).parameters, (
+        'NEW[T16d]: plan_pose has no end_tolerance_m')
+    contract = 'config/box_parking_contract.yaml'
+    rejected = _planned_route((0.94, 2.0), contract).plan_pose(
+        PLANNED_POSE, single=True, end_tolerance_m=0.05)
+    accepted = _planned_route((0.96, 2.0), contract).plan_pose(
+        PLANNED_POSE, single=True, end_tolerance_m=0.05)
+    assert rejected['ok'] is False and rejected['end_error_m'] == pytest.approx(0.06)
+    assert accepted['ok'] is True and accepted['end_error_m'] == pytest.approx(0.04)
+
+
+def test_t18_end_point_failure_tries_alternate():
+    """Try the registered alternate when the first goal cell is unreachable."""
+    poses = [{'id': 'main'}, {'id': 'alternate'}, {'id': 'not_allowed'}]
+    planner = Mock(side_effect=[
+        {'ok': False, 'error_code': 0, 'reason': 'goal_not_reachable_within_tolerance',
+         'end_error_m': 0.15, 'end_tolerance_m': 0.05},
+        {'ok': True, 'error_code': 0, 'reason': 'planned'}])
+    chosen, attempts = select_destination(poses, planner)
+    assert planner.call_count == 2, 'HEADFAIL[T18]: alternate not attempted'
+    assert chosen == poses[1] and len(attempts) == 2
+
+
+def test_t14_parking_contract_option_is_home_only():
+    """Accept --parking-contract for home only, never for table or serve commands."""
+    base = ['service', 'home', '--registry', '/tmp/r.yaml', '--log', '/tmp/h.jsonl']
+    try:
+        args = parse_args([*base, '--parking-contract', '/tmp/box.yaml'])
+    except SystemExit as error:
+        raise AssertionError('NEW[T14]: home rejects --parking-contract') from error
+    assert args.parking_contract == Path('/tmp/box.yaml')
+    assert parse_args(base).parking_contract is None
+    for command in (['go', '--table-id', 'table_01'], ['serve', '--table-id', 'table_01'],
+                    ['roundtrip', '--table-id', 'table_01'], ['teach-home']):
+        with pytest.raises(SystemExit):
+            parse_args(['service', command[0], '--registry', '/tmp/r.yaml',
+                        '--log', '/tmp/x.jsonl', *command[1:],
+                        '--parking-contract', '/tmp/box.yaml'])
+
+
+def test_t14b_home_main_loads_session_and_home_contracts(monkeypatch, tmp_path):
+    """Use the session contract for home motion and keep the dock contract apart."""
+    argv = ['service', 'home', '--registry', str(tmp_path / 'registry.yaml'),
+            '--log', str(tmp_path / 'home.jsonl'), '--execute',
+            '--parking-contract', str(PACKAGE / 'config/box_parking_contract.yaml')]
+    try:
+        parse_args(argv)
+    except SystemExit as error:
+        raise AssertionError('NEW[T14b]: home rejects --parking-contract') from error
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    monkeypatch.setattr(module + 'load_registry', lambda _path: {'home': {}})
+    monkeypatch.setattr(module + 'get_package_share_directory', lambda _name: str(PACKAGE))
+    monkeypatch.setattr(module + 'rclpy.init', lambda **_kwargs: None)
+    monkeypatch.setattr(module + 'rclpy.shutdown', lambda **_kwargs: None)
+    created = []
+
+    class Route:
+        def __init__(self, _registry, contract, _stream, home_contract=None):
+            self.contract, self.home_contract = contract, home_contract
+            self.go_home = Mock(return_value=True)
+            self.finish_navigation = Mock(return_value=True)
+            self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+            created.append(self)
+
+    monkeypatch.setattr(module + 'ServiceRoute', Route)
+    main(argv)
+    (node,) = created
+    assert node.contract['xy_tolerance_m'] == 0.01
+    assert node.home_contract['xy_tolerance_m'] == 0.05
+    node.go_home.assert_called_once()
+
+
+def test_t15_precision_params_match_box_contract_only(monkeypatch):
+    """Match live precision parking parameters to the box contract, not home."""
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'precision_contract_launch', PACKAGE / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE if name == 'jdamr_cube_navigation' else PACKAGE.parent / name))
+    monkeypatch.setattr(module, 'load_registry', lambda _: {
+        'home': {'parking_direction': 'reverse'},
+        'map': {'yaml_path': '/map.yaml'}, 'keepout': {'yaml_path': '/mask.yaml'}})
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'registry': '/registry.yaml',
+        'params_file': str(PACKAGE / 'config/new_base_nav2_params.yaml'),
+        'parking_contract': str(PACKAGE / 'config/box_parking_contract.yaml'),
+        'precision_parking': 'true'})
+    generated = Path(dict(module._configure(context)[1].launch_arguments)['params_file'])
+    try:
+        controller = yaml.safe_load(generated.read_text())['controller_server'][
+            'ros__parameters']
+    finally:
+        generated.unlink()
+    flat = {}
+
+    def flatten(prefix, value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                flatten(f'{prefix}{key}.', item)
+        else:
+            flat[prefix[:-1]] = value
+
+    flatten('', controller)
+    client = Mock()
+    client.wait_for_services.return_value = True
+    client.get_parameters.side_effect = lambda names: done(SimpleNamespace(values=[
+        Parameter('value', value=flat.get(name)).get_parameter_value() for name in names]))
+    node = route()
+    node.parking_parameters = client
+    node.parking_contract = load_parking_contract(
+        PACKAGE / 'config/box_parking_contract.yaml')
+    assert node._parking_parameters_ready(reverse=True)
+    home = load_parking_contract(PACKAGE / 'config/parking_contract.yaml')
+    node.parking_contract = home
+    assert not node._parking_parameters_ready(reverse=True)
+    assert flat['alignment_goal_checker.xy_goal_tolerance'] == home['xy_tolerance_m']
+    assert flat['alignment_goal_checker.yaw_goal_tolerance'] == pytest.approx(
+        home['yaw_tolerance_rad'])
+
+
+def test_m2_home_help_forbids_use_in_front_of_a_box(capsys):
+    """State that `home` must not start in front of a box; box_service escapes first."""
+    with pytest.raises(SystemExit):
+        parse_args(['service', 'home', '--help'])
+    text = ' '.join(capsys.readouterr().out.split())
+    assert '0.6 m' in text and 'box_service --return-home' in text, (
+        f'REVIEW[M2]: home --help lacks the box-front rule: {text}')
