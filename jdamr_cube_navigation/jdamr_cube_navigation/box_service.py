@@ -23,6 +23,48 @@ from rclpy.signals import SignalHandlerOptions
 import yaml
 
 
+SEARCH_STEP_RAD = math.radians(30.0)
+SEARCH_MAX_STEPS = 12
+SEARCH_MAX_CUMULATIVE_RAD = math.tau
+SEARCH_RECOVERABLE_REASONS = frozenset({
+    'stable detected front surface is required',
+    'LiDAR face support is below five points',
+    'LiDAR face tangent spread is too narrow',
+    'LiDAR face line residual is too large',
+    'LiDAR and depth face normals disagree',
+    'LiDAR and depth face distances disagree',
+    'observed_box_outside_selected_table_region',
+})
+
+
+class BoxObservationUnavailable(RuntimeError):
+    """Describe whether changing the camera heading may recover observation."""
+
+    def __init__(self, reason, *, retryable):
+        super().__init__(f'box observation unavailable: {reason}')
+        self.reason = reason
+        self.retryable = retryable
+
+
+class BoxSearchBudget:
+    """Issue at most one full turn as fixed, auditable search increments."""
+
+    def __init__(self):
+        self.steps_used = 0
+        self.cumulative_yaw_rad = 0.0
+
+    def next_rotation(self):
+        """Reserve the next bounded rotation, or return None when exhausted."""
+        if self.steps_used >= SEARCH_MAX_STEPS:
+            return None
+        remaining = SEARCH_MAX_CUMULATIVE_RAD - self.cumulative_yaw_rad
+        if remaining + 1e-12 < SEARCH_STEP_RAD:
+            return None
+        self.steps_used += 1
+        self.cumulative_yaw_rad += SEARCH_STEP_RAD
+        return SEARCH_STEP_RAD
+
+
 class BoxServiceRoute(ServiceRoute):
     """Keep every movement on the existing Nav2 and collision-monitor path."""
 
@@ -156,6 +198,7 @@ class BoxServiceRoute(ServiceRoute):
         cutoff_s = self.get_clock().now().nanoseconds * 1e-9
         deadline_s = time.monotonic() + timeout_s
         last_failure = 'no_stable_box'
+        last_failure_retryable = False
         rejected_observation_stamps = set()
         while not self.stop_requested and time.monotonic() < deadline_s:
             rclpy.spin_once(self, timeout_sec=0.05)
@@ -167,17 +210,28 @@ class BoxServiceRoute(ServiceRoute):
             if (not observation or observation.get('frame_id') != 'camera_color_optical_frame'
                     or not isinstance(observation.get('stamp_s'), (int, float))
                     or observation['stamp_s'] <= cutoff_s):
+                last_failure_retryable = False
                 continue
             try:
+                retryable = False
+                now_s = self.get_clock().now().nanoseconds * 1e-9
+                age_s = now_s - observation['stamp_s']
+                if (isinstance(observation['stamp_s'], bool)
+                        or not math.isfinite(age_s) or not 0.0 <= age_s <= 0.5):
+                    raise ValueError('box observation is stale or future-dated')
                 if observation.get('control_ready') is not False:
                     raise ValueError(
                         'observer must remain perception-only; candidate gate is separate')
-                now_s = self.get_clock().now().nanoseconds * 1e-9
+                retryable = (
+                    observation.get('detected') is not True
+                    or observation.get('stable') is not True
+                    or observation.get('surface_kind') != 'front')
                 target = compute_box_docking_target(
                     observation, camera_mount,
                     dict(zip(('x_m', 'y_m', 'yaw_rad'), robot_pose)),
                     requested_gap_m=gap_m, front_extent_m=front_extent_m,
                     now_s=now_s)
+                retryable = False
                 scan = self.last_scan
                 if scan is None:
                     raise ValueError('fresh LiDAR scan is required for box witness')
@@ -195,6 +249,7 @@ class BoxServiceRoute(ServiceRoute):
                     if scan_frame != 'laser_link':
                         raise ValueError(
                             'LiDAR scan frame must be measured laser_link')
+                    retryable = True
                     witness = witness_box_face_with_lidar(
                         scan.ranges, angle_min=scan.angle_min,
                         angle_increment=scan.angle_increment,
@@ -204,6 +259,8 @@ class BoxServiceRoute(ServiceRoute):
                         diagnostics=diagnostics)
                 except ValueError as error:
                     last_failure = str(error)
+                    last_failure_retryable = (
+                        retryable and last_failure in SEARCH_RECOVERABLE_REASONS)
                     observation_stamp = observation['stamp_s']
                     if observation_stamp not in rejected_observation_stamps:
                         rejected_observation_stamps.add(observation_stamp)
@@ -245,8 +302,10 @@ class BoxServiceRoute(ServiceRoute):
                     'candidate_trial': True,
                     'physical_accuracy': 'NOT_EXTERNALLY_MEASURED',
                 })
+                retryable = False
                 if self.parking_motion_revision != revision:
                     raise ValueError('robot moved during box sensor witness')
+                retryable = True
                 if math.dist(target['face_center_map_xy_m'], region_xy) > region_radius_m:
                     raise ValueError('observed_box_outside_selected_table_region')
                 self.emit('box_target_observed', observation=observation,
@@ -255,11 +314,69 @@ class BoxServiceRoute(ServiceRoute):
                 return target
             except ValueError as error:
                 last_failure = str(error)
-        raise RuntimeError(f'box observation unavailable: {last_failure}')
+                last_failure_retryable = (
+                    retryable and last_failure in SEARCH_RECOVERABLE_REASONS)
+        raise BoxObservationUnavailable(
+            last_failure, retryable=last_failure_retryable)
+
+    def _observe_with_search(self, camera_mount, front_extent_m, gap_m,
+                             region_xy, region_radius_m, *, phase,
+                             search_enabled, search_budget):
+        """Retry a recoverable initial observation after bounded Nav2 rotations."""
+        while True:
+            try:
+                return self.observe_target(
+                    camera_mount, front_extent_m, gap_m,
+                    region_xy, region_radius_m)
+            except BoxObservationUnavailable as error:
+                self.emit(
+                    'box_observation_failed', phase=phase,
+                    reason=error.reason, retryable=error.retryable,
+                    search_enabled=search_enabled,
+                    search_steps_used=search_budget.steps_used,
+                    search_cumulative_yaw_rad=(
+                        search_budget.cumulative_yaw_rad))
+                # At the close-range final approach, rotation can sweep the
+                # chassis into the box.  Only the initial face search rotates.
+                if (not search_enabled or phase != 'face_alignment'
+                        or not error.retryable):
+                    raise
+                delta_yaw_rad = search_budget.next_rotation()
+                if delta_yaw_rad is None:
+                    self.emit(
+                        'box_search_exhausted', phase=phase,
+                        reason=error.reason,
+                        search_steps_used=search_budget.steps_used,
+                        search_cumulative_yaw_rad=(
+                            search_budget.cumulative_yaw_rad))
+                    raise BoxObservationUnavailable(
+                        f'search exhausted after {search_budget.steps_used} rotations; '
+                        f'last failure: {error.reason}', retryable=False) from error
+                self.emit(
+                    'box_search_rotation_requested', phase=phase,
+                    search_step=search_budget.steps_used,
+                    delta_yaw_rad=delta_yaw_rad,
+                    search_cumulative_yaw_rad=(
+                        search_budget.cumulative_yaw_rad))
+                if not self.search_rotation(delta_yaw_rad):
+                    self.emit(
+                        'failed', phase='box_search_rotation',
+                        observation_phase=phase,
+                        reason='nav2_spin_failed',
+                        search_step=search_budget.steps_used,
+                        search_cumulative_yaw_rad=(
+                            search_budget.cumulative_yaw_rad))
+                    raise RuntimeError('box search rotation failed')
+                self.emit(
+                    'box_search_rotation_completed', phase=phase,
+                    search_step=search_budget.steps_used,
+                    search_cumulative_yaw_rad=(
+                        search_budget.cumulative_yaw_rad))
 
     def visit_observed_box(self, route_path, camera_mount, geometry,
                            table_id, region_xy, region_radius_m, execute=False,
-                           candidate_trial=False, resume_at_observation=False):
+                           candidate_trial=False, resume_at_observation=False,
+                           search=False):
         """Separate transit, face alignment and final approach in the result log."""
         if execute and candidate_trial is not True:
             raise RuntimeError(
@@ -312,13 +429,16 @@ class BoxServiceRoute(ServiceRoute):
         if resume_at_observation:
             self.emit('resume_at_reached_observation', actual_pose=list(actual),
                       transit_skipped=True, final_parking_confirmed=False)
-        elif not self.execute():
+        elif not self.execute(final_parking=False):
             self.emit('failed', phase='table_region_transit')
             return False
+        search_budget = BoxSearchBudget()
         # Face alignment happens while depth is still in its usable range.
         for phase, gap_m in (('face_alignment', 0.45), ('final_approach', 0.05)):
-            target = self.observe_target(
-                camera_mount, front_extent_m, gap_m, region_xy, region_radius_m)
+            target = self._observe_with_search(
+                camera_mount, front_extent_m, gap_m, region_xy,
+                region_radius_m, phase=phase, search_enabled=search,
+                search_budget=search_budget)
             target.update(id=phase, priority=1, approach_offset_m=0.5)
             self.emit('box_phase', phase=phase, requested_front_gap_m=gap_m)
             planned = self.plan_pose(target, single=True)
@@ -370,6 +490,12 @@ def parse_args(argv=None):
     parser.add_argument('--parking-contract', required=True, type=Path)
     parser.add_argument('--execute', action='store_true')
     parser.add_argument(
+        '--search', action='store_true',
+        help='Search for the box with at most twelve 30-degree Nav2 spins')
+    parser.add_argument(
+        '--resume-at-observation', action='store_true',
+        help='Resume from the already reached observation waypoint')
+    parser.add_argument(
         '--candidate-trial', action='store_true',
         help='Explicitly allow the nominal-camera candidate parking trial')
     args = parser.parse_args(argv)
@@ -379,6 +505,10 @@ def parse_args(argv=None):
         parser.error('table region must be finite and radius in (0, 0.6] m')
     if args.execute and not args.candidate_trial:
         parser.error('--execute requires --candidate-trial')
+    if args.search and not args.execute:
+        parser.error('--search requires --execute')
+    if args.resume_at_observation and not args.execute:
+        parser.error('--resume-at-observation requires --execute')
     return args
 
 
@@ -399,8 +529,10 @@ def main(argv=None):
                 handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
             ok = node.visit_observed_box(
                 args.approach_route, mount, geometry, args.table_id,
-                args.region_xy, args.region_radius_m, args.execute,
-                args.candidate_trial)
+                args.region_xy, args.region_radius_m, execute=args.execute,
+                candidate_trial=args.candidate_trial,
+                resume_at_observation=args.resume_at_observation,
+                search=args.search)
             return 0 if ok else 1
         except (ValueError, RuntimeError) as error:
             if node is not None:

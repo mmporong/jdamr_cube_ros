@@ -22,7 +22,7 @@ from jdamr_cube_navigation.service_destinations import (
     validate_gap_measurement,
     validate_registry, verify_identity,
 )
-from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose
+from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose, Spin
 from nav2_msgs.srv import IsPathValid
 from nav_msgs.msg import OccupancyGrid, Path as RosPath
 import rclpy
@@ -146,6 +146,10 @@ class ServiceRoute(CorridorRoute):
             CancelGoal, 'follow_path/_action/cancel_goal')
         self.query_reverse = self.create_client(
             FollowPath.Impl.GetResultService, 'follow_path/_action/get_result')
+        self.spin_search = ActionClient(self, Spin, 'spin')
+        self.cancel_spin = self.create_client(CancelGoal, 'spin/_action/cancel_goal')
+        self.query_spin = self.create_client(
+            Spin.Impl.GetResultService, 'spin/_action/get_result')
         self.validate_reverse_path = self.create_client(IsPathValid, 'is_path_valid')
         self.active_action_type = NavigateToPose
         self.amcl_yaw_covariance_rad2 = None
@@ -447,10 +451,12 @@ class ServiceRoute(CorridorRoute):
         cancel_future = None
         query_future = None
         action_type = getattr(self, 'active_action_type', NavigateToPose)
-        cancel_client = (self.cancel_reverse if action_type is FollowPath
-                         else self.cancel_navigation)
-        query_client = (self.query_reverse if action_type is FollowPath
-                        else self.query_navigation)
+        if action_type is Spin:
+            cancel_client, query_client = self.cancel_spin, self.query_spin
+        elif action_type is FollowPath:
+            cancel_client, query_client = self.cancel_reverse, self.query_reverse
+        else:
+            cancel_client, query_client = self.cancel_navigation, self.query_navigation
         while time.monotonic() < deadline_s:
             if (cancel_client.service_is_ready()
                     and (cancel_future is None or cancel_future.done())):
@@ -496,8 +502,10 @@ class ServiceRoute(CorridorRoute):
         return (super().wait_until_ready(timeout=timeout)
                 and self._departure_battery_ready())
 
-    def execute(self):
+    def execute(self, *, final_parking=True):
         """Bound transit and parking actions and retain their terminal result."""
+        if not isinstance(final_parking, bool):
+            raise ValueError('final_parking must be boolean')
         if not self.navigate.wait_for_server(timeout_sec=2.0):
             return False
         self.active_action_type = NavigateToPose
@@ -508,7 +516,7 @@ class ServiceRoute(CorridorRoute):
                 return False
             goal = NavigateToPose.Goal()
             goal.pose = self._pose(index, waypoint)
-            final = index == len(self.waypoints) - 1
+            final = final_parking and index == len(self.waypoints) - 1
             goal.behavior_tree = self.parking_behavior_tree if final else self.behavior_tree
             self.navigation_uuid = NavigateToPose.Impl.SendGoalService.Request().goal_id
             self.navigation_uuid.uuid = list(uuid.uuid4().bytes)
@@ -519,6 +527,7 @@ class ServiceRoute(CorridorRoute):
                 if not handle.accepted:
                     self.emit('failed', reason='navigation_rejected')
                     return False
+                self.active_handle = handle
                 self._route_event('accepted', index, handle)
                 self.navigation_result = handle.get_result_async()
                 while not self.navigation_result.done():
@@ -542,6 +551,85 @@ class ServiceRoute(CorridorRoute):
                 if not self.finish_navigation():
                     raise RuntimeError('navigation cancellation unconfirmed')
         return True
+
+    def _search_parameters_ready(self):
+        """Reject absent/unbounded spin profiles before sending a search action."""
+        client = AsyncParameterClient(self, 'behavior_server')
+        if not client.wait_for_services(timeout_sec=2.0):
+            return False
+        names = ['behavior_plugins', 'max_rotational_vel', 'min_rotational_vel',
+                 'local_frame', 'robot_base_frame', 'enable_stamped_cmd_vel']
+        response = self._wait(client.get_parameters(names), 2.0)
+        values = [parameter_value_to_python(v) for v in response.values]
+        if len(values) != len(names):
+            return False
+        plugins, maximum, minimum, frame, base, stamped = values
+        return (isinstance(plugins, list) and 'spin' in plugins
+                and all(not isinstance(v, bool) and isinstance(v, (int, float))
+                        and math.isfinite(v) for v in (minimum, maximum))
+                and 0.0 < minimum <= maximum <= self.parking_contract['rotate_angular_radps']
+                and frame == 'odom' and base == 'base_footprint' and stamped is False)
+
+    def search_rotation(self, delta_yaw_rad):
+        """Run one bounded Spin through the existing smoother/monitor chain."""
+        if (isinstance(delta_yaw_rad, bool)
+                or not isinstance(delta_yaw_rad, (int, float))
+                or not math.isfinite(delta_yaw_rad)
+                or not 0.0 < abs(delta_yaw_rad) <= math.pi / 6 + 1e-9):
+            raise ValueError('search rotation must be finite and at most 30 degrees')
+        if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
+                or not self._departure_battery_ready()
+                or not self.spin_search.wait_for_server(timeout_sec=2.0)
+                or not self._search_parameters_ready()):
+            self.emit('search_rotation_failed', reason='spin_profile_or_navigation_unavailable')
+            return False
+        before, _ = self.capture_stationary_pose()
+        self.active_action_type = Spin
+        goal = Spin.Goal()
+        goal.target_yaw = float(delta_yaw_rad)
+        # A search is a bounded observation maneuver, not final parking.
+        goal.time_allowance.sec = 20
+        deadline_s = time.monotonic() + goal.time_allowance.sec
+        self.navigation_uuid = Spin.Impl.SendGoalService.Request().goal_id
+        self.navigation_uuid.uuid = list(uuid.uuid4().bytes)
+        self.pending_goal = self.spin_search.send_goal_async(
+            goal, goal_uuid=self.navigation_uuid)
+        try:
+            handle = self._wait(self.pending_goal, 5.0)
+            self.pending_goal = None
+            if not handle.accepted:
+                self.emit('search_rotation_failed', reason='spin_rejected')
+                return False
+            self.active_handle = handle
+            self.navigation_result = handle.get_result_async()
+            self.emit('search_rotation_accepted', requested_yaw_rad=delta_yaw_rad,
+                      goal_uuid=bytes(self.navigation_uuid.uuid).hex())
+            while not self.navigation_result.done():
+                rclpy.spin_once(self, timeout_sec=0.05)
+                if (self.stop_requested or time.monotonic() >= deadline_s
+                        or not self._navigation_ready(require_fresh_amcl=False)):
+                    self.emit('search_rotation_failed', reason=(
+                        self._guard_failure(False) or 'operator_or_spin_timeout'))
+                    return False
+            wrapped = self.navigation_result.result()
+            self.emit('search_rotation_result', terminal_status_code=int(wrapped.status),
+                      nav2_error_code=int(wrapped.result.error_code))
+            if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
+                    or wrapped.result.error_code):
+                return False
+            after, _ = self.capture_stationary_pose()
+            turned_rad = math.atan2(math.sin(after[2] - before[2]),
+                                    math.cos(after[2] - before[2]))
+            displacement_m = math.dist(before[:2], after[:2])
+            confirmed = (abs(turned_rad - delta_yaw_rad) <= math.radians(5)
+                         and displacement_m <= 0.05)
+            self.emit('search_rotation_observed', confirmed=confirmed,
+                      requested_yaw_rad=delta_yaw_rad, observed_yaw_rad=turned_rad,
+                      displacement_m=displacement_m)
+            return confirmed
+        finally:
+            if not self.finish_navigation():
+                raise RuntimeError('search rotation cancellation unconfirmed')
 
     def capture_stationary_pose(self, timeout_s=10.0):
         """Capture fresh TF while odometry and consecutive poses remain still."""
@@ -816,6 +904,9 @@ class ServiceRoute(CorridorRoute):
 
     def _execute_reverse_path(self, path):
         """Keep reverse motion in controller → smoother → monitor → base."""
+        if not self.waypoints:
+            raise ValueError('reverse execution requires a target waypoint')
+        target_index = len(self.waypoints) - 1
         if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
                 or not self._departure_battery_ready()
                 or not self.follow_reverse.wait_for_server(timeout_sec=2.0)):
@@ -835,7 +926,8 @@ class ServiceRoute(CorridorRoute):
             self.pending_goal = None
             if not handle.accepted:
                 return False
-            self._route_event('accepted', 1, handle, motion='reverse')
+            self.active_handle = handle
+            self._route_event('accepted', target_index, handle, motion='reverse')
             self.navigation_result = handle.get_result_async()
             while not self.navigation_result.done():
                 rclpy.spin_once(self, timeout_sec=0.05)
@@ -843,14 +935,14 @@ class ServiceRoute(CorridorRoute):
                         or not self._navigation_ready(require_fresh_amcl=False)):
                     return False
             wrapped = self.navigation_result.result()
-            self._route_event('result', 1, handle, motion='reverse',
+            self._route_event('result', target_index, handle, motion='reverse',
                               terminal_status_code=int(wrapped.status),
                               nav2_error_code=int(wrapped.result.error_code))
             self.navigation_result = None
             if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
                     or wrapped.result.error_code):
                 return False
-            return self._verify_parking_stop(1, self.waypoints[-1], handle)
+            return self._verify_parking_stop(target_index, self.waypoints[-1], handle)
         finally:
             if not self.finish_navigation():
                 raise RuntimeError('reverse action cancellation unconfirmed')

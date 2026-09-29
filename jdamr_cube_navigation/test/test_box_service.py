@@ -36,6 +36,7 @@ def mission(monkeypatch):
     node._precision_collision_ready = Mock(return_value=True)
     node.capture_stationary_pose = Mock(side_effect=[((0, 0, 0), {}), ((0.885, 0, 0), {})])
     node.plan_pose = Mock(return_value={'ok': True})
+    node.search_rotation = Mock(return_value=True)
     node.confirmation = {'confirmed': True, 'physical_accuracy': 'NOT_MEASURED'}
     node.parking_contract = {'yaw_tolerance_rad': math.radians(1)}
     target = {'x_m': 0.885, 'y_m': 0.0, 'yaw_rad': 0.0,
@@ -44,13 +45,13 @@ def mission(monkeypatch):
     return node
 
 
-def invoke(node, execute=True):
+def invoke(node, execute=True, *, search=False):
     """Run the table attempt with explicit execution semantics."""
     return node.visit_observed_box(
         'route', {}, {'front_to_wheel_axis': {'value': 0.065},
                       'wheel_outer_width': {'value': 0.540}},
         'table_01', (1, 0), 0.6, execute=execute,
-        candidate_trial=execute)
+        candidate_trial=execute, search=search)
 
 
 def test_plan_only_does_not_observe_or_move(mission):
@@ -63,6 +64,8 @@ def test_plan_only_does_not_observe_or_move(mission):
 def test_transit_alignment_final_sequence(mission):
     assert invoke(mission)
     assert mission.execute.call_count == 3
+    assert [call.kwargs for call in mission.execute.call_args_list] == [
+        {'final_parking': False}, {}, {}]
     assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
     assert mission.emit.call_args.args == ('box_approach_finished',)
     assert mission.emit.call_args.kwargs['estimated_front_gap_m'] == pytest.approx(0.05)
@@ -112,6 +115,74 @@ def test_missing_face_has_no_parking_dispatch(mission):
         invoke(mission)
     assert mission.execute.call_count == 1
     mission.plan_pose.assert_not_called()
+
+
+def test_opt_in_search_rotates_once_then_resumes_parking(mission):
+    target = mission.observe_target.return_value
+    mission.observe_target.side_effect = [
+        box_service.BoxObservationUnavailable('no_stable_box', retryable=True),
+        target,
+        target,
+    ]
+    assert invoke(mission, search=True)
+    mission.search_rotation.assert_called_once_with(math.radians(30.0))
+    assert mission.execute.call_count == 3
+    assert [call.args[2] for call in mission.observe_target.call_args_list] == [
+        0.45, 0.45, 0.05]
+
+
+def test_search_budget_stops_after_one_full_turn(mission):
+    mission.observe_target.side_effect = lambda *_args, **_kwargs: (
+        _raise_observation('no_stable_box', retryable=True))
+    with pytest.raises(RuntimeError, match='search exhausted after 12 rotations'):
+        invoke(mission, search=True)
+    assert mission.search_rotation.call_count == 12
+    assert sum(call.args[0] for call in mission.search_rotation.call_args_list) == (
+        pytest.approx(math.tau))
+    exhausted = [call for call in mission.emit.call_args_list
+                 if call.args == ('box_search_exhausted',)]
+    assert len(exhausted) == 1
+    assert exhausted[0].kwargs['search_steps_used'] == 12
+    assert exhausted[0].kwargs['search_cumulative_yaw_rad'] == pytest.approx(
+        math.tau)
+
+
+def _raise_observation(reason, *, retryable):
+    raise box_service.BoxObservationUnavailable(reason, retryable=retryable)
+
+
+def test_search_does_not_rotate_for_sensor_or_geometry_failure(mission):
+    mission.observe_target.side_effect = (
+        box_service.BoxObservationUnavailable(
+            'LiDAR scan is stale or future-dated', retryable=False))
+    with pytest.raises(RuntimeError, match='LiDAR scan is stale'):
+        invoke(mission, search=True)
+    mission.search_rotation.assert_not_called()
+    failure = [call for call in mission.emit.call_args_list
+               if call.args == ('box_observation_failed',)][0]
+    assert failure.kwargs['retryable'] is False
+
+
+def test_final_approach_observation_loss_never_rotates_near_box(mission):
+    target = mission.observe_target.return_value
+    mission.observe_target.side_effect = [
+        target,
+        box_service.BoxObservationUnavailable('no_stable_box', retryable=True),
+    ]
+    with pytest.raises(RuntimeError, match='no_stable_box'):
+        invoke(mission, search=True)
+    mission.search_rotation.assert_not_called()
+    assert mission.execute.call_count == 2
+
+
+def test_failed_search_rotation_stops_without_repeating(mission):
+    mission.observe_target.side_effect = (
+        box_service.BoxObservationUnavailable('no_stable_box', retryable=True))
+    mission.search_rotation.return_value = False
+    with pytest.raises(RuntimeError, match='search rotation failed'):
+        invoke(mission, search=True)
+    mission.search_rotation.assert_called_once_with(math.radians(30.0))
+    assert mission.observe_target.call_count == 1
 
 
 def test_failed_alignment_never_dispatches_final_approach(mission):
@@ -170,6 +241,19 @@ def test_parser_requires_explicit_candidate_trial_for_execution():
     with pytest.raises(SystemExit):
         parse_args(base)
     assert parse_args([*base, '--candidate-trial']).candidate_trial is True
+
+
+@pytest.mark.parametrize('flag', ['--search', '--resume-at-observation'])
+def test_search_and_resume_require_explicit_execution(flag):
+    base = [
+        '--registry', '/r', '--approach-route', '/a', '--camera-mount', '/c',
+        '--geometry', '/g', '--log', '/l', '--parking-contract', '/p',
+        '--table-id', 'table_01', '--region-xy', '1.896', '0.303',
+    ]
+    with pytest.raises(SystemExit):
+        parse_args([*base, flag])
+    args = parse_args([*base, '--execute', '--candidate-trial', flag])
+    assert getattr(args, flag.removeprefix('--').replace('-', '_')) is True
 
 
 def test_direct_execution_requires_candidate_before_runtime_or_motion(mission):
@@ -314,8 +398,10 @@ def test_nonfinite_scan_scalar_keeps_original_rejection_reason(monkeypatch):
     monkeypatch.setattr(
         box_service.rclpy, 'spin_once',
         lambda *_a, **_k: setattr(node, 'stop_requested', True))
-    with pytest.raises(RuntimeError, match='angle_min must be finite'):
+    with pytest.raises(box_service.BoxObservationUnavailable,
+                       match='angle_min must be finite') as caught:
         node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    assert caught.value.retryable is False
     assert node.emit.call_count == 1
     evidence = node.emit.call_args.kwargs
     assert evidence['scan_angle_min'] is None
@@ -414,6 +500,59 @@ def test_stale_depth_observation_never_reaches_fusion(monkeypatch):
     with pytest.raises(RuntimeError, match='no_stable_box'):
         node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
     box_service.witness_box_face_with_lidar.assert_not_called()
+
+
+def test_fresh_no_box_status_is_retryable_by_heading_search(monkeypatch):
+    node = _observer_node(monkeypatch)
+    node.box_status.update(
+        detected=False, stable=False, surface_kind=None,
+        reason='no_box_surface_candidate')
+    box_service.compute_box_docking_target.side_effect = ValueError(
+        'stable detected front surface is required')
+    monkeypatch.setattr(
+        box_service.rclpy, 'spin_once',
+        lambda *_a, **_k: setattr(node, 'stop_requested', True))
+    with pytest.raises(box_service.BoxObservationUnavailable) as caught:
+        node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    assert caught.value.retryable is True
+    box_service.witness_box_face_with_lidar.assert_not_called()
+
+
+@pytest.mark.parametrize('reason', [
+    'angle_min must be finite', 'angle_increment must be nonzero',
+    'laser range bounds are invalid', 'ranges must not be empty',
+    'scan has no valid ranges', 'geometry is missing laser mounting data',
+])
+def test_invalid_witness_never_requests_search_rotation(monkeypatch, reason):
+    node = _observer_node(monkeypatch)
+    node.search_rotation = Mock()
+    box_service.witness_box_face_with_lidar.side_effect = ValueError(reason)
+    monkeypatch.setattr(
+        box_service.rclpy, 'spin_once',
+        lambda *_a, **_k: setattr(node, 'stop_requested', True))
+    with pytest.raises(box_service.BoxObservationUnavailable) as caught:
+        node._observe_with_search(
+            {}, 0.065, 0.45, (0.5, 0.0), 0.6,
+            phase='face_alignment', search_enabled=True,
+            search_budget=box_service.BoxSearchBudget())
+    assert caught.value.retryable is False
+    node.search_rotation.assert_not_called()
+
+
+@pytest.mark.parametrize('stamp_s', [10.01, 11.0, math.nan])
+def test_stale_or_future_no_box_does_not_enable_search(monkeypatch, stamp_s):
+    node = _observer_node(monkeypatch, observation_stamp=stamp_s)
+    node.box_status.update(detected=False, stable=False, surface_kind=None)
+    clock_values = iter((10.0, 10.7))
+    node.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=int(next(clock_values) * 1e9)))
+    monkeypatch.setattr(
+        box_service.rclpy, 'spin_once',
+        lambda *_a, **_k: setattr(node, 'stop_requested', True))
+    with pytest.raises(box_service.BoxObservationUnavailable) as caught:
+        node.observe_target({}, 0.065, 0.45, (0.5, 0.0), 0.6)
+    assert caught.value.retryable is False
+    box_service.compute_box_docking_target.assert_not_called()
 
 
 def test_scan_callback_preserves_parent_freshness_and_full_message():

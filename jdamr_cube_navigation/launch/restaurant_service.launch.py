@@ -33,14 +33,22 @@ def _configure(context):
     controller = parking_controller_overrides(document, contract)
     if (registry.get('home') or {}).get('parking_direction') == 'reverse':
         controller = reverse_controller_overrides(controller)
-        document['velocity_smoother']['ros__parameters']['min_velocity'][0] = (
-            -contract['desired_linear_mps'])
+        smoother = document['velocity_smoother']['ros__parameters']
+        smoother['min_velocity'][0] = -contract['desired_linear_mps']
+        smoother['max_velocity'][0] = min(
+            smoother['max_velocity'][0], contract['desired_linear_mps'])
     document['controller_server']['ros__parameters'] = controller
     if LaunchConfiguration('precision_parking', default='false').perform(context) == 'true':
         geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))
                          / 'config/new_base_geometry.yaml')
         document = apply_docking_stop_profile(
             document, yaml.safe_load(geometry_path.read_text(encoding='utf-8')))
+        behavior = document['behavior_server']['ros__parameters']
+        behavior.update({
+            'max_rotational_vel': contract['rotate_angular_radps'],
+            'min_rotational_vel': contract['rotate_angular_radps'] / 2.0,
+            'enable_stamped_cmd_vel': False,
+        })
     with tempfile.NamedTemporaryFile(
             mode='w', prefix='jdamr_service_', suffix='.yaml',
             encoding='utf-8', delete=False) as stream:
@@ -65,6 +73,7 @@ def _configure(context):
             'navigation_autostart': LaunchConfiguration(
                 'navigation_autostart', default='true'),
             'precision_parking': LaunchConfiguration('precision_parking', default='false'),
+            'enable_box_search': LaunchConfiguration('precision_parking', default='false'),
             'use_composition': LaunchConfiguration(
                 'use_composition', default='true'),
             'coordinated_startup': LaunchConfiguration(

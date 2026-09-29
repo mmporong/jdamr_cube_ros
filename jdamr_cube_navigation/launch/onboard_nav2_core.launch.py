@@ -203,6 +203,12 @@ def _launch_navigation(context):
     if profile in ('new_base_candidate', 'new_base_revisit_candidate'):
         _validate_new_base_params(
             context, revisit=profile == 'new_base_revisit_candidate')
+    box_search = LaunchConfiguration(
+        'enable_box_search', default='false').perform(context) == 'true'
+    if box_search and (profile not in ('new_base_candidate', 'new_base_revisit_candidate')
+                       or LaunchConfiguration('precision_parking', default='false').perform(
+                           context) != 'true'):
+        raise RuntimeError('box search requires the precision-parking new-base profile')
     map_yaml = LaunchConfiguration('map')
     keepout_mask = LaunchConfiguration('keepout_mask')
     params_file = LaunchConfiguration('params_file')
@@ -325,14 +331,17 @@ def _launch_navigation(context):
     required_nodes = list(DEFAULT_REQUIRED)
     if profile in {'obstacle_candidate', 'obstacle_base_candidate',
                    'new_base_candidate', 'new_base_revisit_candidate'}:
-        # The candidate BT calls Wait during bounded recovery.  Load only
-        # that plugin; selecting this profile must not enable spin or backup.
+        # Ordinary transit keeps Wait only. Precision service can expose Spin
+        # for explicit bounded search actions, never automatic backup/recovery.
+        behavior_options = {'behavior_plugins': ['wait'], 'use_sim_time': use_sim_time}
+        if box_search:
+            behavior_options.update(behavior_plugins=['wait', 'spin'],
+                                    spin={'plugin': 'nav2_behaviors::Spin'})
         nav2_components.insert(-1, ComposableNode(
             package='nav2_behaviors',
             plugin='behavior_server::BehaviorServer',
             name='behavior_server',
-            parameters=[configured_params, {
-                'behavior_plugins': ['wait'], 'use_sim_time': use_sim_time}],
+            parameters=[configured_params, behavior_options, {'use_sim_time': use_sim_time}],
             remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
         ))
         navigation_nodes.insert(-1, 'behavior_server')
@@ -481,6 +490,8 @@ def generate_launch_description():
     discovery_range = LaunchConfiguration('discovery_range')
     return LaunchDescription([
         DeclareLaunchArgument('precision_parking', default_value='false',
+                              choices=['true', 'false']),
+        DeclareLaunchArgument('enable_box_search', default_value='false',
                               choices=['true', 'false']),
         DeclareLaunchArgument('use_composition', default_value='true',
                               choices=['true', 'false']),

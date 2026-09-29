@@ -16,7 +16,7 @@ from jdamr_cube_navigation.restaurant_service import (
     select_destination, ServiceRoute,
 )
 from jdamr_cube_navigation.service_destinations import route_config, taught_pose
-from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose
+from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose, Spin
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import Path as RosPath
 import pytest
@@ -668,6 +668,126 @@ def test_reverse_lost_acceptance_uses_follow_path_cancel_and_query(monkeypatch):
     node.cancel_navigation.call_async.assert_not_called()
 
 
+def test_reverse_single_waypoint_tracks_accepted_goal_before_logging_failure():
+    node = reverse_route()
+    node.waypoints = node.waypoints[-1:]
+    node.follow_reverse = Mock()
+    accepted = handle()
+    node.follow_reverse.send_goal_async.return_value = done(accepted)
+    node._verify_parking_stop = Mock(return_value=True)
+    assert node._execute_reverse_path(RosPath())
+    assert node._verify_parking_stop.call_args.args[0] == 0
+
+
+def test_reverse_logging_exception_still_owns_goal_for_cancellation():
+    node = reverse_route()
+    node.follow_reverse = Mock()
+    accepted = handle()
+    node.follow_reverse.send_goal_async.return_value = done(accepted)
+    node._route_event = Mock(side_effect=RuntimeError('log failed'))
+    owned = []
+    node.finish_navigation = lambda: owned.append(node.active_handle) or True
+    with pytest.raises(RuntimeError, match='log failed'):
+        node._execute_reverse_path(RosPath())
+    assert owned == [accepted]
+
+
+@pytest.mark.parametrize('angle', [0.0, math.nan, math.inf, True, math.pi])
+def test_search_rotation_rejects_unbounded_request_before_motion(angle):
+    node = route()
+    node.spin_search = Mock()
+    with pytest.raises(ValueError):
+        node.search_rotation(angle)
+    node.spin_search.send_goal_async.assert_not_called()
+
+
+@pytest.mark.parametrize('status,error,observed_yaw,expected', [
+    (GoalStatus.STATUS_SUCCEEDED, 0, math.pi / 6, True),
+    (GoalStatus.STATUS_SUCCEEDED, 0, -math.pi / 6, False),
+    (GoalStatus.STATUS_SUCCEEDED, 0, 0.0, False),
+    (GoalStatus.STATUS_ABORTED, 0, math.pi / 6, False),
+    (GoalStatus.STATUS_SUCCEEDED, 1, math.pi / 6, False),
+])
+def test_search_uses_spin_and_observed_turn_not_xy_parking(
+        status, error, observed_yaw, expected):
+    node = route()
+    node.spin_search = Mock()
+    node.spin_search.send_goal_async.return_value = done(handle(status, error))
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, observed_yaw), {})])
+    node._search_parameters_ready = Mock(return_value=True)
+    node.navigate = Mock()
+    node._verify_parking_stop = Mock()
+    assert node.search_rotation(math.pi / 6) is expected
+    goal = node.spin_search.send_goal_async.call_args.args[0]
+    assert goal.target_yaw == pytest.approx(math.pi / 6)
+    assert 0 < goal.time_allowance.sec <= 20
+    node.navigate.send_goal_async.assert_not_called()
+    node._verify_parking_stop.assert_not_called()
+    assert node.active_handle is None
+    assert node.active_action_type is Spin
+
+
+def test_spin_lost_acceptance_cancels_only_its_action_uuid(monkeypatch):
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once',
+                        lambda *args, **kwargs: None)
+    node = route()
+    node.active_action_type = Spin
+    node.navigation_uuid = Spin.Impl.SendGoalService.Request().goal_id
+    node.cancel_spin = Mock()
+    node.cancel_spin.call_async.return_value = done(None)
+    node.query_spin = Mock()
+    node.query_spin.call_async.return_value = done(
+        SimpleNamespace(status=GoalStatus.STATUS_CANCELED))
+    node.cancel_navigation = Mock()
+    assert node._cancel_navigation_uuid()
+    node.cancel_spin.call_async.assert_called_once()
+    node.cancel_navigation.call_async.assert_not_called()
+
+
+@pytest.mark.parametrize('maximum,minimum,plugins,stamped,ready', [
+    (.2, .1, ['wait', 'spin'], False, True),
+    (.7, .1, ['wait', 'spin'], False, False),
+    (.2, .4, ['wait', 'spin'], False, False),
+    (.2, .1, ['wait'], False, False),
+    (.2, .1, ['wait', 'spin'], True, False),
+])
+def test_search_checks_installed_spin_profile(
+        monkeypatch, maximum, minimum, plugins, stamped, ready):
+    node = route()
+    client = Mock()
+    values = [Parameter('p', value=v).get_parameter_value() for v in (
+        plugins, maximum, minimum, 'odom', 'base_footprint', stamped)]
+    client.get_parameters.return_value = done(SimpleNamespace(values=values))
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.AsyncParameterClient',
+                        lambda *args: client)
+    assert node._search_parameters_ready() is ready
+
+
+def test_search_timeout_cancels_accepted_spin(monkeypatch):
+    node = route()
+    node.spin_search = Mock()
+    pending = Future()
+    accepted = handle(future=pending)
+    node.spin_search.send_goal_async.return_value = done(accepted)
+    node.capture_stationary_pose = Mock(return_value=((0., 0., 0.), {}))
+    node._search_parameters_ready = lambda: True
+    clock = {'now': 0.0}
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.time.monotonic',
+                        lambda: clock['now'])
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once',
+                        lambda *args, **kwargs: clock.update(now=clock['now'] + 21.0))
+
+    def cancel(handle, reason):
+        assert handle is accepted
+        pending.set_result(SimpleNamespace(status=GoalStatus.STATUS_CANCELED))
+
+    node._cancel = cancel
+    assert not node.search_rotation(math.pi / 6)
+    assert node.active_handle is None
+    assert node.capture_stationary_pose.call_count == 1
+
+
 @pytest.mark.parametrize('minimum,maximum,ready', [
     (-.08, .08, True), (0.0, .08, False), (-.09, .08, False), (-.08, .2, False),
 ])
@@ -816,6 +936,26 @@ def test_final_action_uses_parking_and_requires_confirmation(confirmed):
     goals = [call.args[0] for call in node.navigate.send_goal_async.call_args_list]
     assert [goal.behavior_tree for goal in goals] == ['transit.xml', 'parking.xml']
     assert node._verify_parking_stop.call_count == 1
+
+
+def test_observation_transit_replans_without_forcing_final_parking_yaw():
+    node = route()
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = lambda *_, **__: done(handle())
+    node._verify_parking_stop = Mock(return_value=False)
+    assert node.execute(final_parking=False)
+    goals = [call.args[0] for call in node.navigate.send_goal_async.call_args_list]
+    assert [goal.behavior_tree for goal in goals] == ['transit.xml', 'transit.xml']
+    node._verify_parking_stop.assert_not_called()
+
+
+@pytest.mark.parametrize('value', [None, 0, 1, 'false'])
+def test_final_parking_mode_rejects_non_boolean_before_dispatch(value):
+    node = route()
+    node.navigate = Mock()
+    with pytest.raises(ValueError, match='final_parking must be boolean'):
+        node.execute(final_parking=value)
+    node.navigate.send_goal_async.assert_not_called()
 
 
 def test_action_failure_does_not_send_parking_goal():
@@ -1139,6 +1279,75 @@ def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
     context = LaunchContext()
     declaration.execute(context)
     assert context.launch_configurations['discovery_range'] == 'SUBNET'
+
+
+def test_precision_launch_matches_box_contract_speed_and_search_capability(monkeypatch):
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'precision_service_launch', PACKAGE / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE if name == 'jdamr_cube_navigation' else PACKAGE.parent / name))
+    monkeypatch.setattr(module, 'load_registry', lambda _: {
+        'home': {'parking_direction': 'reverse'},
+        'map': {'yaml_path': '/map.yaml'}, 'keepout': {'yaml_path': '/mask.yaml'}})
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'registry': '/registry.yaml',
+        'params_file': str(PACKAGE / 'config/new_base_nav2_params.yaml'),
+        'parking_contract': str(PACKAGE / 'config/box_parking_contract.yaml'),
+        'precision_parking': 'true'})
+    actions = module._configure(context)
+    arguments = dict(actions[1].launch_arguments)
+    generated = Path(arguments['params_file'])
+    try:
+        document = yaml.safe_load(generated.read_text())
+        smoother = document['velocity_smoother']['ros__parameters']
+        assert smoother['min_velocity'][0] == -.04
+        assert smoother['max_velocity'][0] == .04
+        behavior = document['behavior_server']['ros__parameters']
+        assert behavior['max_rotational_vel'] == .2
+        assert behavior['min_rotational_vel'] == .1
+        assert behavior['enable_stamped_cmd_vel'] is False
+        assert arguments['enable_box_search'].perform(context) == 'true'
+        assert document['collision_monitor']['ros__parameters']['source_timeout'] == 1.0
+    finally:
+        generated.unlink()
+
+
+@pytest.mark.parametrize('search', [False, True])
+def test_core_spin_opt_in_uses_guarded_command_route(monkeypatch, search):
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'core_spin_launch', PACKAGE / 'launch/onboard_nav2_core.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda _: str(PACKAGE))
+    monkeypatch.setattr(module, '_validate_new_base_params', lambda *a, **k: None)
+    captured = []
+    original = module.ComposableNode
+
+    def capture(**kwargs):
+        captured.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(module, 'ComposableNode', capture)
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_candidate',
+        'map': '/map.yaml', 'keepout_mask': '/mask.yaml',
+        'params_file': str(PACKAGE / 'config/new_base_nav2_params.yaml'),
+        'use_sim_time': 'false', 'autostart': 'true', 'use_composition': 'true',
+        'precision_parking': 'true', 'enable_box_search': str(search).lower()})
+    module._launch_navigation(context)
+    behavior = next(value for value in captured if value['name'] == 'behavior_server')
+    parameters = next(value for value in behavior['parameters']
+                      if isinstance(value, dict) and 'behavior_plugins' in value)
+    assert parameters['behavior_plugins'] == (['wait', 'spin'] if search else ['wait'])
+    if search:
+        assert parameters['spin']['plugin'] == 'nav2_behaviors::Spin'
+    assert ('cmd_vel', 'cmd_vel_nav') in behavior['remappings']
 
 
 def test_service_launch_defaults_to_composed_ordered_startup(monkeypatch):
