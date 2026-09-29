@@ -111,7 +111,7 @@ class DisplayExport(Node):
             self.create_subscription(
                 kind, topic, lambda msg, name=topic: self.receive(name, msg),
                 qos(topic, subscriber=True))
-        self.create_timer(0.05, self.flush)
+        self.create_timer(0.1, self.flush)
         self.create_timer(10.0, self.report)
 
     def receive(self, topic, message):
@@ -131,7 +131,7 @@ class DisplayExport(Node):
     def flush(self):
         now = time.monotonic()
         for topic in list(self.pending):
-            interval = 0.05 if topic == '/tf' else 0.1
+            interval = 0.1 if topic == '/tf' else 0.2
             if now - self.last_emit.get(topic, 0) < interval:
                 continue
             message = self.pending.pop(topic)
@@ -162,7 +162,7 @@ class DisplayImport(Node):
             for topic, kind in TOPICS.items()}
         self.thread = threading.Thread(target=self.read_stream, daemon=True)
         self.thread.start()
-        self.create_timer(0.05, self.flush)
+        self.create_timer(0.1, self.flush)
         self.create_timer(10.0, self.report)
 
     def read_stream(self):

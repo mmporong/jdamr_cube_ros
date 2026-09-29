@@ -109,3 +109,28 @@ def test_export_tf_coalesces_at_flush_and_keeps_last_original_stamp(monkeypatch)
     assert len(lines) == 1
     topic, message = parse_line(lines[0])
     assert topic == '/tf' and message.transforms[0].header.stamp.sec == 100
+
+
+def test_display_rates_keep_latest_tf_and_scan_without_retimestamping(monkeypatch):
+    from jdamr_cube_navigation import rviz_display_relay as relay
+    node = object.__new__(relay.DisplayExport)
+    node.pending, node.last_emit, node.received_counts = {}, {}, {}
+    node.transforms = {'/tf': {}, '/tf_static': {}}
+    output = io.BytesIO()
+    monkeypatch.setattr(relay.sys, 'stdout', SimpleNamespace(buffer=output))
+    now = [10.0]
+    monkeypatch.setattr(relay.time, 'monotonic', lambda: now[0])
+    for index, offset in enumerate((0.0, .06, .11, .16, .21)):
+        now[0] = 10.0 + offset
+        tf = TransformStamped()
+        tf.child_frame_id = 'base_link'
+        tf.header.stamp.sec = index + 1
+        scan = LaserScan()
+        scan.header.stamp.sec = index + 1
+        node.receive('/tf', TFMessage(transforms=[tf]))
+        node.receive('/scan', scan)
+        node.flush()
+    decoded = [parse_line(line) for line in output.getvalue().splitlines(keepends=True)]
+    assert [msg.transforms[0].header.stamp.sec for topic, msg in decoded
+            if topic == '/tf'] == [1, 3, 5]
+    assert [msg.header.stamp.sec for topic, msg in decoded if topic == '/scan'] == [1, 5]
