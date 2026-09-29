@@ -933,6 +933,42 @@ def test_wrong_live_map_prevents_any_goal(monkeypatch):
     assert verify.call_args.args[1] == '/wrong/map.yaml'
 
 
+def test_delayed_live_map_discovery_preserves_identity_checks(monkeypatch):
+    node = route()
+    node.registry = {'map': {'yaml_path': 'expected'}, 'keepout': {'yaml_path': 'mask'}}
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    monkeypatch.setattr(module + 'map_grid_signature', lambda x: x)
+    monkeypatch.setattr(module + 'validate_registry', lambda _: None)
+    clock = {'now': 0.0}
+    monkeypatch.setattr(module + 'time.monotonic', lambda: clock['now'])
+
+    def spin(*_, **__):
+        clock['now'] += 1.0
+        if clock['now'] >= 4.0:
+            node.live_grids = {'map': 'wrong', 'keepout': 'mask'}
+
+    monkeypatch.setattr(module + 'rclpy.spin_once', spin)
+    with pytest.raises(RuntimeError, match='does not match registered data'):
+        node.verify_live_maps()
+    assert clock['now'] == 4.0
+
+
+def test_missing_live_map_reports_missing_streams(monkeypatch):
+    node = route()
+    node.registry = {'map': {'yaml_path': 'expected'}, 'keepout': {'yaml_path': 'mask'}}
+    node.live_grids = {'map': 'expected'}
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    monkeypatch.setattr(module + 'map_grid_signature', lambda x: x)
+    monkeypatch.setattr(module + 'validate_registry', lambda _: None)
+    clock = {'now': 0.0}
+    monkeypatch.setattr(module + 'time.monotonic', lambda: clock['now'])
+    monkeypatch.setattr(module + 'rclpy.spin_once',
+                        lambda *_, **__: clock.update(now=clock['now'] + 1.0))
+    with pytest.raises(RuntimeError, match='live map data unavailable: keepout'):
+        node.verify_live_maps()
+    assert clock['now'] == 10.0
+
+
 def test_live_map_reload_is_detected_even_with_unchanged_parameters():
     """A changed OccupancyGrid invalidates the session independently of YAML names."""
     node = route()

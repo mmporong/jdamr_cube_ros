@@ -344,10 +344,14 @@ class ServiceRoute(CorridorRoute):
         self.expected_grids = {
             name: map_grid_signature(self.registry[name]['yaml_path'])
             for name in ('map', 'keepout')}
-        deadline_s = time.monotonic() + 3.0
-        while (len(self.live_grids) != 2 and not self.stop_requested
+        # Allow initial transient-local discovery without relaxing asset identity.
+        deadline_s = time.monotonic() + 10.0
+        while (len(self.live_grids) != 2 and not self.map_mismatch and not self.stop_requested
                and time.monotonic() < deadline_s):
             rclpy.spin_once(self, timeout_sec=0.05)
+        missing = sorted(set(self.expected_grids) - set(self.live_grids))
+        if missing and not self.map_mismatch:
+            raise RuntimeError('live map data unavailable: ' + ', '.join(missing))
         if self.map_mismatch or self.live_grids != self.expected_grids:
             raise RuntimeError(
                 self.map_mismatch or 'live map/keepout does not match registered data')
