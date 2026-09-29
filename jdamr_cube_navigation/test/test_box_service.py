@@ -308,7 +308,11 @@ def test_scan_callback_preserves_parent_freshness_and_full_message():
     assert node.last_scan is message
 
 
-def test_live_precision_profile_matches_generated_candidate(monkeypatch):
+@pytest.mark.parametrize('polygon_name', [
+    'StopZone.translation_forward.points',
+    'StopZone.translation_backward.points',
+])
+def test_live_precision_profile_matches_generated_candidate(monkeypatch, polygon_name):
     baseline = yaml.safe_load(PARAMS.read_text())
     geometry = yaml.safe_load(GEOMETRY.read_text())
     candidate = apply_docking_stop_profile(baseline, geometry)
@@ -336,7 +340,7 @@ def test_live_precision_profile_matches_generated_candidate(monkeypatch):
     original_wait = node._wait
     node._wait = lambda names, timeout: SimpleNamespace(values=[
         ('[[0.135, 0.29], [0.135, -0.29], [-0.295, -0.29], '
-         '[-0.295, 0.29]]') if name == 'StopZone.translation_forward.points'
+         '[-0.295, 0.29]]') if name == polygon_name
         else nested(name) for name in names])
     assert not node._precision_collision_ready(geometry)
     node._wait = original_wait
