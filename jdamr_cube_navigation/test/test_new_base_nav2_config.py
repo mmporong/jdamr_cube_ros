@@ -419,7 +419,7 @@ def test_standalone_keeps_components_parameters_and_required_shutdown(monkeypatc
             'velocity_smoother', 'bt_navigator', 'behavior_server',
             'keepout_filter_mask_server', 'keepout_costmap_filter_info_server',
             'collision_monitor', 'nav2_liveness_guard'} <= nodes.keys()
-    assert len(actions) == len(nodes) * 2  # every process has a required exit handler
+    assert len(actions) == len(nodes) * 2 - 1  # discovery observer is diagnostic only
     controller = nodes['controller_server']
     params = evaluate_parameters(context, controller._Node__parameters)
     rewritten = yaml.safe_load(Path(params[0]).read_text())
@@ -477,7 +477,7 @@ def test_coordinated_startup_uses_one_ordered_required_manager(monkeypatch):
         for action in actions
         if action.__class__.__name__ == 'RegisterEventHandler'
     }
-    assert set(nodes.values()) == exit_targets
+    assert set(nodes.values()) - {nodes['nav2_liveness_guard']} == exit_targets
 
 
 def test_legacy_startup_keeps_three_independent_managers(monkeypatch):

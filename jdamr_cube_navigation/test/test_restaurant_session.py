@@ -166,8 +166,8 @@ def test_internal_run_sources_overlay_and_launches_servers_without_action(sessio
     assert '/config/parking_contract.yaml' in commands
     assert '/config/box_parking_contract.yaml' not in commands
     assert 'use_box_observer:=false' in commands
-    assert 'discovery_range:=SUBNET' in commands
-    assert 'launch-env 12 SUBNET UDPv4 1' in commands
+    assert 'discovery_range:=LOCALHOST' in commands
+    assert 'launch-env 12 LOCALHOST UDPv4 1' in commands
     assert 'initial_pose' not in commands
 
 
@@ -431,7 +431,7 @@ def test_transport_default_overrides_inherited_environment(session_env):
         FASTDDS_BUILTIN_TRANSPORTS='DEFAULT')
     assert result.returncode == 0, result.stderr
     commands = session_env['log'].read_text(encoding='utf-8')
-    assert 'launch-env 12 SUBNET UDPv4 1' in commands
+    assert 'launch-env 12 LOCALHOST UDPv4 1' in commands
 
 
 def test_internal_run_clears_inherited_localhost_isolation(session_env):
@@ -481,7 +481,7 @@ def test_discovery_mismatch_does_not_reuse_active_session(session_env):
     result = _run(
         session_env, 'start', '--workspace', session_env['workspace'],
         '--registry', session_env['registry'], '--params-file',
-        session_env['params'], '--discovery-range', 'LOCALHOST',
+        session_env['params'], '--discovery-range', 'SUBNET',
         MOCK_ACTIVE_SERVICES='jdamr-base.service jdamr-restaurant-navigation.service',
         MOCK_UNIT_ENV=identity)
     assert result.returncode == 4

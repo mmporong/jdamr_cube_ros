@@ -121,6 +121,13 @@ def parking_controller_overrides(
     configured = deepcopy(original)
     configured['controller_plugins'].append('Parking')
     configured['goal_checker_plugins'].append('parking_goal_checker')
+    configured['goal_checker_plugins'].append('alignment_goal_checker')
+    configured['alignment_goal_checker'] = {
+        'plugin': 'nav2_controller::SimpleGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
+        'yaw_goal_tolerance': math.radians(MAXIMUM_CONTRACT_VALUES['yaw_tolerance_deg']),
+    }
     parking = deepcopy(configured['FollowPath'])
     parking.update({
         'desired_linear_vel': contract['desired_linear_mps'],

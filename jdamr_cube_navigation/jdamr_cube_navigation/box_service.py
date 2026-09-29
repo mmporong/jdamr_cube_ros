@@ -16,6 +16,7 @@ from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profil
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import ServiceRoute
 from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
+from nav2_msgs.action import Spin
 import rclpy
 from rclpy.parameter import parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
@@ -52,6 +53,7 @@ class BoxSearchBudget:
     def __init__(self):
         self.steps_used = 0
         self.cumulative_yaw_rad = 0.0
+        self.reposition_attempted = False
 
     def next_rotation(self):
         """Reserve the next bounded rotation, or return None when exhausted."""
@@ -319,6 +321,28 @@ class BoxServiceRoute(ServiceRoute):
         raise BoxObservationUnavailable(
             last_failure, retryable=last_failure_retryable)
 
+    def _reposition_search(self):
+        """Try one planned nearby view after a confirmed collision-blocked Spin."""
+        if (self.stop_requested or not self._navigation_ready(require_fresh_amcl=False)
+                or getattr(self, 'last_search_error_code', None) != Spin.Result.COLLISION_AHEAD):
+            return False
+        actual, _ = self.capture_stationary_pose()
+        # These are candidate waypoints, not open-loop displacement commands.
+        # Nav2 must find a valid path through the current footprint/keepout map.
+        for offset_m in (0.2, -0.2):
+            candidate = {
+                'id': 'search_view', 'priority': 1, 'approach_offset_m': 0.5,
+                'x_m': actual[0] + offset_m * math.cos(actual[2]),
+                'y_m': actual[1] + offset_m * math.sin(actual[2]),
+                'yaw_rad': actual[2],
+            }
+            planned = self.plan_pose(candidate, single=True)
+            if not planned['ok']:
+                continue
+            self.emit('box_search_reposition', candidate=candidate)
+            return self.execute(final_parking=False, alignment=True)
+        return False
+
     def _observe_with_search(self, camera_mount, front_extent_m, gap_m,
                              region_xy, region_radius_m, *, phase,
                              search_enabled, search_budget):
@@ -359,6 +383,10 @@ class BoxServiceRoute(ServiceRoute):
                     search_cumulative_yaw_rad=(
                         search_budget.cumulative_yaw_rad))
                 if not self.search_rotation(delta_yaw_rad):
+                    if not search_budget.reposition_attempted:
+                        search_budget.reposition_attempted = True
+                        if self._reposition_search():
+                            continue
                     self.emit(
                         'failed', phase='box_search_rotation',
                         observation_phase=phase,
@@ -397,7 +425,6 @@ class BoxServiceRoute(ServiceRoute):
         if route.get('frame_id') != 'map':
             raise ValueError('observation route must use map')
         self.table_id = table_id
-        self.run_deadline_s = time.monotonic() + 240.0
         self.verify_live_maps()
         if not self.wait_until_ready(timeout=10.0):
             raise RuntimeError('localization or sensor data unavailable')
@@ -426,6 +453,8 @@ class BoxServiceRoute(ServiceRoute):
         if not execute:
             self.emit('transit_planned_only', box_target='requires_observation_on_arrival')
             return True
+        # Setup time must not consume the motion/search budget.
+        self.run_deadline_s = time.monotonic() + 240.0
         if resume_at_observation:
             self.emit('resume_at_reached_observation', actual_pose=list(actual),
                       transit_skipped=True, final_parking_confirmed=False)
@@ -445,8 +474,10 @@ class BoxServiceRoute(ServiceRoute):
             if not planned['ok']:
                 self.emit('failed', phase=phase, planning=planned)
                 return False
-            self.verify_live_maps()
-            if not self.execute():
+            # Live map callbacks keep checking the verified identity throughout
+            # this visit; do not repeat disk/service configuration audits here.
+            if not self.execute(final_parking=phase == 'final_approach',
+                                alignment=phase == 'face_alignment'):
                 self.emit('failed', phase=phase, reason='nav2_or_stop_confirmation')
                 return False
         actual, _ = self.capture_stationary_pose()

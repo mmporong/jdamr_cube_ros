@@ -366,6 +366,10 @@ class CorridorRoute(Node):
 
     def _odom_callback(self, _message):
         self.samples['odom'] = time.monotonic()
+        self.latest_motion = (
+            self.samples['odom'],
+            math.hypot(_message.twist.twist.linear.x, _message.twist.twist.linear.y),
+            float(_message.twist.twist.angular.z))
         position = _message.pose.pose.position
         yaw = _quaternion_yaw(_message.pose.pose.orientation)
         odom_pose = (position.x, position.y, yaw)
@@ -517,6 +521,47 @@ class CorridorRoute(Node):
 
     def _navigation_ready(self, require_fresh_amcl=True):
         return self._guard_failure(require_fresh_amcl) is None
+
+    @staticmethod
+    def _input_gap_recoverable(reason):
+        """Do not retry operator stops, invalid geometry, low power or bad poses."""
+        return isinstance(reason, str) and reason.startswith((
+            'scan stale:', 'odom stale:', 'AMCL pose stale:', 'AMCL stale after motion'))
+
+    def _wait_for_input_recovery(self, reason, timeout_s=8.0):
+        """Wait after the previous action is terminal without sending commands."""
+        if not self._input_gap_recoverable(reason):
+            return False
+        started_s = time.monotonic()
+        self.get_logger().warning(f'paused for input recovery: {reason}')
+        while not self.stop_requested and time.monotonic() - started_s < timeout_s:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self.stop_requested:
+                return False
+            failure = self._guard_failure(False)
+            if failure and not self._input_gap_recoverable(failure):
+                return False
+            motion = getattr(self, 'latest_motion', None)
+            if motion is None or motion[0] <= started_s:
+                continue
+            _, linear_mps, angular_radps = motion
+            if (failure is None and all(math.isfinite(v) for v in motion)
+                    and abs(linear_mps) <= 0.01 and abs(angular_radps) <= 0.01):
+                self.get_logger().info('inputs recovered; resume current waypoint')
+                return True
+        return False
+
+    def _run_with_input_recovery(self, attempt):
+        """Keep completed waypoints, with at most one fresh-input retry per call."""
+        self._resume_waypoint_index = 0
+        for retry in range(2):
+            self._retry_guard_reason = None
+            if attempt():
+                return True
+            if (retry or self.stop_requested or not self._wait_for_input_recovery(
+                    self._retry_guard_reason)):
+                return False
+        return False
 
     def _revisit_protection_ready(self):
         """Check only the three publishers that make a revisit safe."""
@@ -814,7 +859,11 @@ class CorridorRoute(Node):
         return future.done()
 
     def execute(self):
-        """Execute each waypoint once and stop on the first fault."""
+        """Resume the current waypoint once after a confirmed input-gap stop."""
+        return self._run_with_input_recovery(self._execute_route_once)
+
+    def _execute_route_once(self):
+        """Run the remaining waypoints without restarting completed segments."""
         if not self.navigate.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('navigate_to_pose unavailable')
             return False
@@ -822,6 +871,9 @@ class CorridorRoute(Node):
         # current pose.  AMCL's pose topic may remain quiet while stationary.
         # New-base movement without an AMCL update eventually cancels the goal.
         for index, waypoint in enumerate(self.waypoints):
+            if index < self._resume_waypoint_index:
+                continue
+            self._resume_waypoint_index = index
             if (
                     self.stop_requested or
                     not self._navigation_ready(require_fresh_amcl=False)):
@@ -864,11 +916,17 @@ class CorridorRoute(Node):
                     self._cancel(handle, 'operator interrupt', index)
                     return False
                 if not self._navigation_ready(require_fresh_amcl=False):
-                    self._cancel(
-                        handle,
-                        self._guard_failure(False) or
-                        'navigation guard failure',
-                        index)
+                    reason = self._guard_failure(False) or 'navigation guard failure'
+                    canceled = self._cancel(handle, reason, index)
+                    if canceled and self._input_gap_recoverable(reason):
+                        deadline_s = time.monotonic() + 5.0
+                        while not result_future.done() and time.monotonic() < deadline_s:
+                            rclpy.spin_once(self, timeout_sec=0.05)
+                        if (result_future.done() and result_future.exception() is None
+                                and result_future.result().status in (
+                                    GoalStatus.STATUS_CANCELED, GoalStatus.STATUS_ABORTED,
+                                    GoalStatus.STATUS_SUCCEEDED)):
+                            self._retry_guard_reason = reason
                     return False
             wrapped = result_future.result()
             self._route_event(

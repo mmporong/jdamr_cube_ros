@@ -379,7 +379,7 @@ def test_corridor_route_retries_but_never_turns_around():
     assert root.findall(
         './/ComputePathToPose')[0].attrib['server_timeout'] == '3000'
     assert root.findall('.//FollowPath')[0].attrib['server_timeout'] == '3000'
-    assert _method_source(source, 'execute').count(
+    assert _method_source(source, '_execute_route_once').count(
         'not self._navigation_ready(require_fresh_amcl=False)') == 2
     assert 'self._guard_failure()' in source
 
@@ -618,7 +618,7 @@ def test_amcl_freshness_is_a_start_gate_not_a_runtime_cancel():
     assert route._guard_failure(require_fresh_amcl=False) is None
 
     source = ROUTE_SOURCE.read_text(encoding='utf-8')
-    assert _method_source(source, 'execute').count(
+    assert _method_source(source, '_execute_route_once').count(
         '_navigation_ready(require_fresh_amcl=False)') == 2
 
 
@@ -993,7 +993,7 @@ def test_onboard_core_uses_composition_with_a_liveness_guard():
 
 
 def test_liveness_guard_tolerates_a_single_discovery_flicker():
-    """Reset one graph miss, then fail on two consecutive misses."""
+    """Record sustained discovery loss without terminating healthy processes."""
     from jdamr_cube_navigation.nav2_liveness_guard import Nav2LivenessGuard
 
     class _Logger:
@@ -1023,8 +1023,10 @@ def test_liveness_guard_tolerates_a_single_discovery_flicker():
 
     present.clear()
     guard._tick()
-    with pytest.raises(SystemExit):
-        guard._tick()
+    guard._tick()
     assert guard.consecutive_misses == 2
     assert guard.failure == (
         'required Nav2 node(s) vanished from the graph: amcl')
+    present.append('/amcl')
+    guard._tick()
+    assert guard.failure is None

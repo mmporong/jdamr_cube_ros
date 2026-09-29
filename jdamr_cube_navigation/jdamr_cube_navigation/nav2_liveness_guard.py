@@ -1,8 +1,8 @@
-"""Fail loudly when a required Nav2 node leaves the ROS graph."""
+"""Report graph discovery loss without owning navigation shutdown."""
 
 # A composed container can stay alive after internal nodes leave the graph, so
 # process exit alone is insufficient evidence of Nav2 liveness.  This guard is
-# a secondary detector beside lifecycle bonds.  It identifies graph loss; it
+# a diagnostic beside lifecycle bonds.  It identifies graph loss; it
 # does not establish why callbacks, transforms, or bonds stopped.  Historical
 # measurements and causal limits live in evaluation/20260904_HANDOFF.md.
 
@@ -44,7 +44,7 @@ class Nav2LivenessGuard(Node):
         self.ready = False
         self.failure = None
         # A node can flicker out of one discovery sample without being dead,
-        # so a single miss is not enough to end a drive.
+        # so discovery loss is diagnostic, not a motion-stop authority.
         self.consecutive_misses = 0
         self.get_logger().info(
             f'watching {len(self.required)} Nav2 nodes; '
@@ -60,29 +60,32 @@ class Nav2LivenessGuard(Node):
         if not self.ready:
             if not absent:
                 self.ready = True
+                self.failure = None
                 self.get_logger().info('all required Nav2 nodes present')
             elif time.monotonic() > self.deadline:
                 self.failure = (
                     'Nav2 nodes never appeared within the grace period: '
                     + ', '.join(absent))
-                raise SystemExit(0)
+                if not getattr(self, '_reported_startup_loss', False):
+                    self.get_logger().warn(self.failure)
+                    self._reported_startup_loss = True
             return
         if absent:
             self.consecutive_misses += 1
-            self.get_logger().warn(
-                f'required Nav2 node(s) missing from the graph '
-                f'({self.consecutive_misses}/2): ' + ', '.join(absent))
-            if self.consecutive_misses >= 2:
+            if self.consecutive_misses == 2:
                 self.failure = (
                     'required Nav2 node(s) vanished from the graph: '
                     + ', '.join(absent))
-                raise SystemExit(0)
+                self.get_logger().warn(self.failure + '; lifecycle bonds remain authoritative')
         else:
+            if self.failure:
+                self.get_logger().info('Nav2 graph discovery recovered')
+            self.failure = None
             self.consecutive_misses = 0
 
 
 def main(argv=None):
-    """Run the guard; exit non-zero once a required node is gone."""
+    """Run discovery diagnostics without converting absence into stack shutdown."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--required', default=','.join(DEFAULT_REQUIRED))
     parser.add_argument('--grace', type=float, default=120.0,

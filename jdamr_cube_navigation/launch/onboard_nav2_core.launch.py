@@ -471,7 +471,6 @@ def _launch_navigation(context):
     ])
     required_processes = [
         *navigation_processes, collision_monitor, *lifecycle_processes,
-        liveness_guard,
     ]
     required_exit_handlers = [
         RegisterEventHandler(OnProcessExit(
@@ -481,7 +480,8 @@ def _launch_navigation(context):
         for process in required_processes
     ]
 
-    return [*required_exit_handlers, *required_processes]
+    # Discovery diagnostics do not own motor or lifecycle shutdown.
+    return [*required_exit_handlers, *required_processes, liveness_guard]
 
 
 def generate_launch_description():

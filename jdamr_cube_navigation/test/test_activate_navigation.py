@@ -556,7 +556,12 @@ def test_failure_after_startup_requires_rollback(monkeypatch, failure):
         check.side_effect = [None, RuntimeError('partial active')]
     with pytest.raises(RuntimeError):
         module.activate_prepared(node)
-    rollback.assert_called_once_with(node, client)
+    if failure == 'post_identity':
+        rollback.assert_not_called()
+        assert node.emit.call_args.kwargs['servers_kept_active'] is True
+        assert node.emit.call_args.kwargs['navigation_ready'] is False
+    else:
+        rollback.assert_called_once_with(node, client)
 
 
 def test_uncertain_rollback_is_not_activation_success(monkeypatch):

@@ -215,6 +215,7 @@ def activate_prepared(node):
     client = node.create_client(
         ManageLifecycleNodes, '/lifecycle_manager_navigation/manage_nodes')
     startup_requested = False
+    startup_confirmed = False
     try:
         if node.stop_requested or not client.wait_for_service(timeout_sec=5.0):
             raise RuntimeError('navigation lifecycle startup unavailable')
@@ -230,17 +231,24 @@ def activate_prepared(node):
         if response is None or not response.success:
             raise RuntimeError('navigation lifecycle startup failed')
         require_active(node, NAVIGATION_NODES)
+        startup_confirmed = True
         node.verify_live_maps()
         node.emit('navigation_activated_without_motion',
                   stationary_pose=pose, stationary_evidence=evidence)
-    except Exception:
-        if startup_requested:
+    except Exception as verification_error:
+        if startup_requested and not startup_confirmed:
             try:
                 rollback_navigation(node, client)
             except Exception as error:
                 node.emit('navigation_activation_rollback_unconfirmed',
                           reason=str(error), navigation_ready=False)
                 raise RuntimeError('navigation rollback unconfirmed; do not depart') from error
+        elif startup_confirmed:
+            # A failed read/identity check still prevents departure, but is not
+            # evidence that healthy lifecycle servers need a destructive reset.
+            node.emit('navigation_activation_verification_failed',
+                      reason=str(verification_error), navigation_ready=False,
+                      servers_kept_active=True)
         raise
     finally:
         node.destroy_client(client)

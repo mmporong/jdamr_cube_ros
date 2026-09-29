@@ -48,8 +48,10 @@ def test_generated_params_only_add_opt_in_controller_content(tmp_path):
     original = _document()
     modified = actual['controller_server']['ros__parameters']
     modified['goal_checker_plugins'].remove('parking_goal_checker')
+    modified['goal_checker_plugins'].remove('alignment_goal_checker')
     modified['controller_plugins'].remove('Parking')
     del modified['Parking'], modified['parking_goal_checker']
+    del modified['alignment_goal_checker']
     assert actual == original
     assert source.read_bytes() == before
     assert evidence['physical_accuracy'] == 'NOT_MEASURED'
@@ -64,8 +66,11 @@ def test_parking_bt_fixes_controller_and_checker_without_selector():
     assert follow.attrib['controller_id'] == 'Parking'
     assert follow.attrib['goal_checker_id'] == 'parking_goal_checker'
     for forbidden in ('GoalCheckerSelector', 'ControllerSelector',
-                      'Spin', 'BackUp', 'Wait'):
+                      'Spin', 'BackUp'):
         assert root.find('.//' + forbidden) is None
+    assert root.find('.//RecoveryNode').attrib['number_of_retries'] == '1'
+    assert root.find('.//RateController').attrib['hz'] == '1.0'
+    assert root.find('.//Wait').attrib['wait_duration'] == '1.0'
 
 
 @pytest.mark.parametrize('final', [

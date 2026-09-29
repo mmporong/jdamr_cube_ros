@@ -9,7 +9,7 @@ PARAMS_FILE="${JDAMR_RESTAURANT_PARAMS:-}"
 PRECISION_PARKING=false
 PREPARE_ONLY=false
 USE_COMPOSITION=true
-DISCOVERY_RANGE=SUBNET
+DISCOVERY_RANGE=LOCALHOST
 
 usage() {
   cat <<'EOF'
@@ -29,6 +29,7 @@ start는 센서가 이미 실행 중인 Pi에서 식당 서비스용 Nav2 서버
 --use-composition은 Nav2 서버 실행 방식을 선택한다. 기본값은 완주 검증에 사용한 true이며,
 false는 독립 프로세스 비교 진단용 폴백이다.
 --discovery-range는 베이스·카메라·관측기·실행기와 동일하게 설정해야 한다.
+기본값은 온보드 제어용 LOCALHOST이며, PC 관제는 표시 중계를 사용한다.
 LOCALHOST에서는 다른 PC의 ROS 구독이 연결되지 않는다.
 배치 후 위치추정 확인을 마친 뒤 navigation lifecycle startup이 필요하다.
 

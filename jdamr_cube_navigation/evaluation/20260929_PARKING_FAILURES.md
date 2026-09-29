@@ -108,7 +108,41 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 
 파이 조회 출력은 `$HOME/jdamr_data/nav2_architecture_20260929_tF5td9/parameter_reader_pi_check.json`에 보존했다. 구성 판단과 남은 계측 조건은 [Nav2 실행 위치 조사](20260929_NAV2_PLATFORM_RESEARCH.md)를 따른다.
 
-## 충전 중 수정본 검증
+## 12. 개발 우선 운영과 불필요한 태스크 종료 축소
+
+사용자 요청: 교실·복도의 저속 학습용 시제품에서 실제 태스크 구현·실행을 최우선으로 한다. 반복 출발 검수·코딩·리뷰로 배터리를 소모하거나, 일시적인 문제마다 처음부터 재주행하는 과정을 줄인다. 저장소 `AGENTS.md`에 이후 세션의 우선순위로 기록했다. 차체 손상 감수 의사를 사람·물건과의 충돌 허용 또는 센서 없이 이동하는 권한으로 확대하지 않는다.
+
+변경 범위:
+
+| 기존 처리 | 반영한 처리 |
+|---|---|
+| 입력 지연 시 전체 경로 종료 | 일반 CorridorRoute와 ServiceRoute는 이전 action의 terminal 확인 후 새 입력·새 정지 odom을 기다려 현재 waypoint부터 1회 재개. 대기는 최대 8초이며 정상 출발에 고정 대기를 추가하지 않음 |
+| 탐색·후진의 입력 지연 후 처음부터 재시작 | Spin은 남은 각도만, 후진은 현재 실제 pose부터 경로를 다시 만들고 충돌 확인 후 재개 |
+| 매 이동·회전에 출발 예비전압 적용 | 첫 action 수락 전 10.8V, 같은 실행기의 후속 단계는 기존 진행 중 10.5V. 저전압·비정상 값 차단은 유지 |
+| 45cm 중간 정렬에도 1cm/1도 최종 판정 | 저속 Parking 제어기는 유지하고 중간 정렬용 5cm/3도 goal checker 분리. 최종 5cm 간격·양쪽 모서리·1도 판정은 유지 |
+| 최종 접근의 단발 경로 계산 | 1Hz 재계획 및 복구 가능한 계획/제어 오류에 한해 1초 대기 후 1회 재시도. 가까운 물체 앞 임의 Spin/BackUp은 넣지 않음 |
+| 탐색 Spin 충돌 차단 즉시 태스크 종료 | COLLISION_AHEAD가 확인된 경우에만 앞·뒤 20cm 관측 후보를 계획하고 가능한 첫 위치로 1회 이동 시도. 속도 명령을 우회 발행하지 않음 |
+| 같은 지도 파일·서버 설정 조회 반복 | 동일 실행기에서 확인한 지도 자산을 재사용. 실제 grid 변경과 명령 경로 검사는 유지 |
+| 준비 시간까지 240초 태스크 예산에 포함 | 준비가 끝나고 이동을 시작하는 시점부터 계산 |
+| ROS graph 누락으로 전체 Nav2 종료 | graph 감시기는 진단 알림으로 한정. 일반 주행·자율 매핑 launch에서 감시기 종료를 전체 shutdown 조건에서 제외. 핵심 프로세스 종료·lifecycle bond 보호는 유지 |
+| 기동 완료 후 후속 조회 실패에도 RESET | 기동·ACTIVE 확인이 끝난 서버는 유지하고 준비 미완료를 보고. STARTUP 자체 실패·부분 활성화는 기존 rollback 유지 |
+| 세션 스크립트 기본 SUBNET | 현재 온보드 제어 기본 LOCALHOST와 일치. 명시한 discovery-range 옵션은 유지 |
+
+스킬 확인:
+
+- 설치된 개인 스킬에서 주행 진단에 해당하는 것은 `ros-graph-triage`다. 모터 제어 코드는 없으며 진단 지침이다. 출발/재출발 자동 적용을 제외하고 Codex `allow_implicit_invocation: false`로 바꿨다. PKM 원본을 수정하고 설치본을 동기화한다.
+- `arm-motion-gate`·`arm-motion-guard` 설치 스킬과 해당 Codex 훅은 이번 조회에서 발견되지 않았다. 없는 스킬을 제거했다고 기록하지 않는다.
+- `servo-register-triage`는 팔 서보 진단용이며 이번 베이스 주행 차단 원인으로 확인되지 않아 변경하지 않았다. OMX·리뷰 스킬 전체를 삭제하지 않고 출발 단계의 새 필수 절차로 사용하지 않도록 프로젝트 규칙에 명시했다.
+
+유지한 조건: 실제 footprint·keepout, CollisionMonitor, 유효 입력, 명령 watchdog, 저전압 cutoff, 사용자 정지. 정밀 접근 앞 여유 5cm·costmap 차체 패딩 2cm 및 회전 swept 영역은 변경하지 않았다. 정지거리·입력 지연의 실측 근거 없이 수치를 낮추지 않는다. 수동 조종에는 사용자가 버튼을 놓은 뒤 자동으로 다시 움직이는 기능을 넣지 않았다.
+
+검증: 관련 629개 테스트 통과, 변경 핵심 Python 9개 파일 ament_flake8 통과, 셸 구문·diff 확인 및 로컬 navigation 패키지 빌드 통과. 입력 공백 시 취소 terminal 뒤 현재 waypoint만 재전송하는 시나리오, 남은 Spin 각도와 후진 경로 재계산, 지도 자산 재사용 후 grid 변경 거부를 검사했다. 독립 리뷰 에이전트는 thread limit으로 시작되지 않아 작성 후 별도 로컬 검토 패스를 수행했으며 독립 승인으로 표시하지 않는다.
+
+이번 변경은 18:29 센서·제어 지연의 근본 원인이 사라졌다는 증거가 아니다. 박스 면 후보가 바뀌는 인식 문제도 별도이며, 수정본의 실제 주차 성공·소요시간 단축·충돌 회피 성능은 아직 측정하지 않았다. 새 거리 완화나 실물 주행은 실행하지 않았다.
+
+파이 반영: 변경 파일을 기존 소스에 반영하고 navigation 패키지 빌드, `box_service --help`, 실행 모듈 구문 확인을 완료했다. 원본 백업은 파이 `$HOME/jdamr_data/development_flow_20260929_T8eNdh/before.tar.gz`, 반영 목록은 같은 디렉터리의 `changed_paths.txt`다. 주행 세션은 inactive를 유지했고 베이스 MainPID 17643은 변경되지 않았다. 새 정렬 goal checker·BT 설정은 다음 Nav2 세션 시작 때 로드된다. 실행 중 센서·모터 서비스 재시작이나 이동 명령은 없었다.
+
+## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.
 - 변경 Python 9개 파일 ament_flake8 통과, `git diff --check` 통과.

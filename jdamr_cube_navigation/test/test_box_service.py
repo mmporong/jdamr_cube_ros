@@ -29,6 +29,8 @@ def mission(monkeypatch):
     monkeypatch.setattr(box_service, 'verify_identity', Mock())
     node = object.__new__(BoxServiceRoute)
     node.registry = {'map': {}, 'keepout': {}}
+    node.stop_requested = False
+    node._navigation_ready = Mock(return_value=True)
     for method in ('verify_live_maps', 'emit'):
         setattr(node, method, Mock())
     for method in ('wait_until_ready', '_parking_parameters_ready', 'preflight', 'execute'):
@@ -65,7 +67,8 @@ def test_transit_alignment_final_sequence(mission):
     assert invoke(mission)
     assert mission.execute.call_count == 3
     assert [call.kwargs for call in mission.execute.call_args_list] == [
-        {'final_parking': False}, {}, {}]
+        {'final_parking': False}, {'final_parking': False, 'alignment': True},
+        {'final_parking': True, 'alignment': False}]
     assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
     assert mission.emit.call_args.args == ('box_approach_finished',)
     assert mission.emit.call_args.kwargs['estimated_front_gap_m'] == pytest.approx(0.05)
@@ -183,6 +186,28 @@ def test_failed_search_rotation_stops_without_repeating(mission):
         invoke(mission, search=True)
     mission.search_rotation.assert_called_once_with(math.radians(30.0))
     assert mission.observe_target.call_count == 1
+
+
+def test_collision_blocked_search_can_reposition_once_and_continue(mission):
+    target = mission.observe_target.return_value
+    mission.observe_target.side_effect = [
+        box_service.BoxObservationUnavailable('no_stable_box', retryable=True), target, target]
+    mission.search_rotation.return_value = False
+    mission._reposition_search = Mock(return_value=True)
+    assert invoke(mission, search=True)
+    mission._reposition_search.assert_called_once()
+
+
+def test_search_reposition_requires_collision_result_and_valid_planned_path(mission):
+    from nav2_msgs.action import Spin
+    mission.last_search_error_code = Spin.Result.TF_ERROR
+    assert not mission._reposition_search()
+    mission.plan_pose.assert_not_called()
+    mission.last_search_error_code = Spin.Result.COLLISION_AHEAD
+    mission.plan_pose.side_effect = [{'ok': False}, {'ok': True}]
+    assert mission._reposition_search()
+    assert mission.plan_pose.call_count == 2
+    mission.execute.assert_called_once_with(final_parking=False, alignment=True)
 
 
 def test_failed_alignment_never_dispatches_final_approach(mission):

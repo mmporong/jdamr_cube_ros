@@ -1,13 +1,12 @@
-<!-- Final parking replans while moving, with one non-motion recovery.
-     Controller collision checks, fixed IDs and final pose tolerances remain. -->
+<!-- Intermediate face alignment keeps parking speed, not final gap precision. -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="1" name="FinalParking">
+    <RecoveryNode number_of_retries="1" name="FaceAlignment">
       <PipelineSequence>
         <RateController hz="1.0">
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
         </RateController>
-        <FollowPath path="{path}" controller_id="Parking" goal_checker_id="parking_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+        <FollowPath path="{path}" controller_id="Parking" goal_checker_id="alignment_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
       </PipelineSequence>
       <Sequence>
         <Fallback>

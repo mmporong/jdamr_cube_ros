@@ -31,6 +31,20 @@ def test_departure_reserve(voltage_v, ready):
         json.dumps(node.emit.call_args.kwargs, allow_nan=False)
 
 
+def test_reserve_is_not_reapplied_between_steps_but_running_cutoff_remains():
+    node = object.__new__(ServiceRoute)
+    node.service_contract = load_service_contract(CONTRACT)
+    node.minimum_battery_v = 10.5
+    node.emit = Mock()
+    node.battery_voltage = 11.2
+    assert node._departure_battery_ready()
+    node._mission_started = True
+    node.battery_voltage = 10.7
+    assert node._departure_battery_ready()
+    node.battery_voltage = 10.4
+    assert not node._departure_battery_ready()
+
+
 @pytest.mark.parametrize('method', ['execute', '_execute_reverse_path'])
 def test_low_reserve_never_dispatches_forward_or_reverse(method):
     """Both action entrypoints reject low reserve before send_goal_async."""

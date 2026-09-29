@@ -1002,6 +1002,21 @@ def test_navigation_terminal_failure_is_propagated():
     assert '"event": "arrived"' not in node.result_stream.getvalue()
 
 
+def test_verified_maps_reuse_asset_audit_but_keep_live_identity_and_command_check():
+    node = route()
+    node.registry = {'map': {'yaml_path': 'map'}, 'keepout': {'yaml_path': 'mask'}}
+    node._verified_map_identity = json.dumps(node.registry, sort_keys=True)
+    node.live_grids = node.expected_grids = {'map': 'a', 'keepout': 'b'}
+    node._startup_protection_ready = Mock(return_value=None)
+    node._read_parameters = Mock()
+    node.verify_live_maps()
+    node._read_parameters.assert_not_called()
+    node._startup_protection_ready.assert_called_once_with(require_command_path=True)
+    node.live_grids = {'map': 'changed', 'keepout': 'b'}
+    with pytest.raises(RuntimeError, match='changed'):
+        node.verify_live_maps()
+
+
 @pytest.mark.parametrize('execute', [False, True])
 def test_alternate_selection_retains_waypoints_and_gap_evidence(execute):
     """Plan and report the selected table's two poses without reusing the primary."""
@@ -1066,6 +1081,79 @@ def test_observation_transit_replans_without_forcing_final_parking_yaw():
     goals = [call.args[0] for call in node.navigate.send_goal_async.call_args_list]
     assert [goal.behavior_tree for goal in goals] == ['transit.xml', 'transit.xml']
     node._verify_parking_stop.assert_not_called()
+
+
+def test_intermediate_alignment_uses_separate_checker_without_final_confirmation():
+    node = route()
+    node.alignment_behavior_tree = 'alignment.xml'
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = lambda *_, **__: done(handle())
+    node._verify_parking_stop = Mock(return_value=False)
+    assert node.execute(final_parking=False, alignment=True)
+    goals = [call.args[0] for call in node.navigate.send_goal_async.call_args_list]
+    assert [goal.behavior_tree for goal in goals] == ['transit.xml', 'alignment.xml']
+    node._verify_parking_stop.assert_not_called()
+
+
+def test_sensor_gap_cancels_terminal_then_retries_only_current_waypoint(monkeypatch):
+    node = route()
+    result = Future()
+    interrupted = handle(future=result)
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = [done(handle()), done(interrupted), done(handle())]
+    node._navigation_ready = Mock(side_effect=[True, True, False, True])
+    node._guard_failure = Mock(return_value='scan stale: age=1s')
+    node._wait_for_input_recovery = Mock(return_value=True)
+
+    def spin(_node, timeout_sec):
+        if interrupted.cancel_goal_async.called and not result.done():
+            result.set_result(SimpleNamespace(status=GoalStatus.STATUS_CANCELED))
+
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    assert node.execute(final_parking=False)
+    interrupted.cancel_goal_async.assert_called_once()
+    node._wait_for_input_recovery.assert_called_once_with('scan stale: age=1s')
+    assert node.navigate.send_goal_async.call_count == 3
+    records = [json.loads(line) for line in node.result_stream.getvalue().splitlines()]
+    accepted = [item['waypoint_id'] for item in records if item['event'] == 'accepted']
+    assert accepted == ['approach', 'main', 'main']
+
+
+def test_search_input_recovery_uses_remaining_angle_not_another_full_turn():
+    node = route()
+    node._wait_for_input_recovery = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(return_value=((0, 0, math.radians(10)), {}))
+    angles = []
+
+    def attempt(angle):
+        angles.append(angle)
+        node._search_target_yaw = math.radians(30)
+        node._retry_guard_reason = 'scan stale: age=1s'
+        return len(angles) == 2
+
+    node._search_rotation_once = attempt
+    assert node.search_rotation(math.radians(30))
+    assert angles == pytest.approx([math.radians(30), math.radians(20)])
+
+
+def test_reverse_recovery_rebuilds_and_revalidates_remaining_path():
+    node = route()
+    node._wait_for_input_recovery = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(return_value=((0.7, 0, 0.2), {}))
+    node._make_reverse_path = Mock(return_value='remaining')
+    node._reverse_path_valid = Mock(return_value=True)
+    paths = []
+
+    def attempt(path):
+        paths.append(path)
+        node._retry_guard_reason = 'odom stale: age=1s'
+        return len(paths) == 2
+
+    node._execute_reverse_once = attempt
+    assert node._execute_reverse_path('original')
+    assert paths == ['original', 'remaining']
+    node._make_reverse_path.assert_called_once_with((0.7, 0, 0.2), (1.0, 0.0, 0.2))
+    node._reverse_path_valid.assert_called_once_with('remaining')
 
 
 @pytest.mark.parametrize('value', [None, 0, 1, 'false'])
@@ -1370,7 +1458,9 @@ def test_service_launch_adds_parking_without_changing_costmaps(
             assert output['velocity_smoother']['ros__parameters']['min_velocity'][0] == 0.0
         controller['controller_plugins'].remove('Parking')
         controller['goal_checker_plugins'].remove('parking_goal_checker')
+        controller['goal_checker_plugins'].remove('alignment_goal_checker')
         del controller['Parking'], controller['parking_goal_checker']
+        del controller['alignment_goal_checker']
         assert output == original
         assert arguments['map'] == '/maps/new_base_room.yaml'
         assert arguments['asset_registry'].perform(context) == '/registry.yaml'

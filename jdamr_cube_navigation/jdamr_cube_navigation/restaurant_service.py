@@ -154,6 +154,8 @@ class ServiceRoute(CorridorRoute):
         self.active_action_type = NavigateToPose
         self.amcl_yaw_covariance_rad2 = None
         package = Path(get_package_share_directory('jdamr_cube_navigation'))
+        self.alignment_behavior_tree = str(
+            package / 'behavior_trees/navigate_to_pose_alignment.xml')
         self.service_contract = load_service_contract(
             package / 'config/restaurant_service_contract.yaml')
         self.minimum_battery_v = self.service_contract['minimum_running_battery_v']
@@ -267,6 +269,7 @@ class ServiceRoute(CorridorRoute):
         super()._route_event(event, route_index, handle, **fields)
         if event == 'accepted':
             self.active_handle = handle
+            self._mission_started = True
         elif event == 'result':
             self.active_handle = None
         if event in ('parking_estimate_confirmed', 'parking_not_confirmed'):
@@ -365,6 +368,15 @@ class ServiceRoute(CorridorRoute):
 
     def verify_live_maps(self, require_command_path=True):
         """Require the running map servers to name the registered assets."""
+        identity = json.dumps(
+            {name: self.registry[name] for name in ('map', 'keepout')}, sort_keys=True)
+        if getattr(self, '_verified_map_identity', None) == identity:
+            if self.map_mismatch or self.live_grids != self.expected_grids:
+                raise RuntimeError(self.map_mismatch or 'live map/keepout changed')
+            failure = self._startup_protection_ready(require_command_path=require_command_path)
+            if failure:
+                raise RuntimeError(failure)
+            return
         validate_registry(self.registry)
         self.expected_grids = {
             name: map_grid_signature(self.registry[name]['yaml_path'])
@@ -396,6 +408,9 @@ class ServiceRoute(CorridorRoute):
             require_command_path=require_command_path)
         if protection_error:
             raise RuntimeError(protection_error)
+        # Cache the verified assets for this executor, not sensor freshness or
+        # permission to drive. Map callbacks still stop on changed grid content.
+        self._verified_map_identity = identity
 
     def plan_pose(self, pose, single=False):
         """Validate the entire approach before dispatching any motion goal."""
@@ -501,9 +516,10 @@ class ServiceRoute(CorridorRoute):
         return False
 
     def _departure_battery_ready(self):
-        """Require reserve before a new action, without raising the in-motion cutoff."""
+        """Require starting reserve once per executor, running cutoff thereafter."""
         voltage_v = self.battery_voltage
-        threshold_v = self.service_contract['minimum_start_battery_v']
+        threshold_v = (self.minimum_battery_v if getattr(self, '_mission_started', False)
+                       else self.service_contract['minimum_start_battery_v'])
         if (voltage_v is None or not math.isfinite(voltage_v)
                 or voltage_v < threshold_v):
             self.emit('departure_blocked', reason='battery_departure_reserve',
@@ -519,14 +535,24 @@ class ServiceRoute(CorridorRoute):
         return (super().wait_until_ready(timeout=timeout)
                 and self._departure_battery_ready())
 
-    def execute(self, *, final_parking=True):
+    def execute(self, *, final_parking=True, alignment=False):
         """Bound transit and parking actions and retain their terminal result."""
         if not isinstance(final_parking, bool):
             raise ValueError('final_parking must be boolean')
+        if not isinstance(alignment, bool) or (alignment and final_parking):
+            raise ValueError('alignment requires non-final parking mode')
+        return self._run_with_input_recovery(
+            lambda: self._execute_service_once(final_parking=final_parking, alignment=alignment))
+
+    def _execute_service_once(self, *, final_parking, alignment):
+        """Retry only a canceled input gap, never an unresolved action."""
         if not self.navigate.wait_for_server(timeout_sec=2.0):
             return False
         self.active_action_type = NavigateToPose
         for index, waypoint in enumerate(self.waypoints):
+            if index < self._resume_waypoint_index:
+                continue
+            self._resume_waypoint_index = index
             if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
                 return False
             if not self._departure_battery_ready():
@@ -535,6 +561,8 @@ class ServiceRoute(CorridorRoute):
             goal.pose = self._pose(index, waypoint)
             final = final_parking and index == len(self.waypoints) - 1
             goal.behavior_tree = self.parking_behavior_tree if final else self.behavior_tree
+            if alignment and index == len(self.waypoints) - 1:
+                goal.behavior_tree = self.alignment_behavior_tree
             self.navigation_uuid = NavigateToPose.Impl.SendGoalService.Request().goal_id
             self.navigation_uuid.uuid = list(uuid.uuid4().bytes)
             self.pending_goal = self.navigate.send_goal_async(goal, goal_uuid=self.navigation_uuid)
@@ -551,8 +579,10 @@ class ServiceRoute(CorridorRoute):
                     rclpy.spin_once(self, timeout_sec=0.05)
                     if (self.stop_requested
                             or not self._navigation_ready(require_fresh_amcl=False)):
-                        self.emit('interrupted', reason=(
-                            self._guard_failure(False) or 'operator_or_timeout'))
+                        reason = self._guard_failure(False) or 'operator_or_timeout'
+                        self.emit('interrupted', reason=reason)
+                        if not self.stop_requested and self._input_gap_recoverable(reason):
+                            self._retry_guard_reason = reason
                         return False
                 wrapped = self.navigation_result.result()
                 self._route_event('result', index, handle,
@@ -587,7 +617,27 @@ class ServiceRoute(CorridorRoute):
                 and frame == 'odom' and base == 'base_footprint' and stamped is False)
 
     def search_rotation(self, delta_yaw_rad):
+        """Resume only the remaining angle after a terminal input-gap stop."""
+        self._search_target_yaw = None
+
+        def attempt():
+            remaining_rad = delta_yaw_rad
+            if self._search_target_yaw is not None:
+                actual, _ = self.capture_stationary_pose()
+                remaining_rad = math.atan2(
+                    math.sin(self._search_target_yaw - actual[2]),
+                    math.cos(self._search_target_yaw - actual[2]))
+                if abs(remaining_rad) <= math.radians(5):
+                    return True
+                if abs(remaining_rad) > math.pi / 6 + 1e-9:
+                    return False
+            return self._search_rotation_once(remaining_rad)
+
+        return self._run_with_input_recovery(attempt)
+
+    def _search_rotation_once(self, delta_yaw_rad):
         """Run one bounded Spin through the existing smoother/monitor chain."""
+        self.last_search_error_code = None
         if (isinstance(delta_yaw_rad, bool)
                 or not isinstance(delta_yaw_rad, (int, float))
                 or not math.isfinite(delta_yaw_rad)
@@ -600,6 +650,8 @@ class ServiceRoute(CorridorRoute):
             self.emit('search_rotation_failed', reason='spin_profile_or_navigation_unavailable')
             return False
         before, _ = self.capture_stationary_pose()
+        if self._search_target_yaw is None:
+            self._search_target_yaw = before[2] + delta_yaw_rad
         self.active_action_type = Spin
         goal = Spin.Goal()
         goal.target_yaw = float(delta_yaw_rad)
@@ -618,16 +670,21 @@ class ServiceRoute(CorridorRoute):
                 return False
             self.active_handle = handle
             self.navigation_result = handle.get_result_async()
+            self._mission_started = True
             self.emit('search_rotation_accepted', requested_yaw_rad=delta_yaw_rad,
                       goal_uuid=bytes(self.navigation_uuid.uuid).hex())
             while not self.navigation_result.done():
                 rclpy.spin_once(self, timeout_sec=0.05)
                 if (self.stop_requested or time.monotonic() >= deadline_s
                         or not self._navigation_ready(require_fresh_amcl=False)):
-                    self.emit('search_rotation_failed', reason=(
-                        self._guard_failure(False) or 'operator_or_spin_timeout'))
+                    reason = self._guard_failure(False) or 'operator_or_spin_timeout'
+                    self.emit('search_rotation_failed', reason=reason)
+                    if (not self.stop_requested and time.monotonic() < deadline_s
+                            and self._input_gap_recoverable(reason)):
+                        self._retry_guard_reason = reason
                     return False
             wrapped = self.navigation_result.result()
+            self.last_search_error_code = int(wrapped.result.error_code)
             self.emit('search_rotation_result', terminal_status_code=int(wrapped.status),
                       nav2_error_code=int(wrapped.result.error_code))
             if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
@@ -918,6 +975,25 @@ class ServiceRoute(CorridorRoute):
         return success
 
     def _execute_reverse_path(self, path):
+        """Rebuild the remaining reverse path after one confirmed input-gap stop."""
+        first_attempt = True
+
+        def attempt():
+            nonlocal first_attempt
+            remaining = path
+            if not first_attempt:
+                actual, _ = self.capture_stationary_pose()
+                goal = self.waypoints[-1]
+                remaining = self._make_reverse_path(
+                    actual, (goal['x'], goal['y'], goal['yaw']))
+                if not self._reverse_path_valid(remaining):
+                    return False
+            first_attempt = False
+            return self._execute_reverse_once(remaining)
+
+        return self._run_with_input_recovery(attempt)
+
+    def _execute_reverse_once(self, path):
         """Keep reverse motion in controller → smoother → monitor → base."""
         if not self.waypoints:
             raise ValueError('reverse execution requires a target waypoint')
@@ -948,6 +1024,10 @@ class ServiceRoute(CorridorRoute):
                 rclpy.spin_once(self, timeout_sec=0.05)
                 if (self.stop_requested
                         or not self._navigation_ready(require_fresh_amcl=False)):
+                    reason = self._guard_failure(False) or 'operator_or_timeout'
+                    self.emit('reverse_interrupted', reason=reason)
+                    if not self.stop_requested and self._input_gap_recoverable(reason):
+                        self._retry_guard_reason = reason
                     return False
             wrapped = self.navigation_result.result()
             self._route_event('result', target_index, handle, motion='reverse',
