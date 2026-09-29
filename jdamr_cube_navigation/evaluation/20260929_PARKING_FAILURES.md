@@ -89,6 +89,25 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 
 19:07 정지 상태에서 기존 읽기 전용 probe로 15초를 측정했다. scan 142개, 9.638Hz, stamp age 최대 0.118초, 0.2초 초과 수신 간격 0회였다. odom 740개, 50.007Hz이며 선속도·각속도·변위 최대 모두 0이었다. Nav2가 꺼진 상태의 기준선이므로 주행 부하에서의 지연 해결 증거는 아니다. 파이 소스에 probe 파일이 없어 첫 호출은 실행되지 않았고, 로컬의 기존 probe를 SSH 표준입력으로 전달해 측정했다. 새 이동 코드는 만들지 않았다.
 
+## 11. 반복 설정 조회에서 ROS service client 누적
+
+관측용 지도 확인·탐색 회전 설정·후진 속도·costmap footprint 조회마다 `AsyncParameterClient`를 새로 만들었다. 설치된 Jazzy 구현은 인스턴스마다 6개 service client를 만들며, 지역 변수만 사라져도 Node가 보유한 client는 남는다. 회전 설정 조회 12회를 실제 rclpy Node에서 재현했을 때 72개가 남았다. 응답은 대체했지만 client 생성과 개수는 실제 rclpy 객체로 측정했다.
+
+수정: `ServiceRoute._read_parameters()`가 대상 노드별 `GetParameters` client 하나를 재사용한다. 반환된 설정값은 캐시하지 않고 매번 서버에서 새로 읽는다. 사용하지 않는 다른 5개 parameter service의 발견을 기다리지 않는다. 기존 서비스 발견 2초·응답 2초 상한을 유지하고, 중단·timeout 때 미완료 요청을 client에서 제거한다. 지도 식별·footprint·속도·회전 설정 비교와 충돌 방지 조건은 유지했다.
+
+검증 결과:
+
+- 수정 전 회귀 실패: 12회 조회 뒤 client 72개. 수정 후 같은 반복에서 1개 유지.
+- 새 설정값 수신, 서비스 부재 시 요청 금지, 중단 시 pending request 제거를 검증했다. GetParameters만 제공하는 실제 ROS 서버에서도 두 번의 서로 다른 응답을 받았다.
+- restaurant service·box service·activate navigation 관련 229개 테스트 통과. 변경 Python 2개 파일 ament_flake8, py_compile, diff 검사 통과.
+- 파이의 실행 모듈 SHA-256은 로컬과 같은 `4087e2cd05c87e18c85cfc8980143cf22758ea0ded0cc9a016071592beae8998`이다. 파이 관측 노드의 `processing_hz`를 12번 읽어 모두 2.0을 받았고 client는 1개였다. 해당 조회 구간은 0.283초이며, 서비스 시작·Nav2 활성화·실차 태스크 시간을 뜻하지 않는다.
+- 파이 원본은 `$HOME/jdamr_data/restaurant_service.before_parameter_clients_20260929.py`에 보존했다. Python 모듈은 빌드 경로에서 소스를 참조하므로 다음 실행부터 적용된다. Nav2·모터 서비스를 재기동하거나 이동 goal/cmd_vel을 보내지 않았다.
+- 독립 리뷰 에이전트는 런타임 thread limit으로 시작하지 못했다. 작성과 분리한 검토 패스에서 호출부·값의 신선도·실패 전파·pending request 정리·수명 종료를 확인했다. 독립 승인으로 표시하지 않는다.
+
+연결 누적 결함은 재현·수정했다. 하지만 이것이 18:29 heartbeat 상실의 원인이었다는 인과는 아직 확인하지 못했다. 당시 생성 client 수와 장애 시각의 대응 기록이 없으므로 모든 지연의 해결이라고 보고하지 않는다. 기존 `BoxService.precision_parameters`와 `CorridorRoute.parking_parameters`는 인스턴스를 재사용하므로 이번 누적 결함과 구분해 그대로 두었다.
+
+파이 조회 출력은 `$HOME/jdamr_data/nav2_architecture_20260929_tF5td9/parameter_reader_pi_check.json`에 보존했다. 구성 판단과 남은 계측 조건은 [Nav2 실행 위치 조사](20260929_NAV2_PLATFORM_RESEARCH.md)를 따른다.
+
 ## 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.

@@ -25,10 +25,10 @@ from jdamr_cube_navigation.service_destinations import (
 from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose, Spin
 from nav2_msgs.srv import IsPathValid
 from nav_msgs.msg import OccupancyGrid, Path as RosPath
+from rcl_interfaces.srv import GetParameters
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.parameter import parameter_value_to_python
-from rclpy.parameter_client import AsyncParameterClient
 from rclpy.signals import SignalHandlerOptions
 from rclpy.utilities import remove_ros_args
 from std_msgs.msg import String
@@ -172,6 +172,7 @@ class ServiceRoute(CorridorRoute):
                 OccupancyGrid, topic,
                 lambda message, name=key: self._map_callback(name, message), AMCL_QOS)
         self.run_deadline_s = None
+        self._parameter_readers = {}
         self.create_timer(0.1, self._deadline_tick)
 
     def _box_callback(self, message):
@@ -345,6 +346,23 @@ class ServiceRoute(CorridorRoute):
                     f'actual={actual}')
             rclpy.spin_once(self, timeout_sec=0.05)
 
+    def _read_parameters(self, remote_node, names):
+        """Reuse one read-only endpoint; never cache the returned parameter values."""
+        client = self._parameter_readers.get(remote_node)
+        if client is None:
+            client = self.create_client(GetParameters, f'{remote_node}/get_parameters')
+            self._parameter_readers[remote_node] = client
+        if not client.wait_for_service(timeout_sec=2.0):
+            return None
+        request = GetParameters.Request()
+        request.names = list(names)
+        future = client.call_async(request)
+        try:
+            return self._wait(future, 2.0)
+        finally:
+            if not future.done():
+                client.remove_pending_request(future)
+
     def verify_live_maps(self, require_command_path=True):
         """Require the running map servers to name the registered assets."""
         validate_registry(self.registry)
@@ -365,10 +383,9 @@ class ServiceRoute(CorridorRoute):
         for node_name, identity in (
                 ('map_server', self.registry['map']),
                 ('keepout_filter_mask_server', self.registry['keepout'])):
-            client = AsyncParameterClient(self, node_name)
-            if not client.wait_for_services(timeout_sec=2.0):
+            response = self._read_parameters(node_name, ['yaml_filename'])
+            if response is None:
                 raise RuntimeError(f'{node_name} parameters unavailable')
-            response = self._wait(client.get_parameters(['yaml_filename']), 2.0)
             if len(response.values) != 1:
                 raise RuntimeError(f'{node_name} yaml_filename unavailable')
             path = parameter_value_to_python(response.values[0])
@@ -554,12 +571,11 @@ class ServiceRoute(CorridorRoute):
 
     def _search_parameters_ready(self):
         """Reject absent/unbounded spin profiles before sending a search action."""
-        client = AsyncParameterClient(self, 'behavior_server')
-        if not client.wait_for_services(timeout_sec=2.0):
-            return False
         names = ['behavior_plugins', 'max_rotational_vel', 'min_rotational_vel',
                  'local_frame', 'robot_base_frame', 'enable_stamped_cmd_vel']
-        response = self._wait(client.get_parameters(names), 2.0)
+        response = self._read_parameters('behavior_server', names)
+        if response is None:
+            return False
         values = [parameter_value_to_python(v) for v in response.values]
         if len(values) != len(names):
             return False
@@ -785,10 +801,10 @@ class ServiceRoute(CorridorRoute):
         return path
 
     def _reverse_smoother_ready(self):
-        client = AsyncParameterClient(self, 'velocity_smoother')
-        if not client.wait_for_services(timeout_sec=2.0):
+        response = self._read_parameters(
+            'velocity_smoother', ['min_velocity', 'max_velocity'])
+        if response is None:
             return False
-        response = self._wait(client.get_parameters(['min_velocity', 'max_velocity']), 2.0)
         values = [parameter_value_to_python(v) for v in response.values]
         if (len(values) != 2 or any(not isinstance(v, list) or len(v) != 3 for v in values)
                 or any(isinstance(x, bool) or not isinstance(x, (int, float))
@@ -821,11 +837,10 @@ class ServiceRoute(CorridorRoute):
         """Use matching runtime footprints, including their configured padding."""
         footprints = []
         for name in ('global_costmap/global_costmap', 'local_costmap/local_costmap'):
-            client = AsyncParameterClient(self, name)
-            if not client.wait_for_services(timeout_sec=2.0):
+            response = self._read_parameters(
+                name, ['footprint', 'footprint_padding', 'robot_base_frame'])
+            if response is None:
                 raise RuntimeError(f'{name} footprint unavailable')
-            response = self._wait(client.get_parameters(
-                ['footprint', 'footprint_padding', 'robot_base_frame']), 2.0)
             values = [parameter_value_to_python(v) for v in response.values]
             if len(values) != 3 or values[2] != 'base_footprint':
                 raise RuntimeError('reverse footprint frame mismatch')

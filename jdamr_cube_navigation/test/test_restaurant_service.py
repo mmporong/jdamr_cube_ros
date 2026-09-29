@@ -97,6 +97,7 @@ def route():
     node.live_grids = {}
     node.expected_grids = {}
     node.map_mismatch = None
+    node._parameter_readers = {}
     node.confirmation = None
     node.start_index = 0
     node.navigation_profile = 'obstacle_base_candidate'
@@ -758,9 +759,8 @@ def test_search_checks_installed_spin_profile(
     client = Mock()
     values = [Parameter('p', value=v).get_parameter_value() for v in (
         plugins, maximum, minimum, 'odom', 'base_footprint', stamped)]
-    client.get_parameters.return_value = done(SimpleNamespace(values=values))
-    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.AsyncParameterClient',
-                        lambda *args: client)
+    client.call_async.return_value = done(SimpleNamespace(values=values))
+    node.create_client = Mock(return_value=client)
     assert node._search_parameters_ready() is ready
 
 
@@ -788,6 +788,126 @@ def test_search_timeout_cancels_accepted_spin(monkeypatch):
     assert node.capture_stationary_pose.call_count == 1
 
 
+def test_repeated_spin_profile_reads_do_not_accumulate_ros_clients(monkeypatch):
+    """Count real rclpy clients, with only remote responses substituted."""
+    import rclpy
+    from rclpy.client import Client
+    from rclpy.context import Context
+    from rclpy.node import Node
+    from rclpy.parameter_client import AsyncParameterClient
+
+    monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+    monkeypatch.setenv('ROS_LOCALHOST_ONLY', '0')
+    monkeypatch.setattr(AsyncParameterClient, 'wait_for_services',
+                        lambda *args, **kwargs: True)
+    monkeypatch.setattr(Client, 'wait_for_service', lambda *args, **kwargs: True)
+    context = Context()
+    rclpy.init(context=context, domain_id=91)
+    node = Node('parameter_reader_regression', context=context,
+                start_parameter_services=False, enable_rosout=False)
+    node.parking_contract = {'rotate_angular_radps': .2}
+    node._parameter_readers = {}
+    node._read_parameters = lambda remote, names: ServiceRoute._read_parameters(
+        node, remote, names)
+    response = SimpleNamespace(values=[
+        Parameter('p', value=value).get_parameter_value() for value in
+        (['wait', 'spin'], .2, .1, 'odom', 'base_footprint', False)])
+    monkeypatch.setattr(Client, 'call_async', lambda *args: done(response))
+    node._wait = lambda future, timeout: future.result()
+    try:
+        for _ in range(12):
+            assert ServiceRoute._search_parameters_ready(node)
+        assert len(list(node.clients)) == 1
+    finally:
+        node.destroy_node()
+        rclpy.shutdown(context=context)
+
+
+def test_parameter_reader_reuses_endpoint_but_not_returned_values():
+    node = route()
+    client = Mock()
+    first = SimpleNamespace(values=['old'])
+    second = SimpleNamespace(values=['new'])
+    client.call_async.side_effect = [done(first), done(second)]
+    node.create_client = Mock(return_value=client)
+    assert node._read_parameters('map_server', ['yaml_filename']) is first
+    assert node._read_parameters('map_server', ['yaml_filename']) is second
+    node.create_client.assert_called_once()
+    assert client.call_async.call_count == 2
+    assert client.call_async.call_args.args[0].names == ['yaml_filename']
+    client.remove_pending_request.assert_not_called()
+
+
+def test_parameter_reader_absent_service_never_sends_request():
+    node = route()
+    client = Mock()
+    client.wait_for_service.return_value = False
+    node.create_client = Mock(return_value=client)
+    assert node._read_parameters('map_server', ['yaml_filename']) is None
+    client.call_async.assert_not_called()
+
+
+def test_parameter_reader_discards_pending_request_on_interruption():
+    node = route()
+    client = Mock()
+    pending = Future()
+    client.call_async.return_value = pending
+    node.create_client = Mock(return_value=client)
+    node._wait = Mock(side_effect=RuntimeError('request interrupted, failed or timed out'))
+    with pytest.raises(RuntimeError, match='request interrupted'):
+        node._read_parameters('map_server', ['yaml_filename'])
+    client.remove_pending_request.assert_called_once_with(pending)
+
+
+def test_parameter_reader_uses_real_read_only_service_and_fresh_responses(monkeypatch):
+    """A get-only peer works without five unrelated parameter services."""
+    import rclpy
+    from rcl_interfaces.srv import GetParameters
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+
+    monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+    monkeypatch.setenv('ROS_LOCALHOST_ONLY', '0')
+    context = Context()
+    rclpy.init(context=context, domain_id=91)
+    executor = SingleThreadedExecutor(context=context)
+    server = Node('read_only_peer', context=context, start_parameter_services=False,
+                  enable_rosout=False)
+    node = Node('fresh_parameter_reader', context=context, start_parameter_services=False,
+                enable_rosout=False)
+    node._parameter_readers = {}
+    requests = []
+
+    def respond(request, response):
+        requests.append(list(request.names))
+        response.values = [Parameter('revision', value=len(requests)).get_parameter_value()]
+        return response
+
+    server.create_service(GetParameters, 'read_only_peer/get_parameters', respond)
+    executor.add_node(server)
+    executor.add_node(node)
+
+    def wait(future, timeout):
+        executor.spin_until_future_complete(future, timeout_sec=timeout)
+        assert future.done()
+        return future.result()
+
+    node._wait = wait
+    try:
+        first = ServiceRoute._read_parameters(node, 'read_only_peer', ['revision'])
+        second = ServiceRoute._read_parameters(node, 'read_only_peer', ['revision'])
+        assert first.values[0].integer_value == 1
+        assert second.values[0].integer_value == 2
+        assert requests == [['revision'], ['revision']]
+        assert len(list(node.clients)) == 1
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        server.destroy_node()
+        rclpy.shutdown(context=context)
+
+
 @pytest.mark.parametrize('minimum,maximum,ready', [
     (-.08, .08, True), (0.0, .08, False), (-.09, .08, False), (-.08, .2, False),
 ])
@@ -796,9 +916,8 @@ def test_reverse_checks_actual_smoother_velocity_bounds(monkeypatch, minimum, ma
     client = Mock()
     values = [Parameter('min_velocity', value=[minimum, 0.0, -.3]).get_parameter_value(),
               Parameter('max_velocity', value=[maximum, 0.0, .3]).get_parameter_value()]
-    client.get_parameters.return_value = done(SimpleNamespace(values=values))
-    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.AsyncParameterClient',
-                        lambda *args: client)
+    client.call_async.return_value = done(SimpleNamespace(values=values))
+    node.create_client = Mock(return_value=client)
     assert node._reverse_smoother_ready() is ready
 
 
@@ -1079,10 +1198,9 @@ def test_wrong_live_map_prevents_any_goal(monkeypatch):
     monkeypatch.setattr(
         'jdamr_cube_navigation.restaurant_service.validate_registry', lambda _: None)
     client = Mock()
-    client.get_parameters.return_value = done(SimpleNamespace(values=[
+    client.call_async.return_value = done(SimpleNamespace(values=[
         Parameter('yaml_filename', value='/wrong/map.yaml').get_parameter_value()]))
-    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.AsyncParameterClient',
-                        lambda *_: client)
+    node.create_client = Mock(return_value=client)
     verify = Mock(side_effect=ValueError('map hash mismatch'))
     monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.verify_identity', verify)
     with pytest.raises(ValueError, match='hash mismatch'):
