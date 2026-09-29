@@ -20,6 +20,7 @@ from jdamr_cube_navigation.reverse_parking import reverse_controller_overrides
 from nav_msgs.msg import Odometry
 import pytest
 from rclpy.parameter import Parameter
+from rclpy.task import Future
 import yaml
 
 
@@ -149,13 +150,14 @@ def test_original_route_never_runs_parking_verification():
 
 
 @pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('response_delay_s', [0, 3, 6])
 @pytest.mark.parametrize('mismatch', [
     None, 'Parking.stateful', 'parking_goal_checker.xy_goal_tolerance',
     'Parking.use_collision_detection', 'controller_plugins',
     'Parking.regulated_linear_scaling_min_speed',
 ])
 def test_runtime_parameter_check_rejects_missing_or_relaxed_configuration(
-        mismatch, reverse):
+        mismatch, reverse, response_delay_s, monkeypatch):
     """Validate effective runtime parameters before the first route goal."""
     route = _route()
     values = parking_controller_overrides(_document(), _contract())
@@ -173,11 +175,29 @@ def test_runtime_parameter_check_rejects_missing_or_relaxed_configuration(
     elif mismatch:
         flat[mismatch] = None
     route.parking_parameters = Mock()
-    route.parking_parameters.get_parameters.side_effect = lambda names: (
-        _completed_future(SimpleNamespace(values=[
+    clock = {'now': 0.0}
+    future = Future()
+    responses = {}
+
+    def query(names):
+        responses['value'] = SimpleNamespace(values=[
             Parameter(name, value=flat.get(name)).get_parameter_value()
-            for name in names])))
-    assert route._parking_parameters_ready(reverse=reverse) is (mismatch is None)
+            for name in names])
+        if response_delay_s == 0:
+            future.set_result(responses['value'])
+        return future
+
+    def spin(*_, **__):
+        clock['now'] += 1
+        if clock['now'] >= response_delay_s and not future.done():
+            future.set_result(responses['value'])
+
+    route.parking_parameters.get_parameters.side_effect = query
+    monkeypatch.setattr('jdamr_cube_navigation.corridor_route.time.monotonic',
+                        lambda: clock['now'])
+    monkeypatch.setattr('jdamr_cube_navigation.corridor_route.rclpy.spin_once', spin)
+    assert route._parking_parameters_ready(reverse=reverse) is (
+        mismatch is None and response_delay_s < 5)
 
 
 def test_quaternion_conversion_validates_input_and_preserves_yaw():

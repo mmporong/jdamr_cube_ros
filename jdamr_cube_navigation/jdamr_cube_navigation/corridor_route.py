@@ -661,11 +661,11 @@ class CorridorRoute(Node):
             })
             expected['ParkingReverse.use_rotate_to_heading'] = False
             expected['ParkingReverse.allow_reversing'] = True
-        if not self.parking_parameters.wait_for_services(timeout_sec=2.0):
+        if not self.parking_parameters.wait_for_services(timeout_sec=5.0):
             self.get_logger().error('parking controller parameters unavailable')
             return False
         future = self.parking_parameters.get_parameters(list(expected))
-        deadline_s = time.monotonic() + 2.0
+        deadline_s = time.monotonic() + 5.0
         while (not future.done() and not self.stop_requested and
                time.monotonic() < deadline_s):
             rclpy.spin_once(self, timeout_sec=0.1)
