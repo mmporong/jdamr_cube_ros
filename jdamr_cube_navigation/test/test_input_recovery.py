@@ -308,7 +308,7 @@ class _ActionPeer:
 
 
 class _Planner:
-    """Return a successful two-pose plan whose end the scenario may shift."""
+    """Return a successful two-pose plan that ends at the requested goal."""
 
     def __init__(self, world):
         self.world = world
@@ -320,8 +320,6 @@ class _Planner:
         self.world.plans.append(goal)
         target = goal.goals[-1].pose
         end = (target.position.x, target.position.y)
-        if self.world.plan_end is not None:
-            end = self.world.plan_end(end)
         result = ComputePathThroughPoses.Result()
         start = PoseStamped()
         start.pose.position.x, start.pose.position.y = self.world.pose[:2]
@@ -411,7 +409,6 @@ class _World:
         self.parameter_reads = []
         self.tf_lookups = 0
         self.stop_on_motion = False
-        self.plan_end = None
         self.lethal = set(lethal)
         self.subscriptions = []
         self.destroyed = []
@@ -1387,6 +1384,14 @@ def _path_length(path):
                for a, b in zip(path.poses, path.poses[1:]))
 
 
+def _escape_path(node, contract):
+    target = (PARKED_X_M - 0.45, 0.0, 0.0)
+    node.config = {'frame_id': 'map', 'waypoints': [
+        {'id': 'box_escape', 'x': target[0], 'y': target[1], 'yaw': target[2]}]}
+    node.waypoints = node.config['waypoints']
+    return node._make_reverse_path((PARKED_X_M, 0.0, 0.0), target, path_contract=contract)
+
+
 def test_t23_escape_is_first_motion_before_box(monkeypatch, tmp_path):
     """Back straight away from the box before any rotation or NavigateToPose."""
     node, world = _parked_world(monkeypatch, tmp_path)
@@ -1511,12 +1516,9 @@ def test_t25b_escape_retry_already_at_goal_is_reported(monkeypatch, tmp_path):
     _require_parameter('T25b', ServiceRoute._execute_reverse_path, 'final')
     contract = _new_symbol('T25b', box_service, 'ESCAPE_PATH_CONTRACT')
     node, _world = _parked_world(monkeypatch, tmp_path)
-    target = (PARKED_X_M - 0.45, 0.0, 0.0)
-    node.config = {'frame_id': 'map', 'waypoints': [
-        {'id': 'box_escape', 'x': target[0], 'y': target[1], 'yaw': target[2]}]}
-    node.waypoints = node.config['waypoints']
-    path = node._make_reverse_path((PARKED_X_M, 0.0, 0.0), target, path_contract=contract)
-    node.capture_stationary_pose = Mock(return_value=((target[0] + 0.03, 0.0, 0.0), {}))
+    path = _escape_path(node, contract)
+    escape_x = node.waypoints[-1]['x']
+    node.capture_stationary_pose = Mock(return_value=((escape_x + 0.03, 0.0, 0.0), {}))
     node._wait_for_input_recovery = Mock(return_value=True)
     attempts = []
 
@@ -1621,14 +1623,6 @@ def test_t28_final_box_pose_real_dwell(monkeypatch, tmp_path):
 
 
 # Review fixes: escape retry band, escape outcomes and pre-motion guards -------
-
-def _escape_path(node, contract):
-    target = (PARKED_X_M - 0.45, 0.0, 0.0)
-    node.config = {'frame_id': 'map', 'waypoints': [
-        {'id': 'box_escape', 'x': target[0], 'y': target[1], 'yaw': target[2]}]}
-    node.waypoints = node.config['waypoints']
-    return node._make_reverse_path((PARKED_X_M, 0.0, 0.0), target, path_contract=contract)
-
 
 def _box_escape_failures(node):
     return [record for record in _events(node, 'failed')
