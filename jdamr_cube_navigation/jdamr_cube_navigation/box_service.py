@@ -259,7 +259,7 @@ class BoxServiceRoute(ServiceRoute):
 
     def visit_observed_box(self, route_path, camera_mount, geometry,
                            table_id, region_xy, region_radius_m, execute=False,
-                           candidate_trial=False):
+                           candidate_trial=False, resume_at_observation=False):
         """Separate transit, face alignment and final approach in the result log."""
         if execute and candidate_trial is not True:
             raise RuntimeError(
@@ -295,18 +295,24 @@ class BoxServiceRoute(ServiceRoute):
                 or not math.isfinite(limit_m) or not 0.0 < limit_m <= 0.3):
             raise ValueError('observation route requires a bounded start pose')
         actual, _ = self.capture_stationary_pose()
-        if math.dist(actual[:2], (start['x'], start['y'])) > limit_m:
+        reference = route['waypoints'][-1] if resume_at_observation else start
+        if math.dist(actual[:2], (reference['x'], reference['y'])) > limit_m:
+            if resume_at_observation:
+                raise RuntimeError('robot is not at the reached observation region')
             raise RuntimeError('robot is not at the observation route starting place')
         self.config, self.waypoints = route, route['waypoints']
         self.emit('observation_route_selected', waypoints=self.waypoints,
                   candidate_trial=self.candidate_trial,
                   physical_accuracy='NOT_EXTERNALLY_MEASURED')
-        if not self.preflight():
+        if not resume_at_observation and not self.preflight():
             return False
         if not execute:
             self.emit('transit_planned_only', box_target='requires_observation_on_arrival')
             return True
-        if not self.execute():
+        if resume_at_observation:
+            self.emit('resume_at_reached_observation', actual_pose=list(actual),
+                      transit_skipped=True, final_parking_confirmed=False)
+        elif not self.execute():
             self.emit('failed', phase='table_region_transit')
             return False
         # Face alignment happens while depth is still in its usable range.

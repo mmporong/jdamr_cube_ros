@@ -75,6 +75,37 @@ def test_transit_failure_never_observes_or_dispatches_alignment(mission):
     mission.observe_target.assert_not_called()
 
 
+def test_resume_observation_skips_transit_but_keeps_both_parking_phases(mission):
+    mission.config = {}
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 1.0), {}), ((0.885, 0, 0), {})]
+    original = box_service.load_route('route')
+    original['waypoints'][-1].update(x=0, y=0)
+    assert mission.visit_observed_box(
+        'route', {}, {'front_to_wheel_axis': {'value': 0.065},
+                      'wheel_outer_width': {'value': 0.540}},
+        'table_01', (1, 0), 0.6, execute=True,
+        candidate_trial=True, resume_at_observation=True)
+    assert mission.execute.call_count == 2
+    mission.preflight.assert_not_called()
+    assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
+    mission.verify_live_maps.assert_called()
+    mission._precision_collision_ready.assert_called_once()
+
+
+def test_resume_observation_rejects_robot_outside_observation_region(mission):
+    original = box_service.load_route('route')
+    original['waypoints'][-1].update(x=1, y=0)
+    with pytest.raises(RuntimeError, match='not at the reached observation'):
+        mission.visit_observed_box(
+            'route', {}, {'front_to_wheel_axis': {'value': 0.065},
+                          'wheel_outer_width': {'value': 0.540}},
+            'table_01', (1, 0), 0.6, execute=True,
+            candidate_trial=True, resume_at_observation=True)
+    mission.execute.assert_not_called()
+    mission.observe_target.assert_not_called()
+
+
 def test_missing_face_has_no_parking_dispatch(mission):
     mission.observe_target.side_effect = RuntimeError('no stable face')
     with pytest.raises(RuntimeError, match='no stable face'):
