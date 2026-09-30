@@ -333,8 +333,10 @@ class ServiceRoute(CorridorRoute):
 
     def emit(self, event, **fields):
         """Flush structured evidence on each transition, including failures."""
+        # wall_time_s lines events up with the PC bag and phone video.
         record = {'event': event, 'table_id': self.table_id,
                   'pose_id': self.pose_id, 'monotonic_s': time.monotonic(),
+                  'wall_time_s': time.time(),
                   'physical_accuracy': 'NOT_MEASURED', **fields}
         record['front_gap'] = front_gap_evidence(getattr(self, 'selected_pose', None) or {})
         covariance = getattr(self, 'amcl_covariance', None)
