@@ -744,13 +744,13 @@ class CorridorRoute(Node):
                 return False
         return True
 
-    def _parking_observation(self):
-        """Read current map pose and independent odometry without commanding."""
+    def _parking_observation(self, reference_frame=None):
+        """Read current map (or odom) pose and independent odometry without commanding."""
         contract = self.parking_contract
         if self.parking_odom is None or self.parking_command is None:
             raise ValueError('parking odometry or final command missing')
         transform = self.parking_tf.lookup_transform(
-            contract['reference_frame'], contract['robot_base_frame'],
+            reference_frame or contract['reference_frame'], contract['robot_base_frame'],
             rclpy.time.Time())
         ros_now_s = self.get_clock().now().nanoseconds * 1e-9
         now_s = time.monotonic()
@@ -837,7 +837,11 @@ class CorridorRoute(Node):
                 continue
             last_stamp = stamp_key
             try:
-                observation = self._parking_observation()
+                frame = contract.get('reference_frame')
+                observation = (
+                    self._parking_observation()
+                    if frame == self.parking_contract.get('reference_frame')
+                    else self._parking_observation(frame))
                 result = gate.observe(
                     now_s=time.monotonic(),
                     target_pose=(waypoint['x'], waypoint['y'], waypoint['yaw']),

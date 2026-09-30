@@ -1508,7 +1508,7 @@ def test_t25a_dock_retry_rebuilds_with_home_contract(monkeypatch, tmp_path):
     # The resumed dock keeps the dock's goal checker and acceptance contract.
     home = load_parking_contract(CONTRACT)
     assert options[1].get('goal_checker_id') == 'alignment_goal_checker'
-    assert options[1].get('verify_contract') == home
+    assert options[1].get('verify_contract') == {**home, 'reference_frame': 'odom'}
     assert options[1] == options[0]
 
 
@@ -1551,7 +1551,10 @@ def test_t26_precision_staging_and_dock_use_home_contract(monkeypatch, tmp_path)
     verified = node._verify_parking_stop.call_args_list
     assert verified[0].args[0] == 0 and verified[0].args[2] is None
     assert verified[0].args[1]['x'] == pytest.approx(stage['x'])
-    assert all(item.kwargs.get('contract') == home for item in verified)
+    # Staging is confirmed on the map; the dock leg in odom (AMCL jumps, 2026-09-30).
+    assert verified[0].kwargs.get('contract') == home
+    assert all(item.kwargs.get('contract') == {**home, 'reference_frame': 'odom'}
+               for item in verified[1:])
     kinds = [kind for kind, _goal in world.motions]
     assert kinds == ['FollowPath']
     assert world.motions[0][1].goal_checker_id == 'alignment_goal_checker'

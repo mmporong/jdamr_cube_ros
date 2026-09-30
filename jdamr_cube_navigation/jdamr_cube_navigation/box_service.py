@@ -888,10 +888,13 @@ class BoxServiceRoute(ServiceRoute):
                 self.emit('failed', phase='box_escape', reason='box_escape_blocked')
                 return False
             failure = 'box_escape_failed'
+            # Straight back in odom: AMCL jumps near the box cannot bend it.
+            odom_path, _to_odom = self._frozen_in_odom(path)
             reached = self._execute_reverse_path(
                 path, path_contract=ESCAPE_PATH_CONTRACT,
                 validate_from_m=ESCAPE_VALIDATION_EXCLUDE_M,
-                goal_checker_id='alignment_goal_checker', final=False)
+                goal_checker_id='alignment_goal_checker', final=False,
+                send_path=odom_path)
             if not reached and self.stop_requested:
                 # The preceding result event carries the Nav2 error code.
                 self.emit('failed', phase='box_escape', reason='box_escape_failed')

@@ -14,6 +14,7 @@ import uuid
 from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from ament_index_python.packages import get_package_share_directory
+from geometry_msgs.msg import PoseStamped
 from jdamr_cube_navigation.corridor_route import _quaternion_yaw, AMCL_QOS, CorridorRoute
 from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold, pose_errors,
@@ -1027,6 +1028,44 @@ class ServiceRoute(CorridorRoute):
         path.header = path.poses[0].header
         return path
 
+    def _frozen_in_odom(self, path):
+        """
+        Express a validated map path in odom as map and odom relate right now.
+
+        AMCL heading near the dock and the boxes jumped by up to about 15 deg on
+        2026-09-30 while short reverses swung left and right; a path held in
+        odom stays straight whatever AMCL does meanwhile. Returns the odom path
+        and the map-to-odom pose function used for its confirmation target.
+        """
+        base = self.parking_contract['robot_base_frame']
+        in_map = self.parking_tf.lookup_transform('map', base, rclpy.time.Time())
+        in_odom = self.parking_tf.lookup_transform('odom', base, rclpy.time.Time())
+        map_x, map_y = in_map.transform.translation.x, in_map.transform.translation.y
+        odom_x, odom_y = in_odom.transform.translation.x, in_odom.transform.translation.y
+        turn = (_quaternion_yaw(in_odom.transform.rotation)
+                - _quaternion_yaw(in_map.transform.rotation))
+
+        def to_odom(x, y, yaw):
+            dx, dy = x - map_x, y - map_y
+            return (odom_x + math.cos(turn) * dx - math.sin(turn) * dy,
+                    odom_y + math.sin(turn) * dx + math.cos(turn) * dy,
+                    math.atan2(math.sin(yaw + turn), math.cos(yaw + turn)))
+
+        frozen = RosPath()
+        frozen.header.frame_id = 'odom'
+        frozen.header.stamp = path.header.stamp
+        for item in path.poses:
+            x, y, yaw = to_odom(item.pose.position.x, item.pose.position.y,
+                                _quaternion_yaw(item.pose.orientation))
+            pose = PoseStamped()
+            pose.header.frame_id = 'odom'
+            pose.header.stamp = item.header.stamp
+            pose.pose.position.x, pose.pose.position.y = x, y
+            pose.pose.orientation.z = math.sin(yaw / 2.0)
+            pose.pose.orientation.w = math.cos(yaw / 2.0)
+            frozen.poses.append(pose)
+        return frozen, to_odom
+
     def _reverse_smoother_ready(self):
         response = self._read_parameters(
             'velocity_smoother', ['min_velocity', 'max_velocity'])
@@ -1229,9 +1268,17 @@ class ServiceRoute(CorridorRoute):
         if not self._reverse_path_valid(path):
             return False
         if precision_home:
+            # Staging was confirmed on the map; the dock leg runs and is
+            # confirmed in odom from there, so AMCL jumps cannot bend it.
+            odom_path, to_odom = self._frozen_in_odom(path)
+            odom_x, odom_y, odom_yaw = to_odom(*target)
+            self.emit('dock_leg_frozen_in_odom',
+                      odom_target_pose=[odom_x, odom_y, odom_yaw])
             success = self._execute_reverse_path(
                 path, path_contract=home, goal_checker_id=dock_checker,
-                verify_contract=home)
+                verify_contract={**home, 'reference_frame': 'odom'},
+                send_path=odom_path,
+                verify_waypoint={'x': odom_x, 'y': odom_y, 'yaw': odom_yaw})
         else:
             success = self._execute_reverse_path(path)
         self.emit('home_arrived' if success else 'failed',
@@ -1240,7 +1287,7 @@ class ServiceRoute(CorridorRoute):
 
     def _execute_reverse_path(self, path, path_contract=None, validate_from_m=0.0,
                               goal_checker_id='parking_goal_checker', verify_contract=None,
-                              final=True):
+                              final=True, send_path=None, verify_waypoint=None):
         """
         Rebuild the remaining reverse path after one confirmed input-gap stop.
 
@@ -1260,10 +1307,14 @@ class ServiceRoute(CorridorRoute):
             once_kwargs['verify_contract'] = verify_contract
         if not final:
             once_kwargs['final'] = False
+        if verify_waypoint is not None:
+            once_kwargs['verify_waypoint'] = verify_waypoint
 
         def attempt():
             nonlocal first_attempt
-            remaining = path
+            # The first send may be the odom-frozen copy; a retry after an
+            # input gap rebuilds on the map from the stationary pose.
+            remaining = path if send_path is None else send_path
             if not first_attempt:
                 actual, _ = self.capture_stationary_pose()
                 goal = self.waypoints[-1]
@@ -1296,7 +1347,7 @@ class ServiceRoute(CorridorRoute):
         return self._run_with_input_recovery(attempt)
 
     def _execute_reverse_once(self, path, goal_checker_id='parking_goal_checker',
-                              verify_contract=None, final=True):
+                              verify_contract=None, final=True, verify_waypoint=None):
         """Keep reverse motion in controller → smoother → monitor → base."""
         if not self.waypoints:
             raise ValueError('reverse execution requires a target waypoint')
@@ -1348,7 +1399,8 @@ class ServiceRoute(CorridorRoute):
                 return True
             if verify_contract is not None:
                 return self._verify_parking_stop(
-                    target_index, self.waypoints[-1], handle, contract=verify_contract)
+                    target_index, verify_waypoint or self.waypoints[-1], handle,
+                    contract=verify_contract)
             return self._verify_parking_stop(target_index, self.waypoints[-1], handle)
         finally:
             if not self.finish_navigation():
