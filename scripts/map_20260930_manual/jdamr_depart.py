@@ -81,7 +81,7 @@ TABLES = ('table_01', 'table_02')
 # Distances from the face along its outward normal (box_service: final 0.115, face
 # alignment 0.515, escape 0.565). Pre and observation lie on the same straight line so
 # the robot arrives facing the box; 0.50 m spacing stays above the BT goal tolerance.
-PRE_M, OBSERVE_M, ESCAPE_M = 1.10, 0.60, 0.565
+PRE_M, OBSERVE_M, ESCAPE_M = 1.00, 0.58, 0.565  # water face from the camera (0.06): pre 1.00 keeps 0.54 m to table_01
 HOME_EXIT_M = 0.70
 
 
@@ -112,7 +112,9 @@ TASK_TIMEOUT_S = 600.0
 RETURN_TIMEOUT_S = 600.0
 INIT_COVARIANCE = {'covariance_x_m2': 0.0025, 'covariance_y_m2': 0.0025,
                    'covariance_yaw_rad2': math.radians(5.0) ** 2}
-MATCH_MIN_INLIER = 0.5
+# Three unmapped boxes near the dock lower the inlier share (0.48-0.49 at 15:20 with a
+# consistent global match); the global agreement and the AMCL agreement stay the gates.
+MATCH_MIN_INLIER = 0.45
 MATCH_CLICK_XY_M = 0.5
 MATCH_CLICK_YAW_RAD = math.radians(30.0)
 AMCL_AGREE_XY_M = 0.05
@@ -386,7 +388,10 @@ def cmd_init(args):
     log(f'scan match ({pose[0]:.3f}, {pose[1]:.3f}, {math.degrees(pose[2]):.1f} deg) '
         f'inlier {refined["inlier_5cm"]:.2f}, click offset {refined["click_offset_m"]:.2f} m / '
         f'{refined["click_offset_deg"]:.1f} deg, global agrees {refined["global_agrees"]}')
-    if refined['inlier_5cm'] < MATCH_MIN_INLIER or not refined['global_agrees']:
+    # --local-only: the operator stated the placement (e.g. pulled straight back and
+    # turned to face a box); nearby boxes can outrank it globally. AMCL agreement stays.
+    min_inlier = 0.35 if args.local_only else MATCH_MIN_INLIER
+    if refined['inlier_5cm'] < min_inlier or not (refined['global_agrees'] or args.local_only):
         fail('scan does not match the map near the click; check placement or click again')
     initial = {'frame_id': 'map', 'x_m': pose[0], 'y_m': pose[1], 'yaw_rad': pose[2],
                **INIT_COVARIANCE,
@@ -459,6 +464,16 @@ def cmd_go(args):
     if 'regions' not in state:
         fail('run init first')
     table_id = args.table_id
+    healthy, line = dds_health()
+    if not healthy:
+        # Seen on 2026-09-30: new processes stopped receiving map/TF/scan from the
+        # running base and session. A fresh base and session fixed it every time.
+        log(f'DDS check failed before departure ({line}); recovering without motion')
+        args.seed = None
+        cmd_recover(args)
+        state = load_state()
+    else:
+        log('DDS OK: ' + line)
     region = state['regions'][table_id]
     via = state['regions'][VIA_ID]
     if args.region:
@@ -483,9 +498,12 @@ def cmd_go(args):
                f'--region-radius-m {region["radius_m"]} --log {run_dir}/cycle_events.jsonl '
                f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
                f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
-               f'--via-id {VIA_ID} --via-route {P2}/{VIA_ID}_route.yaml '
-               f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
-               f'--via-region-radius-m {via["radius_m"]}')
+               + (' --resume-at-observation ' if args.resume_at_observation else '')
+               + (f' --resume-parked-from-log {args.resume_parked_log} ' if args.resume_parked_log else '')
+               + ('' if args.skip_via else
+                  f'--via-id {VIA_ID} --via-route {args.via_route or P2 / (VIA_ID + "_route.yaml")} '
+                  f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
+                  f'--via-region-radius-m {via["radius_m"]}'))
     (run_dir / 'command.txt').write_text(command + '\n')
     pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
        '--property=KillMode=mixed --property=KillSignal=SIGINT --property=TimeoutStopSec=20 '
@@ -511,6 +529,49 @@ def cmd_go(args):
     log(f'cycle ended: parked={"box_approach_finished" in names} '
         f'dwell={"parked_dwell_complete" in names} escape={"box_escape_finished" in names} '
         f'home={bool(arrived) and arrived[-1].get("confirmation", {}).get("confirmed") is True}')
+
+
+def dds_health():
+    """Check that a fresh Pi process receives /map, the laser static TF and /scan."""
+    script = (TOOLS / 'dds_probe.py').read_text()
+    result = pi(f'{PI_SOURCE}; timeout 30 python3 - health', stdin=script, timeout=45, check=False)
+    line = next((text for text in result.stdout.splitlines() if text.startswith('PROBE')),
+                'PROBE none')
+    return ' ok ' in f'{line} ', line
+
+
+def cmd_health(_args):
+    healthy, line = dds_health()
+    log(('DDS OK: ' if healthy else 'DDS MISSING: ') + line)
+    if not healthy:
+        fail('fresh processes do not receive map/TF/scan; run recover')
+
+
+def cmd_recover(args):
+    """Fresh DDS state without motion: base, session, display, then re-initialize.
+
+    Without --seed the robot must still be where the last init placed it (the dock
+    before a departure): the scan match must then agree globally with that pose.
+    """
+    cmd_display_stop(args)
+    cmd_session_stop(args)
+    pi('sudo -n systemctl restart jdamr-base.service', timeout=200, check=False)
+    log('jdamr-base: ' + pi('systemctl is-active jdamr-base.service', check=False).stdout.strip())
+    time.sleep(8)
+    cmd_display_start(args)
+    cmd_session_start(args)
+    if args.seed is None:
+        args.keep_home, args.seed_from_state, args.local_only = True, True, False
+    else:
+        x, y, yaw_deg = args.seed
+        CLICK.write_text(json.dumps({'x_m': x, 'y_m': y, 'yaw_rad': math.radians(yaw_deg),
+                                     'received_unix_s': time.time(), 'source': 'recover seed'}))
+        args.keep_home, args.seed_from_state, args.local_only = True, False, True
+    cmd_init(args)
+    healthy, line = dds_health()
+    if not healthy:
+        fail(f'DDS still missing after recovery ({line})')
+    log('DDS OK after recovery: ' + line)
 
 
 def cmd_stop(_args):
@@ -543,12 +604,24 @@ def main():
     init = sub.add_parser('init')
     init.add_argument('--keep-home', action='store_true',
                       help='do not re-teach home at this placement')
+    init.add_argument('--local-only', action='store_true',
+                      help='operator-stated placement: skip the global agreement check')
     init.add_argument('--seed-from-state', action='store_true',
                       help='robot not moved since the last init: seed with that pose')
     go = sub.add_parser('go')
     go.add_argument('table_id', choices=TABLES)
     go.add_argument('--route', help='route file (default: <table_id>_route.yaml)')
     go.add_argument('--region', nargs=3, type=float, metavar=('X', 'Y', 'R'))
+    go.add_argument('--via-route', help='water_station route (default: <P2>/water_station_route.yaml)')
+    go.add_argument('--skip-via', action='store_true', help='water stop already done: table then dock')
+    go.add_argument('--resume-at-observation', action='store_true',
+                    help='robot already at the first stop observation point (water_station unless --skip-via)')
+    go.add_argument('--resume-parked-log',
+                    help='cycle_events.jsonl of a run that stopped at the first box: hold, escape, continue')
+    sub.add_parser('health')
+    recover = sub.add_parser('recover')
+    recover.add_argument('--seed', nargs=3, type=float, metavar=('X', 'Y', 'YAW_DEG'),
+                         help='placement when the robot is not at the last init pose')
     routes = sub.add_parser('routes')
     routes.add_argument('--start', nargs=3, type=float, required=True,
                         metavar=('X', 'Y', 'YAW_RAD'))
@@ -556,7 +629,8 @@ def main():
     handlers = {'sync': cmd_sync, 'display-start': cmd_display_start,
                 'display-stop': cmd_display_stop, 'session-start': cmd_session_start,
                 'session-stop': cmd_session_stop, 'init': cmd_init, 'go': cmd_go,
-                'stop': cmd_stop, 'status': cmd_status,
+                'stop': cmd_stop, 'status': cmd_status, 'health': cmd_health,
+                'recover': cmd_recover,
                 'routes': lambda a: write_routes(a.start)}
     handlers[args.command](args)
 
