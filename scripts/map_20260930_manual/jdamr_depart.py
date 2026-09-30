@@ -523,10 +523,11 @@ def run_cycle(args, state, table_id):
                f'--region-radius-m {region["radius_m"]} --log {run_dir}/cycle_events.jsonl '
                f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
                f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
+               + (' --home-only ' if args.dock_only else '')
                + (' --resume-at-observation ' if args.resume_at_observation else '')
                + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
                   if args.resume_parked_log else '')
-               + ('' if args.skip_via else
+               + ('' if args.skip_via or args.dock_only else
                   f'--via-id {VIA_ID} --via-route {args.via_route or P2 / (VIA_ID + "_route.yaml")} '
                   f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
                   f'--via-region-radius-m {via["radius_m"]}'))
@@ -536,7 +537,8 @@ def run_cycle(args, state, table_id):
        f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c {shlex.quote(command)}')
     state.update({'last_unit': unit, 'last_run': str(run_dir)})
     save_state(state)
-    stops = f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}'
+    stops = ('dock only' if args.dock_only else
+             f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
     log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
     seen = 0
     while True:
@@ -574,7 +576,8 @@ def cmd_go(args):
         # 2026-09-30: new processes stopped receiving map/TF/scan from the running base
         # and session; fresh services fixed it every time. The executor's own map check
         # is the detector, so a healthy departure carries no extra check.
-        resumed = args.skip_via or args.resume_at_observation or args.resume_parked_log
+        resumed = (args.skip_via or args.resume_at_observation or args.resume_parked_log
+                   or args.dock_only)
         if resumed or state.get('init_local_only'):
             fail('the executor received no map before moving; the robot is not at a globally '
                  'matched init pose, so run recover --seed X Y YAW_DEG [--local-only], '
@@ -717,6 +720,7 @@ def main():
     go.add_argument('--region', nargs=3, type=float, metavar=('X', 'Y', 'R'))
     go.add_argument('--via-route', help='water_station route (default: <P2>/water_station_route.yaml)')
     go.add_argument('--skip-via', action='store_true', help='water stop already done: table then dock')
+    go.add_argument('--dock-only', action='store_true', help='return to the dock only (re-dock)')
     go.add_argument('--resume-at-observation', action='store_true',
                     help='robot already at the first stop observation point (water_station unless --skip-via)')
     go.add_argument('--resume-parked-log',

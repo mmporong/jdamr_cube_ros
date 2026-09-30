@@ -998,6 +998,8 @@ def parse_args(argv=None):
     parser.add_argument(
         '--via-id', choices=('water_station',),
         help='First stop before the table: approach, hold five seconds and escape')
+    parser.add_argument('--home-only', action='store_true',
+                        help='return to the dock only (needs --execute and --return-home)')
     parser.add_argument('--via-route', type=Path)
     parser.add_argument('--via-region-xy', nargs=2, type=float)
     parser.add_argument('--via-region-radius-m', type=float, default=0.6)
@@ -1022,6 +1024,8 @@ def parse_args(argv=None):
         parser.error('--return-home requires --execute')
     if args.return_home and args.return_timeout_s is None:
         parser.error('--return-home requires --return-timeout-s')
+    if args.home_only and not args.return_home:
+        parser.error('--home-only requires --execute and --return-home')
     if args.return_timeout_s is not None and (
             not math.isfinite(args.return_timeout_s) or args.return_timeout_s <= 0.0):
         parser.error('--return-timeout-s must be finite and positive')
@@ -1065,6 +1069,13 @@ def main(argv=None):
             for signum in (signal.SIGINT, signal.SIGTERM):
                 handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
             ok = True
+            if args.home_only:
+                # Dock return alone, e.g. to re-dock after a crooked stop.
+                node.verify_live_maps()
+                if not node.wait_until_ready(timeout=10.0):
+                    raise RuntimeError('localization or sensor data unavailable')
+                ok = node.go_home(execute=True, timeout_s=args.return_timeout_s)
+                return 0 if ok else 1
             if args.resume_parked_from_log is not None:
                 # The first stop was reached by an earlier run: hold and escape only.
                 face = last_logged_face(args.resume_parked_from_log)
