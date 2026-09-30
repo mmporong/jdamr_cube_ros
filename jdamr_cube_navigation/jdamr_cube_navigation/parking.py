@@ -38,8 +38,6 @@ MAXIMUM_CONTRACT_VALUES = {
     'rotate_angular_radps': 0.2,
 }
 MINIMUM_HOLD_S = 1.0
-# Nav2 RPP default curvature_lookahead_dist.
-PARKING_CURVATURE_LOOKAHEAD_M = 0.6
 
 
 def _finite_number(value: Any, name: str) -> float:
@@ -141,12 +139,6 @@ def parking_controller_overrides(
         'use_rotate_to_heading': True,
         'allow_reversing': False,
         'stateful': False,
-        # Near the goal the carrot distance shrinks and curvature 2y/L^2 blows up:
-        # three reverses on 2026-09-30 swung left-right, ended 18-33 deg off and
-        # aborted with 105. Nav2's fix: a fixed curvature carrot past the goal.
-        'use_fixed_curvature_lookahead': True,
-        'curvature_lookahead_dist': PARKING_CURVATURE_LOOKAHEAD_M,
-        'interpolate_curvature_after_goal': True,
     })
     configured['Parking'] = parking
     configured['parking_goal_checker'] = {
