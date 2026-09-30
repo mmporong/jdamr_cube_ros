@@ -442,7 +442,7 @@ class CorridorRoute(Node):
             float(message.pose.pose.position.y),
         )
 
-    def _guard_failure(self, require_fresh_amcl=True):
+    def _guard_failure(self, require_fresh_amcl=True, covariance_limits=None):
         """Describe the exact fail-closed input instead of a generic stop."""
         now = time.monotonic()
         for name, timestamp in self.samples.items():
@@ -494,7 +494,7 @@ class CorridorRoute(Node):
                 f'limit={amcl_limit_s:.3f}s')
         for axis, covariance, limit in zip(
                 ('x', 'y'), self.amcl_covariance,
-                self.max_amcl_covariance):
+                covariance_limits or self.max_amcl_covariance):
             if not math.isfinite(covariance):
                 return (
                     f'AMCL {axis} covariance non-finite: '

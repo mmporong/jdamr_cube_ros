@@ -679,19 +679,22 @@ class BoxServiceRoute(ServiceRoute):
             raise ValueError('observation route must use map')
         self.table_id = table_id
         self.verify_live_maps()
-        if not self.wait_until_ready(timeout=10.0):
-            raise RuntimeError('localization or sensor data unavailable')
-        if not self._parking_parameters_ready():
-            raise RuntimeError('parking controller parameters unavailable')
-        if execute and not self._precision_collision_ready(geometry):
-            raise RuntimeError('precision collision-monitor profile unavailable')
-        # The starting place is an explicit route contract, not a guessed pose.
-        start = route.get('start_pose')
-        limit_m = route.get('max_route_start_distance_m')
-        if (not isinstance(start, dict) or not isinstance(limit_m, (float, int))
-                or not math.isfinite(limit_m) or not 0.0 < limit_m <= 0.3):
-            raise ValueError('observation route requires a bounded start pose')
-        actual, _ = self.capture_stationary_pose()
+        # A resume starts in the observation stage, where AMCL may still hold the
+        # covariance of its last transit update; a fresh start is judged strictly.
+        with self._localization_bound(resume_at_observation):
+            if not self.wait_until_ready(timeout=10.0):
+                raise RuntimeError('localization or sensor data unavailable')
+            if not self._parking_parameters_ready():
+                raise RuntimeError('parking controller parameters unavailable')
+            if execute and not self._precision_collision_ready(geometry):
+                raise RuntimeError('precision collision-monitor profile unavailable')
+            # The starting place is an explicit route contract, not a guessed pose.
+            start = route.get('start_pose')
+            limit_m = route.get('max_route_start_distance_m')
+            if (not isinstance(start, dict) or not isinstance(limit_m, (float, int))
+                    or not math.isfinite(limit_m) or not 0.0 < limit_m <= 0.3):
+                raise ValueError('observation route requires a bounded start pose')
+            actual, _ = self.capture_stationary_pose()
         reference = route['waypoints'][-1] if resume_at_observation else start
         if math.dist(actual[:2], (reference['x'], reference['y'])) > limit_m:
             if resume_at_observation:
@@ -719,44 +722,47 @@ class BoxServiceRoute(ServiceRoute):
         search_budget = BoxSearchBudget()
         # Face alignment happens while depth is still in its usable range.
         for phase, gap_m in (('face_alignment', 0.45), ('final_approach', 0.05)):
-            plan_input_recovered = False
-            while True:
-                target = self._observe_with_search(
-                    camera_mount, front_extent_m, gap_m, region_xy,
-                    region_radius_m, phase=phase, search_enabled=search,
-                    search_budget=search_budget)
-                target.update(id=phase, priority=1, approach_offset_m=0.5)
-                # The escape before any return starts from the last planned face.
-                self.last_box_face = {
-                    'face_center_map_xy_m': list(target['face_center_map_xy_m']),
-                    'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
-                self.emit('box_phase', phase=phase, requested_front_gap_m=gap_m)
-                if phase == 'face_alignment':
-                    # Judged by the alignment goal checker, not the final contract.
-                    planned = self.plan_pose(
-                        target, single=True,
-                        end_tolerance_m=MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'])
-                else:
-                    planned = self.plan_pose(target, single=True)
-                reason = planned.get('guard_failure')
-                if (planned['ok'] or planned.get('reason') != 'navigation_not_ready'
-                        or plan_input_recovered or self.stop_requested
-                        or not self._input_gap_recoverable(reason)):
-                    break
-                # A face observed before an input gap is discarded, never planned.
-                plan_input_recovered = True
-                self.emit('box_target_discarded', phase=phase, reason=reason)
-                if not self._wait_for_input_recovery(reason):
-                    break
-            if not planned['ok']:
-                self.emit('failed', phase=phase, planning=planned)
-                return False
-            # Live map callbacks keep checking the verified identity throughout
-            # this visit; do not repeat disk/service configuration audits here.
-            if not self.execute(final_parking=phase == 'final_approach',
-                                alignment=phase == 'face_alignment'):
-                self.emit('failed', phase=phase, reason='nav2_or_stop_confirmation')
-                return False
+            # Observation and face alignment are intermediate; the final approach,
+            # its confirmation and the final capture keep the strict AMCL bounds.
+            with self._localization_bound(phase == 'face_alignment'):
+                plan_input_recovered = False
+                while True:
+                    target = self._observe_with_search(
+                        camera_mount, front_extent_m, gap_m, region_xy,
+                        region_radius_m, phase=phase, search_enabled=search,
+                        search_budget=search_budget)
+                    target.update(id=phase, priority=1, approach_offset_m=0.5)
+                    # The escape before any return starts from the last planned face.
+                    self.last_box_face = {
+                        'face_center_map_xy_m': list(target['face_center_map_xy_m']),
+                        'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
+                    self.emit('box_phase', phase=phase, requested_front_gap_m=gap_m)
+                    if phase == 'face_alignment':
+                        # Judged by the alignment goal checker, not the final contract.
+                        planned = self.plan_pose(
+                            target, single=True,
+                            end_tolerance_m=MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'])
+                    else:
+                        planned = self.plan_pose(target, single=True)
+                    reason = planned.get('guard_failure')
+                    if (planned['ok'] or planned.get('reason') != 'navigation_not_ready'
+                            or plan_input_recovered or self.stop_requested
+                            or not self._input_gap_recoverable(reason)):
+                        break
+                    # A face observed before an input gap is discarded, never planned.
+                    plan_input_recovered = True
+                    self.emit('box_target_discarded', phase=phase, reason=reason)
+                    if not self._wait_for_input_recovery(reason):
+                        break
+                if not planned['ok']:
+                    self.emit('failed', phase=phase, planning=planned)
+                    return False
+                # Live map callbacks keep checking the verified identity throughout
+                # this visit; do not repeat disk/service configuration audits here.
+                if not self.execute(final_parking=phase == 'final_approach',
+                                    alignment=phase == 'face_alignment'):
+                    self.emit('failed', phase=phase, reason='nav2_or_stop_confirmation')
+                    return False
         # Motion is over; the deadline must not stop the final stationary capture.
         self.run_deadline_s = None
         actual, _ = self.capture_stationary_pose()

@@ -4,6 +4,13 @@ schema_version: 1
 max_x_covariance_m2: 0.01
 max_y_covariance_m2: 0.01
 max_yaw_covariance_rad2: 0.030461741978670857
+# Intermediate legs (route to the observation waypoint, box observation and
+# face alignment, precision home staging plan and drive) stop only when
+# localization is lost; final approach, stop confirmations, box escape, docking
+# and activation keep the limits above. Basis: intermediate_bound_provenance.
+intermediate_max_x_covariance_m2: 0.04
+intermediate_max_y_covariance_m2: 0.04
+intermediate_max_yaw_covariance_rad2: 0.06853891945200942
 physical_validation: NOT_PHYSICALLY_VALIDATED
 minimum_start_battery_v: 10.8
 minimum_running_battery_v: 10.5
@@ -13,3 +20,13 @@ battery_policy_provenance:
   valid_for: current_service_base_and_battery
   evidence: evaluation/20260922_SERVICE_DEPARTURE_FAILURES.md#후속-실행-1634-목표-수락-후-배터리-저전압-취소
   reason: Separate departure reserve from the existing running cutoff; not a state-of-charge estimate
+intermediate_bound_provenance:
+  status: CANDIDATE_FROM_RECORDED_RUNS
+  set_at: '2026-09-30'
+  converged_max_x_covariance_m2: 0.010213
+  converged_source: table_recovered_start_20260929_OCoNlZ transit stop (E1)
+  unconverged_min_xy_covariance_m2: 0.17
+  unconverged_source: early activation stop, xy 0.24/0.17 (plan v4.1 E2)
+  xy_rule: between the converged maximum and the unconverged minimum
+  yaw_rule: initial pose seed spread (15 degrees); no unconverged yaw recorded
+  evidence: evaluation/20260929_PARKING_FAILURES.md#15

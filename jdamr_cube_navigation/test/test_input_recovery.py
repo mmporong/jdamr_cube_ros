@@ -1818,3 +1818,298 @@ def test_l12_failed_dwell_never_returns_home(monkeypatch):
     node.wait_parked.assert_called_once_with(5.0)
     assert node.go_home.call_count == 0
     assert _events(node, 'failed')[-1]['phase'] == 'table_dwell'
+
+
+# T31-T35: intermediate legs keep only the lost-localization bound ----------
+
+# 9/29 transit stop (table_recovered_start_20260929_OCoNlZ): x = 0.010213 m2.
+E1_X_COVARIANCE_M2 = 0.010213
+E1_COVARIANCE = (E1_X_COVARIANCE_M2, 0.001, 0.001)
+# Recorded unconverged states: early activation stop (xy 0.24/0.17), seed spread 0.21.
+UNCONVERGED = {'e2': (0.24, 0.17, 0.001), 'seeded': (0.21, 0.21, 0.001)}
+TRANSIT_WAYPOINTS = [{'id': 'home_exit', 'x': 0.5, 'y': 0.0},
+                     {'id': 'table_observation', 'x': 1.0, 'y': 0.0, 'yaw': 0.0}]
+
+
+def _stage_bound(node, tag):
+    """Read the new stage-bound context lazily so HEAD reports HEADFAIL."""
+    bound = getattr(node, '_localization_bound', None)
+    if bound is None:
+        raise AssertionError(f'HEADFAIL[{tag}]: stage localization bound is missing')
+    return bound
+
+
+def _intermediate(node):
+    return getattr(node, '_intermediate_localization', None)
+
+
+class _HeldNavigate(_ActionPeer):
+    """Keep each NavigateToPose goal running so the in-flight guard is exercised."""
+
+    def __init__(self, world, hold_s):
+        super().__init__(world, 'NavigateToPose')
+        self.hold_s = hold_s
+
+    def send_goal_async(self, goal, goal_uuid=None, feedback_callback=None):
+        world = self.world
+        world.motions.append((self.kind, goal))
+        done_s = world.now + self.hold_s
+        wrapped = SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED,
+                                  result=NavigateToPose.Result())
+
+        class _Running:
+            completed = False
+
+            def done(self):
+                if not self.completed and world.now >= done_s - 1e-9:
+                    self.completed = True
+                    world.complete_motion('NavigateToPose', goal)
+                return self.completed
+
+            def result(self):
+                return wrapped
+
+            def exception(self):
+                return None
+
+        running = _Running()
+        return _done(SimpleNamespace(
+            accepted=True, goal_id=SimpleNamespace(uuid=bytes(range(16))),
+            get_result_async=lambda: running,
+            cancel_goal_async=lambda: _done(SimpleNamespace(goals_canceling=[]))))
+
+
+def _transit_world(monkeypatch, tmp_path, covariance, hold_s=None):
+    node, world = _service_world(monkeypatch, tmp_path, covariance=covariance)
+    node.waypoints = [dict(waypoint) for waypoint in TRANSIT_WAYPOINTS]
+    node.config = {'frame_id': 'map', 'waypoints': node.waypoints}
+    if hold_s is not None:
+        node.navigate = _HeldNavigate(world, hold_s)
+    return node, world
+
+
+@pytest.mark.parametrize('covariance,axis', [
+    (E1_COVARIANCE, 'x'), ((0.001, 0.02, 0.001), 'y'), ((0.001, 0.001, 0.04), 'yaw')],
+    ids=['e1_x', 'y', 'yaw'])
+def test_t31a_transit_departs_above_confidence_limit(monkeypatch, tmp_path, covariance, axis):
+    """Dispatch the observation route when AMCL is only above the 0.01 m2 confidence limit."""
+    node, world = _transit_world(monkeypatch, tmp_path, covariance)
+    assert node._guard_failure(False) is not None, f'{axis} setup must break the strict bound'
+    succeeded = node.execute(final_parking=False)
+    assert succeeded and len(world.motions) == len(TRANSIT_WAYPOINTS), (
+        f'HEADFAIL[T31a-{axis}]: transit blocked by {node._guard_failure(False)}')
+    assert _intermediate(node) is False
+
+
+def test_t31b_transit_rise_during_goal_keeps_driving(monkeypatch, tmp_path):
+    """Keep the running transit goal when x covariance rises to the recorded E1 value."""
+    node, world = _transit_world(monkeypatch, tmp_path, (0.001, 0.001, 0.001), hold_s=2.0)
+    world.at(world.now + 0.5, lambda: world.publish_amcl(E1_COVARIANCE))
+    succeeded = node.execute(final_parking=False)
+    interrupted = _events(node, 'interrupted')
+    assert succeeded and not interrupted, f'HEADFAIL[T31b]: {interrupted}'
+    assert len(world.motions) == len(TRANSIT_WAYPOINTS)
+
+
+@pytest.mark.parametrize('mode', [
+    {'final_parking': False, 'alignment': True}, {'final_parking': True}],
+    ids=['alignment_outside_stage', 'final'])
+def test_t31c_strict_legs_keep_confidence_limit(monkeypatch, tmp_path, mode):
+    """Refuse a standalone alignment leg and any final leg above 0.01 m2 before motion."""
+    node, world = _transit_world(monkeypatch, tmp_path, E1_COVARIANCE)
+    assert node.execute(**mode) is False
+    assert not world.motions
+    reason = str(node._guard_failure(False))
+    assert 'AMCL x covariance high' in reason
+
+
+def test_t31d_stationary_checks_keep_limit_after_transit(monkeypatch, tmp_path):
+    """Restore the strict bound for stationary checks that follow a successful transit."""
+    node, world = _transit_world(monkeypatch, tmp_path, E1_COVARIANCE)
+    assert node.execute(final_parking=False) is True, 'HEADFAIL[T31d]: transit blocked'
+    assert len(world.motions) == len(TRANSIT_WAYPOINTS)
+    world.run(1.0)
+    assert 'AMCL x covariance high' in str(node._guard_failure(True))
+    with pytest.raises(RuntimeError, match='stationary teaching unavailable'):
+        node.capture_stationary_pose(timeout_s=2.0)
+
+
+@pytest.mark.parametrize('covariance,expected', [
+    ((0.3, 0.001, 0.001), 'AMCL x covariance high'),
+    ((0.001, 0.001, 0.07), 'AMCL yaw covariance high'),
+    ((math.nan, 0.001, 0.001), 'AMCL x covariance non-finite'),
+    ((0.001, -0.001, 0.001), 'AMCL position covariance invalid')],
+    ids=['x_lost', 'yaw_lost', 'nan', 'negative'])
+def test_t31e_transit_stops_on_lost_localization(monkeypatch, tmp_path, covariance, expected):
+    """Keep the lost-localization bound and validity checks before a transit goal."""
+    node, world = _transit_world(monkeypatch, tmp_path, covariance)
+    assert node.execute(final_parking=False) is False
+    assert not world.motions
+    with _stage_bound(node, 'T31e')(True):
+        assert expected in str(node._guard_failure(False))
+
+
+def test_t31f_transit_input_recovery_uses_intermediate_bound(monkeypatch, tmp_path):
+    """Resume the current transit waypoint after a scan gap while x covariance is E1."""
+    node, world = _transit_world(monkeypatch, tmp_path, E1_COVARIANCE, hold_s=4.0)
+    world.scan_gap(world.now + 0.5, world.now + 3.6)
+    assert node.execute(final_parking=False) is True, 'HEADFAIL[T31f]: no resume at E1'
+    reasons = [record['reason'] for record in _events(node, 'interrupted')]
+    assert len(reasons) == 1 and reasons[0].startswith('scan stale:')
+    assert len(world.motions) == len(TRANSIT_WAYPOINTS) + 1
+
+
+def test_t31g_transit_stops_when_localization_is_lost_in_flight(monkeypatch, tmp_path):
+    """Cancel a running transit goal at the lost-localization bound without a retry."""
+    node, world = _transit_world(monkeypatch, tmp_path, (0.001, 0.001, 0.001), hold_s=2.0)
+    world.at(world.now + 0.5, lambda: world.publish_amcl((0.3, 0.001, 0.001)))
+    assert node.execute(final_parking=False) is False
+    reasons = [record['reason'] for record in _events(node, 'interrupted')]
+    assert reasons and 'AMCL x covariance high' in reasons[0]
+    assert 'limit=0.040' in reasons[0] and 'bound=intermediate' in reasons[0], (
+        f'HEADFAIL[T31g]: {reasons}')
+    assert len(world.motions) == 1
+
+
+def _latched_box_visit(monkeypatch, tmp_path, after_alignment=None, latched=E1_COVARIANCE):
+    """Resume at the observation waypoint with AMCL latched at a transit covariance."""
+    stubs = [lambda world: _box_target(gap_m=0.45)]
+
+    def final_observation(world):
+        if after_alignment is not None:
+            # AMCL publishes again only after the alignment leg moved the base.
+            world.publish_amcl(after_alignment)
+        return _box_target(gap_m=0.05)
+
+    stubs.append(final_observation)
+    node, world, observations, _planned = _box_visit(monkeypatch, tmp_path, stubs)
+    world.publish_amcl(latched)
+    world.run(1.0)
+    return node, world, observations
+
+
+def test_t32a_latched_covariance_allows_alignment_but_not_final(monkeypatch, tmp_path):
+    """Observe and align at E1, then refuse the final approach on the strict bound."""
+    node, world, observations = _latched_box_visit(monkeypatch, tmp_path)
+    try:
+        result = _visit(node)
+    except RuntimeError as error:
+        _headfail('T32a', error)
+    assert result is False
+    assert observations == ['face_alignment', 'final_approach']
+    assert [kind for kind, _goal in world.motions] == ['NavigateToPose']
+    failed = _events(node, 'failed')[-1]
+    assert failed['phase'] == 'final_approach'
+    assert 'AMCL x covariance high' in failed['planning']['guard_failure']
+    assert 'bound=strict' in failed['planning']['guard_failure']
+    assert _intermediate(node) is False
+
+
+def test_t32b_refreshed_covariance_allows_final_approach(monkeypatch, tmp_path):
+    """Send the final approach once AMCL republishes a covariance inside 0.01 m2."""
+    node, world, observations = _latched_box_visit(
+        monkeypatch, tmp_path, after_alignment=(0.004, 0.001, 0.001))
+    try:
+        _visit(node)
+    except RuntimeError as error:
+        _headfail('T32b', error)
+    assert observations[:2] == ['face_alignment', 'final_approach']
+    assert [kind for kind, _goal in world.motions] == ['NavigateToPose', 'NavigateToPose']
+
+
+def test_t32c_observation_capture_follows_stage_bound(monkeypatch, tmp_path):
+    """Capture for observation at E1 only inside the intermediate stage."""
+    node, world = _observer_world(monkeypatch, tmp_path, covariance=E1_COVARIANCE)
+    world.status_train(world.now, world.now + 12.0, 0.1, _front_box)
+    with _stage_bound(node, 'T32c')(True):
+        target = _observe(node)
+    assert target['face_center_map_xy_m'] == pytest.approx(list(FACE))
+    with pytest.raises(RuntimeError, match='stationary teaching unavailable.*covariance high'):
+        _observe(node, timeout_s=3.0)
+
+
+@pytest.mark.parametrize('precision', [True, False], ids=['precision', 'standard'])
+def test_t33_home_staging_bound_follows_session(monkeypatch, tmp_path, precision):
+    """Dispatch precision staging at E1; keep the standard session strict."""
+    contracts = ((BOX_CONTRACT, CONTRACT) if precision else (CONTRACT, None))
+    node, world = _service_world(monkeypatch, tmp_path, *contracts, home=HOME,
+                                 pose=(0.0, 0.0, 0.0), covariance=E1_COVARIANCE)
+    node.verify_live_maps = Mock()
+    world.stop_on_motion = True
+    try:
+        result = node._go_home_reverse(HOME, True)
+    except _StopScenario as stopped:
+        result = f'stopped at {stopped}'
+    kinds = [kind for kind, _goal in world.motions]
+    if precision:
+        assert kinds == ['NavigateToPose'], f'HEADFAIL[T33]: staging blocked ({result})'
+    else:
+        assert result is False and not kinds
+    assert _intermediate(node) is False, 'HEADFAIL[T33]: stage flag missing or leaked'
+
+
+def test_t34a_fresh_start_stays_strict(monkeypatch, tmp_path):
+    """Refuse a fresh observation route start at E1 before any motion."""
+    node, world, _observations = _latched_box_visit(monkeypatch, tmp_path)
+    with pytest.raises(RuntimeError, match='localization or sensor data unavailable'):
+        node.visit_observed_box(
+            'route', MOUNT, GEOMETRY, 'table_01', REGION_XY, 0.6, execute=True,
+            candidate_trial=True, resume_at_observation=False)
+    assert not world.motions
+
+
+def test_t34b_precision_dock_stays_strict_after_staging(monkeypatch, tmp_path):
+    """Stage at E1, then refuse the staging confirmation and the dock strictly."""
+    node, world = _service_world(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT, home=HOME,
+                                 pose=(0.0, 0.0, 0.0), covariance=E1_COVARIANCE)
+    node.verify_live_maps = Mock()
+    result = node._go_home_reverse(HOME, True)
+    kinds = [kind for kind, _goal in world.motions]
+    assert kinds == ['NavigateToPose'], f'HEADFAIL[T34b]: {kinds} ({result})'
+    assert result is False
+    confirmation = node.confirmation or {}
+    assert 'covariance high' in json.dumps(confirmation), confirmation
+
+
+def test_t34c_final_leg_never_inherits_intermediate(monkeypatch, tmp_path):
+    """Keep a final leg strict even inside an intermediate stage."""
+    node, world = _transit_world(monkeypatch, tmp_path, E1_COVARIANCE)
+    with _stage_bound(node, 'T34c')(True):
+        assert node.execute(final_parking=True) is False
+    assert not world.motions
+
+
+def test_t34d_box_escape_capture_stays_strict(monkeypatch, tmp_path):
+    """Refuse the straight escape at E1 before any reverse motion."""
+    node, world = _parked_world(monkeypatch, tmp_path)
+    world.publish_amcl(E1_COVARIANCE)
+    world.run(1.0)
+    with pytest.raises(RuntimeError, match='stationary teaching unavailable.*covariance high'):
+        node._leave_parked_pose()
+    assert not world.motions
+
+
+def test_t34e_stage_bound_restores_after_exception(monkeypatch, tmp_path):
+    """Restore the strict bound when an intermediate stage raises."""
+    node, _world = _transit_world(monkeypatch, tmp_path, E1_COVARIANCE)
+    with pytest.raises(RuntimeError, match='stage failure'):
+        with _stage_bound(node, 'T34e')(True):
+            assert node._guard_failure(False) is None
+            raise RuntimeError('stage failure')
+    assert _intermediate(node) is False
+    assert 'bound=strict' in str(node._guard_failure(False))
+
+
+@pytest.mark.parametrize('state', sorted(UNCONVERGED))
+def test_t35_unconverged_localization_never_moves(monkeypatch, tmp_path, state):
+    """Refuse recorded unconverged filters on the transit and at an observation resume."""
+    node, world = _transit_world(monkeypatch, tmp_path, UNCONVERGED[state])
+    assert node.execute(final_parking=False) is False
+    assert not world.motions
+    resume_path = tmp_path / 'resume'
+    resume_path.mkdir()
+    visit_node, visit_world, _observations = _latched_box_visit(
+        monkeypatch, resume_path, latched=UNCONVERGED[state])
+    with pytest.raises(RuntimeError, match='localization or sensor data unavailable'):
+        _visit(visit_node)
+    assert not visit_world.motions

@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+from contextlib import contextmanager
 import json
 import math
 from pathlib import Path
@@ -64,6 +65,13 @@ def load_service_contract(path):
             raise ValueError(f'{key} must be finite and positive')
     if document['minimum_start_battery_v'] < document['minimum_running_battery_v']:
         raise ValueError('departure battery threshold must not be below running cutoff')
+    for axis, unit in (('x', 'm2'), ('y', 'm2'), ('yaw', 'rad2')):
+        key = f'intermediate_max_{axis}_covariance_{unit}'
+        value = document.get(key)
+        if (isinstance(value, bool) or not isinstance(value, (float, int))
+                or not math.isfinite(value)
+                or value < document[f'max_{axis}_covariance_{unit}']):
+            raise ValueError(f'{key} must be finite and not below the strict limit')
     return document
 
 
@@ -176,6 +184,8 @@ class ServiceRoute(CorridorRoute):
         self.max_amcl_covariance = (
             self.service_contract['max_x_covariance_m2'],
             self.service_contract['max_y_covariance_m2'])
+        # Read only by _guard_failure; set through _localization_bound().
+        self._intermediate_localization = False
         self.live_grids = {}
         self.expected_grids = {}
         self.map_mismatch = None
@@ -269,7 +279,15 @@ class ServiceRoute(CorridorRoute):
     def _guard_failure(self, require_fresh_amcl=True):
         if self.map_mismatch:
             return self.map_mismatch
-        failure = super()._guard_failure(require_fresh_amcl)
+        # Intermediate legs use the lost-localization bound; the final approach,
+        # its confirmation, escape and docking keep the strict limits.
+        intermediate = getattr(self, '_intermediate_localization', False)
+        prefix = 'intermediate_max' if intermediate else 'max'
+        limits = ((self.service_contract['intermediate_max_x_covariance_m2'],
+                   self.service_contract['intermediate_max_y_covariance_m2'])
+                  if intermediate else None)
+        bound = 'intermediate' if intermediate else 'strict'
+        failure = super()._guard_failure(require_fresh_amcl, covariance_limits=limits)
         if (failure and require_fresh_amcl
                 and failure.startswith('AMCL pose stale:')):
             # A stationary robot keeps AMCL quiet by design. Exempt only the
@@ -277,15 +295,21 @@ class ServiceRoute(CorridorRoute):
             denial = self._quiet_amcl_denial()
             if denial is not None:
                 return f'{failure}; quiet exemption denied: {denial}'
-            failure = super()._guard_failure(False)
+            failure = super()._guard_failure(False, covariance_limits=limits)
         if failure:
+            if 'covariance high' in failure:
+                # Three decimals hid 0.010213 against 0.01 in the 9/29 log.
+                failure += (f' (x={self.amcl_covariance[0]:.6f} '
+                            f'y={self.amcl_covariance[1]:.6f} bound={bound})')
             return failure
         yaw_covariance_rad2 = self.amcl_yaw_covariance_rad2
         if (yaw_covariance_rad2 is None or not math.isfinite(yaw_covariance_rad2)
                 or yaw_covariance_rad2 < 0.0):
             return 'AMCL yaw covariance invalid'
-        if yaw_covariance_rad2 > self.service_contract['max_yaw_covariance_rad2']:
-            return 'AMCL yaw covariance high'
+        yaw_limit_rad2 = self.service_contract[f'{prefix}_yaw_covariance_rad2']
+        if yaw_covariance_rad2 > yaw_limit_rad2:
+            return (f'AMCL yaw covariance high: value={yaw_covariance_rad2:.6f} '
+                    f'limit={yaw_limit_rad2:.6f} bound={bound}')
         if any(value < 0.0 for value in self.amcl_covariance):
             return 'AMCL position covariance invalid'
         moved = (self.amcl_motion_distance_m >= self.revisit_motion_min_distance_m
@@ -625,14 +649,31 @@ class ServiceRoute(CorridorRoute):
         return (super().wait_until_ready(timeout=timeout)
                 and self._departure_battery_ready())
 
+    @contextmanager
+    def _localization_bound(self, intermediate):
+        """Select the AMCL covariance bound for one stage, then restore it."""
+        previous = getattr(self, '_intermediate_localization', False)
+        self._intermediate_localization = bool(intermediate)
+        try:
+            yield
+        finally:
+            self._intermediate_localization = previous
+
     def execute(self, *, final_parking=True, alignment=False):
         """Bound transit and parking actions and retain their terminal result."""
         if not isinstance(final_parking, bool):
             raise ValueError('final_parking must be boolean')
         if not isinstance(alignment, bool) or (alignment and final_parking):
             raise ValueError('alignment requires non-final parking mode')
-        return self._run_with_input_recovery(
-            lambda: self._execute_service_once(final_parking=final_parking, alignment=alignment))
+        # The 9/29 transit stopped at x covariance 0.010213 against 0.01 with no
+        # resume path. A transit leg is intermediate, an alignment leg keeps its
+        # caller's stage and a final leg is always strict, input recovery included.
+        intermediate = not final_parking and (
+            not alignment or getattr(self, '_intermediate_localization', False))
+        with self._localization_bound(intermediate):
+            return self._run_with_input_recovery(
+                lambda: self._execute_service_once(
+                    final_parking=final_parking, alignment=alignment))
 
     def _execute_service_once(self, *, final_parking, alignment):
         """Retry only a canceled input gap, never an unresolved action."""
@@ -813,11 +854,14 @@ class ServiceRoute(CorridorRoute):
         last_stamp = None
         revision = self.parking_motion_revision
         deadline_s = time.monotonic() + timeout_s
+        last_guard_failure = None
         while time.monotonic() < deadline_s and not self.stop_requested:
             rclpy.spin_once(self, timeout_sec=0.05)
             if self.parking_odom is None or self.amcl_covariance is None:
                 continue
-            if self._guard_failure(require_fresh_amcl=True):
+            guard_failure = self._guard_failure(require_fresh_amcl=True)
+            if guard_failure:
+                last_guard_failure = guard_failure
                 target = None
                 continue
             received_s, stamp, linear_mps, angular_radps = self.parking_odom
@@ -859,8 +903,10 @@ class ServiceRoute(CorridorRoute):
                     }
             except (TransformException, ValueError):
                 target = None
+        detail = f'; last guard: {last_guard_failure}' if last_guard_failure else ''
         raise RuntimeError(
-            'stationary teaching unavailable: need fresh TF, odometry and localization')
+            'stationary teaching unavailable: need fresh TF, odometry and localization'
+            + detail)
 
     def visit(self, table_id, execute=False, timeout_s=180.0):
         """Resolve, plan, navigate, park and confirm one selected table pose."""
@@ -1133,26 +1179,30 @@ class ServiceRoute(CorridorRoute):
         if not self._reverse_path_valid(nominal_path):
             return False
         try:
-            if precision_home:
-                # Staging is intermediate: the alignment checker judges its plan.
-                planned = self._plan_with_input_recovery(
-                    stage_pose, single=True,
-                    end_tolerance_m=MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'])
-            else:
-                planned = self._plan_with_input_recovery(stage_pose, single=True)
-            self.emit('reverse_staging_planned', attempt=planned)
-            if not planned['ok']:
-                return False
-            if not execute:
-                self.emit('home_planned_only', parking_direction='reverse',
-                          final_path_validation='RECHECK_ACTUAL_PATH_AT_STAGING')
-                return True
-            if precision_home:
-                # The straight dock path needs staging inside the dock contract.
-                if (not self.execute(final_parking=False, alignment=True)
-                        or not self._verify_parking_stop(0, stage, None, contract=home)):
+            # Precision staging is an intermediate leg; the docking below is not.
+            with self._localization_bound(precision_home):
+                if precision_home:
+                    # Staging is intermediate: the alignment checker judges its plan.
+                    planned = self._plan_with_input_recovery(
+                        stage_pose, single=True,
+                        end_tolerance_m=MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'])
+                else:
+                    planned = self._plan_with_input_recovery(stage_pose, single=True)
+                self.emit('reverse_staging_planned', attempt=planned)
+                if not planned['ok']:
                     return False
-            elif not self.execute():
+                if not execute:
+                    self.emit('home_planned_only', parking_direction='reverse',
+                              final_path_validation='RECHECK_ACTUAL_PATH_AT_STAGING')
+                    return True
+                if precision_home:
+                    if not self.execute(final_parking=False, alignment=True):
+                        return False
+                elif not self.execute():
+                    return False
+            # The straight dock path needs staging inside the dock contract,
+            # confirmed with the strict localization bound like the dock itself.
+            if precision_home and not self._verify_parking_stop(0, stage, None, contract=home):
                 return False
         finally:
             self.config, self.waypoints = full_config, full_config['waypoints']

@@ -1322,7 +1322,7 @@ def test_amcl_stale_after_motion_is_blocked(monkeypatch):
     del node._guard_failure
     monkeypatch.setattr(
         'jdamr_cube_navigation.restaurant_service.CorridorRoute._guard_failure',
-        lambda *_: None)
+        lambda *_, **__: None)
     node.amcl_covariance = (0.01, 0.01)
     node.amcl_seen = 0.0
     node.amcl_motion_distance_m = 0.3
@@ -1338,7 +1338,7 @@ def test_amcl_stale_after_motion_is_blocked(monkeypatch):
     node.amcl_yaw_covariance_rad2 = math.nan
     assert node._guard_failure(False) == 'AMCL yaw covariance invalid'
     node.amcl_yaw_covariance_rad2 = 1.0
-    assert node._guard_failure(False) == 'AMCL yaw covariance high'
+    assert node._guard_failure(False).startswith('AMCL yaw covariance high')
 
 
 def test_planner_cancellation_without_error_is_not_success():
@@ -1438,6 +1438,31 @@ def test_localization_limits_use_squared_si_units():
     assert contract['max_x_covariance_m2'] == pytest.approx(0.1 ** 2)
     assert contract['max_y_covariance_m2'] == pytest.approx(0.1 ** 2)
     assert contract['max_yaw_covariance_rad2'] == pytest.approx(math.radians(10.0) ** 2)
+    # Intermediate legs stop between the recorded converged and unconverged states.
+    assert contract['intermediate_max_x_covariance_m2'] == pytest.approx(0.2 ** 2)
+    assert contract['intermediate_max_y_covariance_m2'] == pytest.approx(0.2 ** 2)
+    assert contract['intermediate_max_yaw_covariance_rad2'] == pytest.approx(
+        math.radians(15.0) ** 2)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('intermediate_max_x_covariance_m2', None), ('intermediate_max_y_covariance_m2', 0.005),
+    ('intermediate_max_yaw_covariance_rad2', math.inf),
+    ('intermediate_max_x_covariance_m2', math.nan), ('intermediate_max_y_covariance_m2', True),
+    ('intermediate_max_x_covariance_m2', '0.25')],
+    ids=['missing', 'below_strict', 'inf', 'nan', 'bool', 'string'])
+def test_intermediate_limits_never_below_strict_limits(tmp_path, key, value):
+    """Reject an intermediate bound that is missing, non-finite or tighter than strict."""
+    document = yaml.safe_load(
+        (PACKAGE / 'config/restaurant_service_contract.yaml').read_text(encoding='utf-8'))
+    if value is None:
+        document.pop(key, None)
+    else:
+        document[key] = value
+    path = tmp_path / 'contract.yaml'
+    path.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(ValueError, match=key):
+        load_service_contract(path)
 
 
 @pytest.mark.parametrize('sequence,confirmed', [('steady', True), ('moving', False)])
