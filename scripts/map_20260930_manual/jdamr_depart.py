@@ -570,6 +570,7 @@ def run_cycle(args, state, table_id):
                f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
                f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
                + (' --home-only ' if args.dock_only else '')
+               + (' --rpp-final ' if args.rpp_final else '')
                + (' --resume-at-observation ' if args.resume_at_observation else '')
                + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
                   if args.resume_parked_log else '')
@@ -780,6 +781,8 @@ def main():
     go.add_argument('--via-route', help='water_station route (default: <P2>/water_station_route.yaml)')
     go.add_argument('--skip-via', action='store_true', help='water stop already done: table then dock')
     go.add_argument('--dock-only', action='store_true', help='return to the dock only (re-dock)')
+    go.add_argument('--rpp-final', action='store_true',
+                    help='switch back to the RPP box approach and dock leg (Graceful is default)')
     go.add_argument('--resume-at-observation', action='store_true',
                     help='robot already at the first stop observation point (water_station unless --skip-via)')
     go.add_argument('--resume-parked-log',
