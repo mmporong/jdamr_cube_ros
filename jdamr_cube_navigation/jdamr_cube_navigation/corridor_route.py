@@ -17,7 +17,8 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from jdamr_cube_navigation.mobile_manipulator_protection import (
     evaluate_travel_pose, load_mobile_manipulator_protection,
 )
-from jdamr_cube_navigation.parking import load_parking_contract, ParkingHold
+from jdamr_cube_navigation.parking import (
+    load_parking_contract, PARKING_CURVATURE_LOOKAHEAD_M, ParkingHold)
 from nav2_msgs.action import ComputePathThroughPoses, NavigateToPose
 from nav_msgs.msg import Odometry
 import rclpy
@@ -702,6 +703,9 @@ class CorridorRoute(Node):
             'Parking.use_rotate_to_heading': True,
             'Parking.allow_reversing': False,
             'Parking.use_collision_detection': True,
+            'Parking.use_fixed_curvature_lookahead': True,
+            'Parking.curvature_lookahead_dist': PARKING_CURVATURE_LOOKAHEAD_M,
+            'Parking.interpolate_curvature_after_goal': True,
         }
         if reverse:
             expected['controller_plugins'] = ['Parking', 'ParkingReverse']
