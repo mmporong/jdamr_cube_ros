@@ -17,6 +17,15 @@
 - [20260921_NAVIGATION_JD_GAP_ROADMAP.md](20260921_NAVIGATION_JD_GAP_ROADMAP.md):
   물류 AMR 자율주행 SW 채용 요건 대조, 보유 증거 표, 고도화 항목 P1~P6·A1~A2의
   계약·구현 위치·완료 조건과 진행 현황
+- [20260929_PARKING_FAILURES.md](20260929_PARKING_FAILURES.md):
+  테이블 박스 정밀 주차의 실차 실패, 코드 경로 결함 수정, 파이 반영과 SHA 대조,
+  소프트웨어·배치·실차를 구분한 남은 확인 항목
+- [20260929_NAV2_PLATFORM_RESEARCH.md](20260929_NAV2_PLATFORM_RESEARCH.md):
+  파이에서 Nav2·RGB-D·관제를 함께 돌릴 때의 부하·통신 구성 조사와 판단 한계
+- [20260930_CLAUDE_HANDOFF.md](20260930_CLAUDE_HANDOFF.md):
+  2026-09-30 도구 간 인계 시점의 미수정 문제·검증 빈틈·데이터 위치
+- `depth_box_parking_provenance.yaml`: 박스 관측기 파라미터와 관측 status 간격 실측
+  (`observer_status_timing_20260929`)의 출처
 - [20260908_DYNAMIC_OBSTACLE_READINESS.md](20260908_DYNAMIC_OBSTACLE_READINESS.md):
   수납 팔 collision 외곽 기반 보호영역, 실제 온보드 후보의 정지·동일 목표 재개 PASS,
   compact MCAP과 공간 중심 미디어

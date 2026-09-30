@@ -21,7 +21,7 @@
 | 새 차체 재방문 | 부분 완료 | 2026-09-16 기존 지도로 20/20 목표 완료, recovery 0회. 오도메트리 보정값과 새 지도·Keepout은 `candidate` 단계 | [NEW_BASE_REVISIT_CAPTURE.md](jdamr_cube_navigation/evaluation/NEW_BASE_REVISIT_CAPTURE.md) |
 | 시뮬레이션·디지털 트윈 | 완료 | 실차 점유격자를 Gazebo 충돌 메시로 바꿔 20 waypoint와 장애물 장면 3건을 재실행 | [2.5D 디지털 트윈](jdamr_cube_navigation/evaluation/20260912_2_5D_DIGITAL_TWIN_PORTFOLIO_HANDOFF.md) |
 | RGB-D Visual SLAM | 진행 중 | 입력·visual odometry·RTAB-Map DB 생성은 검증. 저텍스처 P턴에서 연속 3D 지도는 아직 통과하지 못함 | [jdamr_cube_vslam/README.md](jdamr_cube_vslam/README.md) |
-| 식당 서빙·박스 정밀 주차 | 진행 중 | 충전소 출발 → 테이블 이동 → 박스 면 정렬 → 5cm 접근 → 복귀 흐름을 연결. 2026-09-22 실차에서 목표 수락·이동까지 확인했으나 저전압(10.464V < 10.5V)으로 취소. 테이블 도착·정밀 주차·복귀는 미완료 | [20260922_SERVICE_DEPARTURE_FAILURES.md](jdamr_cube_navigation/evaluation/20260922_SERVICE_DEPARTURE_FAILURES.md) |
+| 식당 서빙·박스 정밀 주차 | 진행 중 | 충전소 출발 → 테이블 관측 위치 → 박스 면 정렬 → 5cm 접근 → 5 s 대기 → 박스 이탈 후진 → 충전소 후면 주차를 한 실행기(`box_service --return-home`)로 연결. 2026-09-29 실차에서 관측 위치까지 이동했으나 도착 방향이 강제되지 않아 테이블 표지가 카메라 시야 밖이었고, 안정된 박스 앞면을 확보하지 못함. 2026-09-30 입력 공백 회복·정지 위치추정 판정·계획 끝점 검사·박스 이탈 복귀를 구현해 테스트와 파이 반영까지 마침(실차 미검증). 박스 실제 위치·keepout 데이터 확정 뒤 재주행 | [20260929_PARKING_FAILURES.md](jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md) |
 | 캡스톤 픽앤플레이스 (시뮬) | 완료 | 비전 접근 수렴 오차 3~6mm, YOLO mAP50 0.98, 사이클 약 30초(4배속). 수치의 정본은 구현 기록 저장소 | [capstone_pick/](capstone_pick), [gazebo-so101-capstone](https://github.com/mmporong/gazebo-so101-capstone) |
 
 AMCL은 외부 ground truth가 아니다. 이 저장소의 정렬 RMS·복귀 오차는 ATE나 절대 정확도가
@@ -37,13 +37,15 @@ ESP32 펌웨어 ─┘    ├─ jdamr_base_driver: cmd_vel ↔ UART, 50Hz odom
                     ├─ Nav2 (planner·controller·BT) → velocity smoother
                     └─ Collision Monitor → /cmd_vel (최종 속도 감독)
 
-노트북: 기록(MCAP)·RViz·재생·평가·미디어 생성 (제어 경로에는 참여하지 않음)
+노트북: 기록(MCAP)·RViz(SSH 표시 중계)·재생·평가·미디어 생성 (제어 경로에는 참여하지 않음)
 ```
 
 로봇 제어 그래프는 파이 안에서 닫고, 노트북은 기록과 시각화만 소비한다. 무선 구간이 약해도
-원격 구독 상태가 로봇 제어를 멈추지 않게 하기 위한 구조다. DDS 탐색 범위는 센서 브링업과
-Nav2가 같은 `SUBNET`을 쓴다. LOCALHOST와 SUBNET을 나눴을 때 `/tf`와 Collision Monitor
-lifecycle 서비스가 간헐적으로 보이지 않았기 때문이다.
+원격 구독 상태가 로봇 제어를 멈추지 않게 하기 위한 구조다. 파이의 베이스·센서·박스 관측기·Nav2는
+domain 12에서 모두 `LOCALHOST` 탐색 범위(UDPv4)를 쓴다. 한쪽만 다른 범위로 나눴을 때
+`/tf`와 Collision Monitor lifecycle 서비스가 간헐적으로 보이지 않았기 때문에 같은 범위로 맞춘다.
+노트북 RViz는 DDS에 붙지 않고 `rviz_display_relay`가 SSH로 전달하는 표시용 토픽만 받는다.
+주행·실험이 끝나면 띄운 RViz·중계·임시 노드를 종료한다([AGENTS.md](AGENTS.md)).
 
 ## 패키지
 
@@ -92,6 +94,12 @@ ros2 launch jdamr_cube_navigation keepout_navigation.launch.py
 bash jdamr_cube_navigation/scripts/restaurant_session.sh start
 # --precision-parking은 승인된 5cm 박스 주차 시험에서만 추가한다
 
+# 테이블 박스 정밀 주차 → 5 s 대기 → 이탈 후진 → 충전소 복귀 (정밀 세션·위치 초기화 뒤, 출발 요청 시)
+python3 -m jdamr_cube_navigation.box_service --registry <registry> --approach-route <route> \
+  --camera-mount <mount> --geometry <geometry> --parking-contract <box 계약> \
+  --table-id table_01 --region-xy <x> <y> --log <새 jsonl> \
+  --candidate-trial --execute --search --return-home --return-timeout-s <s>
+
 # 기록 bag을 격리 도메인에서 재생해 SLAM 백엔드 하나를 실행
 bash jdamr_cube_navigation/scripts/offline_slam_replay.sh \
   --bag <bag 경로> --backend cartographer --out <결과 디렉터리>
@@ -113,6 +121,9 @@ ros2 launch jdamr_cube_gazebo gazebo.launch.py
 | [20260921_NAVIGATION_JD_GAP_ROADMAP.md](jdamr_cube_navigation/evaluation/20260921_NAVIGATION_JD_GAP_ROADMAP.md) | 물류 AMR 채용 요건 대조와 고도화 항목 P1~P6·A1~A2 |
 | [20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md](jdamr_cube_navigation/evaluation/20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md) | 서비스 위치 교시·정밀 배치 구현 범위 |
 | [20260922_SERVICE_PORTFOLIO_HANDOFF.md](jdamr_cube_navigation/evaluation/20260922_SERVICE_PORTFOLIO_HANDOFF.md) | 서빙 주행 RViz 화면과 기록 재생 인계 |
+| [20260929_PARKING_FAILURES.md](jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md) | 테이블 정밀 주차 실패 원인·수정·파이 반영 기록과 남은 실차 확인 항목 |
+| [20260929_NAV2_PLATFORM_RESEARCH.md](jdamr_cube_navigation/evaluation/20260929_NAV2_PLATFORM_RESEARCH.md) | 파이 Nav2 부하·통신 구성 조사와 판단 한계 |
+| [AGENTS.md](AGENTS.md) | 실차 출발·재개·주행 뒤 정리 운영 규칙 |
 | [PORTFOLIO_20260826.md](PORTFOLIO_20260826.md) | 캡스톤 시점의 Physical AI 적용안 |
 
 ## 관련 저장소
