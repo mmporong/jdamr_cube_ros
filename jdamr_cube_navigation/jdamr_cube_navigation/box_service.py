@@ -876,6 +876,16 @@ class BoxServiceRoute(ServiceRoute):
         self.last_box_face = None
         return True
 
+    def dwell_and_leave(self, dwell_s):
+        """Hold at a verified intermediate stop, then back straight away from its face."""
+        if not self.wait_parked(dwell_s):
+            self.emit('failed', phase='via_dwell')
+            return False
+        if not self._leave_parked_pose():
+            return False
+        self.emit('via_stop_finished')
+        return True
+
     def dwell_and_return_home(self, dwell_s, timeout_s):
         """Hold at the verified final target, then return to the dock."""
         if not self.wait_parked(dwell_s):
@@ -912,6 +922,12 @@ def parse_args(argv=None):
     parser.add_argument(
         '--return-timeout-s', type=float,
         help='Budget for the escape and dock return; required by --return-home')
+    parser.add_argument(
+        '--via-id', choices=('water_station',),
+        help='First stop before the table: approach, hold five seconds and escape')
+    parser.add_argument('--via-route', type=Path)
+    parser.add_argument('--via-region-xy', nargs=2, type=float)
+    parser.add_argument('--via-region-radius-m', type=float, default=0.6)
     args = parser.parse_args(argv)
     if (not all(math.isfinite(v) for v in args.region_xy)
             or not math.isfinite(args.region_radius_m)
@@ -932,6 +948,18 @@ def parse_args(argv=None):
     if args.return_timeout_s is not None and (
             not math.isfinite(args.return_timeout_s) or args.return_timeout_s <= 0.0):
         parser.error('--return-timeout-s must be finite and positive')
+    via = (args.via_id, args.via_route, args.via_region_xy)
+    if any(value is not None for value in via):
+        if any(value is None for value in via):
+            parser.error('--via-id, --via-route and --via-region-xy go together')
+        if not args.return_home:
+            parser.error('a via stop requires --return-home')
+        if args.resume_at_observation:
+            parser.error('--resume-at-observation cannot be combined with a via stop')
+        if (not all(math.isfinite(v) for v in args.via_region_xy)
+                or not math.isfinite(args.via_region_radius_m)
+                or not 0.0 < args.via_region_radius_m <= 0.6):
+            parser.error('via region must be finite and radius in (0, 0.6] m')
     return args
 
 
@@ -955,7 +983,16 @@ def main(argv=None):
             node = BoxServiceRoute(registry, contract, stream, home_contract=home_contract)
             for signum in (signal.SIGINT, signal.SIGTERM):
                 handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
-            ok = node.visit_observed_box(
+            ok = True
+            if args.via_id is not None:
+                # The via stop is a full box visit; its escape starts the table route.
+                ok = node.visit_observed_box(
+                    args.via_route, mount, geometry, args.via_id,
+                    args.via_region_xy, args.via_region_radius_m, execute=args.execute,
+                    candidate_trial=args.candidate_trial, search=args.search,
+                    task_timeout_s=args.task_timeout_s)
+                ok = ok and node.dwell_and_leave(5.0)
+            ok = ok and node.visit_observed_box(
                 args.approach_route, mount, geometry, args.table_id,
                 args.region_xy, args.region_radius_m, execute=args.execute,
                 candidate_trial=args.candidate_trial,

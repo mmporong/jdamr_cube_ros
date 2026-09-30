@@ -872,3 +872,98 @@ def test_l9_home_contract_load_failure_uses_failure_path(monkeypatch, tmp_path, 
     lines = capsys.readouterr().out.strip().splitlines()
     assert json.loads(lines[-1])['failed'].startswith('parking contract keys invalid')
     assert created == []
+
+
+VIA_ARGS = ['--via-id', 'water_station', '--via-route', '/w',
+            '--via-region-xy', '-0.14', '-1.53']
+
+
+def test_t36_via_cli_is_all_or_nothing_and_ends_at_the_dock():
+    """A first stop needs its route and region, execution and the dock return."""
+    execute = [*RETURN_ARGS, '--execute', '--candidate-trial',
+               '--return-home', '--return-timeout-s', '500']
+    args = _parse_new('T36', [*execute, *VIA_ARGS, '--via-region-radius-m', '0.35'])
+    assert (args.via_id, str(args.via_route), args.via_region_xy,
+            args.via_region_radius_m) == ('water_station', '/w', [-0.14, -1.53], 0.35)
+    assert _parse_new('T36', execute).via_id is None
+    for invalid in ([*execute, *VIA_ARGS[:2]],
+                    [*execute, *VIA_ARGS[:4]],
+                    [*RETURN_ARGS, '--execute', '--candidate-trial', *VIA_ARGS],
+                    [*execute, *VIA_ARGS, '--resume-at-observation'],
+                    [*execute, *VIA_ARGS, '--via-region-radius-m', '0.7']):
+        with pytest.raises(SystemExit):
+            parse_args(invalid)
+
+
+def _via_main(monkeypatch, tmp_path, via_ok=True, leave_ok=True):
+    for name in ('registry', 'mount', 'geometry', 'route', 'water'):
+        (tmp_path / f'{name}.yaml').write_text('{}\n')
+    argv = ['--registry', str(tmp_path / 'registry.yaml'),
+            '--approach-route', str(tmp_path / 'route.yaml'),
+            '--camera-mount', str(tmp_path / 'mount.yaml'),
+            '--geometry', str(tmp_path / 'geometry.yaml'),
+            '--parking-contract', str(BOX_CONTRACT), '--table-id', 'table_01',
+            '--region-xy', '1.5', '-1.49', '--execute', '--candidate-trial', '--search',
+            '--return-home', '--return-timeout-s', '500',
+            '--via-id', 'water_station', '--via-route', str(tmp_path / 'water.yaml'),
+            '--via-region-xy', '-0.14', '-1.53']
+    _parse_new('T36', [*argv, '--log', str(tmp_path / 'probe.jsonl')])
+    monkeypatch.setattr(box_service, 'load_registry', lambda _path: {'home': {}})
+    monkeypatch.setattr(box_service.rclpy, 'init', lambda **_kwargs: None)
+    monkeypatch.setattr(box_service.rclpy, 'shutdown', lambda **_kwargs: None)
+    calls = []
+
+    class Route:
+        def __init__(self, *args, **kwargs):
+            self.visit_observed_box = Mock(side_effect=lambda route, *a, **k: calls.append(
+                ('visit', Path(route).name, a[2], list(a[3]), k['search'])) or (
+                    via_ok if Path(route).name == 'water.yaml' else True))
+            self.dwell_and_leave = Mock(side_effect=lambda dwell: calls.append(
+                ('dwell_and_leave', dwell)) or leave_ok)
+            self.dwell_and_return_home = Mock(side_effect=lambda dwell, timeout: calls.append(
+                ('dwell_and_return_home', dwell, timeout)) or True)
+            self.finish_navigation = Mock(return_value=True)
+            self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+
+    monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
+    code = box_service.main([*argv, '--log', str(tmp_path / f'run_{via_ok}_{leave_ok}.jsonl')])
+    return code, calls
+
+
+def test_t36_water_station_then_table_then_dock(monkeypatch, tmp_path):
+    """The call runs the water stop, its dwell and escape, the table, then the dock."""
+    code, calls = _via_main(monkeypatch, tmp_path)
+    assert code == 0
+    assert calls == [('visit', 'water.yaml', 'water_station', [-0.14, -1.53], True),
+                     ('dwell_and_leave', 5.0),
+                     ('visit', 'route.yaml', 'table_01', [1.5, -1.49], True),
+                     ('dwell_and_return_home', 5.0, 500.0)]
+
+
+@pytest.mark.parametrize('via_ok,leave_ok,expected', [
+    (False, True, [('visit', 'water.yaml')]),
+    (True, False, [('visit', 'water.yaml'), ('dwell_and_leave',)]),
+])
+def test_t36_failed_water_stop_never_goes_to_the_table(
+        monkeypatch, tmp_path, via_ok, leave_ok, expected):
+    """A failed water approach or escape ends the run before any table motion."""
+    code, calls = _via_main(monkeypatch, tmp_path, via_ok=via_ok, leave_ok=leave_ok)
+    assert code == 1
+    assert [call[:len(step)] for call, step in zip(calls, expected)] == expected
+    assert len(calls) == len(expected)
+
+
+@pytest.mark.parametrize('parked,left,expected', [
+    (False, True, False), (True, False, False), (True, True, True)])
+def test_t36_dwell_and_leave_holds_then_escapes(parked, left, expected):
+    """Hold the verified stop, then reverse straight away; never escape unverified."""
+    route = BoxServiceRoute.__new__(BoxServiceRoute)
+    route.wait_parked = Mock(return_value=parked)
+    route._leave_parked_pose = Mock(return_value=left)
+    route.emit = Mock()
+    assert hasattr(BoxServiceRoute, 'dwell_and_leave'), 'NEW[T36]: no dwell_and_leave'
+    assert route.dwell_and_leave(5.0) is expected
+    route.wait_parked.assert_called_once_with(5.0)
+    assert route._leave_parked_pose.call_count == (1 if parked else 0)
+    events = [call.args[0] for call in route.emit.call_args_list]
+    assert ('via_stop_finished' in events) is expected
