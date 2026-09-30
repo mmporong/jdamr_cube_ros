@@ -3,7 +3,9 @@ reference_frame: map
 robot_base_frame: base_link
 # Candidate control tolerances; not measured physical accuracy.
 xy_tolerance_m: 0.01
-yaw_tolerance_deg: 1.0
+# 3 deg (contract maximum): the 1 deg box tolerance rejected a 0.65 cm / 1.83 deg
+# water-station stop (2026-09-30); AMCL yaw noise is 4-5 deg (1 sigma).
+yaw_tolerance_deg: 3.0
 stopped_linear_mps: 0.01
 stopped_angular_radps: 0.02
 hold_s: 1.0
