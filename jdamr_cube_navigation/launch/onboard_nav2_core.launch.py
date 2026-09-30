@@ -261,9 +261,11 @@ def _launch_navigation(context):
     )
     remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
     lifecycle_bond = {
-        # Allow lifecycle service and bond handling to tolerate scheduler
-        # jitter.  The executable threshold is covered by launch tests.
-        'bond_timeout': 10.0,
+        # Bonds off (as in the mapping launches): on 2026-09-30 a departing
+        # executor stalled heartbeats past 10 s on the loaded Pi and the managers
+        # shut the stack down (15:54, 16:57). Collision stop, command timeouts and
+        # stale-sensor checks are unaffected.
+        'bond_timeout': 0.0,
         'bond_respawn_max_duration': 20.0,
     }
 

@@ -794,12 +794,12 @@ def test_package_installs_keepout_command_and_assets():
 
 
 def test_lifecycle_managers_tolerate_pi_service_latency():
-    """A slow bond reply must not read as a dead node."""
+    """A stalled heartbeat must not shut the stack down (bonds off)."""
     # The shared setting keeps all lifecycle managers on the same contract.
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
 
     # Shared by the three legacy managers and the coordinated alternative.
-    assert "'bond_timeout': 10.0" in source
+    assert "'bond_timeout': 0.0" in source
     assert "'bond_respawn_max_duration': 20.0" in source
     assert source.count('**lifecycle_bond') == 4
 
