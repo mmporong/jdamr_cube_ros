@@ -153,6 +153,20 @@ def test_restart_must_show_a_new_start_time(env, monkeypatch):
         d.restart_sensor_services()
 
 
+def test_restart_refuses_an_inactive_sensor_service(env, monkeypatch):
+    pi = Pi()
+    real = pi.__call__
+
+    def inactive_observer(command, **kw):
+        result = real(command, **kw)
+        if command.startswith('systemctl show') and command.endswith('jdamr-box-observer.service'):
+            result.stdout = 'ActiveState=inactive\nActiveEnterTimestampMonotonic=0\n'
+        return result
+    monkeypatch.setattr(d, 'pi', inactive_observer)
+    with pytest.raises(SystemExit):
+        d.restart_sensor_services()
+
+
 def test_restart_covers_all_sensor_services(env, monkeypatch):
     pi = Pi()
     monkeypatch.setattr(d, 'pi', pi)
@@ -200,13 +214,15 @@ def test_probe_timeout_is_an_error(env, monkeypatch):
 
 
 def test_session_restart_revokes_localization(env, monkeypatch):
-    monkeypatch.setattr(d, 'pi', lambda *a, **k: SimpleNamespace(returncode=0, stdout='STARTED'))
+    monkeypatch.setattr(d, 'pi', lambda c, **k: SimpleNamespace(
+        returncode=0, stdout='' if 'jdamr-table-cycle-*' in c else 'STARTED'))
     d.cmd_session_start(None)
     assert d.load_state()['localized'] is False
 
 
 def test_session_reuse_keeps_localization(env, monkeypatch):
-    monkeypatch.setattr(d, 'pi', lambda *a, **k: SimpleNamespace(returncode=0, stdout='REUSED'))
+    monkeypatch.setattr(d, 'pi', lambda c, **k: SimpleNamespace(
+        returncode=0, stdout='' if 'jdamr-table-cycle-*' in c else 'REUSED'))
     d.cmd_session_start(None)
     assert d.load_state()['localized'] is True
 
@@ -225,3 +241,26 @@ def test_display_start_starts_only_missing_units(env, monkeypatch):
     monkeypatch.setattr(d, 'sh', sh)
     d.cmd_display_start(None)
     assert started == ['jdamr-p2-rviz']
+
+
+def test_stop_during_the_map_wait_prevents_recovery(env, monkeypatch):
+    """A stop makes the executor fail with the same map message; do not re-depart."""
+    monkeypatch.setattr(d, 'pi', Pi())
+
+    def stopped_run(*_a):
+        d.cmd_stop(None)
+        return MAP_FAIL
+    monkeypatch.setattr(d, 'run_cycle', stopped_run)
+    monkeypatch.setattr(d, 'cmd_recover', lambda a: pytest.fail('recovered'))
+    with pytest.raises(SystemExit):
+        d.cmd_go(go_args())
+
+
+def test_stop_during_recovery_prevents_the_second_departure(env, monkeypatch):
+    monkeypatch.setattr(d, 'pi', Pi())
+    runs = []
+    monkeypatch.setattr(d, 'run_cycle', lambda *a: runs.append(a) or MAP_FAIL)
+    monkeypatch.setattr(d, 'cmd_recover', lambda a: d.cmd_stop(None))
+    with pytest.raises(SystemExit):
+        d.cmd_go(go_args())
+    assert len(runs) == 1

@@ -188,7 +188,8 @@ def session_active():
 
 def refuse_during_cycle(action):
     """Session stops and sensor restarts would end a running cycle mid-drive."""
-    busy = pi("systemctl list-units --type=service --state=active,activating --no-legend "
+    busy = pi("systemctl list-units --type=service --state=active,activating,deactivating "
+              "--no-legend "
               "'jdamr-table-cycle-*'", check=False).stdout.strip()
     if busy:
         fail(f'a table cycle is running; {action} would stop it (use stop first): {busy}')
@@ -319,6 +320,7 @@ exit 4
 
 
 def cmd_session_start(_args):
+    refuse_during_cycle('session-start')
     script = SESSION_SCRIPT.format(source=PI_SOURCE, session=PI_SESSION, registry=REGISTRY,
                                    discovery=SESSION_DISCOVERY,
                                    composition=SESSION_COMPOSITION)
@@ -394,6 +396,7 @@ def cmd_init(args):
     # Until this init completes, go must not depart on an earlier localization.
     state['localized'] = False
     save_state(state)
+    refuse_during_cycle('init')
     if not session_active():
         fail('Nav2 session is not active; run session-start first')
     if args.seed_from_state:
@@ -550,7 +553,14 @@ def run_cycle(args, state, table_id):
             return events
 
 
+def stop_requested_since(started):
+    """An operator stop ends this go: no recovery, no re-departure."""
+    if load_state().get('stop_unix', 0.0) >= started:
+        fail('stop requested; no re-departure')
+
+
 def cmd_go(args):
+    started = time.time()
     state = load_state()
     if 'regions' not in state or state.get('localized') is not True:
         fail('not localized: the session restarted or an init failed since the last init; '
@@ -569,10 +579,13 @@ def cmd_go(args):
             fail('the executor received no map before moving; the robot is not at a globally '
                  'matched init pose, so run recover --seed X Y YAW_DEG [--local-only], '
                  'then go again')
+        stop_requested_since(started)
         log('the executor received no map before moving; recovering without motion, '
             'then departing once more')
         args.seed, args.local_only = None, False
         cmd_recover(args)
+        stop_requested_since(started)
+        refuse_during_cycle('the re-departure')
         events = run_cycle(args, load_state(), table_id)
     names = [e.get('event') for e in events]
     arrived = [e for e in events if e.get('event') == 'home_arrived']
@@ -616,10 +629,8 @@ def restart_sensor_services():
     for unit in SENSOR_UNITS:
         before = unit_state(unit)
         if before[0] != 'active':
-            if unit == SENSOR_UNITS[0]:
-                fail(f'{unit} is {before[0]}; start it before recovering')
-            log(f'{unit}: {before[0]}, left as is')
-            continue
+            # A box cycle needs all three; None means the ssh read failed.
+            fail(f'{unit} is {before[0]}; start it before recovering')
         pi(f'sudo -n systemctl restart {unit}', timeout=200, check=False)
         after = unit_state(unit)
         if after[0] != 'active' or after[1] == before[1]:
@@ -664,7 +675,10 @@ def cmd_recover(args):
 
 
 def cmd_stop(_args):
-    unit = load_state().get('last_unit')
+    state = load_state()
+    state['stop_unix'] = time.time()
+    save_state(state)
+    unit = state.get('last_unit')
     if unit:
         pi(f'sudo -n systemctl stop {unit}', check=False)
         log(f'{unit}: ' + pi(f'systemctl is-active {unit}', check=False).stdout.strip())
