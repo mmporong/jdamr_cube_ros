@@ -367,6 +367,47 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 
 12:23에 PC 표시 유닛 5개(`jdamr-p2-mapserver`·`relay`·`markers`·`rviz`·`click`)와 파이 Nav2 세션(`jdamr-restaurant-navigation`)을 `jdamr_depart.py display-stop`·`session-stop`으로 끄고 inactive를 확인했다. 파이에는 상시 센서 서비스 `jdamr-base`·`jdamr-box-rgbd`·`jdamr-box-observer`만 남았다(이 작업이 띄운 것이 아니다). 같은 지도로 다시 주행한다면 `display-start` → `session-start` → 도크에서 RViz 초기화 → `init --keep-home` 순서다(표시는 Nav2 세션 기동 전에 띄운다). 새 지도로 바꾸면 설치 계획의 등록 절차를 따른다.
 
+## 18. 새 지도, 목적지 재지정, 물 받는 곳 경유 흐름 (2026-09-30 14:10–14:50)
+
+데이터: `$HOME/jdamr_data/map_20260930_manual/` (파이 같은 경로). 로봇 이동은 사용자 수동 매핑 주행뿐이다.
+
+### 18.1 지도와 도크
+
+| 항목 | 내용 | 근거 |
+|---|---|---|
+| 매핑 | 파이 `jdamr-operator-mapping.service`(Cartographer 2D + map_saver + 웹 조종기 8080)로 사용자가 14:10–14:23 주행. 14:23:47 `/finish_trajectory` 뒤 저장해 이후 스캔을 넣지 않았다 | `map_provenance.json`, `map.pbstream` |
+| 매핑 중 표시 | 기존 중계는 `/map`을 옮기지 않아, 설치본 중계에 `/map`만 더한 임시 스크립트를 ssh 표준입력으로 실행하고 PC RViz를 띄웠다(파이 설치·빌드 없음) | `scripts/map_20260930_manual/mapping_display_relay.py` |
+| 도크 | 사용자 지정("마지막 차량 자리 부근을 충전소로"). 정지 스캔 정합 inlier 0.80, 전역 탐색 일치, Cartographer 추정과 0.7 cm·0.75°. 도크 차체 영역의 점유·미확인 0칸, 0.7 m 대기점 회전 여유 0.67 m | `dock_pose.json` |
+| 벽 정렬 | 사용자 요청으로 벽 방향(원 지도 축 −5.7°, 두 방법 일치)에 맞춰 원점 기준 +5.7° 회전한 격자 `aligned/map.yaml`(최근접 재표본, 벽 잔여 0.0°). 도크 재정합 (−0.185, 0.191) inlier 0.72. 도크 목표 방향은 사용자 요청으로 0°(실제 정지 6.7°) | `aligned/alignment.json`, `aligned/dock_pose.json` |
+| keepout | 지도 미확인 칸만 막았다(22,485칸). 세션의 비어 있지 않은 마스크 조건을 만족하고 KeepoutFilter가 미확인을 빈 칸으로 덮는 문제(§14.1)를 막는다 | `aligned/keepout.yaml`, `keepout_mask validate` 통과 |
+
+### 18.2 목적지와 배치 검사
+
+RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축 0/90/180/270°로 고정)으로 지정했다. 박스 0.40×0.30 m 가정, 회전 여유 기준 0.514 m.
+
+| 이름 | 앞면 가운데(정렬 지도) | 법선 | 결과 |
+|---|---|---|---|
+| `water_station` (P2) | (−0.145, −1.531) | 0°(동쪽에서 접근) | 통과 |
+| `table_01` (P1) | (1.496, −1.487) | 180°(서쪽에서 접근) | 통과. 두 박스가 1.64 m 간격으로 마주 본다 |
+| `table_02` (P3) | 클릭 (0.518, −3.578) | 90°(북쪽에서 접근) | 불통과: 박스 자리에 지도 점유 17칸, 접근 자세 회전 여유 0.37–0.46 m. 제안 자리 (0.62, −2.83) 북향(북쪽 75 cm·동쪽 10 cm)은 통과. 사용자 확인 전 |
+
+경로는 앞면 법선 위 한 직선에 둔다(사전 1.10 m, 관측 0.60 m, 간격 0.50 m). 박스 세 개를 넣은 지도에서 회전 지점 13곳 모두 0.514 m 이상, 세 접근 통로와 도크 후진 통로는 `static_corridor_clear` 통과. `water_station` 경로는 도크에서, 테이블 경로는 `water_station` 이탈 자세(앞면 + 0.565 m)에서 시작한다. `table_01`의 사전 지점은 이탈 자세와 5 cm라 곧바로 끝나고 관측 지점(0.48 m 앞)에서 방향이 맞춰진다.
+
+### 18.3 새 흐름 (커밋 `a34b230`)
+
+- 사용자 결정: 웹 호출은 만들지 않고 사용자의 "출발 table_0N"을 호출로 본다. 흐름은 도크 → `water_station` 정밀 주차·5 s·후진 이탈 → 호출 테이블 정밀 주차·5 s·후진 이탈 → 도크 후면 도킹.
+- `box_service --via-id water_station --via-route --via-region-xy [--via-region-radius-m]`: 경유지를 기존 `visit_observed_box`로 방문하고 `dwell_and_leave`(검증된 정지 유지 뒤 `_leave_parked_pose` 이탈)를 거쳐 테이블 방문과 기존 `dwell_and_return_home`으로 이어진다. 경유 인자는 함께만 받고 `--return-home`이 필요하며 관측 지점 재개와 함께 쓰지 않는다. 경유 실패·이탈 실패면 테이블로 가지 않는다.
+- 테스트 T36 7건은 수정 전 모두 실패, 수정 뒤 통과. 핵심 7개 파일 605건 통과, 변경 파일 flake8·pep257 0건.
+- 파이 반영: `scripts/deploy_navigation_to_pi.sh`는 파이 사전 검증에서 멈췄다(검증 사본에 `jdamr_cube_description`이 없어 `new_base_geometry.yaml`을 읽는 기존 테스트 2건 실패, 주 워크스페이스 미변경). 백업(`$HOME/jdamr_data/deploy_backup_20260930_via/`) 뒤 `box_service.py` 한 파일을 복사하고 `colcon build --packages-select jdamr_cube_navigation` 통과. PC·파이 소스·파이 설치본 SHA-256 `7f954a6c…` 일치, `--help`에 경유 옵션 표시.
+- 출발 도구: `$HOME/jdamr_data/map_20260930_manual/tools/jdamr_depart.py`(저장소 사본 `scripts/map_20260930_manual/`). 새 지도 폴더, `destinations.json`, 세 경로 생성, init 때 세 목적지 영역 등록, `go table_0N`에 경유 인자 추가. 14:49 새 registry로 정밀 준비 세션 기동(localization·keepout active) 확인 뒤 종료.
+
+### 18.4 남은 항목
+
+- `table_02` 자리 확정(제안 자리 또는 재클릭) 뒤 `destinations.json`·경로·주석을 다시 만든다.
+- 박스 세 개 설치, 로봇을 도크에 벽과 나란히 두고 `display-start` → `session-start` → RViz 초기화 → `init`(teach-home). 그 뒤 "출발 table_0N"에 `go table_0N`.
+- 실차 미검증: 두 박스가 마주 본 1.64 m 공간에서의 회전 탐색, 테이블 경로 첫 사전 지점 즉시 완료, 도크 끝 yaw(§16.4)는 첫 주행에서 본다.
+- 표시: `service_visualization`은 테이블 두 곳만 그리고 `water_station`은 그리지 않는다.
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.
