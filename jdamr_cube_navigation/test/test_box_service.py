@@ -242,12 +242,17 @@ def test_center_gap_cannot_hide_rotated_front_corner(mission):
     assert min(result['estimated_front_corner_gaps_m']) < 0.04
 
 
-def test_corner_gap_is_checked_even_inside_yaw_tolerance(mission):
-    yaw = math.radians(0.9)
+def test_corner_gaps_inside_yaw_tolerance_are_logged_not_gated(mission):
+    """2026-09-30 table_02: 2.74 deg, centre 5.7 cm, corners 4.4/7.0 cm was a good park."""
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(3)}
+    yaw = math.radians(2.74)
     mission.capture_stationary_pose.side_effect = [
-        ((0, 0, 0), {}), ((0.959 - 0.065 * math.cos(yaw), 0, yaw), {})]
-    assert not invoke(mission)
-    assert min(mission.emit.call_args.kwargs['estimated_front_corner_gaps_m']) < 0.04
+        ((0, 0, 0), {}), ((0.943 - 0.065 * math.cos(yaw), 0, yaw), {})]
+    assert invoke(mission)
+    result = mission.emit.call_args.kwargs
+    assert mission.emit.call_args.args == ('box_approach_finished',)
+    assert result['estimated_front_gap_m'] == pytest.approx(0.057)
+    assert max(result['estimated_front_corner_gaps_m']) > 0.06
 
 
 def test_wrong_start_never_dispatches_transit(mission):

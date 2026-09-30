@@ -1754,7 +1754,6 @@ def test_t44_escape_heading_drift_still_clears_face(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize('case,pose', [
     ('heading_off', (PARKED_X_M, 0.0, math.radians(5.0))),
-    ('beyond_clearance', (FACE[0] - 0.60, 0.0, 0.0)),
     ('not_in_front', (FACE[0] + 0.01, 0.0, 0.0)),
 ])
 def test_l3_escape_refuses_unaligned_or_out_of_range_pose(
@@ -1771,6 +1770,56 @@ def test_l3_escape_refuses_unaligned_or_out_of_range_pose(
     assert [record['reason'] for record in failures] == ['box_escape_unavailable']
     assert failures[0]['detail']
     assert node.last_box_face is not None
+
+
+@pytest.mark.parametrize('distance_m,yaw_deg', [(0.554, 33.0), (0.60, 0.0)])
+def test_escape_is_skipped_once_rotation_clearance_exists(
+        monkeypatch, tmp_path, distance_m, yaw_deg):
+    """2026-09-30 table_02: a reverse ended 33 deg off at 0.554 m; go home from there."""
+    node, world = _parked_world(monkeypatch, tmp_path)
+    world.pose = [FACE[0] - distance_m, 0.0, math.radians(yaw_deg)]
+    world.run(1.0)
+    result = _go_home(node)
+    assert _box_escape_failures(node) == []
+    assert _events(node, 'box_escape_skipped')
+    assert [kind for kind, _goal in world.motions] == ['NavigateToPose'], result
+
+
+class _ShortReverse(_ActionPeer):
+    """End the first reverse early with 105, as the Pi did twice on 2026-09-30."""
+
+    def __init__(self, world, end_distance_m):
+        super().__init__(world, 'FollowPath')
+        self.end_distance_m = end_distance_m
+        self.ended_short = False
+
+    def send_goal_async(self, goal, goal_uuid=None, feedback_callback=None):
+        if self.ended_short:
+            return super().send_goal_async(goal, goal_uuid, feedback_callback)
+        self.ended_short = True
+        self.world.motions.append((self.kind, goal))
+        self.world.pose = [FACE[0] - self.end_distance_m, 0.0, self.world.pose[2]]
+        self.world.command_due = True
+        result = FollowPath.Result()
+        result.error_code = 105
+        return _done(_handle(SimpleNamespace(status=GoalStatus.STATUS_ABORTED, result=result)))
+
+
+@pytest.mark.parametrize('end_distance_m,home', [(0.526, True), (0.45, False)])
+def test_short_reverse_counts_only_with_rotation_clearance(
+        monkeypatch, tmp_path, end_distance_m, home):
+    node, world = _parked_world(monkeypatch, tmp_path)
+    world.stop_on_motion = False
+    node.follow_reverse = _ShortReverse(world, end_distance_m)
+    assert node.go_home(execute=True, timeout_s=500.0) is home
+    kinds = [kind for kind, _goal in world.motions]
+    if home:
+        assert _box_escape_failures(node) == []
+        assert _events(node, 'box_escape_finished')[0]['nav2_goal_reached'] is False
+        assert kinds == ['FollowPath', 'NavigateToPose', 'FollowPath']
+    else:
+        assert [r['reason'] for r in _box_escape_failures(node)] == ['box_escape_failed']
+        assert kinds == ['FollowPath']
 
 
 def test_l4_escape_error_is_recorded_and_reraised(monkeypatch, tmp_path):

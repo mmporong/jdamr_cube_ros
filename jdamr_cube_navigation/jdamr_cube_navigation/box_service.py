@@ -20,7 +20,6 @@ from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, pose_errors,
 )
 from jdamr_cube_navigation.restaurant_service import ServiceRoute
-from jdamr_cube_navigation.reverse_parking import ALREADY_AT_GOAL_DISTANCE_M
 from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
 from nav2_msgs.action import Spin
 import rclpy
@@ -816,9 +815,12 @@ class BoxServiceRoute(ServiceRoute):
         yaw_error = abs(math.atan2(
             math.sin(actual[2] - target['yaw_rad']),
             math.cos(actual[2] - target['yaw_rad'])))
+        # Centre gap and the contract heading decide; inside that heading the
+        # corners only follow it and are logged (2026-09-30 table_02: 2.74 deg,
+        # centre 5.7 cm, corners 4.4 and 7.0 cm stopped a good park).
         gap_confirmed = (
-            all(math.isfinite(gap) and abs(gap - 0.05) <= 0.01
-                for gap in (estimated_gap_m, *corner_gaps))
+            math.isfinite(estimated_gap_m) and abs(estimated_gap_m - 0.05) <= 0.01
+            and all(math.isfinite(gap) for gap in corner_gaps)
             and yaw_error <= self.parking_contract['yaw_tolerance_rad'])
         if gap_confirmed:
             # A later parked dwell verifies this final target, not a taught pose.
@@ -852,11 +854,18 @@ class BoxServiceRoute(ServiceRoute):
         outward = face['outward_normal_map_xy']
         actual, _ = self.capture_stationary_pose()
         distance_m = sum((actual[i] - center[i]) * outward[i] for i in (0, 1))
+        clear_m = ESCAPE_CLEARANCE_M - ESCAPE_PATH_CONTRACT['xy_tolerance_m']
+        if math.isfinite(distance_m) and distance_m >= clear_m:
+            # The rotation room is already there, whatever the heading
+            # (2026-09-30 table_02: a reverse ended 33 deg off at 0.554 m).
+            self.emit('box_escape_skipped', face_distance_m=distance_m,
+                      reason='rotation_clearance_reached')
+            return True
         # A straight reverse moves away from the face only from a pose that
-        # faces it, in front of it and inside the clearance; refuse any other.
+        # faces it and is in front of it; refuse any other.
         facing = -(math.cos(actual[2]) * outward[0] + math.sin(actual[2]) * outward[1])
         aligned = facing >= math.cos(ESCAPE_PATH_CONTRACT['yaw_tolerance_rad'])
-        if not (aligned and 0.0 < distance_m < ESCAPE_CLEARANCE_M):
+        if not (aligned and 0.0 < distance_m):
             self.emit('failed', phase='box_escape', reason='box_escape_unavailable',
                       detail=('heading_not_facing_box_face' if not aligned
                               else 'face_distance_outside_escape_range'),
@@ -864,9 +873,6 @@ class BoxServiceRoute(ServiceRoute):
                       face_heading_cos=self._json_scalar(facing))
             return False
         length_m = ESCAPE_CLEARANCE_M - distance_m
-        if length_m <= ALREADY_AT_GOAL_DISTANCE_M:
-            self.emit('box_escape_skipped', face_distance_m=distance_m)
-            return True
         target = (actual[0] - length_m * math.cos(actual[2]),
                   actual[1] - length_m * math.sin(actual[2]), actual[2])
         saved = (self.config, self.waypoints)
@@ -882,10 +888,11 @@ class BoxServiceRoute(ServiceRoute):
                 self.emit('failed', phase='box_escape', reason='box_escape_blocked')
                 return False
             failure = 'box_escape_failed'
-            if not self._execute_reverse_path(
-                    path, path_contract=ESCAPE_PATH_CONTRACT,
-                    validate_from_m=ESCAPE_VALIDATION_EXCLUDE_M,
-                    goal_checker_id='alignment_goal_checker', final=False):
+            reached = self._execute_reverse_path(
+                path, path_contract=ESCAPE_PATH_CONTRACT,
+                validate_from_m=ESCAPE_VALIDATION_EXCLUDE_M,
+                goal_checker_id='alignment_goal_checker', final=False)
+            if not reached and self.stop_requested:
                 # The preceding result event carries the Nav2 error code.
                 self.emit('failed', phase='box_escape', reason='box_escape_failed')
                 return False
@@ -902,13 +909,17 @@ class BoxServiceRoute(ServiceRoute):
         # The escape only has to give the next rotation room: confirm the face
         # clearance. Heading and lateral drift are logged; the next leg is planned
         # from wherever the robot stands (2026-09-30: 6 deg drift stopped the run).
-        if distance_m < ESCAPE_CLEARANCE_M - ESCAPE_PATH_CONTRACT['xy_tolerance_m']:
-            self.emit('failed', phase='box_escape', reason='box_escape_not_confirmed',
+        # A reverse Nav2 ended short also counts once the clearance is there
+        # (2026-09-30: 105 near the goal at 0.526 m and 0.554 m).
+        if not math.isfinite(distance_m) or distance_m < clear_m:
+            self.emit('failed', phase='box_escape',
+                      reason='box_escape_not_confirmed' if reached else 'box_escape_failed',
                       face_distance_m=distance_m, position_error_m=position_error_m,
                       yaw_error_rad=yaw_error_rad)
             return False
         self.emit('box_escape_finished', face_distance_m=distance_m,
-                  position_error_m=position_error_m, yaw_error_rad=yaw_error_rad)
+                  position_error_m=position_error_m, yaw_error_rad=yaw_error_rad,
+                  nav2_goal_reached=bool(reached))
         self.last_box_face = None
         return True
 
