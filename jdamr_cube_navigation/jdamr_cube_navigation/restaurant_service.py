@@ -464,7 +464,8 @@ class ServiceRoute(CorridorRoute):
             name: map_grid_signature(self.registry[name]['yaml_path'])
             for name in ('map', 'keepout')}
         # Allow initial transient-local discovery without relaxing asset identity.
-        deadline_s = time.monotonic() + 10.0
+        # A fresh process on the loaded Pi took up to 6 s idle and more while driving.
+        deadline_s = time.monotonic() + 30.0
         while (len(self.live_grids) != 2 and not self.map_mismatch and not self.stop_requested
                and time.monotonic() < deadline_s):
             rclpy.spin_once(self, timeout_sec=0.05)

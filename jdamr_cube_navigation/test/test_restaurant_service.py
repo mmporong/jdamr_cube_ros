@@ -1409,7 +1409,9 @@ def test_missing_live_map_reports_missing_streams(monkeypatch):
                         lambda *_, **__: clock.update(now=clock['now'] + 1.0))
     with pytest.raises(RuntimeError, match='live map data unavailable: keepout'):
         node.verify_live_maps()
-    assert clock['now'] == 10.0
+    # 30 s: an idle Pi delivered /map to a fresh process in 1-6 s; under driving
+    # load a 10 s wait failed (2026-09-30 table_02 legs).
+    assert clock['now'] == 30.0
 
 
 def test_live_map_reload_is_detected_even_with_unchanged_parameters():
