@@ -21,7 +21,7 @@
 | 새 차체 재방문 | 부분 완료 | 2026-09-16 기존 지도로 20/20 목표 완료, recovery 0회. 오도메트리 보정값과 새 지도·Keepout은 `candidate` 단계 | [NEW_BASE_REVISIT_CAPTURE.md](jdamr_cube_navigation/evaluation/NEW_BASE_REVISIT_CAPTURE.md) |
 | 시뮬레이션·디지털 트윈 | 완료 | 실차 점유격자를 Gazebo 충돌 메시로 바꿔 20 waypoint와 장애물 장면 3건을 재실행 | [2.5D 디지털 트윈](jdamr_cube_navigation/evaluation/20260912_2_5D_DIGITAL_TWIN_PORTFOLIO_HANDOFF.md) |
 | RGB-D Visual SLAM | 진행 중 | 입력·visual odometry·RTAB-Map DB 생성은 검증. 저텍스처 P턴에서 연속 3D 지도는 아직 통과하지 못함 | [jdamr_cube_vslam/README.md](jdamr_cube_vslam/README.md) |
-| 식당 서빙·박스 정밀 주차 | 진행 중 | 충전소 출발 → 테이블 관측 위치 → 박스 면 정렬 → 5cm 접근 → 5 s 대기 → 박스 이탈 후진 → 충전소 후면 주차를 한 실행기(`box_service --return-home`)로 연결. 2026-09-29 실차에서 관측 위치까지 이동했으나 도착 방향이 강제되지 않아 테이블 표지가 카메라 시야 밖이었고, 안정된 박스 앞면을 확보하지 못함. 2026-09-30 입력 공백 회복·정지 위치추정 판정·계획 끝점 검사·박스 이탈 복귀를 구현해 테스트와 파이 반영까지 마침(실차 미검증). 박스 실제 위치·keepout 데이터 확정 뒤 재주행 | [20260929_PARKING_FAILURES.md](jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md) |
+| 식당 서빙·박스 정밀 주차 | 진행 중 | 충전소 출발 → 테이블 관측 위치 → 박스 면 정렬 → 5cm 접근 → 5 s 대기 → 박스 이탈 후진 → 충전소 후면 주차를 한 실행기(`box_service --return-home`)로 연결. 2026-09-29 실차에서 관측 위치까지 이동했으나 도착 방향이 강제되지 않아 테이블 표지가 카메라 시야 밖이었고, 안정된 박스 앞면을 확보하지 못함. 2026-09-30 입력 공백 회복·정지 위치추정 판정·계획 끝점 검사·박스 이탈 복귀를 구현해 테스트와 파이 반영까지 마침. 같은 날 실차에서 충전소 후진 도킹(도크 앞 0.7 m 정렬 → 직선 후진)으로 도크 정위치에 도달(현장 확인, 끝 구간 yaw 보정 중 Nav2 105로 서비스 판정은 실패). table_01 박스는 관측·회전 공간이 부족한 자리여서 면 정렬 단계에 들어가지 못함. 새 지도·박스 배치 뒤 재주행 | [20260929_PARKING_FAILURES.md](jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md) |
 | 캡스톤 픽앤플레이스 (시뮬) | 완료 | 비전 접근 수렴 오차 3~6mm, YOLO mAP50 0.98, 사이클 약 30초(4배속). 수치의 정본은 구현 기록 저장소 | [capstone_pick/](capstone_pick), [gazebo-so101-capstone](https://github.com/mmporong/gazebo-so101-capstone) |
 
 AMCL은 외부 ground truth가 아니다. 이 저장소의 정렬 RMS·복귀 오차는 ATE나 절대 정확도가
@@ -122,6 +122,8 @@ ros2 launch jdamr_cube_gazebo gazebo.launch.py
 | [20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md](jdamr_cube_navigation/evaluation/20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md) | 서비스 위치 교시·정밀 배치 구현 범위 |
 | [20260922_SERVICE_PORTFOLIO_HANDOFF.md](jdamr_cube_navigation/evaluation/20260922_SERVICE_PORTFOLIO_HANDOFF.md) | 서빙 주행 RViz 화면과 기록 재생 인계 |
 | [20260929_PARKING_FAILURES.md](jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md) | 테이블 정밀 주차 실패 원인·수정·파이 반영 기록과 남은 실차 확인 항목 |
+| [20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md](jdamr_cube_navigation/evaluation/20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md) | 충전소 후진 도킹 자료 묶음·그림·주장 범위·포트폴리오 문안 |
+| [20260930_MAP_BOX_LAYOUT_PLAN.md](jdamr_cube_navigation/evaluation/20260930_MAP_BOX_LAYOUT_PLAN.md) | 새 지도 작성·keepout 재설계·도크 등록·테이블 박스 배치 계획(승인 대기) |
 | [20260929_NAV2_PLATFORM_RESEARCH.md](jdamr_cube_navigation/evaluation/20260929_NAV2_PLATFORM_RESEARCH.md) | 파이 Nav2 부하·통신 구성 조사와 판단 한계 |
 | [AGENTS.md](AGENTS.md) | 실차 출발·재개·주행 뒤 정리 운영 규칙 |
 | [PORTFOLIO_20260826.md](PORTFOLIO_20260826.md) | 캡스톤 시점의 Physical AI 적용안 |

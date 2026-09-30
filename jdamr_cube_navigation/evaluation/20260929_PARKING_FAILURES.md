@@ -271,33 +271,101 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 - 도착 뒤 AMCL 값이 0.04를 넘은 채 잠기면 관측 단계에서, 정렬 뒤 0.01을 넘은 채 잠기면 최종 접근에서, staging 뒤 0.01을 넘으면 도킹 전에 멈춘다. 실패 메시지에 값과 적용 한도가 남는다. 운영자 조치는 충전소 이동 뒤 재초기화다.
 - 데이터 폴더의 `resume_table_trial.py`는 `covariance high` transit 중단을 복구 가능으로 보고 nomotion을 반복한다. D10 뒤에는 그 사유가 위치추정 상실을 뜻하므로 쓰지 않는다.
 
-## 16. table_01 박스 탐색 실패와 도크 복귀 (2026-09-30 11:36–12:02)
+## 16. table_01 박스 탐색 실패와 충전소 복귀 (2026-09-30 11:36–12:14)
 
-데이터 폴더: `$HOME/jdamr_data/map_update_20260929_4XUrkc/phase2_20260930/` (파이 같은 경로).
+데이터 폴더: `$HOME/jdamr_data/map_update_20260929_4XUrkc/phase2_20260930/` (파이 같은 경로). 도킹 성공 자료는 `$HOME/jdamr_data/dock_return_success_20260930/`에 따로 묶었다([포트폴리오 인계](20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md)).
 
 ### 16.1 관찰
 
 | 시각 | 실행 | 결과 |
 |---|---|---|
-| 11:36–11:41 | `runs/table_01_20260930_113650` (box_service `--search`, 박스 경로 `table_01_route_box.yaml`) | 관측점 (1.0, 0.05) 도착 뒤 박스 면 안정 판정(8프레임·영역 안)을 한 번도 통과하지 못하고 +33° 탐색 회전을 이어 갔다. 박스 쪽 방위에서는 면이 카메라에서 0.42 m라 화면을 넘쳐 대부분 `no_box_surface_candidate`, 다른 방위는 비스듬한 면의 흔들림이나 다른 평면을 골랐다. 7번째 탐색 회전에서 `nav2_spin_failed`로 끝났다(누적 210°) |
+| 11:36–11:41 | `runs/table_01_20260930_113650` (box_service `--search`, 박스 경로 `table_01_route_box.yaml`) | 관측점 (1.0, 0.05) 도착 뒤 박스 면 안정 판정(8프레임·영역 안)을 한 번도 통과하지 못하고 +33° 탐색 회전을 이어 갔다. 박스 쪽 방위에서는 면이 카메라에서 0.42 m라 화면을 넘쳐 대부분 `no_box_surface_candidate`, 다른 방위는 비스듬한 면의 흔들림이나 다른 평면을 골랐다. 탐색 회전 6회는 Nav2 성공(4), 7번째가 703으로 끝났고, 11:41:07 운영자 정지(`jdamr_depart.py stop`)로 종료 |
 | 11:46 | `runs/home_20260930_114600` (`restaurant_service home --execute`, 박스 계약) | 움직이기 전 도크 후진 경로 정적 검사 `static_obstacle_unknown_keepout_or_map_boundary`로 종료. 로봇 이동 없음 |
-| 11:58–12:01 | `runs/home_20260930_115853` (같은 명령, 아래 16.2 수정 뒤) | staging 도착(Nav2 4), staging 정지 확인 통과, 후진 경로 검사 통과, 도크 후진 중 52 s 뒤 FollowPath 중단 `Failed to make progress`(Nav2 6, 오류 105). 중단 직후 정지 확인은 도크 목표 대비 2.6 cm·1.7°(내부 추정, 외부 실측 없음)로 confirmed였지만 서비스 판정은 `failed`, 종료 코드 1 |
+| 11:58–12:01 | `runs/home_20260930_115853` (같은 명령, 16.3 수정 뒤) | 11:59:11 (0.94, 0.07)에서 staging (−0.64, −0.14)로 출발, 12:00:57 도착(106 s, Nav2 4). staging 정지 확인 통과(staging 목표 대비 2.6 cm·1.7°, 1.0 s 유지). 후진 경로 검사 통과, 12:01:00 후진 시작, 12:01:52 FollowPath 중단 `Failed to make progress`(Nav2 6, 오류 105). 서비스 판정 `failed`, 종료 코드 1 |
+| 12:01 이후 | 사용자 현장 확인 | 도크 정위치에 도달했다. 끝 구간에서 앞뒤 왕복과 좌우 반복 회전이 있었다 |
+| 12:13–12:14 | 무이동 측정 (`final_pose/`) | 도크 목표 대비: map→base_link TF 0.25 cm·+3.83°, 래치된 `/amcl_pose` 4.0 cm·+3.76°, 독립 스캔 정합 3.9 cm(도크 축 2.2 cm·측방 3.2 cm)·−1.17°(inlier 0.61, 전역 탐색 일치). 줄자 실측 없음 |
 
-### 16.2 도크 경로 차단 원인과 조치
+### 16.2 정정 (커밋 `5462b62` 기록)
 
-- 정적 검사(`static_corridor_clear`, 런타임 footprint 0.38×0.58 m)가 세 곳에서 막혔다.
+`5462b62`의 "중단 직후 정지 확인은 도크 목표 대비 2.6 cm·1.7°"는 틀렸다. `failed` 이벤트의 `confirmation`은 staging 정지 확인 결과가 그대로 남은 값이다(hold 1.0139 s·오차가 staging 이벤트와 같다). 후진 중단 뒤에는 도크 정지 확인이 실행되지 않았다. 도크 최종 자세 수치는 12:14 무이동 측정값뿐이다.
+
+### 16.3 도크 경로 차단 원인과 조치
+
+- 정적 검사(`static_corridor_clear`, 런타임 footprint 0.38×0.58 m, 미확인 = 막힘)가 세 곳에서 막혔다.
   1. staging 자세 차체 왼쪽이 도크 서쪽 keepout 블록 동쪽 열(x −0.93~−0.88)과 수 mm 겹침.
   2. 도크 자세 차체 뒤쪽(y −1.138)이 지도 점유 2칸(x −0.63~−0.58, y −1.08~−0.98)과 겹침. 이 칸은 스캔 정합·AMCL이 1 cm 안에서 일치한 도크 자세에서 차체 안(base_link 뒤 0.19–0.24 m)에 들어가고, 같은 자리 초기화 스캔에서 뒤쪽 0.77 m 안에 반사가 없었다 → 지도 작성 때의 일시 물체로 판단.
   3. 통로 가운데 미확인 1칸(−0.70, −0.51): 도크 초기화 스캔 빔 287개가 통과, 반사 0.
-- 사용자 지시("킵아웃 해제하고 도킹 진행해", "킵아웃만들지말고 그냥해")로 keepout을 전부 비운 마스크를 먼저 썼으나, 세션 런치가 `keepout mask contains no blocked cells`로 거부했다(`keepout_mask.py`). 그래서 원래 keepout에서 staging 회전 원(0.414+0.10 m)과 도크 통로(반폭 0.29+0.10 m)에 걸리는 46칸만 열었다.
-- 새 자산 `map_dockfix.yaml`(3칸 수정), `keepout_dockfix.yaml`(46칸 해제), 근거 `dockfix_provenance.json`. 원본 `local_updated.yaml`·`keepout.yaml`과 이전 registry `service_destinations.before_dockfix.yaml`은 보존. registry 해시 교체 → Nav2 세션 재시작 → 현재 자리에서 스캔 정합 초기화(0.933, 0.074, 185.2°; AMCL과 0.4 cm·0.1°, inlier 0.50). 도구 `jdamr_depart.py`의 `MAP_YAML`도 새 지도로 바꿨다.
+- 사용자 지시("킵아웃 해제하고 도킹 진행해", "킵아웃만들지말고 그냥해")로 keepout을 전부 비운 마스크를 먼저 썼으나, 세션 런치가 `keepout mask contains no blocked cells`로 거부했다(`keepout_mask.py`, 11:53:18). 그래서 원래 keepout에서 staging 회전 원(0.414+0.10 m)과 도크 통로(반폭 0.29+0.10 m)에 걸리는 46칸만 열었다.
+- 새 자산 `map_dockfix.yaml`(3칸 수정), `keepout_dockfix.yaml`(46칸 해제), 근거 `dockfix_provenance.json`. 원본 `local_updated.yaml`·`keepout.yaml`과 이전 registry `service_destinations.before_dockfix.yaml`은 보존. registry 해시 교체 → Nav2 세션 재시작 → 현재 자리에서 스캔 정합 초기화(0.933, 0.074, 185.2°; AMCL과 0.4 cm·0.1°, inlier 0.50). 도구 `jdamr_depart.py`의 `MAP_YAML`도 새 지도로 바꿨다. 수정 뒤 staging 회전(185°→92.3°)과 후진 통로가 같은 정적 검사를 통과했다.
 - 새 지도에서는 PC 표시 유닛 `jdamr-p2-markers`가 `table annotation belongs to a different map`으로 시작하지 않는다(표시 전용, 주행 무관).
 
-### 16.3 남은 항목
+### 16.4 도크 후진 끝의 105 해석
 
-- 도크 후진 끝의 진행 없음 중단 원인은 미확정이다. 진행 검사는 10 s 안 5 cm 이동을 요구한다(`PoseProgressChecker`). 저속 끝 구간의 바퀴 불감대, 또는 컨트롤러 목표 판정과 정지 확인이 다른 시점의 map→odom을 쓴 차이가 후보이며, 다음 도킹에서 cmd_vel·odom 속도와 goal checker 판정을 함께 기록해 가린다.
-- 중단 뒤 정지 자세가 도크 계약 안이어도 서비스는 실패로 판정한다. 재시도는 원인 확인 전에는 하지 않았다.
-- 사용자는 지도 재작성, 박스 재배치, 목적지 재설정을 따로 진행할 예정이다. 그때 이번 흔적 칸과 keepout 경계도 새 지도 기준으로 다시 정한다.
+| 구분 | 내용 |
+|---|---|
+| 확인된 근거 | 정지 뒤 컨트롤러가 보는 자세(map→base_link TF)는 위치 0.25 cm, yaw +3.83°로 도크 계약 yaw 3°를 넘는다. 진행 검사는 `PoseProgressChecker` 5 cm·0.10 rad / 10 s다. 후진 수락 시 AMCL yaw 분산 0.00489 rad²(1σ 4.0°), 종료 시 0.00788 rad²(1σ 5.1°)로 계약 yaw 3°보다 크다. 사용자가 끝 구간 왕복·좌우 회전을 봤다 |
+| 추론(미검증) | 위치는 허용 안인데 yaw가 허용 밖이라 goal checker가 도착을 인정하지 않았고, 컨트롤러가 방향을 고치려 왕복·회전하는 동안 10 s에 5 cm·0.1 rad 넘는 진전을 만들지 못해 중단했다. cmd_vel·컨트롤러 내부 오차는 기록하지 않아 확정하지 못한다 |
+| 가리지 못한 것 | TF yaw(+3.8°)와 스캔 정합 yaw(−1.2°)가 5° 다르다. 도크 목표 yaw 92.3°도 10:24 teach-home 때의 TF 값이다. 외부 실측이 없어 어느 쪽이 실물에 가까운지 이 자료로 정할 수 없다 |
+
+### 16.5 남은 항목
+
+- 후진 중단 뒤 서비스는 도크 정지 확인 없이 실패로 끝나고, 실패 이벤트에 이전 단계(staging) 확인값을 싣는다. 충전 중 수정 후보: 중단 뒤 기존 `_verify_parking_stop` 경로로 도크 계약 정지 확인 1회, 이벤트에 확인 단계 표시.
+- 도크 yaw 허용 3°가 AMCL yaw 1σ(4–5°)보다 작다. 허용을 넓힐지, 도크 끝 구간에서 yaw를 스캔 정합으로 보정할지는 다음 도킹에서 cmd_vel·odom·goal checker 판정을 함께 기록한 뒤 정한다.
+- 사용자가 지도 재작성, 박스 재배치, 목적지 재설정을 진행할 예정이다. 이번 흔적 칸과 keepout 경계는 새 지도 기준으로 다시 정한다([지도·박스 설치 계획](20260930_MAP_BOX_LAYOUT_PLAN.md)).
+
+## 17. 2026-09-30 전체 실행·변경 대장
+
+오전 인계부터 12:14까지. 로봇을 움직인 실행은 사용자 요청("출발", "주차좀 진행해", "충전소 도킹 진행해봐") 범위다.
+
+### 17.1 실행 대장
+
+| 시각 | run (`phase2_20260930/runs/`) | 경로·영역 | 결과 | 기록된 사유·근거 |
+|---|---|---|---|---|
+| 10:22 | `init_20260930_102257` | — | 중단 | 정합 단계 도구 오류(당시 수정: 빔 수가 다른 scan의 각도 binning, map origin 부호 파싱). `scan.json`만 남음 |
+| 10:23–10:53 | `init_…102327`, `…103424`, `…104502`, `…104729`, `…105342` | — | 활성화 | 반복 초기화(세션 재시작·교착 조사 중). 각 `activation.jsonl` |
+| 10:30 | `table_01_20260930_103006` | `table_01_route.yaml`, (1.896, 0.303) | 이동 없음 | `live map data unavailable: keepout, map`. Nav2 합성 컨테이너 교착(`container_hang_evidence/`: futex 대기, `dds.*` 스레드) |
+| 10:35 | `table_01_20260930_103516` | 같음 | 이동 없음 | `stationary teaching unavailable`. 같은 교착 |
+| 10:45–11:03 | `churn_test_*.log` | — | 진단 | 참가자 반복 접속: 합성+LOCALHOST 2회째 교착, 중계 없이 4회째 교착, 루프백 UDP 2회째 교착, 비합성 10/10 통과 → 세션을 `--use-composition false`로 운영 |
+| 10:57 | `init_20260930_105723` | — | 중단 | 정합 통과(inlier 0.61) 뒤 도구 JSON 직렬화 오류(numpy bool). 수정 뒤 재실행 |
+| 10:58 | `init_20260930_105836` | — | 활성화 | 스캔 정합 (−0.613, −0.834, 92.2°)와 AMCL 1 cm 이내. home_dock 유지 |
+| 11:03 | `table_01_20260930_110340` | `table_01_route.yaml`, (1.896, 0.303) | 관측점 도착, 관측 실패 | `box observation unavailable: stable detected front surface is required`(표지 영역에 박스 없음) |
+| 11:08 | `table_01_20260930_110834` | `table_01_route_forward.yaml` | 관측점 도착 | 탐색 회전 1회 뒤 `nav2_spin_failed` |
+| 11:18, 11:20 | `…111834`, `…112042` | `table_01_route_box.yaml`, (1.13, 0.50) | transit 실패 | `table_01_box_pre` Nav2 104(PATIENCE_EXCEEDED). keepout이 회전 원 안 |
+| 11:22 | `…112240` | 같음 | 관측점·search_view 도착 | 탐색 회전 703(COLLISION_AHEAD) ×2 → `nav2_spin_failed` |
+| 11:25 | `…112549` | 같음 | transit 실패 | `table_01_box_back_off` 104 |
+| 11:28 | `…112806` | 같음 | 관측점·search_view 도착 | 안정 앞면 없음(`box_observation_unavailable_evidence`) |
+| 11:31 | `…113143` | 같음 | transit 실패 | `table_01_box_front` 104 |
+| 11:35 | `…113541` | 같음 | 이동 없음 | `parking controller parameters unavailable`(부하 중 일시, 다음 실행 통과) |
+| 11:36 | `…113650` | 같음 | 관측점 도착, 운영자 정지 | §16.1 |
+| 11:46 | `home_20260930_114600` | 도크 | 이동 없음 | §16.3 정적 검사 |
+| 11:53 | 세션 재시작 1차 | — | 기동 거부 | 전부 비운 keepout(`keepout mask contains no blocked cells`) |
+| 11:57 | `init_20260930_115717` | — | 활성화 | 재시작 뒤 현재 자리 스캔 정합(inlier 0.50, 전역 일치), AMCL 0.4 cm·0.1° |
+| 11:58 | `home_20260930_115853` | 도크 | 도크 도달(사용자 확인) | 서비스 판정 105 실패, §16.4 |
+
+박스 정밀 주차(정렬 → 5 cm → 5 s 대기 → 이탈)는 이날 한 번도 정렬 단계에 들어가지 못했다. 막힌 이유는 세 가지였다. 박스 자리가 keepout과 지도 장애물에 가까워 회전이 막혔고(104·703), 관측 거리와 방향 때문에 앞면이 안정되지 않았으며, 가까운 transit waypoint는 BT에서 곧바로 도착 처리됐다.
+
+### 17.2 변경 대장
+
+| 구분 | 변경 | 위치·근거 | 반영 |
+|---|---|---|---|
+| 코드 | 중간 단계 AMCL 공분산 한도(x·y 0.04 m², yaw (15°)²) | 커밋 `e3b00ca`, §15 | 파이 런타임 3파일 해시 일치 |
+| 설정 | 박스 앞면 법선 하한 `minimum_front_normal_z` 0.80 → 0.90(앞면·윗면 혼합 평면 제외) | 커밋 `6f4764f` | 파이 설치본 해시 일치, 관측기 재시작 |
+| 규칙 | 파이 lim linger 전제 | 커밋 `523bec1` | 사용자 `loginctl enable-linger lim` |
+| 운영 | Nav2 세션 비합성(`--use-composition false`), LOCALHOST | `jdamr_depart.py` `SESSION_COMPOSITION` | 10:59 이후 모든 세션 |
+| 운영 도구 | `jdamr_depart.py`(RViz 클릭 → 스캔 정합 → 활성화 → teach-home, `go`·`stop`·`status`·세션·표시 제어), `scan_match.py`, `dock_survey.py`, `capture_scan2.py`, `initialpose_capture.py`, `geometry_check.py` | 데이터 폴더 `tools/`, 저장소 사본 `scripts/phase2_20260930/` | PC에서 실행, 파이는 ssh |
+| 지도 자산 | Phase 2 keepout(표 1 앞 띠 개방, `keepout_provenance.json`), home_dock 재교시(10:24, (−0.608, −0.843, 92.3°)), table_01 경로 3종 | 데이터 폴더 | registry 해시 |
+| 지도 자산 | `map_dockfix.yaml`(흔적 3칸), `keepout_dockfix.yaml`(46칸 해제), registry 교체 | §16.3, `dockfix_provenance.json` | 11:57 세션부터 |
+| 기록 | 이 §16·§17, 포트폴리오 인계, 그림 3장, 지도·박스 설치 계획 | `evaluation/`, `portfolio_data/figures/` | — |
+
+### 17.3 기록 부재
+
+- 이날 어떤 실행도 rosbag을 남기지 않았다. 도킹 구간의 cmd_vel·odom 궤적, Nav2 계획 경로, 카메라 영상이 없다.
+- 도크 최종 자세는 내부 추정(TF·AMCL·스캔 정합)과 사용자 육안 확인뿐이다. 줄자·외부 촬영 실측이 없다.
+- 박스 관측 실패 run은 최근 status 16개 증거 이벤트만 있고 RGB-D 원본 프레임은 없다.
+
+### 17.4 정리
+
+12:23에 PC 표시 유닛 5개(`jdamr-p2-mapserver`·`relay`·`markers`·`rviz`·`click`)와 파이 Nav2 세션(`jdamr-restaurant-navigation`)을 `jdamr_depart.py display-stop`·`session-stop`으로 끄고 inactive를 확인했다. 파이에는 상시 센서 서비스 `jdamr-base`·`jdamr-box-rgbd`·`jdamr-box-observer`만 남았다(이 작업이 띄운 것이 아니다). 같은 지도로 다시 주행한다면 `display-start` → `session-start` → 도크에서 RViz 초기화 → `init --keep-home` 순서다(표시는 Nav2 세션 기동 전에 띄운다). 새 지도로 바꾸면 설치 계획의 등록 절차를 따른다.
 
 ## 앞선 충전 중 수정본 검증
 
@@ -317,4 +385,4 @@ PC에는 저장 지도와 목적지 마커가 있었으나 Current Robot Error�
 - 충전 중 추가 보존: `$HOME/jdamr_data/parking_charging_fix_20260929_hwT9Pe/`의 탐색·회피·재접근 JSONL 다섯 run과 `nav2_latency_journal.log`. 이 후속 구간의 원시 RGB-D rosbag은 확보하지 못했다.
 - 정지 기준선: 같은 폴더의 `stationary_sensor_baseline.json` (파이 원본은 위 백업 폴더). 지도 위치추정은 종료 상태라 map→odom 자료는 없으며 센서/베이스 기준선만 제공한다.
 
-기록과 코드 검증은 주행 성공 증거가 아니다. 테이블 앞 5cm 정밀주차는 아직 성공하지 않았다. 충전소 복귀는 2026-09-30 12:01에 도크 계약 안(내부 추정 2.6 cm·1.7°)에 정지했지만 Nav2 진행 없음 중단으로 서비스 판정은 실패다(§16).
+기록과 코드 검증은 주행 성공 증거가 아니다. 테이블 앞 5cm 정밀주차는 아직 성공하지 않았다. 충전소 후진 도킹은 2026-09-30 12:01에 도크 정위치에 도달했다(사용자 현장 확인, 내부 추정 TF 0.25 cm·3.8°, 스캔 정합 3.9 cm·1.2°, 외부 실측 없음). 끝 구간 yaw 보정 중 Nav2 진행 검사 중단(105)으로 서비스 판정은 실패였다(§16).
