@@ -1038,8 +1038,11 @@ class ServiceRoute(CorridorRoute):
         and the map-to-odom pose function used for its confirmation target.
         """
         base = self.parking_contract['robot_base_frame']
-        in_map = self.parking_tf.lookup_transform('map', base, rclpy.time.Time())
-        in_odom = self.parking_tf.lookup_transform('odom', base, rclpy.time.Time())
+        try:
+            in_map = self.parking_tf.lookup_transform('map', base, rclpy.time.Time())
+            in_odom = self.parking_tf.lookup_transform('odom', base, rclpy.time.Time())
+        except TransformException as error:
+            raise RuntimeError(f'map/odom transform unavailable: {error}') from error
         map_x, map_y = in_map.transform.translation.x, in_map.transform.translation.y
         odom_x, odom_y = in_odom.transform.translation.x, in_odom.transform.translation.y
         turn = (_quaternion_yaw(in_odom.transform.rotation)
@@ -1065,6 +1068,16 @@ class ServiceRoute(CorridorRoute):
             pose.pose.orientation.w = math.cos(yaw / 2.0)
             frozen.poses.append(pose)
         return frozen, to_odom
+
+    def _odom_pose(self):
+        """Return the current base pose in odom (the frame a frozen reverse ran in)."""
+        base = self.parking_contract['robot_base_frame']
+        try:
+            transform = self.parking_tf.lookup_transform('odom', base, rclpy.time.Time())
+        except TransformException as error:
+            raise RuntimeError(f'odom transform unavailable: {error}') from error
+        return (transform.transform.translation.x, transform.transform.translation.y,
+                _quaternion_yaw(transform.transform.rotation))
 
     def _reverse_smoother_ready(self):
         response = self._read_parameters(

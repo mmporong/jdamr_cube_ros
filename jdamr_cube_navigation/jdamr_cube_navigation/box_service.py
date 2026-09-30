@@ -889,7 +889,7 @@ class BoxServiceRoute(ServiceRoute):
                 return False
             failure = 'box_escape_failed'
             # Straight back in odom: AMCL jumps near the box cannot bend it.
-            odom_path, _to_odom = self._frozen_in_odom(path)
+            odom_path, to_odom = self._frozen_in_odom(path)
             reached = self._execute_reverse_path(
                 path, path_contract=ESCAPE_PATH_CONTRACT,
                 validate_from_m=ESCAPE_VALIDATION_EXCLUDE_M,
@@ -908,7 +908,13 @@ class BoxServiceRoute(ServiceRoute):
             self.config, self.waypoints = saved
         after, _ = self.capture_stationary_pose()
         position_error_m, yaw_error_rad = pose_errors(target, after)
-        distance_m = sum((after[i] - center[i]) * outward[i] for i in (0, 1))
+        # The reverse ran in odom, so its clearance is judged there too: AMCL
+        # read 0.5146 m after an odom-straight escape Nav2 completed (2026-09-30).
+        face_x, face_y, _ = to_odom(center[0], center[1], 0.0)
+        tip_x, tip_y, _ = to_odom(center[0] + outward[0], center[1] + outward[1], 0.0)
+        odom_x, odom_y, _ = self._odom_pose()
+        distance_m = ((odom_x - face_x) * (tip_x - face_x)
+                      + (odom_y - face_y) * (tip_y - face_y))
         # The escape only has to give the next rotation room: confirm the face
         # clearance. Heading and lateral drift are logged; the next leg is planned
         # from wherever the robot stands (2026-09-30: 6 deg drift stopped the run).
