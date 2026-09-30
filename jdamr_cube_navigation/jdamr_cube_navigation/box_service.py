@@ -308,6 +308,7 @@ class BoxServiceRoute(ServiceRoute):
             'StopZone.translation_forward.points', 'StopZone.stopped.points',
             'StopZone.translation_backward.points',
             'StopZone.rotation.points', 'StopZone.rotation_clockwise.points',
+            'SlowdownZone.enabled',
             'scan.enabled', 'scan.type', 'scan.topic',
             'FootprintApproach.enabled', 'FootprintApproach.type',
             'FootprintApproach.min_points',

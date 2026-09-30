@@ -967,3 +967,30 @@ def test_t36_dwell_and_leave_holds_then_escapes(parked, left, expected):
     assert route._leave_parked_pose.call_count == (1 if parked else 0)
     events = [call.args[0] for call in route.emit.call_args_list]
     assert ('via_stop_finished' in events) is expected
+
+
+def test_t37_live_precision_profile_requires_slowdown_disabled(monkeypatch):
+    """A live collision monitor that still slows near the box is not the profile."""
+    baseline = yaml.safe_load(PARAMS.read_text())
+    geometry = yaml.safe_load(GEOMETRY.read_text())
+    monitor = apply_docking_stop_profile(baseline, geometry)[
+        'collision_monitor']['ros__parameters']
+
+    def nested(name):
+        value = monitor
+        for component in name.split('.'):
+            value = value[component]
+        return deepcopy(value)
+
+    client = Mock()
+    client.wait_for_services.return_value = True
+    client.get_parameters.side_effect = lambda names: list(names)
+    node = object.__new__(BoxServiceRoute)
+    node.precision_parameters = client
+    monkeypatch.setattr(box_service, 'parameter_value_to_python', lambda value: value)
+    monkeypatch.setattr(
+        box_service, 'get_package_share_directory',
+        lambda _name: str(ROOT / 'jdamr_cube_navigation'))
+    node._wait = lambda names, _timeout: SimpleNamespace(values=[
+        True if name == 'SlowdownZone.enabled' else nested(name) for name in names])
+    assert node._precision_collision_ready(geometry) is False

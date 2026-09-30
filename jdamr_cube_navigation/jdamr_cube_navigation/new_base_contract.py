@@ -195,9 +195,11 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             raise RuntimeError(
                 f'new-base {name} velocity range violates approved policy')
     slow_zone = monitor['SlowdownZone']
+    # The precision session switches the slowdown ring off: it always holds the
+    # target face during the 5 cm approach (docking_stop_profile).
     if (slow_zone['type'] != 'polygon'
             or slow_zone['action_type'] != 'slowdown'
-            or not slow_zone['enabled']
+            or (slow_zone['enabled'] is not True and not precision_parking)
             or type(slow_zone.get('min_points')) is not int
             or slow_zone['min_points'] != 3):
         raise RuntimeError('new-base SlowdownZone is not active')
