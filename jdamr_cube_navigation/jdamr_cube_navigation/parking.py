@@ -146,6 +146,17 @@ def parking_controller_overrides(
         'cost_scaling_dist': 0.3,
     })
     configured['Parking'] = parking
+    # Graceful (Park-Kuipers smooth control law, the law Nav2 docking uses)
+    # converges position and heading together for the last box approach.
+    configured['controller_plugins'].append('GracefulParking')
+    configured['GracefulParking'] = graceful_parking(contract, allow_backward=False)
+    # Staging is judged by position; the heading is turned once afterwards.
+    configured['goal_checker_plugins'].append('staging_position_checker')
+    configured['staging_position_checker'] = {
+        'plugin': 'nav2_controller::PositionGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
+    }
     configured['parking_goal_checker'] = {
         'plugin': 'nav2_controller::SimpleGoalChecker',
         'stateful': False,
@@ -153,6 +164,28 @@ def parking_controller_overrides(
         'yaw_goal_tolerance': contract['yaw_tolerance_rad'],
     }
     return configured
+
+
+def graceful_parking(contract: dict, allow_backward: bool) -> dict:
+    """Return Graceful controller parameters at the parking contract speeds."""
+    return {
+        'plugin': 'nav2_graceful_controller::GracefulController',
+        'transform_tolerance': 0.5,
+        'min_lookahead': 0.1,
+        'max_lookahead': 0.3,
+        'k_phi': 2.0,
+        'k_delta': 1.0,
+        'beta': 0.4,
+        'lambda': 2.0,
+        'v_linear_min': contract['min_approach_linear_mps'],
+        'v_linear_max': contract['desired_linear_mps'],
+        'v_angular_max': contract['rotate_angular_radps'],
+        'v_angular_min_in_place': contract['rotate_angular_radps'] / 2.0,
+        'slowdown_radius': 0.3,
+        'initial_rotation': False,
+        'prefer_final_rotation': False,
+        'allow_backward': allow_backward,
+    }
 
 
 def pose_errors(target_xyz: Sequence[float],

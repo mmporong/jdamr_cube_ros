@@ -8,7 +8,8 @@ from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profil
 from jdamr_cube_navigation.parking import (
     load_parking_contract, parking_controller_overrides,
 )
-from jdamr_cube_navigation.reverse_parking import reverse_controller_overrides
+from jdamr_cube_navigation.reverse_parking import (
+    reverse_controller_overrides, SERVICE_TRANSIT_MAX_MPS)
 from jdamr_cube_navigation.service_destinations import expanded_path, load_registry
 from launch import LaunchDescription
 from launch.actions import (
@@ -35,8 +36,14 @@ def _configure(context):
         controller = reverse_controller_overrides(controller)
         smoother = document['velocity_smoother']['ros__parameters']
         smoother['min_velocity'][0] = -contract['desired_linear_mps']
+        # Transit no longer runs at the parking contract speed (0.04 m/s cap,
+        # 8042a31); the parking controllers bound themselves.
         smoother['max_velocity'][0] = min(
-            smoother['max_velocity'][0], contract['desired_linear_mps'])
+            smoother['max_velocity'][0], SERVICE_TRANSIT_MAX_MPS)
+        transit = controller['FollowPath']
+        for key in ('desired_linear_vel', 'min_approach_linear_velocity',
+                    'regulated_linear_scaling_min_speed'):
+            transit[key] = min(transit[key], SERVICE_TRANSIT_MAX_MPS)
     document['controller_server']['ros__parameters'] = controller
     if LaunchConfiguration('precision_parking', default='false').perform(context) == 'true':
         geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))

@@ -107,9 +107,10 @@ def test_overrides_only_append_parking_plugins_and_deep_copy_follow_path():
 
     assert nav2 == before
     assert configured['controller_plugins'] == (
-        original['controller_plugins'] + ['Parking'])
+        original['controller_plugins'] + ['Parking', 'GracefulParking'])
     assert configured['goal_checker_plugins'] == (
-        original['goal_checker_plugins'] + ['parking_goal_checker', 'alignment_goal_checker'])
+        original['goal_checker_plugins']
+        + ['parking_goal_checker', 'alignment_goal_checker', 'staging_position_checker'])
     unchanged = set(original) - {
         'controller_plugins', 'goal_checker_plugins', 'FollowPath'}
     assert all(configured[key] == original[key] for key in unchanged)

@@ -366,11 +366,21 @@ def validate_new_base_params(params, geometry, precision_parking=False):
     supported_controller = (
         'nav2_regulated_pure_pursuit_controller::'
         'RegulatedPurePursuitController')
+    graceful_controller = 'nav2_graceful_controller::GracefulController'
     for plugin_name in controller_plugins:
         if plugin_name not in controller:
             raise RuntimeError(
                 f'new-base registered controller {plugin_name} is missing')
         plugin = controller[plugin_name]
+        if plugin.get('plugin') == graceful_controller:
+            # Graceful has no collision-detection switch in 1.3.12; the
+            # collision monitor still gates its output like every controller.
+            top = plugin.get('v_linear_max')
+            if (type(top) not in (int, float) or not math.isfinite(top)
+                    or not 0.0 < top <= NEW_BASE_MAX_FORWARD_MPS):
+                raise RuntimeError(
+                    'new-base controller speed exceeds uncalibrated limit')
+            continue
         if plugin.get('plugin') != supported_controller:
             raise RuntimeError(
                 f'new-base controller {plugin_name} plugin is unsupported')

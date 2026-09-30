@@ -19,7 +19,8 @@ from jdamr_cube_navigation.corridor_route import _quaternion_yaw, AMCL_QOS, Corr
 from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold, pose_errors,
 )
-from jdamr_cube_navigation.reverse_parking import reverse_waypoints, static_corridor_clear
+from jdamr_cube_navigation.reverse_parking import (
+    reverse_waypoints, SERVICE_TRANSIT_MAX_MPS, static_corridor_clear)
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
     map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
@@ -51,6 +52,11 @@ AMCL_QUIET_MAX_YAW_RAD = 0.05
 # AMCL stamps map->odom at every scan plus transform_tolerance, so an older
 # map->base_link TF means AMCL or odometry has gone silent.
 AMCL_QUIET_MAX_TF_AGE_S = 0.5
+
+
+# Below this the alignment leg's own rotation turns the rest; above it one
+# odom Spin turns in a direction fixed at rest (never near a +-180 flip).
+STAGING_TURN_MIN_RAD = math.radians(30.0)
 
 
 def load_service_contract(path):
@@ -179,6 +185,12 @@ class ServiceRoute(CorridorRoute):
         package = Path(get_package_share_directory('jdamr_cube_navigation'))
         self.alignment_behavior_tree = str(
             package / 'behavior_trees/navigate_to_pose_alignment.xml')
+        self.staging_behavior_tree = str(
+            package / 'behavior_trees/navigate_to_pose_staging.xml')
+        # Graceful by default for the box approach and the dock leg; the
+        # executor's --rpp-final switch restores the RPP controllers.
+        self.final_approach_controller = 'GracefulParking'
+        self.dock_leg_controller = 'GracefulReverse'
         self.service_contract = load_service_contract(
             package / 'config/restaurant_service_contract.yaml')
         self.minimum_battery_v = self.service_contract['minimum_running_battery_v']
@@ -661,12 +673,14 @@ class ServiceRoute(CorridorRoute):
         finally:
             self._intermediate_localization = previous
 
-    def execute(self, *, final_parking=True, alignment=False):
+    def execute(self, *, final_parking=True, alignment=False, staging=False):
         """Bound transit and parking actions and retain their terminal result."""
         if not isinstance(final_parking, bool):
             raise ValueError('final_parking must be boolean')
         if not isinstance(alignment, bool) or (alignment and final_parking):
             raise ValueError('alignment requires non-final parking mode')
+        if staging and (alignment or final_parking):
+            raise ValueError('staging is a plain intermediate leg')
         # The 9/29 transit stopped at x covariance 0.010213 against 0.01 with no
         # resume path. A transit leg is intermediate, an alignment leg keeps its
         # caller's stage and a final leg is always strict, input recovery included.
@@ -675,9 +689,9 @@ class ServiceRoute(CorridorRoute):
         with self._localization_bound(intermediate):
             return self._run_with_input_recovery(
                 lambda: self._execute_service_once(
-                    final_parking=final_parking, alignment=alignment))
+                    final_parking=final_parking, alignment=alignment, staging=staging))
 
-    def _execute_service_once(self, *, final_parking, alignment):
+    def _execute_service_once(self, *, final_parking, alignment, staging=False):
         """Retry only a canceled input gap, never an unresolved action."""
         if not self.navigate.wait_for_server(timeout_sec=2.0):
             return False
@@ -699,6 +713,9 @@ class ServiceRoute(CorridorRoute):
             goal.behavior_tree = self.parking_behavior_tree if final else self.behavior_tree
             if alignment and index == len(self.waypoints) - 1:
                 goal.behavior_tree = self.alignment_behavior_tree
+            if staging and index == len(self.waypoints) - 1:
+                goal.behavior_tree = getattr(
+                    self, 'staging_behavior_tree', self.alignment_behavior_tree)
             self.navigation_uuid = NavigateToPose.Impl.SendGoalService.Request().goal_id
             self.navigation_uuid.uuid = list(uuid.uuid4().bytes)
             self.pending_goal = self.navigate.send_goal_async(goal, goal_uuid=self.navigation_uuid)
@@ -771,33 +788,38 @@ class ServiceRoute(CorridorRoute):
 
         return self._run_with_input_recovery(attempt)
 
-    def _search_rotation_once(self, delta_yaw_rad):
+    def _search_rotation_once(self, delta_yaw_rad, *, limit_rad=math.pi / 6,
+                              event='search_rotation', measure_in_odom=False):
         """Run one bounded Spin through the existing smoother/monitor chain."""
         self.last_search_error_code = None
         if (isinstance(delta_yaw_rad, bool)
                 or not isinstance(delta_yaw_rad, (int, float))
                 or not math.isfinite(delta_yaw_rad)
-                or not 0.0 < abs(delta_yaw_rad) <= math.pi / 6 + 1e-9):
-            raise ValueError('search rotation must be finite and at most 30 degrees')
+                or not 0.0 < abs(delta_yaw_rad) <= limit_rad + 1e-9):
+            raise ValueError(f'{event} must be finite and within its angle bound')
         if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
             reason = self._guard_failure(False)
             if not self.stop_requested and self._input_gap_recoverable(reason):
                 self._retry_guard_reason = reason
-            self.emit('search_rotation_failed', reason=reason or 'operator_stop')
+            self.emit(f'{event}_failed', reason=reason or 'operator_stop')
             return False
         if (not self._departure_battery_ready()
                 or not self.spin_search.wait_for_server(timeout_sec=2.0)
                 or not self._search_parameters_ready()):
-            self.emit('search_rotation_failed', reason='spin_profile_or_navigation_unavailable')
+            self.emit(f'{event}_failed', reason='spin_profile_or_navigation_unavailable')
             return False
         before, _ = self.capture_stationary_pose()
+        if measure_in_odom:
+            before = self._odom_pose()
         if self._search_target_yaw is None:
             self._search_target_yaw = before[2] + delta_yaw_rad
         self.active_action_type = Spin
         goal = Spin.Goal()
         goal.target_yaw = float(delta_yaw_rad)
-        # A search is a bounded observation maneuver, not final parking.
-        goal.time_allowance.sec = 20
+        # A search is a bounded observation maneuver, not final parking; a
+        # staging turn of up to 180 deg gets time for its angle.
+        extra_rad = max(0.0, abs(delta_yaw_rad) - math.pi / 6)
+        goal.time_allowance.sec = 20 + math.ceil(extra_rad / math.radians(30.0)) * 8
         deadline_s = time.monotonic() + goal.time_allowance.sec
         self.navigation_uuid = Spin.Impl.SendGoalService.Request().goal_id
         self.navigation_uuid.uuid = list(uuid.uuid4().bytes)
@@ -812,7 +834,7 @@ class ServiceRoute(CorridorRoute):
             self.active_handle = handle
             self.navigation_result = handle.get_result_async()
             self._mission_started = True
-            self.emit('search_rotation_accepted', requested_yaw_rad=delta_yaw_rad,
+            self.emit(f'{event}_accepted', requested_yaw_rad=delta_yaw_rad,
                       goal_uuid=bytes(self.navigation_uuid.uuid).hex())
             while not self.navigation_result.done():
                 rclpy.spin_once(self, timeout_sec=0.05)
@@ -823,28 +845,33 @@ class ServiceRoute(CorridorRoute):
                     if (not self.stop_requested and not guard_failure
                             and time.monotonic() >= deadline_s):
                         self.last_search_error_code = Spin.Result.TIMEOUT
-                    self.emit('search_rotation_failed', reason=reason)
+                    self.emit(f'{event}_failed', reason=reason)
                     if (not self.stop_requested and time.monotonic() < deadline_s
                             and self._input_gap_recoverable(reason)):
                         self._retry_guard_reason = reason
                     return False
             wrapped = self.navigation_result.result()
             self.last_search_error_code = int(wrapped.result.error_code)
-            self.emit('search_rotation_result', terminal_status_code=int(wrapped.status),
+            self.emit(f'{event}_result', terminal_status_code=int(wrapped.status),
                       nav2_error_code=int(wrapped.result.error_code))
             if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
                     or wrapped.result.error_code):
                 return False
             after, _ = self.capture_stationary_pose()
+            if measure_in_odom:
+                # The Spin ran in odom; AMCL near the dock was off by ~15 deg.
+                after = self._odom_pose()
             turned_rad = math.atan2(math.sin(after[2] - before[2]),
                                     math.cos(after[2] - before[2]))
             displacement_m = math.dist(before[:2], after[:2])
             # A search step only has to look around: Spin at 0.7 rad/s overshot
             # 30 deg by 8 deg once the precision SlowdownZone was off (2026-09-30).
             # Half a step still rejects a stalled or runaway turn.
-            confirmed = (abs(turned_rad - delta_yaw_rad) <= math.radians(15)
+            error_rad = math.atan2(math.sin(turned_rad - delta_yaw_rad),
+                                   math.cos(turned_rad - delta_yaw_rad))
+            confirmed = (abs(error_rad) <= math.radians(15)
                          and displacement_m <= 0.05)
-            self.emit('search_rotation_observed', confirmed=confirmed,
+            self.emit(f'{event}_observed', confirmed=confirmed,
                       requested_yaw_rad=delta_yaw_rad, observed_yaw_rad=turned_rad,
                       displacement_m=displacement_m)
             return confirmed
@@ -1090,8 +1117,10 @@ class ServiceRoute(CorridorRoute):
                        or not math.isfinite(x) for v in values for x in v)):
             return False
         limit = self.parking_contract['desired_linear_mps']
+        # Reverse must match the contract; forward transit is no longer capped
+        # to the parking speed (the parking controllers bound themselves).
         return (math.isclose(values[0][0], -limit, abs_tol=1e-9)
-                and 0.0 < values[1][0] <= limit)
+                and 0.0 < values[1][0] <= max(limit, SERVICE_TRANSIT_MAX_MPS))
 
     def _reverse_path_valid(self, path, validate_from_m=0.0):
         """
@@ -1195,6 +1224,28 @@ class ServiceRoute(CorridorRoute):
             raise RuntimeError('live alignment goal checker does not match the home contract')
         return 'alignment_goal_checker'
 
+    def _reach_staging(self, stage):
+        """
+        Reach the staging position, turn once toward the dock heading, then align.
+
+        On 2026-09-30 the staging leg replanned every second (113 times in
+        127 s) and the final heading turn followed AMCL, which near the dock was
+        off by about 15 deg, so the robot swung the long way and back. The
+        position leg now replans only on an invalid, expired or new path; the
+        large turn is one odom Spin whose direction is fixed at rest; the
+        existing alignment leg only corrects what is left.
+        """
+        if not self.execute(final_parking=False, staging=True):
+            return False
+        actual, _ = self.capture_stationary_pose()
+        delta_rad = math.atan2(math.sin(stage['yaw'] - actual[2]),
+                               math.cos(stage['yaw'] - actual[2]))
+        self.emit('staging_heading_measured', delta_yaw_rad=delta_rad)
+        if abs(delta_rad) > STAGING_TURN_MIN_RAD and not self._search_rotation_once(
+                delta_rad, limit_rad=math.pi, event='staging_turn', measure_in_odom=True):
+            return False
+        return self.execute(final_parking=False, alignment=True)
+
     def _go_home_reverse(self, pose, execute):
         """
         Align outside the dock, then follow a bounded reverse path via Nav2.
@@ -1257,7 +1308,7 @@ class ServiceRoute(CorridorRoute):
                               final_path_validation='RECHECK_ACTUAL_PATH_AT_STAGING')
                     return True
                 if precision_home:
-                    if not self.execute(final_parking=False, alignment=True):
+                    if not self._reach_staging(stage):
                         return False
                 elif not self.execute():
                     return False
@@ -1286,12 +1337,14 @@ class ServiceRoute(CorridorRoute):
             odom_path, to_odom = self._frozen_in_odom(path)
             odom_x, odom_y, odom_yaw = to_odom(*target)
             self.emit('dock_leg_frozen_in_odom',
-                      odom_target_pose=[odom_x, odom_y, odom_yaw])
+                      odom_target_pose=[odom_x, odom_y, odom_yaw],
+                      controller_id=getattr(self, 'dock_leg_controller', 'GracefulReverse'))
             success = self._execute_reverse_path(
                 path, path_contract=home, goal_checker_id=dock_checker,
                 verify_contract={**home, 'reference_frame': 'odom'},
                 send_path=odom_path,
-                verify_waypoint={'x': odom_x, 'y': odom_y, 'yaw': odom_yaw})
+                verify_waypoint={'x': odom_x, 'y': odom_y, 'yaw': odom_yaw},
+                controller_id=getattr(self, 'dock_leg_controller', 'GracefulReverse'))
         else:
             success = self._execute_reverse_path(path)
         self.emit('home_arrived' if success else 'failed',
