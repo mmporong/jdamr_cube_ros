@@ -50,7 +50,10 @@ def main():
     else:
         if args.face:
             parser.error('extra values are only used with face')
-        face_distance_m = float(args.mode)
+        try:
+            face_distance_m = float(args.mode)
+        except ValueError:
+            parser.error("mode must be a face distance in metres or 'face'")
         dwell_s = 0.0
         if not 0.10 <= face_distance_m <= 0.55:
             raise SystemExit('face distance must be within the escape range')
@@ -89,6 +92,10 @@ def main():
                 time.sleep(dwell_s)
                 (x2, y2, _yaw2), _ = node.capture_stationary_pose()
                 moved_m = math.dist((x, y), (x2, y2))
+                if moved_m > 0.02:
+                    # Same bound as box_service.resume_parked: a moving stop is no dwell.
+                    node.emit('failed', phase='resume_parked_dwell', moved_m=moved_m)
+                    raise RuntimeError('robot moved during the dwell')
                 node.emit('parked_dwell_complete', dwell_s=dwell_s, moved_m=moved_m)
             ok = node._leave_parked_pose()
         finally:

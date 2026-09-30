@@ -76,6 +76,11 @@ PC_SOURCE = ('set +u; source /opt/ros/jazzy/setup.bash; '
              f'source {HOME_DIR}/jdamr_rgbd_ws/install/setup.bash; {ROS_ENV}')
 DISPLAY_UNITS = ('jdamr-p2-mapserver', 'jdamr-p2-relay', 'jdamr-p2-markers',
                  'jdamr-p2-rviz', 'jdamr-p2-click')
+# PC-side bag of what the display relay already brings over (no Pi disk or load:
+# the Pi had 844 MB free on 2026-09-30). /tf carries the odom trajectory and the
+# AMCL corrections; the relay never carries command topics by design.
+RECORD_UNIT = 'jdamr-p2-record'
+RECORD_TOPICS = ('/tf', '/tf_static', '/scan', '/plan', '/amcl_pose')
 # Box front-face centres and outward normals (destinations.json, operator RViz clicks).
 DESTINATIONS = json.loads((P2 / 'destinations.json').read_text())['destinations']
 VIA_ID = 'water_station'
@@ -188,9 +193,11 @@ def session_active():
 
 def refuse_during_cycle(action):
     """Session stops and sensor restarts would end a running cycle mid-drive."""
-    busy = pi("systemctl list-units --type=service --state=active,activating,deactivating "
-              "--no-legend "
-              "'jdamr-table-cycle-*'", check=False).stdout.strip()
+    result = pi("systemctl list-units --type=service --state=active,activating,deactivating "
+                "--no-legend 'jdamr-table-cycle-*'", check=False)
+    if result.returncode == 255:
+        fail(f'ssh to the Pi failed; cannot tell whether a cycle is running: {result.stdout[-200:]}')
+    busy = result.stdout.strip()
     if busy:
         fail(f'a table cycle is running; {action} would stop it (use stop first): {busy}')
 
@@ -251,6 +258,7 @@ def cmd_display_start(_args):
                if sh(f'systemctl --user is-active {u}', check=False).stdout.strip() != 'active']
     if not missing:
         log('display already running')
+        record_start()
         return
     env = '--setenv=DISPLAY=:1 --setenv=XAUTHORITY=/run/user/1000/gdm/Xauthority'
     commands = {
@@ -281,9 +289,43 @@ def cmd_display_start(_args):
     log(f'display units: {states}')
     if any(v != 'active' for v in states.values()):
         fail('a display unit is not active; see journalctl --user -u <unit>')
+    record_start()
+
+
+def record_start():
+    """Start the PC bag once and confirm that it actually writes messages."""
+    if sh(f'systemctl --user is-active {RECORD_UNIT}', check=False).stdout.strip() == 'active':
+        log('bag recorder already running')
+        return
+    bag = P2 / 'runs' / f'bag_{time.strftime("%Y%m%d_%H%M%S")}'
+    command = (f'{PC_SOURCE}; exec ros2 bag record -s mcap -o {shlex.quote(str(bag))} '
+               + ' '.join(RECORD_TOPICS))
+    sh(f'systemd-run --user --unit={RECORD_UNIT} --collect '
+       f'--property=KillSignal=SIGINT --property=TimeoutStopSec=15 '
+       f'/bin/bash -c {shlex.quote(command)}')
+    for _ in range(15):
+        time.sleep(2)
+        written = sum(f.stat().st_size for f in bag.glob('*.mcap')) if bag.exists() else 0
+        if written > 4096:
+            state = load_state()
+            state['bag'] = str(bag)
+            save_state(state)
+            log(f'bag recording: {bag} ({written} bytes so far)')
+            return
+    log(f'bag recorder started but nothing written yet: {bag} '
+        '(the relay may still be connecting; check with status)')
+
+
+def record_stop():
+    sh(f'systemctl --user stop {RECORD_UNIT}', check=False)
+    bag = load_state().get('bag')
+    if bag and Path(bag).exists():
+        size = sum(f.stat().st_size for f in Path(bag).glob('*'))
+        log(f'bag closed: {bag} ({size} bytes)')
 
 
 def cmd_display_stop(_args):
+    record_stop()
     for unit in DISPLAY_UNITS:
         sh(f'systemctl --user stop {unit}', check=False)
     left = [u for u in DISPLAY_UNITS
@@ -324,7 +366,11 @@ def cmd_session_start(_args):
     script = SESSION_SCRIPT.format(source=PI_SOURCE, session=PI_SESSION, registry=REGISTRY,
                                    discovery=SESSION_DISCOVERY,
                                    composition=SESSION_COMPOSITION)
-    result = pi('bash -s', stdin=script, timeout=240, check=False)
+    try:
+        result = pi('bash -s', stdin=script, timeout=240, check=False)
+    except subprocess.TimeoutExpired:
+        mark_localized(False)
+        fail('Nav2 session start did not answer within 240 s; run status, then init')
     tail = result.stdout.strip().splitlines()[-3:]
     if not tail or tail[-1] != 'REUSED':
         # A new or restarted session holds no localization until init.
@@ -535,8 +581,9 @@ def run_cycle(args, state, table_id):
     pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
        '--property=KillMode=mixed --property=KillSignal=SIGINT --property=TimeoutStopSec=20 '
        f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c {shlex.quote(command)}')
-    state.update({'last_unit': unit, 'last_run': str(run_dir)})
-    save_state(state)
+    fresh = load_state()
+    fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
+    save_state(fresh)
     stops = ('dock only' if args.dock_only else
              f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
     log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
@@ -552,7 +599,14 @@ def run_cycle(args, state, table_id):
         seen = len(events)
         active = pi(f'systemctl is-active {unit}', check=False).stdout.strip()
         if active not in ('active', 'activating'):
-            return events
+            # The last lines may land between the read above and this check.
+            final = read_events(str(run_dir / 'cycle_events.jsonl'))
+            for event in final[seen:]:
+                keep = {k: event[k] for k in ('event', 'phase', 'reason', 'waypoint_id',
+                                              'terminal_status_code', 'nav2_error_code')
+                        if k in event}
+                log('  ' + json.dumps(keep, ensure_ascii=False))
+            return final
 
 
 def stop_requested_since(started):
@@ -592,9 +646,12 @@ def cmd_go(args):
         events = run_cycle(args, load_state(), table_id)
     names = [e.get('event') for e in events]
     arrived = [e for e in events if e.get('event') == 'home_arrived']
+    home = bool(arrived) and arrived[-1].get('confirmation', {}).get('confirmed') is True
     log(f'cycle ended: parked={"box_approach_finished" in names} '
         f'dwell={"parked_dwell_complete" in names} escape={"box_escape_finished" in names} '
-        f'home={bool(arrived) and arrived[-1].get("confirmation", {}).get("confirmed") is True}')
+        f'home={home}')
+    if not home:
+        fail('the cycle did not end confirmed at the dock; see the last events above')
 
 
 def dds_health():
@@ -649,6 +706,8 @@ def cmd_recover(args):
     before a departure): the scan match must then agree globally with that pose.
     --local-only (operator-stated placement) is never implied.
     """
+    if args.local_only and args.seed is None:
+        fail('--local-only needs --seed: without it the last init pose must agree globally')
     refuse_during_cycle('recover')
     linger = pi('loginctl show-user lim -p Linger --value', check=False).stdout.strip()
     if linger != 'yes':
@@ -691,12 +750,12 @@ def cmd_status(_args):
     state = load_state()
     log('session: ' + pi('systemctl is-active jdamr-restaurant-navigation.service',
                          check=False).stdout.strip())
-    for unit in DISPLAY_UNITS:
+    for unit in (*DISPLAY_UNITS, RECORD_UNIT):
         log(f'{unit}: ' + sh(f'systemctl --user is-active {unit}', check=False).stdout.strip())
     if state.get('last_unit'):
         log(f'{state["last_unit"]}: ' + pi(f'systemctl is-active {state["last_unit"]}',
                                            check=False).stdout.strip())
-    log('state: ' + json.dumps({k: state[k] for k in ('pose', 'home', 'last_run')
+    log('state: ' + json.dumps({k: state[k] for k in ('pose', 'home', 'last_run', 'bag')
                                 if k in state}))
 
 
@@ -705,7 +764,7 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('sync', 'display-start', 'display-stop', 'session-start', 'session-stop',
-                 'stop', 'status'):
+                 'stop', 'status', 'record-start', 'record-stop'):
         sub.add_parser(name)
     init = sub.add_parser('init')
     init.add_argument('--keep-home', action='store_true',
@@ -740,6 +799,8 @@ def main():
                 'session-stop': cmd_session_stop, 'init': cmd_init, 'go': cmd_go,
                 'stop': cmd_stop, 'status': cmd_status, 'health': cmd_health,
                 'recover': cmd_recover,
+                'record-start': lambda _a: record_start(),
+                'record-stop': lambda _a: record_stop(),
                 'routes': lambda a: write_routes(a.start)}
     handlers[args.command](args)
 

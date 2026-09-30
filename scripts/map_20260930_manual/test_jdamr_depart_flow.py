@@ -120,8 +120,18 @@ def test_later_failures_are_not_retried(env, monkeypatch):
              {'event': 'failed', 'reason': 'live map data unavailable: map'}]
     monkeypatch.setattr(d, 'run_cycle', lambda *a: runs.append(a) or moved)
     monkeypatch.setattr(d, 'cmd_recover', lambda a: pytest.fail('recovered'))
-    d.cmd_go(go_args())
+    # A cycle that did not end docked exits non-zero, without a retry.
+    with pytest.raises(SystemExit):
+        d.cmd_go(go_args())
     assert len(runs) == 1
+
+
+def test_recover_local_only_needs_a_seed(env, monkeypatch):
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', pi)
+    with pytest.raises(SystemExit):
+        d.cmd_recover(SimpleNamespace(seed=None, local_only=True))
+    assert pi.calls == []
 
 
 @pytest.mark.parametrize('extra', [{'skip_via': True}, {'resume_at_observation': True},
