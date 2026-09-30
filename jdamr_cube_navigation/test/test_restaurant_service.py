@@ -94,7 +94,7 @@ def route():
     node.amcl_yaw_covariance_rad2 = 0.01
     node.amcl_covariance = (0.001, 0.001)
     node.service_contract = load_service_contract(
-        PACKAGE / 'config/restaurant_service_contract.yaml')
+        Path(__file__).parent / 'fixtures/restaurant_service_contract_gated.yaml')
     node.battery_voltage = 12.0
     node.minimum_battery_v = node.service_contract['minimum_running_battery_v']
     node.live_grids = {}
@@ -1434,7 +1434,8 @@ def test_live_map_reload_is_detected_even_with_unchanged_parameters():
 
 def test_localization_limits_use_squared_si_units():
     """The candidate confidence thresholds have explicit independent units."""
-    contract = load_service_contract(PACKAGE / 'config/restaurant_service_contract.yaml')
+    contract = load_service_contract(
+        Path(__file__).parent / 'fixtures/restaurant_service_contract_gated.yaml')
     assert contract['max_x_covariance_m2'] == pytest.approx(0.1 ** 2)
     assert contract['max_y_covariance_m2'] == pytest.approx(0.1 ** 2)
     assert contract['max_yaw_covariance_rad2'] == pytest.approx(math.radians(10.0) ** 2)
@@ -1904,3 +1905,12 @@ def test_t38_search_rotation_tolerates_spin_overshoot_but_not_a_missing_turn(
         ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, math.radians(observed_deg)), {})])
     node._search_parameters_ready = Mock(return_value=True)
     assert node.search_rotation(math.pi / 6) is expected
+
+
+def test_t41_deployed_contract_disables_covariance_gates():
+    """Operator decision 2026-09-30: no AMCL covariance stop in the deployed contract."""
+    contract = load_service_contract(PACKAGE / 'config/restaurant_service_contract.yaml')
+    for key in ('max_x_covariance_m2', 'max_y_covariance_m2', 'max_yaw_covariance_rad2',
+                'intermediate_max_x_covariance_m2', 'intermediate_max_y_covariance_m2',
+                'intermediate_max_yaw_covariance_rad2'):
+        assert contract[key] >= 1.0e6

@@ -105,7 +105,8 @@ def test_recovery_retries_only_remaining_waypoint_once():
 PACKAGE = Path(__file__).resolve().parents[1]
 CONTRACT = PACKAGE / 'config/parking_contract.yaml'
 BOX_CONTRACT = PACKAGE / 'config/box_parking_contract.yaml'
-SERVICE_CONTRACT = PACKAGE / 'config/restaurant_service_contract.yaml'
+# The gating logic is exercised with the gated fixture; the deployed contract disables it.
+SERVICE_CONTRACT = Path(__file__).parent / 'fixtures/restaurant_service_contract_gated.yaml'
 PARAMS = PACKAGE / 'config/new_base_nav2_params.yaml'
 OBSERVER_CONFIG = PACKAGE / 'config/depth_box_parking.yaml'
 T0_S = 1000.0

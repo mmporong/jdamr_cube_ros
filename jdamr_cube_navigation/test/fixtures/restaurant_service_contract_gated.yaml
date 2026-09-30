@@ -1,19 +1,18 @@
 schema_version: 1
+# Test fixture: the covariance-gated contract (strict 0.01 m2, intermediate 0.04 m2) that
+# the gating logic tests exercise. The deployed config disables these gates (2026-09-30).
 # Candidate localization confidence limits, not a measured accuracy guarantee.
 # Standard deviation limits: 0.10 m on each map axis and 10 degrees in yaw.
-# AMCL covariance gates disabled by the operator (2026-09-30 15:40, "공분산이나 한도 쓰지 말라");
-# finite/non-negative sanity checks remain in code. Previous: strict 0.01 m2 / (10 deg)^2,
-# intermediate 0.04 m2 / (15 deg)^2 (intermediate_bound_provenance below).
-max_x_covariance_m2: 1.0e+6
-max_y_covariance_m2: 1.0e+6
-max_yaw_covariance_rad2: 1.0e+6
+max_x_covariance_m2: 0.01
+max_y_covariance_m2: 0.01
+max_yaw_covariance_rad2: 0.030461741978670857
 # Intermediate legs (route to the observation waypoint, box observation and
 # face alignment, precision home staging plan and drive) stop only when
 # localization is lost; final approach, stop confirmations, box escape, docking
 # and activation keep the limits above. Basis: intermediate_bound_provenance.
-intermediate_max_x_covariance_m2: 1.0e+6
-intermediate_max_y_covariance_m2: 1.0e+6
-intermediate_max_yaw_covariance_rad2: 1.0e+6
+intermediate_max_x_covariance_m2: 0.04
+intermediate_max_y_covariance_m2: 0.04
+intermediate_max_yaw_covariance_rad2: 0.06853891945200942
 physical_validation: NOT_PHYSICALLY_VALIDATED
 minimum_start_battery_v: 10.8
 minimum_running_battery_v: 10.5
