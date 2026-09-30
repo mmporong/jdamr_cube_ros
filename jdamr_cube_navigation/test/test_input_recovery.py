@@ -1724,6 +1724,34 @@ def test_m3_escape_not_confirmed_never_stages(monkeypatch, tmp_path):
     assert node.last_box_face is not None
 
 
+def test_t44_escape_heading_drift_still_clears_face(monkeypatch, tmp_path):
+    """Confirm the escape by face clearance; heading and lateral drift only log.
+
+    2026-09-30 water_station escapes reversed to 0.526 m from the face but ended
+    6.0 deg off heading, and the service stopped before the table.
+    """
+    node, world = _parked_world(monkeypatch, tmp_path)
+    world.stop_on_motion = False
+    real_complete = world.complete_motion
+    drifted = []
+
+    def drift(kind, goal):
+        real_complete(kind, goal)
+        if kind == 'FollowPath' and not drifted:
+            drifted.append(True)
+            world.pose[1] += 0.04
+            world.pose[2] += math.radians(6.0)
+
+    world.complete_motion = drift
+    assert node.go_home(execute=True, timeout_s=500.0) is True
+    assert _box_escape_failures(node) == []
+    finished = _events(node, 'box_escape_finished')[0]
+    assert finished['yaw_error_rad'] == pytest.approx(math.radians(6.0), abs=0.01)
+    assert finished['position_error_m'] == pytest.approx(0.04, abs=0.005)
+    assert [kind for kind, _goal in world.motions] == [
+        'FollowPath', 'NavigateToPose', 'FollowPath']
+
+
 @pytest.mark.parametrize('case,pose', [
     ('heading_off', (PARKED_X_M, 0.0, math.radians(5.0))),
     ('beyond_clearance', (FACE[0] - 0.60, 0.0, 0.0)),
