@@ -12,7 +12,8 @@ localization seeding through the existing `activate_navigation`, home teaching.
     jdamr_depart.py sync            copy Phase 2 assets to the Pi (same paths)
     jdamr_depart.py display-start   PC map_server + relay import + markers + RViz + click capture
     jdamr_depart.py session-start   Pi Nav2 session (precision, prepare-only, LOCALHOST)
-    jdamr_depart.py init            RViz click -> scan-matched pose -> activation -> teach home
+    jdamr_depart.py init            registered dock pose -> scan-matched pose -> activation
+                                    (--click: RViz click instead, re-teaches home unless --keep-home)
     jdamr_depart.py go table_01     table cycle: observe -> align -> 5 cm -> 5 s -> escape -> dock
     jdamr_depart.py health          read-only: does a fresh Pi process receive map/TF/scan
     jdamr_depart.py recover         no-motion restart of sensors, session and display + init
@@ -452,10 +453,19 @@ def cmd_init(args):
         x, y, yaw = state['pose']
         click = {'x_m': x, 'y_m': y, 'yaw_rad': yaw, 'received_unix_s': time.time(),
                  'source': 'previous_init_scan_match'}
-    else:
+    elif getattr(args, 'click', False):
         if not CLICK.exists():
             fail(f'no RViz 2D Pose Estimate click saved yet ({CLICK})')
         click = json.loads(CLICK.read_text())
+    else:
+        # A new run starts at the dock: seed with the registered dock and keep it, so the
+        # dock does not drift to wherever the last docking stopped.
+        home = pull_registry().get('home') or state.get('home')
+        if home is None:
+            fail('no registered dock yet; run init --click at the dock once')
+        click = {'x_m': home['x_m'], 'y_m': home['y_m'], 'yaw_rad': home['yaw_rad'],
+                 'received_unix_s': time.time(), 'source': 'registered_dock'}
+        args.keep_home = True
     age = time.time() - click['received_unix_s']
     if age > CLICK_MAX_AGE_S:
         fail(f'RViz click is {age:.0f} s old; click 2D Pose Estimate again')
@@ -721,6 +731,7 @@ def cmd_recover(args):
     cmd_display_start(args)
     cmd_session_start(args)
     args.keep_home, args.seed_from_state = True, args.seed is None
+    args.click = args.seed is not None
     if args.seed is not None:
         x, y, yaw_deg = args.seed
         CLICK.write_text(json.dumps({'x_m': x, 'y_m': y, 'yaw_rad': math.radians(yaw_deg),
@@ -729,7 +740,7 @@ def cmd_recover(args):
         cmd_init(args)
     except SystemExit:
         log('recover: services are fresh but init stopped. If the robot is not at the last '
-            'init pose, click 2D Pose Estimate and run init, or run recover --seed X Y YAW_DEG')
+            'init pose, click 2D Pose Estimate and run init --click, or run recover --seed X Y YAW_DEG')
         raise
     status, line = dds_health()
     if status != 'ok':
@@ -774,6 +785,8 @@ def main():
                       help='operator-stated placement: skip the global agreement check')
     init.add_argument('--seed-from-state', action='store_true',
                       help='robot not moved since the last init: seed with that pose')
+    init.add_argument('--click', action='store_true',
+                      help='robot placed away from the registered dock: seed with the RViz click')
     go = sub.add_parser('go')
     go.add_argument('table_id', choices=TABLES)
     go.add_argument('--route', help='route file (default: <table_id>_route.yaml)')

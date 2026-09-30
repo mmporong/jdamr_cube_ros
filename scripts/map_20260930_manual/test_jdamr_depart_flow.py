@@ -192,11 +192,30 @@ def test_recover_seed_does_not_imply_local_only(env, monkeypatch):
         monkeypatch.setattr(d, name, lambda *a: None)
     seen = []
     monkeypatch.setattr(d, 'cmd_init', lambda a: seen.append(
-        (a.keep_home, a.seed_from_state, a.local_only)))
+        (a.keep_home, a.seed_from_state, a.local_only, a.click)))
     monkeypatch.setattr(d, 'dds_health', lambda: ('ok', 'PROBE health ok {} 1.0 s'))
     d.cmd_recover(SimpleNamespace(seed=[1.0, 2.0, 90.0], local_only=False))
-    assert seen == [(True, False, False)]
+    assert seen == [(True, False, False, True)]
     assert json.loads(d.CLICK.read_text())['x_m'] == 1.0
+
+
+def test_init_seeds_from_the_registered_dock_and_keeps_it(env, monkeypatch):
+    monkeypatch.setattr(d, 'pi', Pi())
+    monkeypatch.setattr(d, 'pull_registry', lambda: {'home': {
+        'x_m': -0.204, 'y_m': 0.184, 'yaw_rad': 0.0}})
+    monkeypatch.setattr(d, 'capture_scan', lambda _path: None)
+    seen = []
+
+    def refine(_scan, click):
+        seen.append(click)
+        raise SystemExit('stop after seeding')
+    monkeypatch.setattr(d, 'refine_pose', refine)
+    args = SimpleNamespace(seed_from_state=False, click=False, local_only=False, keep_home=False)
+    with pytest.raises(SystemExit):
+        d.cmd_init(args)
+    assert (seen[0]['x_m'], seen[0]['y_m'], seen[0]['source']) == (-0.204, 0.184, 'registered_dock')
+    assert args.keep_home is True
+    assert not d.CLICK.exists()
 
 
 def test_failed_init_leaves_go_refused(env, monkeypatch):
