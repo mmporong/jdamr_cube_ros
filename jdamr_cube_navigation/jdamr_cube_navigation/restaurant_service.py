@@ -837,7 +837,10 @@ class ServiceRoute(CorridorRoute):
             turned_rad = math.atan2(math.sin(after[2] - before[2]),
                                     math.cos(after[2] - before[2]))
             displacement_m = math.dist(before[:2], after[:2])
-            confirmed = (abs(turned_rad - delta_yaw_rad) <= math.radians(5)
+            # A search step only has to look around: Spin at 0.7 rad/s overshot
+            # 30 deg by 8 deg once the precision SlowdownZone was off (2026-09-30).
+            # Half a step still rejects a stalled or runaway turn.
+            confirmed = (abs(turned_rad - delta_yaw_rad) <= math.radians(15)
                          and displacement_m <= 0.05)
             self.emit('search_rotation_observed', confirmed=confirmed,
                       requested_yaw_rad=delta_yaw_rad, observed_yaw_rad=turned_rad,

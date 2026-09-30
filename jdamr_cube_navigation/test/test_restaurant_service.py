@@ -1884,3 +1884,23 @@ def test_m2_home_help_forbids_use_in_front_of_a_box(capsys):
     text = ' '.join(capsys.readouterr().out.split())
     assert '0.6 m' in text and 'box_service --return-home' in text, (
         f'REVIEW[M2]: home --help lacks the box-front rule: {text}')
+
+
+@pytest.mark.parametrize('observed_deg,expected', [
+    (38.2, True),    # 2026-09-30 water station: Spin at 0.7 rad/s overshot 30 deg by 8.2 deg
+    (18.0, True),
+    (44.0, True),
+    (50.0, False),
+    (10.0, False),
+    (0.0, False),
+])
+def test_t38_search_rotation_tolerates_spin_overshoot_but_not_a_missing_turn(
+        observed_deg, expected):
+    """A 30 deg look-around step accepts +/-15 deg; a stalled or runaway turn fails."""
+    node = route()
+    node.spin_search = Mock()
+    node.spin_search.send_goal_async.return_value = done(handle(GoalStatus.STATUS_SUCCEEDED, 0))
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, math.radians(observed_deg)), {})])
+    node._search_parameters_ready = Mock(return_value=True)
+    assert node.search_rotation(math.pi / 6) is expected
