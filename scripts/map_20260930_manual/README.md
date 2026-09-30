@@ -10,5 +10,10 @@
 | `box_escape_once.py` | 박스 앞에서 멈춘 로봇에 실행기 `_leave_parked_pose` 후진 이탈만 한 번 실행한다. 앞면은 로봇 방향+측정 거리 또는 로그의 관측 면(단위 법선만 허용). 선택적으로 정지 확인 대기, `--stop-id`로 로그 표지 지정. SIGINT·SIGTERM·SIGHUP이면 후진을 취소한다 | 후진 이탈 |
 | `test_jdamr_depart_flow.py` | `jdamr_depart.py`의 출발·복구 흐름을 ssh 없이 모의로 확인한다(22건). 지도 데이터가 있는 PC에서만 돈다 | 없음 |
 | `table_click_capture.py` | PC 전용 도메인 78에서 RViz 2D Pose Estimate 클릭을 목적지 후보로 기록하고 지도 축 0/90/180/270°로 고정해 표시한다 | 없음 |
+| `analyze_run.py` | 한 실행의 `cycle_events.jsonl`(+ PC 중계 bag)을 단계·최종 접근·간격·도크 대기점 회전·이탈·도킹과 단계별 재계획 수·회전 방향 뒤집힘·map→odom 점프로 요약한다 | 없음 |
+| `scan_match.py` | 정지한 로봇의 스캔 묶음을 지도에 맞춰 자세를 구한다(도크 init에 쓴 도구의 사본). `amcl_replay.py`가 기준 자세를 만들 때 쓴다 | 없음 |
+| `amcl_replay.py`, `amcl_replay.launch.py` | `/scan`·`/tf`·`/tf_static`이 든 bag(PC 중계 bag 포함)을 PC 도메인 88에서 AMCL 파라미터별로 다시 돌리고, 정지 구간마다 `scan_match` 기준 자세와 비교한다(`prepare` → `run <tag> <params>` → `compare`) | 없음 |
+| `rotation_truth.py` | 제자리 회전 전후 스캔끼리 맞춘 회전량을 기준으로 odom·자이로·EKF 회전량 오차를 잰다(`--turnarounds`, `--ekf=<bag>`) | 없음 |
+| `ekf_replay.sh` | bag의 `/odom`·`/imu/data_raw`를 `imu_bias_relay` + robot_localization에 PC 도메인 89로 흘려 `/odometry/filtered`를 기록한다 | 없음 |
 
 사용 순서와 결과는 `jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md` §18.
