@@ -514,6 +514,28 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
 
 검증: 패키지 테스트 2347 통과. 실패 28·오류 9는 frontier·AMCL 평가·G006·저장소 전체 린트 파일로, 같은 파일을 HEAD 임시 worktree에서 돌려도 같은 수가 나와 이번 변경과 무관하다. 수정 파일 `ament_flake8`·`ament_pep257` 문제 없음. 스크립트는 flake8 F·E9 통과.
 
+### 19.7 저녁 "2번 출발"과 후진 문제 (2026-09-30 16:56–18:20)
+
+데이터: `$HOME/jdamr_data/map_20260930_manual/aligned/runs/` (`table_02_20260930_1656*`–`1736*`, `home_20260930_173307`, `go_table_02_*_monitor.log`). 정확도 값은 모두 내부 추정이고 외부 실측은 없다.
+
+| 시작 | 실행 | 결과 | 원인(근거) | 조치 |
+|---|---|---|---|---|
+| 16:56 | 도크 출발 | 이동 전 `live map data unavailable: map` | 실행기 시작 12 s 뒤 16:57:00 lifecycle_manager `controller_server IS DOWN after not receiving a heartbeat for 10000 ms` → 스택 종료. 15:54에도 같은 기록. 파이 UDP `RcvbufErrors` 누적 3,664,856(수신 데이터그램의 약 10 %), `rmem_max` 212992 | 파이 `/etc/sysctl.d/60-ros2-dds-udp.conf`(rmem_default 4 MB, rmem_max 16 MB), `f4f375d` bond_timeout 0. 이후 주행 중 폐기 0 |
+| 16:57 | 자동 복구 | 재초기화 활성화 실패(`navigation rollback unconfirmed`) | 기동 요청 45 s 무응답(부하 평균 8–10) | 17:07 버퍼 적용 뒤 `recover` 성공 |
+| 17:11 | 도크 출발 | 물 받는 곳 5 cm 주차(0.31 cm, 1.39°), 5 s 대기. 이탈 0.526 m에서 105 | 아래 후진 문제 | 그 자리에서 `--skip-via`로 이어감 |
+| 17:15 | table_02 | 이동 성공(16:00의 104 구간 통과). 관측 13회 실패로 탐색 소진 | 라이다 앞면 직선(지지점 45–51, 잔차 1.3 mm, 방향 차 약 1°)이 깊이 앞면보다 일정하게 2.4–2.7 cm 뒤. 같은 날 통과 관측 8건은 −0.43~+0.19 cm | `5bd2708` 2–3.5 cm 차이는 가까운 면 기준 |
+| 17:28 | table_02 관측 지점부터 | 5 cm 주차(중앙 5.7 cm, 2.74°) 뒤 `box_gap_not_confirmed` | 모서리 4.4·7.0 cm가 ±1 cm 밖. 방향 허용을 3°로 넓힐 때(`86581fb`) 모서리 기준을 그대로 둔 결함 | `665f891` 중앙 ±1 cm와 계약 방향으로 판정, 모서리는 기록 |
+| 17:30 | 주차 자리 재개 | 5 s 대기 뒤 이탈 0.554 m에서 105, AMCL 방향 33° 틀어짐 | 아래 후진 문제 | `665f891` 회전 여유(0.515 m)면 이탈 완료·생략 |
+| 17:33 | `restaurant_service home` | 이동 전 거부 | 도크 계약 파라미터를 요구하는데 세션은 박스 계약 | `9017be0` `--dock-only`(box_service `--home-only`) |
+| 17:36 | 도크 복귀 | 대기점 1.5 cm·1.4°, 후면 도킹 뒤 105. AMCL 방향 18.8° | 사용자 확인: 로봇은 충전기에 평행, 충전 중(12.1–12.2 V). 18:13 스캔 정합 3.5°·AMCL 3.1°. AMCL 방향 오차 약 15° | 아래 |
+
+후진 문제(세 번 모두 105): 목표 몇 cm 앞에서 좌우로 흔들리다 진행 검사에 걸렸다(사용자 관찰: 후진·회전 중 좌우 왕복). 확정 사실은 AMCL 방향이 도크 근처에서 약 15° 틀렸다는 것이다. RPP 끝단에서 추종점 거리가 줄어 곡률이 폭증하는 현상이 이를 키웠다는 것은 가설이다. `c1770a2` 주차·후진 RPP에 `use_fixed_curvature_lookahead`·`curvature_lookahead_dist` 0.6·`interpolate_curvature_after_goal`을 켰다(Nav2 1.3.12 지원 확인, 파이 반영·세션 재시작 적용). 실차 확인은 다음 주행에서 한다.
+
+남은 항목:
+- 짧은 직선 후진(이탈 0.45 m, 도킹 마지막 0.7 m)을 odom 좌표 경로로 보내 AMCL 방향 튐의 영향을 없애는 방안. 도킹 확인이 AMCL에 기대는 부분(물리적으로 도킹됐는데 105)도 같이 다뤄야 한다.
+- 도크·박스 근처 AMCL 방향 오차(15°)의 원인.
+- 출발 순간 발견 트래픽 소켓(104xx 짝수 포트)의 폐기는 버퍼 확대 뒤에도 기동 중에 남았다(주행 중에는 0).
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.
