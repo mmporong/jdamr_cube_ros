@@ -889,7 +889,6 @@ def test_t36_via_cli_is_all_or_nothing_and_ends_at_the_dock():
     for invalid in ([*execute, *VIA_ARGS[:2]],
                     [*execute, *VIA_ARGS[:4]],
                     [*RETURN_ARGS, '--execute', '--candidate-trial', *VIA_ARGS],
-                    [*execute, *VIA_ARGS, '--resume-at-observation'],
                     [*execute, *VIA_ARGS, '--via-region-radius-m', '0.7']):
         with pytest.raises(SystemExit):
             parse_args(invalid)
@@ -1027,3 +1026,109 @@ def test_t42_observation_search_uses_the_diagnostic_bearing(mission):
     assert invoke(mission, search=True)
     first = mission.search_rotation.call_args_list[0].args[0]
     assert first == pytest.approx(math.radians(-24.5))
+
+
+def test_t43_resume_options_parse():
+    """Resume at the via observation, or from a parked stop recorded in a log."""
+    execute = [*RETURN_ARGS, '--execute', '--candidate-trial',
+               '--return-home', '--return-timeout-s', '500']
+    assert _parse_new('T43', [*execute, *VIA_ARGS, '--resume-at-observation']).via_id
+    args = _parse_new('T43', [*execute, *VIA_ARGS, '--resume-parked-from-log', '/log'])
+    assert str(args.resume_parked_from_log) == '/log'
+    for invalid in ([*RETURN_ARGS, '--execute', '--candidate-trial',
+                     '--resume-parked-from-log', '/log'],
+                    [*execute, '--resume-parked-from-log', '/log', '--resume-at-observation']):
+        with pytest.raises(SystemExit):
+            parse_args(invalid)
+
+
+def _resume_main(monkeypatch, tmp_path, extra):
+    for name in ('registry', 'mount', 'geometry', 'route', 'water'):
+        (tmp_path / f'{name}.yaml').write_text('{}\n')
+    log = tmp_path / 'previous.jsonl'
+    log.write_text(json.dumps({'event': 'box_target_observed', 'target': {
+        'face_center_map_xy_m': [0.02, -1.2], 'outward_normal_map_xy': [1.0, 0.0]}}) + '\n')
+    argv = ['--registry', str(tmp_path / 'registry.yaml'),
+            '--approach-route', str(tmp_path / 'route.yaml'),
+            '--camera-mount', str(tmp_path / 'mount.yaml'),
+            '--geometry', str(tmp_path / 'geometry.yaml'),
+            '--parking-contract', str(BOX_CONTRACT), '--table-id', 'table_02',
+            '--region-xy', '0.7', '-2.6', '--execute', '--candidate-trial', '--search',
+            '--return-home', '--return-timeout-s', '500',
+            *[str(log) if item == 'LOG' else item for item in extra]]
+    monkeypatch.setattr(box_service, 'load_registry', lambda _path: {'home': {}})
+    monkeypatch.setattr(box_service.rclpy, 'init', lambda **_kwargs: None)
+    monkeypatch.setattr(box_service.rclpy, 'shutdown', lambda **_kwargs: None)
+    calls = []
+
+    class Route:
+        def __init__(self, *args, **kwargs):
+            self.visit_observed_box = Mock(side_effect=lambda route, *a, **k: calls.append(
+                ('visit', Path(route).name, a[2], k.get('resume_at_observation'))) or True)
+            self.resume_parked = Mock(side_effect=lambda face, dwell: calls.append(
+                ('resume_parked', face['face_center_map_xy_m'], dwell)) or True)
+            self.dwell_and_leave = Mock(side_effect=lambda dwell: calls.append(
+                ('dwell_and_leave', dwell)) or True)
+            self.dwell_and_return_home = Mock(side_effect=lambda dwell, timeout: calls.append(
+                ('dwell_and_return_home', dwell)) or True)
+            self.go_home = Mock(side_effect=lambda **k: calls.append(('go_home',)) or True)
+            self.verify_live_maps = Mock()
+            self.wait_until_ready = Mock(return_value=True)
+            self.finish_navigation = Mock(return_value=True)
+            self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+
+    monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
+    code = box_service.main([*argv, '--log', str(tmp_path / 'run.jsonl')])
+    return code, calls
+
+
+def test_t43_resume_at_via_observation_applies_to_the_water_stop_only(monkeypatch, tmp_path):
+    code, calls = _resume_main(monkeypatch, tmp_path,
+                               [*VIA_ARGS[:2], '--via-route', str(tmp_path / 'water.yaml'),
+                                *VIA_ARGS[4:], '--resume-at-observation'])
+    assert code == 0
+    assert calls == [('visit', 'water.yaml', 'water_station', True), ('dwell_and_leave', 5.0),
+                     ('visit', 'route.yaml', 'table_02', False), ('dwell_and_return_home', 5.0)]
+
+
+def test_t43_parked_water_stop_resumes_with_logged_face_then_table(monkeypatch, tmp_path):
+    code, calls = _resume_main(monkeypatch, tmp_path,
+                               [*VIA_ARGS[:2], '--via-route', str(tmp_path / 'water.yaml'),
+                                *VIA_ARGS[4:], '--resume-parked-from-log', 'LOG'])
+    assert code == 0
+    assert calls == [('resume_parked', [0.02, -1.2], 5.0),
+                     ('visit', 'route.yaml', 'table_02', False), ('dwell_and_return_home', 5.0)]
+
+
+def test_t43_parked_table_resumes_with_logged_face_then_docks(monkeypatch, tmp_path):
+    code, calls = _resume_main(monkeypatch, tmp_path, ['--resume-parked-from-log', 'LOG'])
+    assert code == 0
+    assert calls == [('resume_parked', [0.02, -1.2], 5.0), ('go_home',)]
+
+
+def test_t43_last_logged_face_requires_an_observed_face(tmp_path):
+    path = tmp_path / 'log.jsonl'
+    path.write_text('{"event": "accepted"}\nnot json\n')
+    with pytest.raises(ValueError, match='no observed box face'):
+        box_service.last_logged_face(path)
+    path.write_text('\n'.join(json.dumps({'event': 'box_target_observed', 'target': {
+        'face_center_map_xy_m': [x, 0.0], 'outward_normal_map_xy': [1.0, 0.0]}})
+        for x in (1.0, 2.0)))
+    assert box_service.last_logged_face(path)['face_center_map_xy_m'] == [2.0, 0.0]
+
+
+@pytest.mark.parametrize('moved,left,expected', [
+    (0.0, True, True), (0.05, True, False), (0.0, False, False)])
+def test_t43_resume_parked_holds_still_then_escapes(monkeypatch, moved, left, expected):
+    """The resumed dwell needs a stationary robot; the escape uses the logged face."""
+    monkeypatch.setattr(box_service.time, 'sleep', lambda _s: None)
+    route = BoxServiceRoute.__new__(BoxServiceRoute)
+    route.capture_stationary_pose = Mock(side_effect=[((0.1, -1.2, math.pi), {}),
+                                                      ((0.1 + moved, -1.2, math.pi), {})])
+    route._leave_parked_pose = Mock(return_value=left)
+    route.emit = Mock()
+    face = {'face_center_map_xy_m': [0.0, -1.2], 'outward_normal_map_xy': [1.0, 0.0]}
+    assert route.resume_parked(face, 5.0) is expected
+    assert route._leave_parked_pose.call_count == (0 if moved else 1)
+    if moved == 0.0:
+        assert route.last_box_face == face

@@ -115,6 +115,24 @@ class BoxSearchBudget:
         return step
 
 
+def last_logged_face(path):
+    """Return the last box face a previous run observed (its escape reference)."""
+    face = None
+    for line in Path(path).read_text(encoding='utf-8').splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        target = event.get('target') if isinstance(event, dict) else None
+        if (event.get('event') == 'box_target_observed' and isinstance(target, dict)
+                and 'face_center_map_xy_m' in target and 'outward_normal_map_xy' in target):
+            face = {'face_center_map_xy_m': [float(v) for v in target['face_center_map_xy_m']],
+                    'outward_normal_map_xy': [float(v) for v in target['outward_normal_map_xy']]}
+    if face is None:
+        raise ValueError('no observed box face in the resume log')
+    return face
+
+
 class BoxServiceRoute(ServiceRoute):
     """Keep every movement on the existing Nav2 and collision-monitor path."""
 
@@ -893,6 +911,32 @@ class BoxServiceRoute(ServiceRoute):
         self.last_box_face = None
         return True
 
+    def resume_parked(self, face, dwell_s):
+        """
+        Continue from a stop an earlier run left at a box: hold, then escape.
+
+        A new process has no final command for wait_parked(), so the dwell is a
+        stationary hold confirmed before and after; the escape uses the face that
+        run observed, not a new observation (the face is inside the depth minimum).
+        """
+        (x, y, _yaw), _ = self.capture_stationary_pose()
+        self.emit('resume_parked_started', dwell_s=dwell_s,
+                  face_center_map_xy_m=face['face_center_map_xy_m'])
+        time.sleep(dwell_s)
+        (x_after, y_after, _yaw_after), _ = self.capture_stationary_pose()
+        moved_m = math.dist((x, y), (x_after, y_after))
+        if moved_m > 0.02:
+            self.emit('failed', phase='resume_parked_dwell', moved_m=moved_m)
+            return False
+        self.emit('parked_dwell_complete', dwell_s=dwell_s, moved_m=moved_m, resumed=True)
+        if getattr(self, 'config', None) is None:
+            self.config, self.waypoints = {'frame_id': 'map', 'waypoints': []}, []
+        self.last_box_face = face
+        if not self._leave_parked_pose():
+            return False
+        self.emit('resume_parked_finished')
+        return True
+
     def dwell_and_leave(self, dwell_s):
         """Hold at a verified intermediate stop, then back straight away from its face."""
         if not self.wait_parked(dwell_s):
@@ -945,6 +989,10 @@ def parse_args(argv=None):
     parser.add_argument('--via-route', type=Path)
     parser.add_argument('--via-region-xy', nargs=2, type=float)
     parser.add_argument('--via-region-radius-m', type=float, default=0.6)
+    parser.add_argument(
+        '--resume-parked-from-log', type=Path,
+        help='An earlier run stopped at the first box (via stop if given, else the table): '
+             'hold five seconds, escape from the face logged there, then continue')
     args = parser.parse_args(argv)
     if (not all(math.isfinite(v) for v in args.region_xy)
             or not math.isfinite(args.region_radius_m)
@@ -971,12 +1019,16 @@ def parse_args(argv=None):
             parser.error('--via-id, --via-route and --via-region-xy go together')
         if not args.return_home:
             parser.error('a via stop requires --return-home')
-        if args.resume_at_observation:
-            parser.error('--resume-at-observation cannot be combined with a via stop')
         if (not all(math.isfinite(v) for v in args.via_region_xy)
                 or not math.isfinite(args.via_region_radius_m)
                 or not 0.0 < args.via_region_radius_m <= 0.6):
             parser.error('via region must be finite and radius in (0, 0.6] m')
+    if args.resume_parked_from_log is not None:
+        if not (args.execute and args.return_home):
+            parser.error('--resume-parked-from-log requires --execute and --return-home')
+        if args.resume_at_observation:
+            parser.error('--resume-parked-from-log cannot be combined with '
+                         '--resume-at-observation')
     return args
 
 
@@ -1001,19 +1053,32 @@ def main(argv=None):
             for signum in (signal.SIGINT, signal.SIGTERM):
                 handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
             ok = True
-            if args.via_id is not None:
+            if args.resume_parked_from_log is not None:
+                # The first stop was reached by an earlier run: hold and escape only.
+                face = last_logged_face(args.resume_parked_from_log)
+                node.verify_live_maps()
+                if not node.wait_until_ready(timeout=10.0):
+                    raise RuntimeError('localization or sensor data unavailable')
+                ok = node.resume_parked(face, 5.0)
+                if args.via_id is None:
+                    # The parked stop was the table: its escape leads straight home.
+                    ok = ok and node.go_home(execute=True, timeout_s=args.return_timeout_s)
+                    return 0 if ok else 1
+            elif args.via_id is not None:
                 # The via stop is a full box visit; its escape starts the table route.
                 ok = node.visit_observed_box(
                     args.via_route, mount, geometry, args.via_id,
                     args.via_region_xy, args.via_region_radius_m, execute=args.execute,
-                    candidate_trial=args.candidate_trial, search=args.search,
-                    task_timeout_s=args.task_timeout_s)
+                    candidate_trial=args.candidate_trial,
+                    resume_at_observation=args.resume_at_observation,
+                    search=args.search, task_timeout_s=args.task_timeout_s)
                 ok = ok and node.dwell_and_leave(5.0)
+            # A resume applies to the first stop of this run only.
             ok = ok and node.visit_observed_box(
                 args.approach_route, mount, geometry, args.table_id,
                 args.region_xy, args.region_radius_m, execute=args.execute,
                 candidate_trial=args.candidate_trial,
-                resume_at_observation=args.resume_at_observation,
+                resume_at_observation=(args.resume_at_observation and args.via_id is None),
                 search=args.search, task_timeout_s=args.task_timeout_s)
             # Exit 0 only when every requested stage, including the return, succeeded.
             if ok and args.return_home:
