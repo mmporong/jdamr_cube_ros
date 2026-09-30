@@ -5,7 +5,8 @@
 - 기준 저장소: `mmporong/jdamr_cube_ros`
 - 기준 브랜치: `feat/restaurant-service-destinations`
 - 원격 확인 커밋: [`45d1de9`](https://github.com/mmporong/jdamr_cube_ros/commit/45d1de9ef4faaca9095ef6bfa8586b7f1fd82897) (`45d1de9ef4faaca9095ef6bfa8586b7f1fd82897`)
-- 원격 브랜치, 로컬 원격 추적 브랜치, HEAD의 일치를 확인한 시점의 코드·설정을 기준으로 재작성했다. 이후 커밋은 이 문서의 기준선에 포함하지 않는다.
+- 원격 브랜치, 로컬 원격 추적 브랜치, HEAD의 일치를 확인한 시점의 코드·설정을 기준으로 재작성했다.
+- 2026-09-30 밤 검토 반영: `45d1de9` 이후 `02de1e7`·`2bb6bc7`·`fc73b12`의 변경(§3 끝 목록)과 새 지도 플래너 비교·위치추정 오프라인 검증(§4.1)을 덧붙이고, §2 테이블 방향을 경로 파일 값으로 바로잡았다. 위치추정 변경안은 `feat/nav-items34-localization-lattice` 브랜치에 있고 파이에 배포하지 않았다.
 
 ## 1. 이번 인계의 목적과 범위
 
@@ -30,8 +31,10 @@ Claude의 첫 작업은 현재 기능과 공식 자료를 비교해 적용안을
 |---|---|
 | 충전소 | 고정된 map 좌표와 방향으로 등록. 복귀 시 같은 자세로 후면 주차 |
 | 물 받는 곳 | 근접 정지 후 5초 대기로 팔 태스크를 대체. 후진 이탈 뒤 호출 테이블로 이동 |
-| 테이블 1 | 등록한 면 방향으로 측면 접근·약 90° 방향 전환을 평가. 최종 방향은 박스의 실제 앞면 법선으로 보정 |
-| 테이블 2 | 정면 접근. 최종 거리와 평행 정렬은 박스 앞면 기준으로 보정 |
+| 테이블 1 | 관측 자세 yaw 0°(동쪽). 물 받는 곳 이탈 자세(yaw 180°)에서 약 180° 방향 전환 뒤 접근. 최종 방향은 박스의 실제 앞면 법선으로 보정 |
+| 테이블 2 | 관측 자세 yaw −90°(남쪽). 물 받는 곳 이탈 자세에서 약 90° 방향 전환 뒤 접근. 최종 거리와 평행 정렬은 박스 앞면 기준으로 보정 |
+
+방향 값은 `map_20260930_manual/aligned/destinations.json`의 면 법선(물 받는 곳 0°, 테이블 1 180°, 테이블 2 90°)과 경로 파일의 관측 자세에서 계산했다.
 
 충전소 도달과 실제 충전 접점 연결은 다른 태스크다. 이번 범위는 위치·방향을 맞춘 후면 주차이며, 충전 전류 감지나 접점 체결은 포함하지 않는다. 테이블에서 벗어난 뒤 임의의 후진·회전으로 종료하지 않고 지도에 등록한 충전소로 돌아온다.
 
@@ -46,12 +49,18 @@ Claude의 첫 작업은 현재 기능과 공식 자료를 비교해 적용안을
 - 카메라 렌즈 높이: 바닥에서 0.215m. 표적 좌표는 센서 장착 변환을 거쳐 차체 기준으로 계산한다.
 - 지도 생성: Cartographer 2D. 저장 지도 주행의 위치추정은 AMCL.
 - 전역 경로: NavFn, `use_astar: false`인 Dijkstra 모드, planner ID `GridBased`.
-- 주행 제어: RPP `FollowPath`. 일반 이동 설정은 0.120m/s, 박스 `Parking`은 0.040m/s·최저 접근 0.020m/s다. 일반 이동의 50% 속도 상향을 박스 주차 속도에 적용하지 않는다. 도크는 별도 `parking_contract.yaml`을 사용한다.
+- 주행 제어: RPP `FollowPath`. 설정 파일의 일반 이동은 0.120m/s이고, 후면 도킹을 포함하는 서비스 세션에서는 `SERVICE_TRANSIT_MAX_MPS` 0.060m/s로 제한된다(`fc73b12` 기준, 이전 `45d1de9`에서는 주차 계약 0.040m/s로 묶여 있었다). 박스 주차는 0.040m/s·최저 접근 0.020m/s다. 도크는 별도 `parking_contract.yaml`을 사용한다.
 - 기본 `FollowPath`는 후진 비활성이다. `ParkingReverse`가 있다는 이유로 일반 경로의 모든 후진·방향 전환을 처리한다고 가정하지 않는다.
-- 표적 면 정렬은 map 기준으로 접근하고, 마지막 약 0.45m→0.05m 접근은 정렬 방향을 유지하는 odom 고정 직선 경로로 실행한다. 박스 이탈과 도크의 마지막 후진도 odom 고정 경로를 사용한다.
+- 표적 면 정렬은 map 기준으로 접근하고, 마지막 약 0.45m→0.05m 접근은 정렬 방향을 유지하는 odom 고정 직선 경로로 실행한다. 박스 이탈과 도크의 마지막 후진도 odom 고정 경로를 사용한다. `02de1e7`부터 최종 접근은 `GracefulParking`, 도크 후진은 `GracefulReverse`(Graceful controller)가 추종하고, `jdamr_depart.py go --rpp-final`로 RPP `Parking`·`ParkingReverse`에 되돌릴 수 있다. 실차 확인 전이다.
 - 박스 완료 판정은 중앙 간격 0.05±0.01m와 계약 방향 허용 3°다. 박스 목표 위치 계약 0.01m와 도크 위치 계약 0.05m를 구분한다.
 - costmap 해상도: 0.050m. Depth 박스 관측은 주차 목표 생성에 사용하며, 기본 장애물 레이어는 LiDAR 입력이다.
 - 확인한 PC 설치 버전: ROS 2 Jazzy / Nav2 1.3.12. 최신 문서의 파라미터를 설치 버전에 그대로 복사하지 않는다.
+
+`45d1de9` 이후 기준 브랜치에 들어간 변경:
+
+- `02de1e7`: 최종 접근·도크 후진 Graceful 추종, 도크 대기점 전용 BT(`navigate_to_pose_staging.xml`, 경로 무효·10 s 경과·새 목표일 때만 재계획, 위치만 보는 goal checker), 대기점 도착 뒤 odom 기준 한 방향 Spin, 서비스 이동 0.06m/s.
+- `2bb6bc7`: 출발 도구 `--rpp-final` 전환.
+- `fc73b12`: 실행 이벤트에 벽시계 시각(`wall_time_s`), 주행 분석 스크립트 `scripts/map_20260930_manual/analyze_run.py`.
 
 참조 파일은 저장소 루트 기준이다.
 
@@ -75,17 +84,31 @@ odom 고정은 단기 경로와 확인 좌표를 일관되게 유지하는 방�
 | 부분 | 후보 | 적용 효과와 판단 기준 |
 |---|---|---|
 | 전역 경로 | NavFn 유지 / A* 모드 / Smac2D | 경로 길이·형태·계획 시간을 비교하는 기준선. 사각 차체의 방향별 통과 검사를 추가하는 교체는 아님 |
-| 자세 포함 경로 | Smac Hybrid | 방향과 곡률, Reeds–Shepp의 후진을 경로에 반영. 제자리회전은 표현하지 못하며 기본 RPP 후진 설정과 연결을 맞춰야 함 |
+| 자세 포함 경로 | Smac Hybrid | 방향과 곡률, Reeds–Shepp의 후진을 경로에 반영. 제자리회전은 표현하지 못한다. 9/29 지도 비교에서 Dubin(r=0.2)은 inflation 0.3일 때 home_exit·관측 지점 출발 구간을 모두 풀지 못했고, Reeds–Shepp는 풀었지만 후진 1.8–2.6 m를 써서 `FollowPath`의 후진 비활성과 맞지 않았다. Nav2 선택표상 Ackermann용이라 새 지도 비교에서 뺐다 |
 | 차동구동 경로 | Smac Lattice | 사각 차체와 차동구동의 전진·후진·제자리회전 후보를 반영. 운동 후보·방향 해상도·회전 비용에 따라 우회가 커질 수 있음 |
-| 주행 제어 | RPP 유지 / MPPI / DWB | RPP는 경로 추종 기준선. MPPI·DWB는 주변 비용을 고려한 이동 궤적 선택 후보. 회피 품질과 파이 처리 주기를 함께 비교 |
-| 경로 평활화 | 기존 구성 / Constrained Smoother | 실제 BT 호출 여부를 확인. 평활화 뒤 곡률·후진 전환·차체 통과 가능성을 보존하는지 비교 |
+| 주행 제어 | RPP 유지 / Graceful / MPPI / DWB | RPP는 경로 추종 기준선. 최종 접근·도크 후진은 `02de1e7`부터 Graceful. `new_base_contract.py`는 RPP와 Graceful만 허용하므로 MPPI·DWB는 계약 변경이 먼저다. 회피 품질과 파이 처리 주기를 함께 비교 |
+| 경로 평활화 | 기존 구성 / Constrained Smoother | 설정에 `smoother_server`는 있지만 어떤 BT도 `SmoothPath`를 호출하지 않는다. 도입하려면 BT 변경이 먼저다. 평활화 뒤 곡률·후진 전환·차체 통과 가능성을 보존하는지 비교 |
 | 장애물 표현 | LiDAR ObstacleLayer / Depth VoxelLayer 병용 | 라이다 높이에서 보이지 않는 돌출물 반영. 바닥 제거, 높이 범위, 점 수와 갱신 주기를 설계 |
-| 위치추정·주차 | AMCL 유지와 조정 / 표적 상대 자세 보정 | 지도에서 목적지 근처까지 이동하고 표적 면 기준으로 마지막 거리·방향을 보정. 유효한 IMU가 있으면 odometry 융합도 별도 후보 |
+| 위치추정·주차 | AMCL 유지와 조정 / 표적 상대 자세 보정 / odom+자이로 EKF | 지도에서 목적지 근처까지 이동하고 표적 면 기준으로 마지막 거리·방향을 보정. AMCL 관측 모델 변경과 EKF는 §4.1 |
 | 주차 인터페이스 | 현재 실행기 유지 / Nav2 Docking Server의 표적 pose 연동 | staging 이동·표적 자세 보정·접근·완료를 표준 action으로 연결하는 후보. 태그 사용을 전제로 하지 않되 검출 입력·센서 시야·설치 버전 호환성을 확인 |
 
-Smac Lattice는 공식 선택표에서 비원형 차동구동에 적합한 후보다. 다만 보존된 PC 정적 지도 비교에서는 동봉 16방향·0.5m 회전반경 운동 후보와 당시 설정이 짧은 접근을 큰 우회로로 풀었다. 이는 해당 조건의 결과이며 Lattice 전체의 한계로 일반화하지 않는다. Hybrid 전진 전용과 Reeds–Shepp도 따로 비교한다. 어느 후보든 즉시 전면 교체할 근거로 사용하지 않는다.
+Smac Lattice는 공식 선택표에서 비원형 차동구동에 적합한 후보다. 9/29 지도 비교(`$HOME/jdamr_data/claude_phase1_20260930/planner_bench/REPORT.md`)와 현재 지도 비교(`$HOME/jdamr_data/planner_bench_20260930_newmap/REPORT.md`) 모두에서 동봉 `diff` 운동 후보(제자리 회전 포함)와 기본 rotation_penalty 5.0이 짧은 접근을 큰 우회로로 풀었다. 이는 해당 조건의 결과이며 파라미터 스윕은 하지 않았다. 둘 다 PC 정적 경로 생성 결과이며 파이 계산 시간이나 실차 수행 결과로 표시하지 않는다.
 
-이 비교의 보존 자료는 `$HOME/jdamr_data/claude_phase1_20260930/planner_bench/REPORT.md`, `compact_tables.md`, `results.json`이다. PC 정적 경로 생성 결과이며 파이 계산 시간이나 실차 수행 결과로 표시하지 않는다.
+플래너 교체는 파라미터만으로 끝나지 않는다. 서비스 BT 세 개(`navigate_to_pose_parking.xml`·`_alignment.xml`·`_staging.xml`)가 planner ID `GridBased`를 고정하고, BT 다섯 개가 1 Hz RateController로 경로 계획을 돈다(staging은 그 안에서 경로 무효·10 s 경과·새 목표일 때만 다시 계획한다). Lattice는 inflation_radius가 외접 반지름(0.414 m)보다 작으면 전체 footprint 검사로 넘어가며 `computeCircumscribedCost` 오류를 낸다(현재 지도 0.30에서 79줄, 0.45에서 0줄).
+
+### 4.1 2026-09-30 밤 검증 결과 (PC 오프라인, 실차 전)
+
+기록: `jdamr_cube_navigation/evaluation/20260930_ITEMS34_LOCALIZATION_LATTICE.md`(`feat/nav-items34-localization-lattice` 브랜치).
+
+| 부분 | 기존 | 변경·비교 | 수치 | 상태 |
+|---|---|---|---|---|
+| 전역 경로 | NavFn | Smac2D, Lattice 0.5 m·1 m | 새 지도 6구간, 길이/직선: NavFn 1.00–1.05, Lattice 0.5 m 2.10–3.33, 1 m 1.00–1.18(한 구간 6.74) | NavFn 유지 |
+| inflation | 0.30 | 0.45 | NavFn 경로 bit 단위 동일, 경로 셀 비용 0. keepout은 팽창되지 않음 | 바꾸지 않음 |
+| 최종 접근 | 플래너 경로 + RPP | odom 고정 직선 | 면 대비 방향 11–23°(104 실패) → 0.87°(성공), 9/30 실차 내부 추정 | 적용됨 |
+| 최종 접근 추종기 | RPP `Parking` | Graceful | — | 적용, 실차 전 |
+| 도크 대기점 이동 | 1 Hz 재계획 | 조건부 재계획 + 한 방향 Spin | 기존 구간 118.4 s, 그 사이 Nav2 journal의 새 경로 전달(`Passing new path`) 113줄(18:48:54–18:51:01) | 적용, 실차 전 |
+| AMCL 관측 모델 | `likelihood_field` | `likelihood_field_prob` + beamskip | 재생 도구 동작 확인, 9/29 bag 정지 구간 2개라 판정 불가 | 브랜치, 다음 주행 bag으로 판정 |
+| odom 방향 | 바퀴 odom | 바퀴 + 자이로 EKF(바이어스 제거) | 제자리 회전 스캔 기준 오차 중앙값 odom 0.50° → EKF 0.10°(4건). 자이로 z 부호 반대, 바이어스 −0.0018~+0.0011 rad/s | 브랜치, 미연결 |
 
 마스킹은 차체 중심뿐 아니라 외곽까지 고려해 계획에 반영되는지 확인한다. 일반 장애물 inflation이 KeepoutFilter에도 자동 적용된다고 가정하지 않는다. 전역 경로가 통과 가능해도 선택한 컨트롤러가 중간 회전·후진 구간을 수행할 수 있는지는 별도 항목이다.
 
@@ -96,7 +119,8 @@ Smac Lattice는 공식 선택표에서 비원형 차동구동에 적합한 후�
 1. 현재 구성으로 물 받는 곳·선택 테이블·충전소의 한 사이클을 완료하고 외부 실측과 동기화 영상을 확보한다. 최근 완료한 table_02 구간을 기준선으로 활용한다.
 2. 회전한 박스와 서로 다른 테이블 방향에서 면 정렬·간격을 평가한다. 관측 가능한 구간에서는 재관측과 상대 자세 갱신을 후보로 삼고, 근거리 관측 한계에서는 odom 이행과 외부 실측을 구분한다. 카메라가 볼 수 없는 마지막 구간을 시각 폐루프로 표시하지 않는다.
 3. 테이블 등록·호출과 팔 작업 완료 신호를 기존 실행기의 상태 전환에 연결하는 적용안을 만든다. 5초 대기는 시험용 기본값으로 두고, 최종 양팔 시스템은 팔 태스크 완료 이벤트를 사용한다.
-4. 위 기능의 비교 기준선이 확보되면 좁은 통로·큰 방향 전환에 `NavFn + RPP`와 `차체에 맞춘 Lattice + 실행 가능한 제어 구성`을 비교한다. Hybrid Reeds–Shepp는 보조 비교군, MPPI는 동적 회피·복합 전진/후진의 필요성이 확인됐을 때 후보로 둔다.
+4. 전역 경로는 현재 지도 비교에서 NavFn을 유지하기로 했다(§4.1). Lattice는 운동 후보·회전 비용을 이 차체에 맞춰 다시 만들 때만 다시 비교한다. MPPI는 동적 회피·복합 전진/후진의 필요성이 확인됐을 때 후보로 두고, 계약(`new_base_contract.py`) 변경을 함께 계획한다.
+5. 위치추정은 다음 주행의 PC bag으로 AMCL 관측 모델 A/B를 재생 비교하고, EKF는 `/odom`·`/imu/data_raw`가 든 기록을 확보한 뒤 표본을 늘린다.
 
 Nav2 Docking Server는 고정 위치로의 staging 이동과 표적 자세 보정·접근을 나누고 기본 local frame으로 odom을 사용하는 구조여서 현재 설계와 비교할 가치가 있다. 다만 설정에 `docking_server` 항목이 있다는 것과 현재 `DockRobot` action으로 실행한다는 것은 다르다. 현재는 자체 실행기와 RPP FollowPath가 수행한다. RGB-D 면 추정을 도킹 검출 pose로 연결하는 방식과 일반 서비스 위치의 완료 조건을 먼저 검토한다. 후면 주차에서 전방 카메라가 도크 표적을 계속 볼 수 있다고 가정하지 않는다. 충전 전류나 접점 판정은 위치 주차와 분리한다. [Jazzy Docking Server](https://docs.nav2.org/jazzy/configuration_and_development/configuration_guide/core_servers/configuring_docking_server/)
 
