@@ -64,3 +64,18 @@ def test_republish_removes_old_taught_pose(assets):
             else:
                 cache[(item.ns, item.id)] = item
     assert not any(m.type == Marker.ARROW for m in cache.values())
+
+
+def test_t39_water_station_marker_is_drawn_when_annotated(assets):
+    """The water stop appears as its own area; tables and home are unchanged."""
+    registry, annotation = assets
+    before = build_markers(registry, annotation).markers
+    annotation = deepcopy(annotation)
+    annotation['markers']['water_station'] = {'approximate_map_xy_m': [0.06, -1.21]}
+    markers = build_markers(registry, annotation).markers
+    texts = [item.text for item in markers if item.type == Marker.TEXT_VIEW_FACING]
+    assert any(text.startswith('WATER_STATION') for text in texts)
+    area = next(item for item in markers if item.type == Marker.CYLINDER
+                and (item.pose.position.x, item.pose.position.y) == (0.06, -1.21))
+    assert area.action == Marker.ADD
+    assert len(markers) == len(before) + 2

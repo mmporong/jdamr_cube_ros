@@ -59,6 +59,18 @@ def build_markers(registry, annotation, selected='table_01'):
             label.text = label.text.replace('AREA_ONLY', 'DOCK_POSE_TAUGHT')
             for index, pose in enumerate(table['service_poses']):
                 result.append(pose_arrow(number * 10 + 2 + index, pose, color, frame))
+    water = annotation['markers'].get('water_station')
+    if water:
+        # The via stop before a table; an area like the tables, not a goal pose.
+        x, y = water['approximate_map_xy_m']
+        area = marker(30, Marker.CYLINDER, x, y, (0.0, 0.75, 0.85, 0.45), frame)
+        area.scale.x = area.scale.y = 0.45
+        area.scale.z = 0.015
+        area.pose.position.z = 0.025
+        label = marker(31, Marker.TEXT_VIEW_FACING, x, y + 0.35, (0.1, 0.15, 0.22, 1.0), frame)
+        label.pose.position.z, label.scale.z = 0.2, 0.14
+        label.text = 'WATER_STATION\nAREA_ONLY'
+        result.extend([area, label])
     home = registry.get('home')
     if home:
         result.append(pose_arrow(100, home, (1.0, 0.65, 0.0, 1.0), frame))
