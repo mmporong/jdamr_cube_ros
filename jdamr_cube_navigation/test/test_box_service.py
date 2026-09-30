@@ -45,6 +45,9 @@ def mission(monkeypatch):
     for method in ('wait_until_ready', '_parking_parameters_ready', 'preflight', 'execute'):
         setattr(node, method, Mock(return_value=True))
     node._precision_collision_ready = Mock(return_value=True)
+    # The straight odom approach is exercised on its own; here it succeeds and
+    # the gap is judged on the map as before.
+    node._straight_final_approach = Mock(return_value=(True, None))
     node.capture_stationary_pose = Mock(side_effect=[((0, 0, 0), {}), ((0.885, 0, 0), {})])
     node.plan_pose = Mock(return_value={'ok': True})
     node.search_rotation = Mock(return_value=True)
@@ -74,10 +77,11 @@ def test_plan_only_does_not_observe_or_move(mission):
 
 def test_transit_alignment_final_sequence(mission):
     assert invoke(mission)
-    assert mission.execute.call_count == 3
+    # The final approach is the straight odom leg, not a planned execute.
+    assert mission.execute.call_count == 2
     assert [call.kwargs for call in mission.execute.call_args_list] == [
-        {'final_parking': False}, {'final_parking': False, 'alignment': True},
-        {'final_parking': True, 'alignment': False}]
+        {'final_parking': False}, {'final_parking': False, 'alignment': True}]
+    mission._straight_final_approach.assert_called_once()
     assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
     assert mission.emit.call_args.args == ('box_approach_finished',)
     assert mission.emit.call_args.kwargs['estimated_front_gap_m'] == pytest.approx(0.05)
@@ -101,7 +105,8 @@ def test_resume_observation_skips_transit_but_keeps_both_parking_phases(mission)
                       'wheel_outer_width': {'value': 0.540}},
         'table_01', (1, 0), 0.6, execute=True,
         candidate_trial=True, resume_at_observation=True)
-    assert mission.execute.call_count == 2
+    assert mission.execute.call_count == 1
+    mission._straight_final_approach.assert_called_once()
     mission.preflight.assert_not_called()
     assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
     mission.verify_live_maps.assert_called()
@@ -138,7 +143,7 @@ def test_opt_in_search_rotates_once_then_resumes_parking(mission):
     ]
     assert invoke(mission, search=True)
     mission.search_rotation.assert_called_once_with(math.radians(30.0))
-    assert mission.execute.call_count == 3
+    assert mission.execute.call_count == 2
     assert [call.args[2] for call in mission.observe_target.call_args_list] == [
         0.45, 0.45, 0.05]
 
@@ -842,7 +847,7 @@ def test_t28_final_execute_releases_task_deadline(mission):
         'table_01', (1, 0), 0.6, execute=True, candidate_trial=True,
         task_timeout_s=300.0)
     assert [kind for kind, _deadline in seen] == [
-        'capture', 'execute', 'execute', 'execute', 'capture']
+        'capture', 'execute', 'execute', 'capture']
     deadlines = [deadline for kind, deadline in seen if kind == 'execute']
     assert deadlines[0] - started_s == pytest.approx(300.0, abs=5.0)
     assert seen[-1] == ('capture', None)

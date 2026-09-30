@@ -22,6 +22,7 @@ from jdamr_cube_navigation.parking import (
 from jdamr_cube_navigation.restaurant_service import ServiceRoute
 from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
 from nav2_msgs.action import Spin
+from nav_msgs.msg import Path as RosPath
 import rclpy
 from rclpy.parameter import parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
@@ -60,6 +61,10 @@ BOX_INPUT_LATENCY_FAILURES = frozenset({
 # Face-to-base_link distance at which an in-place turn clears the face: the
 # collision monitor rotation polygon radius plus margin (pinned by test_t29).
 ESCAPE_CLEARANCE_M = 0.565
+# A straight reverse still moves away from a face up to this angle (cos 15 deg
+# = 0.97); the reverse path itself is validated on the costmap. 3 deg stopped
+# escapes after tilted stops on 2026-09-30 (11 and 23 deg).
+ESCAPE_MAX_FACE_ANGLE_RAD = math.radians(15.0)
 # Chassis-front band excluded from escape validation: one diagonal costmap
 # cell plus capture noise, rounded up to path steps (recomputed by test_t29).
 ESCAPE_VALIDATION_EXCLUDE_M = 0.10
@@ -755,6 +760,7 @@ class BoxServiceRoute(ServiceRoute):
             return False
         search_budget = BoxSearchBudget()
         # Face alignment happens while depth is still in its usable range.
+        straight_to_odom = None
         for phase, gap_m in (('face_alignment', 0.45), ('final_approach', 0.05)):
             # Observation and face alignment are intermediate; the final approach,
             # its confirmation and the final capture keep the strict AMCL bounds.
@@ -791,6 +797,13 @@ class BoxServiceRoute(ServiceRoute):
                 if not planned['ok']:
                     self.emit('failed', phase=phase, planning=planned)
                     return False
+                if phase == 'final_approach':
+                    approached, straight_to_odom = self._straight_final_approach(
+                        target, front_extent_m)
+                    if not approached:
+                        self.emit('failed', phase=phase, reason='nav2_or_stop_confirmation')
+                        return False
+                    continue
                 # Live map callbacks keep checking the verified identity throughout
                 # this visit; do not repeat disk/service configuration audits here.
                 if not self.execute(final_parking=phase == 'final_approach',
@@ -802,6 +815,16 @@ class BoxServiceRoute(ServiceRoute):
         actual, _ = self.capture_stationary_pose()
         outward = target['outward_normal_map_xy']
         face = target['face_center_map_xy_m']
+        target_yaw = target['yaw_rad']
+        parked = actual
+        if straight_to_odom is not None:
+            # The straight approach ran in odom from the aligned pose; judge the
+            # gap there too, against the face observed before it.
+            face_x, face_y, _ = straight_to_odom(face[0], face[1], 0.0)
+            tip_x, tip_y, _ = straight_to_odom(face[0] + outward[0], face[1] + outward[1], 0.0)
+            face, outward = (face_x, face_y), (tip_x - face_x, tip_y - face_y)
+            target_yaw = straight_to_odom(0.0, 0.0, target_yaw)[2]
+            actual = self._odom_pose()
         front = (actual[0] + front_extent_m * math.cos(actual[2]),
                  actual[1] + front_extent_m * math.sin(actual[2]))
         estimated_gap_m = sum((front[i] - face[i]) * outward[i] for i in (0, 1))
@@ -813,8 +836,8 @@ class BoxServiceRoute(ServiceRoute):
         corner_gaps = [sum((corner[i] - face[i]) * outward[i] for i in (0, 1))
                        for corner in corners]
         yaw_error = abs(math.atan2(
-            math.sin(actual[2] - target['yaw_rad']),
-            math.cos(actual[2] - target['yaw_rad'])))
+            math.sin(actual[2] - target_yaw),
+            math.cos(actual[2] - target_yaw)))
         # Centre gap and the contract heading decide; inside that heading the
         # corners only follow it and are logged (2026-09-30 table_02: 2.74 deg,
         # centre 5.7 cm, corners 4.4 and 7.0 cm stopped a good park).
@@ -823,9 +846,9 @@ class BoxServiceRoute(ServiceRoute):
             and all(math.isfinite(gap) for gap in corner_gaps)
             and yaw_error <= self.parking_contract['yaw_tolerance_rad'])
         if gap_confirmed:
-            # A later parked dwell verifies this final target, not a taught pose.
-            self.selected_pose = {'id': 'final_approach', 'x_m': target['x_m'],
-                                  'y_m': target['y_m'], 'yaw_rad': target['yaw_rad']}
+            # The dwell holds the confirmed stop where it is (map pose at rest).
+            self.selected_pose = {'id': 'final_approach', 'x_m': parked[0],
+                                  'y_m': parked[1], 'yaw_rad': parked[2]}
         self.emit('box_approach_finished' if gap_confirmed else 'box_gap_not_confirmed',
                   estimated_front_gap_m=estimated_gap_m,
                   estimated_front_corner_gaps_m=corner_gaps,
@@ -834,6 +857,54 @@ class BoxServiceRoute(ServiceRoute):
                   physical_accuracy='NOT_EXTERNALLY_MEASURED',
                   final_depth_measurement=False)
         return gap_confirmed
+
+    def _straight_final_approach(self, target, front_extent_m):
+        """
+        Close the last gap straight along the aligned heading, held in odom.
+
+        Face alignment has squared the robot to the face. A planned approach to
+        the 1 cm goal arrived 11-23 deg off and stopped on RPP collision checks
+        (2026-09-30), so the heading is kept and only the gap closes. Returns
+        (reached, map-to-odom function of the approach).
+        """
+        actual, _ = self.capture_stationary_pose()
+        face = target['face_center_map_xy_m']
+        outward = target['outward_normal_map_xy']
+        facing = -(math.cos(actual[2]) * outward[0] + math.sin(actual[2]) * outward[1])
+        distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
+        travel_m = ((distance_m - front_extent_m - 0.05) / facing
+                    if facing > 0.0 else float('nan'))
+        if (facing < math.cos(self.parking_contract['yaw_tolerance_rad'])
+                or not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6):
+            self.emit('failed', phase='final_approach', reason='final_approach_unavailable',
+                      face_heading_cos=self._json_scalar(facing),
+                      travel_m=self._json_scalar(travel_m))
+            return False, None
+        steps = int(math.ceil(travel_m / 0.05)) + 1
+        points = [(actual[0] + travel_m * k / steps * math.cos(actual[2]),
+                   actual[1] + travel_m * k / steps * math.sin(actual[2]))
+                  for k in range(steps + 1)]
+        end = {'id': 'final_approach', 'x': points[-1][0], 'y': points[-1][1],
+               'yaw': actual[2]}
+        saved = (self.config, self.waypoints)
+        self.config = {'frame_id': 'map', 'waypoints': [end]}
+        self.waypoints = self.config['waypoints']
+        try:
+            path = RosPath()
+            path.poses = [self._pose(0, {'x': x, 'y': y, 'yaw': actual[2]})
+                          for x, y in points]
+            path.header = path.poses[0].header
+            odom_path, to_odom = self._frozen_in_odom(path)
+            end_x, end_y, end_yaw = to_odom(end['x'], end['y'], end['yaw'])
+            self.emit('final_approach_straight', travel_m=travel_m,
+                      face_heading_cos=facing)
+            reached = self._execute_reverse_path(
+                path, send_path=odom_path, controller_id='Parking',
+                verify_contract={**self.parking_contract, 'reference_frame': 'odom'},
+                verify_waypoint={'x': end_x, 'y': end_y, 'yaw': end_yaw})
+        finally:
+            self.config, self.waypoints = saved
+        return bool(reached), to_odom
 
     def _leave_parked_pose(self):
         """
@@ -864,7 +935,7 @@ class BoxServiceRoute(ServiceRoute):
         # A straight reverse moves away from the face only from a pose that
         # faces it and is in front of it; refuse any other.
         facing = -(math.cos(actual[2]) * outward[0] + math.sin(actual[2]) * outward[1])
-        aligned = facing >= math.cos(ESCAPE_PATH_CONTRACT['yaw_tolerance_rad'])
+        aligned = facing >= math.cos(ESCAPE_MAX_FACE_ANGLE_RAD)
         if not (aligned and 0.0 < distance_m):
             self.emit('failed', phase='box_escape', reason='box_escape_unavailable',
                       detail=('heading_not_facing_box_face' if not aligned

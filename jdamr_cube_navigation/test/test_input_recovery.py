@@ -1756,7 +1756,7 @@ def test_t44_escape_heading_drift_still_clears_face(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('case,pose', [
-    ('heading_off', (PARKED_X_M, 0.0, math.radians(5.0))),
+    ('heading_off', (PARKED_X_M, 0.0, math.radians(20.0))),
     ('not_in_front', (FACE[0] + 0.01, 0.0, 0.0)),
 ])
 def test_l3_escape_refuses_unaligned_or_out_of_range_pose(
@@ -2095,7 +2095,10 @@ def test_t32b_refreshed_covariance_allows_final_approach(monkeypatch, tmp_path):
     except RuntimeError as error:
         _headfail('T32b', error)
     assert observations[:2] == ['face_alignment', 'final_approach']
-    assert [kind for kind, _goal in world.motions] == ['NavigateToPose', 'NavigateToPose']
+    # The final approach is a straight Parking FollowPath held in odom.
+    assert [kind for kind, _goal in world.motions] == ['NavigateToPose', 'FollowPath']
+    final = world.motions[1][1]
+    assert final.controller_id == 'Parking' and final.path.header.frame_id == 'odom'
 
 
 def test_t32c_observation_capture_follows_stage_bound(monkeypatch, tmp_path):

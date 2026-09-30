@@ -1300,7 +1300,8 @@ class ServiceRoute(CorridorRoute):
 
     def _execute_reverse_path(self, path, path_contract=None, validate_from_m=0.0,
                               goal_checker_id='parking_goal_checker', verify_contract=None,
-                              final=True, send_path=None, verify_waypoint=None):
+                              final=True, send_path=None, verify_waypoint=None,
+                              controller_id='ParkingReverse'):
         """
         Rebuild the remaining reverse path after one confirmed input-gap stop.
 
@@ -1322,6 +1323,8 @@ class ServiceRoute(CorridorRoute):
             once_kwargs['final'] = False
         if verify_waypoint is not None:
             once_kwargs['verify_waypoint'] = verify_waypoint
+        if controller_id != 'ParkingReverse':
+            once_kwargs['controller_id'] = controller_id
 
         def attempt():
             nonlocal first_attempt
@@ -1360,7 +1363,8 @@ class ServiceRoute(CorridorRoute):
         return self._run_with_input_recovery(attempt)
 
     def _execute_reverse_once(self, path, goal_checker_id='parking_goal_checker',
-                              verify_contract=None, final=True, verify_waypoint=None):
+                              verify_contract=None, final=True, verify_waypoint=None,
+                              controller_id='ParkingReverse'):
         """Keep reverse motion in controller → smoother → monitor → base."""
         if not self.waypoints:
             raise ValueError('reverse execution requires a target waypoint')
@@ -1376,7 +1380,7 @@ class ServiceRoute(CorridorRoute):
         self.active_action_type = FollowPath
         goal = FollowPath.Goal()
         goal.path = path
-        goal.controller_id = 'ParkingReverse'
+        goal.controller_id = controller_id
         goal.goal_checker_id = goal_checker_id
         goal.progress_checker_id = 'progress_checker'
         self.navigation_uuid = FollowPath.Impl.SendGoalService.Request().goal_id
