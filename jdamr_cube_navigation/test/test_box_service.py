@@ -994,3 +994,36 @@ def test_t37_live_precision_profile_requires_slowdown_disabled(monkeypatch):
     node._wait = lambda names, _timeout: SimpleNamespace(values=[
         True if name == 'SlowdownZone.enabled' else nested(name) for name in names])
     assert node._precision_collision_ready(geometry) is False
+
+
+@pytest.mark.parametrize('toward_deg,expected_deg', [
+    (-24.5, -24.5),   # 2026-09-30 water station: region 24 deg clockwise, sweep turned CCW
+    (-60.0, -30.0),   # far off: one bounded step toward the region
+    (16.0, 16.0),
+    (4.0, 30.0),      # centred region: the failure is not a heading problem
+    (None, 30.0),     # no diagnostic: the fixed counter-clockwise sweep
+])
+def test_t42_search_turns_toward_the_region_first(toward_deg, expected_deg):
+    """A known region bearing sets the step direction and size; the budget stays absolute."""
+    budget = box_service.BoxSearchBudget()
+    toward = None if toward_deg is None else math.radians(toward_deg)
+    step = budget.next_rotation(toward_rad=toward)
+    assert step == pytest.approx(math.radians(expected_deg))
+    assert budget.cumulative_yaw_rad == pytest.approx(abs(math.radians(expected_deg)))
+
+
+def test_t42_observation_search_uses_the_diagnostic_bearing(mission):
+    """The first search rotation follows the recorded region bearing."""
+    failure = box_service.BoxObservationUnavailable('no_box_surface_candidate', retryable=True)
+    target = mission.observe_target.return_value
+
+    def observe(*_args, **_kwargs):
+        mission.last_region_bearing_error_rad = math.radians(-24.5)
+        if mission.search_rotation.call_count == 0:
+            raise failure
+        return target
+
+    mission.observe_target = Mock(side_effect=observe)
+    assert invoke(mission, search=True)
+    first = mission.search_rotation.call_args_list[0].args[0]
+    assert first == pytest.approx(math.radians(-24.5))

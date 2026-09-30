@@ -35,6 +35,9 @@ import yaml
 SEARCH_STEP_RAD = math.radians(30.0)
 SEARCH_MAX_STEPS = 12
 SEARCH_MAX_CUMULATIVE_RAD = math.tau
+# A region bearing smaller than this is treated as centred: the failure is not a
+# heading problem and the fixed sweep continues.
+SEARCH_DIRECTED_MIN_RAD = math.radians(8.0)
 SEARCH_RECOVERABLE_REASONS = frozenset({
     'stable detected front surface is required',
     'LiDAR face support is below five points',
@@ -91,16 +94,25 @@ class BoxSearchBudget:
         self.cumulative_yaw_rad = 0.0
         self.reposition_attempted = False
 
-    def next_rotation(self):
-        """Reserve the next bounded rotation, or return None when exhausted."""
+    def next_rotation(self, toward_rad=None):
+        """
+        Reserve the next bounded rotation, or return None when exhausted.
+
+        With a known region bearing the step turns toward it (at most one step);
+        otherwise it is the fixed counter-clockwise sweep step.
+        """
         if self.steps_used >= SEARCH_MAX_STEPS:
             return None
+        step = SEARCH_STEP_RAD
+        if (toward_rad is not None and math.isfinite(toward_rad)
+                and abs(toward_rad) >= SEARCH_DIRECTED_MIN_RAD):
+            step = math.copysign(min(abs(toward_rad), SEARCH_STEP_RAD), toward_rad)
         remaining = SEARCH_MAX_CUMULATIVE_RAD - self.cumulative_yaw_rad
-        if remaining + 1e-12 < SEARCH_STEP_RAD:
+        if remaining + 1e-12 < abs(step):
             return None
         self.steps_used += 1
-        self.cumulative_yaw_rad += SEARCH_STEP_RAD
-        return SEARCH_STEP_RAD
+        self.cumulative_yaw_rad += abs(step)
+        return step
 
 
 class BoxServiceRoute(ServiceRoute):
@@ -171,6 +183,8 @@ class BoxServiceRoute(ServiceRoute):
 
     def _observation_pose_diagnostic(self, robot_pose, camera_mount, region_xy):
         """Record the camera bearing to the table region; never aim or judge."""
+        # The search reads only the latest bearing; a failed diagnostic leaves none.
+        self.last_region_bearing_error_rad = None
         try:
             self._ensure_depth_info()
             info = getattr(self, 'depth_camera_info', None)
@@ -196,6 +210,7 @@ class BoxServiceRoute(ServiceRoute):
                 bearing_error = math.atan2(math.sin(bearing - camera_yaw),
                                            math.cos(bearing - camera_yaw))
                 distance_m = math.dist(camera_xy, region_xy)
+                self.last_region_bearing_error_rad = bearing_error
                 fields.update(
                     camera_xy=list(camera_xy), camera_yaw_rad=camera_yaw,
                     bearing_error_rad=bearing_error, camera_region_distance_m=distance_m,
@@ -619,7 +634,8 @@ class BoxServiceRoute(ServiceRoute):
                 if (not search_enabled or phase != 'face_alignment'
                         or not error.retryable):
                     raise
-                delta_yaw_rad = search_budget.next_rotation()
+                delta_yaw_rad = search_budget.next_rotation(
+                    toward_rad=getattr(self, 'last_region_bearing_error_rad', None))
                 if delta_yaw_rad is None:
                     self.emit(
                         'box_search_exhausted', phase=phase,
