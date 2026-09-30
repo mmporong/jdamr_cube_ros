@@ -6,7 +6,7 @@ jdamr_depth_box_parking:
     pixel_step: 2
     plane_distance_m: 0.025
     minimum_normal_y: 0.65
-    minimum_front_normal_z: 0.80
+    minimum_front_normal_z: 0.90
     maximum_top_y_m: 0.05
     minimum_width_m: 0.18
     maximum_width_m: 1.20
