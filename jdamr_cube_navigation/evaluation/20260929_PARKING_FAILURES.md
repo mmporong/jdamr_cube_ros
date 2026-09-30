@@ -571,6 +571,10 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
 - 도크 대기점 앞 큰 회전(사용자 관찰: 한쪽으로 조금만 돌면 되는데 반대로 크게 돈다): 18:48:54–18:51:01(2분 7초) 동안 controller_server가 `Passing new path to controller`를 113회 남겼다. 내비게이터가 약 1초마다 경로를 새로 계획했다는 기록이다. AMCL 자세가 튈 때마다 경로의 돌아 들어가는 쪽이 바뀌어 회전 방향이 뒤집혔다는 것은 가설이고, 경로를 기록하지 않아 확인하지 못했다. 개선안은 두 가지다. (1) 대기점 구간도 한 번 계획한 경로를 odom에 고정해 FollowPath로 보내기, (2) 마지막 방향 맞춤은 정지 자세에서 계산한 최단 각도로 Spin 한 번. 다음 주행에서 `/plan`·`/cmd_vel`·`/odom`·`/amcl_pose`를 기록해 확인한 뒤 적용한다.
 - 보존: 파이 run 로그 전체를 PC `aligned/runs/`로 회수했다. Nav2 세션 journal 16:50–18:55와 실행 유닛 journal 14개는 `aligned/runs/journal_20260930_evening/`에 있다.
 - 포트폴리오 데이터 점검: `20260930_EVENING_E2E_PORTFOLIO_NOTES.md`.
+- 주행 기록기: 파이 디스크가 98 %(여유 844 MB, `~/jdamr_data/vslam` 14 GB·`~/jdamr_artifacts` 2.5 GB)라 파이에서 기록하지 않는다. 표시 중계가 이미 PC로 넘기는 `/tf`·`/tf_static`·`/scan`·`/plan`·`/amcl_pose`를 PC에서 mcap으로 기록한다(`display-start`가 켜고 `display-stop`이 끈다, `record-start`·`record-stop`도 있음). `/tf`에 odom 궤적과 AMCL 보정이 들어 있다. 중계는 설계상 명령 토픽을 싣지 않으므로 `/cmd_vel`은 없다. 19:06 중계만 켠 시험에서 10 s에 `/scan` 139·`/tf` 235·`/tf_static` 2를 기록했다(시간당 약 120 MB). 도크 대기점 회전 수정은 이 기록으로 원인을 확인한 뒤 한다.
+- 파이 디스크 정리(`vslam` 14 GB 보관·삭제)는 사용자 결정 사항이다.
+- 코드 리뷰 LOW 반영(출발 도구): 사이클 종료 직후 로그 재읽기, ssh 실패와 사이클 실행 구분, session-start 시간 초과 시 위치추정 무효화, 도크에 닿지 못한 `go`는 종료 코드 1, `recover --local-only`는 `--seed` 필요, 상태 파일 덮어쓰기 방지. `box_escape_once.py`는 대기 중 2 cm 넘게 움직이면 중단, 잘못된 모드 입력은 인자 오류. 모의 흐름 테스트 26건 통과.
+- `scripts/deploy_navigation_to_pi.sh`: 검증 사본에 `jdamr_cube_description/config/new_base_geometry.yaml`을 넣었다(§18.3의 테스트 2건 실패 원인). 스크립트는 `jdamr-base`를 멈추고 다시 켜므로 퇴근 전에는 실행하지 않았다. 다음 배포 때 확인한다.
 
 ## 앞선 충전 중 수정본 검증
 
