@@ -14,6 +14,8 @@ localization seeding through the existing `activate_navigation`, home teaching.
     jdamr_depart.py session-start   Pi Nav2 session (precision, prepare-only, LOCALHOST)
     jdamr_depart.py init            RViz click -> scan-matched pose -> activation -> teach home
     jdamr_depart.py go table_01     table cycle: observe -> align -> 5 cm -> 5 s -> escape -> dock
+    jdamr_depart.py health          read-only: does a fresh Pi process receive map/TF/scan
+    jdamr_depart.py recover         no-motion restart of sensors, session and display + init
     jdamr_depart.py status | stop | display-stop | session-stop
 """
 import argparse
@@ -80,8 +82,9 @@ VIA_ID = 'water_station'
 TABLES = ('table_01', 'table_02')
 # Distances from the face along its outward normal (box_service: final 0.115, face
 # alignment 0.515, escape 0.565). Pre and observation lie on the same straight line so
-# the robot arrives facing the box; 0.50 m spacing stays above the BT goal tolerance.
-PRE_M, OBSERVE_M, ESCAPE_M = 1.00, 0.58, 0.565  # water face from the camera (0.06): pre 1.00 keeps 0.54 m to table_01
+# the robot arrives facing the box; their 0.42 m spacing stays above the BT goal
+# tolerance (0.15 m). Pre 1.00 keeps 0.54 m between the water face and table_01's pre.
+PRE_M, OBSERVE_M, ESCAPE_M = 1.00, 0.58, 0.565
 HOME_EXIT_M = 0.70
 
 
@@ -120,6 +123,10 @@ MATCH_CLICK_YAW_RAD = math.radians(30.0)
 AMCL_AGREE_XY_M = 0.05
 AMCL_AGREE_YAW_RAD = math.radians(2.0)
 CLICK_MAX_AGE_S = 1800.0
+# The 2026-09-30 morning fix for new processes receiving nothing restarted all three.
+SENSOR_UNITS = ('jdamr-base.service', 'jdamr-box-rgbd.service', 'jdamr-box-observer.service')
+# box_service's first check (verify_live_maps, 30 s) runs before any motion command.
+MAP_WAIT_FAILURE = 'live map data unavailable'
 
 
 def log(message):
@@ -165,6 +172,26 @@ def save_state(state):
 
 def wrap(angle):
     return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def mark_localized(value):
+    """Only a completed init localizes; a session restart or a failed init revokes it."""
+    state = load_state()
+    state['localized'] = value
+    save_state(state)
+
+
+def session_active():
+    return pi('systemctl is-active jdamr-restaurant-navigation.service',
+              check=False).stdout.strip() == 'active'
+
+
+def refuse_during_cycle(action):
+    """Session stops and sensor restarts would end a running cycle mid-drive."""
+    busy = pi("systemctl list-units --type=service --state=active,activating --no-legend "
+              "'jdamr-table-cycle-*'", check=False).stdout.strip()
+    if busy:
+        fail(f'a table cycle is running; {action} would stop it (use stop first): {busy}')
 
 
 # ---------------------------------------------------------------- assets
@@ -219,10 +246,10 @@ def pull_registry():
 
 # ---------------------------------------------------------------- display (PC)
 def cmd_display_start(_args):
-    running = [u for u in DISPLAY_UNITS
-               if sh(f'systemctl --user is-active {u}', check=False).stdout.strip() == 'active']
-    if running:
-        log(f'display already running: {running}')
+    missing = [u for u in DISPLAY_UNITS
+               if sh(f'systemctl --user is-active {u}', check=False).stdout.strip() != 'active']
+    if not missing:
+        log('display already running')
         return
     env = '--setenv=DISPLAY=:1 --setenv=XAUTHORITY=/run/user/1000/gdm/Xauthority'
     commands = {
@@ -239,7 +266,8 @@ def cmd_display_start(_args):
         'jdamr-p2-rviz': f'{PC_SOURCE}; exec rviz2 -d {P2}/restaurant_phase2.rviz',
         'jdamr-p2-click': f'{PC_SOURCE}; exec python3 {TOOLS}/initialpose_capture.py {CLICK}',
     }
-    for unit, command in commands.items():
+    for unit in missing:
+        command = commands[unit]
         sh(f'systemd-run --user --unit={unit} --collect {env} '
            f'--property=KillSignal=SIGINT --property=TimeoutStopSec=10 '
            f'/bin/bash -c {shlex.quote(command)}')
@@ -296,6 +324,9 @@ def cmd_session_start(_args):
                                    composition=SESSION_COMPOSITION)
     result = pi('bash -s', stdin=script, timeout=240, check=False)
     tail = result.stdout.strip().splitlines()[-3:]
+    if not tail or tail[-1] != 'REUSED':
+        # A new or restarted session holds no localization until init.
+        mark_localized(False)
     if result.returncode != 0:
         fail(f'Nav2 session start failed (code {result.returncode}): {tail}')
     log(f'Nav2 session {tail[-1] if tail else ""}: precision, prepare-only, '
@@ -304,6 +335,8 @@ def cmd_session_start(_args):
 
 
 def cmd_session_stop(_args):
+    refuse_during_cycle('session-stop')
+    mark_localized(False)
     pi(f'{PI_SOURCE}; bash {PI_SESSION} stop', timeout=90, check=False)
     log('session: ' + pi('systemctl is-active jdamr-restaurant-navigation.service',
                          check=False).stdout.strip())
@@ -358,8 +391,10 @@ def read_events(pi_path):
 
 def cmd_init(args):
     state = load_state()
-    if pi('systemctl is-active jdamr-restaurant-navigation.service',
-          check=False).stdout.strip() != 'active':
+    # Until this init completes, go must not depart on an earlier localization.
+    state['localized'] = False
+    save_state(state)
+    if not session_active():
         fail('Nav2 session is not active; run session-start first')
     if args.seed_from_state:
         # Same placement only: the scan match below must agree globally with this seed.
@@ -453,38 +488,25 @@ def cmd_init(args):
             f'{regions[table_id]["basis"]}')
     (run_dir / 'regions.json').write_text(json.dumps(regions, indent=1))
     state.update({'init_run': str(run_dir), 'pose': pose, 'amcl': amcl, 'home': home,
-                  'regions': regions, 'init_time': time.time()})
+                  'regions': regions, 'init_time': time.time(), 'localized': True,
+                  'init_local_only': bool(args.local_only)})
     save_state(state)
     log('init complete: robot localized at the dock, navigation active, no motion sent')
 
 
 # ---------------------------------------------------------------- go
-def cmd_go(args):
-    state = load_state()
-    if 'regions' not in state:
-        fail('run init first')
-    table_id = args.table_id
-    healthy, line = dds_health()
-    if not healthy:
-        # Seen on 2026-09-30: new processes stopped receiving map/TF/scan from the
-        # running base and session. A fresh base and session fixed it every time.
-        log(f'DDS check failed before departure ({line}); recovering without motion')
-        args.seed = None
-        cmd_recover(args)
-        state = load_state()
-    else:
-        log('DDS OK: ' + line)
+def map_wait_failed(events):
+    """Only the executor's first check ran and it received no map: nothing moved."""
+    return (len(events) == 1 and events[0].get('event') == 'failed'
+            and str(events[0].get('reason', '')).startswith(MAP_WAIT_FAILURE))
+
+
+def run_cycle(args, state, table_id):
+    """Start one box_service run on the Pi and follow its log until the unit ends."""
     region = state['regions'][table_id]
     via = state['regions'][VIA_ID]
     if args.region:
         region = {'xy': args.region[:2], 'radius_m': args.region[2], 'basis': 'operator-confirmed box'}
-    if pi('systemctl is-active jdamr-restaurant-navigation.service',
-          check=False).stdout.strip() != 'active':
-        fail('Nav2 session is not active')
-    busy = pi("systemctl list-units --type=service --state=active --no-legend "
-              "'jdamr-table-cycle-*'", check=False).stdout.strip()
-    if busy:
-        fail(f'a table cycle is already running: {busy}')
     run = time.strftime('%Y%m%d_%H%M%S')
     run_dir = P2 / 'runs' / f'{table_id}_{run}'
     run_dir.mkdir(parents=True)
@@ -499,7 +521,8 @@ def cmd_go(args):
                f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
                f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
                + (' --resume-at-observation ' if args.resume_at_observation else '')
-               + (f' --resume-parked-from-log {args.resume_parked_log} ' if args.resume_parked_log else '')
+               + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
+                  if args.resume_parked_log else '')
                + ('' if args.skip_via else
                   f'--via-id {VIA_ID} --via-route {args.via_route or P2 / (VIA_ID + "_route.yaml")} '
                   f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
@@ -510,7 +533,8 @@ def cmd_go(args):
        f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c {shlex.quote(command)}')
     state.update({'last_unit': unit, 'last_run': str(run_dir)})
     save_state(state)
-    log(f'DEPARTED water_station -> {table_id} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
+    stops = f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}'
+    log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
     seen = 0
     while True:
         time.sleep(10)
@@ -523,7 +547,33 @@ def cmd_go(args):
         seen = len(events)
         active = pi(f'systemctl is-active {unit}', check=False).stdout.strip()
         if active not in ('active', 'activating'):
-            break
+            return events
+
+
+def cmd_go(args):
+    state = load_state()
+    if 'regions' not in state or state.get('localized') is not True:
+        fail('not localized: the session restarted or an init failed since the last init; '
+             'run init')
+    if not session_active():
+        fail('Nav2 session is not active')
+    refuse_during_cycle('a new departure')
+    table_id = args.table_id
+    events = run_cycle(args, state, table_id)
+    if map_wait_failed(events):
+        # 2026-09-30: new processes stopped receiving map/TF/scan from the running base
+        # and session; fresh services fixed it every time. The executor's own map check
+        # is the detector, so a healthy departure carries no extra check.
+        resumed = args.skip_via or args.resume_at_observation or args.resume_parked_log
+        if resumed or state.get('init_local_only'):
+            fail('the executor received no map before moving; the robot is not at a globally '
+                 'matched init pose, so run recover --seed X Y YAW_DEG [--local-only], '
+                 'then go again')
+        log('the executor received no map before moving; recovering without motion, '
+            'then departing once more')
+        args.seed, args.local_only = None, False
+        cmd_recover(args)
+        events = run_cycle(args, load_state(), table_id)
     names = [e.get('event') for e in events]
     arrived = [e for e in events if e.get('event') == 'home_arrived']
     log(f'cycle ended: parked={"box_approach_finished" in names} '
@@ -532,45 +582,84 @@ def cmd_go(args):
 
 
 def dds_health():
-    """Check that a fresh Pi process receives /map, the laser static TF and /scan."""
+    """Read-only probe: returns ('ok' | 'missing' | 'error', report line)."""
     script = (TOOLS / 'dds_probe.py').read_text()
-    result = pi(f'{PI_SOURCE}; timeout 30 python3 - health', stdin=script, timeout=45, check=False)
-    line = next((text for text in result.stdout.splitlines() if text.startswith('PROBE')),
-                'PROBE none')
-    return ' ok ' in f'{line} ', line
+    try:
+        result = pi(f'{PI_SOURCE}; timeout 45 python3 - health', stdin=script, timeout=60,
+                    check=False)
+    except subprocess.TimeoutExpired:
+        return 'error', 'probe did not finish within 60 s'
+    line = next((text for text in result.stdout.splitlines() if text.startswith('PROBE ')), None)
+    if line is None:
+        return 'error', f'probe did not run (code {result.returncode}): {result.stdout[-300:]}'
+    return ('ok' if line.split()[2:3] == ['ok'] else 'missing'), line
 
 
 def cmd_health(_args):
-    healthy, line = dds_health()
-    log(('DDS OK: ' if healthy else 'DDS MISSING: ') + line)
-    if not healthy:
+    status, line = dds_health()
+    log(f'DDS {status}: {line}')
+    if status == 'missing':
         fail('fresh processes do not receive map/TF/scan; run recover')
+    if status == 'error':
+        fail('the probe could not run; check ssh and the Pi ROS environment')
+
+
+def unit_state(unit):
+    text = pi(f'systemctl show -p ActiveState -p ActiveEnterTimestampMonotonic {unit}',
+              check=False).stdout
+    state = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+    return state.get('ActiveState'), state.get('ActiveEnterTimestampMonotonic')
+
+
+def restart_sensor_services():
+    """Restart each running sensor service and confirm it really started again."""
+    for unit in SENSOR_UNITS:
+        before = unit_state(unit)
+        if before[0] != 'active':
+            if unit == SENSOR_UNITS[0]:
+                fail(f'{unit} is {before[0]}; start it before recovering')
+            log(f'{unit}: {before[0]}, left as is')
+            continue
+        pi(f'sudo -n systemctl restart {unit}', timeout=200, check=False)
+        after = unit_state(unit)
+        if after[0] != 'active' or after[1] == before[1]:
+            fail(f'{unit} did not restart (before {before}, after {after})')
+        log(f'{unit}: restarted')
+    time.sleep(8)
 
 
 def cmd_recover(args):
-    """Fresh DDS state without motion: base, session, display, then re-initialize.
+    """Fresh DDS state without motion: sensor services, session, display, then init.
 
     Without --seed the robot must still be where the last init placed it (the dock
     before a departure): the scan match must then agree globally with that pose.
+    --local-only (operator-stated placement) is never implied.
     """
+    refuse_during_cycle('recover')
+    linger = pi('loginctl show-user lim -p Linger --value', check=False).stdout.strip()
+    if linger != 'yes':
+        # 2026-09-30 morning: without linger the last ssh logout removed DDS shared memory.
+        fail(f'Pi user lim linger is {linger or "unknown"}; run sudo loginctl enable-linger lim')
+    mark_localized(False)
     cmd_display_stop(args)
     cmd_session_stop(args)
-    pi('sudo -n systemctl restart jdamr-base.service', timeout=200, check=False)
-    log('jdamr-base: ' + pi('systemctl is-active jdamr-base.service', check=False).stdout.strip())
-    time.sleep(8)
+    restart_sensor_services()
     cmd_display_start(args)
     cmd_session_start(args)
-    if args.seed is None:
-        args.keep_home, args.seed_from_state, args.local_only = True, True, False
-    else:
+    args.keep_home, args.seed_from_state = True, args.seed is None
+    if args.seed is not None:
         x, y, yaw_deg = args.seed
         CLICK.write_text(json.dumps({'x_m': x, 'y_m': y, 'yaw_rad': math.radians(yaw_deg),
                                      'received_unix_s': time.time(), 'source': 'recover seed'}))
-        args.keep_home, args.seed_from_state, args.local_only = True, False, True
-    cmd_init(args)
-    healthy, line = dds_health()
-    if not healthy:
-        fail(f'DDS still missing after recovery ({line})')
+    try:
+        cmd_init(args)
+    except SystemExit:
+        log('recover: services are fresh but init stopped. If the robot is not at the last '
+            'init pose, click 2D Pose Estimate and run init, or run recover --seed X Y YAW_DEG')
+        raise
+    status, line = dds_health()
+    if status != 'ok':
+        fail(f'DDS {status} after recovery ({line})')
     log('DDS OK after recovery: ' + line)
 
 
@@ -622,6 +711,8 @@ def main():
     recover = sub.add_parser('recover')
     recover.add_argument('--seed', nargs=3, type=float, metavar=('X', 'Y', 'YAW_DEG'),
                          help='placement when the robot is not at the last init pose')
+    recover.add_argument('--local-only', action='store_true',
+                         help='operator-stated placement: skip the global agreement check')
     routes = sub.add_parser('routes')
     routes.add_argument('--start', nargs=3, type=float, required=True,
                         metavar=('X', 'Y', 'YAW_RAD'))
