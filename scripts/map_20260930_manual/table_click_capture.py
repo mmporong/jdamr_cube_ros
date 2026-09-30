@@ -65,7 +65,9 @@ def main():
     clicks = json.loads(OUT.read_text()) if OUT.exists() else []
 
     def redraw():
-        markers = [arrow(0, DOCK[0], DOCK[1], DOCK[2], (0.1, 0.7, 0.2)),
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        markers = [clear, arrow(0, DOCK[0], DOCK[1], DOCK[2], (0.1, 0.7, 0.2)),
                    label(0, DOCK[0], DOCK[1], 'dock', (0.1, 0.6, 0.2))]
         for i, c in enumerate(clicks, start=1):
             markers.append(arrow(i, c['x'], c['y'], c['yaw'], (1.0, 0.5, 0.0)))

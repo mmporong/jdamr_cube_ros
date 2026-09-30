@@ -401,9 +401,20 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
 - 파이 반영: `scripts/deploy_navigation_to_pi.sh`는 파이 사전 검증에서 멈췄다(검증 사본에 `jdamr_cube_description`이 없어 `new_base_geometry.yaml`을 읽는 기존 테스트 2건 실패, 주 워크스페이스 미변경). 백업(`$HOME/jdamr_data/deploy_backup_20260930_via/`) 뒤 `box_service.py` 한 파일을 복사하고 `colcon build --packages-select jdamr_cube_navigation` 통과. PC·파이 소스·파이 설치본 SHA-256 `7f954a6c…` 일치, `--help`에 경유 옵션 표시.
 - 출발 도구: `$HOME/jdamr_data/map_20260930_manual/tools/jdamr_depart.py`(저장소 사본 `scripts/map_20260930_manual/`). 새 지도 폴더, `destinations.json`, 세 경로 생성, init 때 세 목적지 영역 등록, `go table_0N`에 경유 인자 추가. 14:49 새 registry로 정밀 준비 세션 기동(localization·keepout active) 확인 뒤 종료.
 
-### 18.4 남은 항목
+### 18.4 최종 배치 (14:55, 사용자 조정)
 
-- `table_02` 자리 확정(제안 자리 또는 재클릭) 뒤 `destinations.json`·경로·주석을 다시 만든다.
+사용자 요청: "워터스테이션은 조금 위로, 테이블1은 내릴 수 있을 만큼 내리고, 테이블2는 제안한 거로", "주행 중 멈추지 않을 정도로". 세 목적지를 함께 넣은 검사기(`scripts/map_20260930_manual/layout_eval.py`: 박스 자리, 박스 간격 0.30 m, 회전 지점 13곳 0.514 m, 직선 접근 통로, 도크 후진 통로, 0.30 m 측면 여유 연결성)로 정했다.
+
+| 이름 | 앞면 가운데 | 법선 | 조정과 한계 |
+|---|---|---|---|
+| `water_station` | (−0.145, −1.331) | 0° | 북쪽 0.20 m. +0.30 m까지 통과, +0.40 m 접근 통로 차단 |
+| `table_01` | (1.596, −1.687) | 180° | 남쪽 0.20 m(−0.35 m부터 사전 지점 회전 여유 부족), 동쪽 0.10 m. 두 박스 앞면 간격 1.64 → 1.74 m로 넓혀 서로의 사전 지점 여유를 0.03 m에서 0.13 m로 늘렸다 |
+| `table_02` | (0.67, −2.83) | 90° | 제안 자리에서 동쪽 0.05 m(서쪽 설치 오차 대비) |
+
+설치 오차 ±0.10 m(9방향 × 3곳) 검사에서 남은 실패는 `water_station`을 서쪽으로 0.10 m 놓을 때(뒤쪽 지도 물체와 0.10 m 이내)와 `table_02`를 서쪽으로 0.10 m 놓을 때(0.510 m < 0.514 m)뿐이다. 카메라 시야 1.5 m 안 점유 칸: `water_station` 19칸(최근접 1.20 m), `table_01` 15칸(1.28 m), `table_02` 0칸. 경로·주석·표시를 다시 만들고 파이에 동기화했다.
+
+### 18.5 남은 항목
+
 - 박스 세 개 설치, 로봇을 도크에 벽과 나란히 두고 `display-start` → `session-start` → RViz 초기화 → `init`(teach-home). 그 뒤 "출발 table_0N"에 `go table_0N`.
 - 실차 미검증: 두 박스가 마주 본 1.64 m 공간에서의 회전 탐색, 테이블 경로 첫 사전 지점 즉시 완료, 도크 끝 yaw(§16.4)는 첫 주행에서 본다.
 - 표시: `service_visualization`은 테이블 두 곳만 그리고 `water_station`은 그리지 않는다.
