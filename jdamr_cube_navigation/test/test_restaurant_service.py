@@ -1396,6 +1396,33 @@ def test_delayed_live_map_discovery_preserves_identity_checks(monkeypatch):
     assert clock['now'] == 4.0
 
 
+@pytest.mark.parametrize('stage', ['visit', 'go_home'])
+def test_live_map_wait_does_not_consume_leg_budget(monkeypatch, stage):
+    """A fresh process waits up to 30 s for maps; the leg budget starts afterwards."""
+    node = serving_route()
+    node.registry['home'] = taught_pose('home_dock', (-0.5, 0.4, -1.2), {},
+                                        approach_offset_m=0.7)
+    clock = {'now': 100.0}
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.time.monotonic',
+                        lambda: clock['now'])
+    node.run_deadline_s = 50.0  # an earlier leg's expired deadline
+    seen = []
+
+    def discover():
+        seen.append(node.run_deadline_s)
+        clock['now'] += 30.0
+
+    node.verify_live_maps = Mock(side_effect=discover)
+    node.wait_until_ready = Mock(return_value=False)
+    with pytest.raises(RuntimeError, match='navigation data unavailable'):
+        if stage == 'visit':
+            node.visit('table_01')
+        else:
+            node.go_home()
+    assert seen == [None]
+    assert node.run_deadline_s == 130.0 + 180.0
+
+
 def test_missing_live_map_reports_missing_streams(monkeypatch):
     node = route()
     node.registry = {'map': {'yaml_path': 'expected'}, 'keepout': {'yaml_path': 'mask'}}

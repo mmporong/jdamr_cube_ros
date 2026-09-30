@@ -918,8 +918,11 @@ class ServiceRoute(CorridorRoute):
         self.selected_pose = None
         self.confirmation = None
         poses = candidates(self.registry, table_id)
-        self.run_deadline_s = time.monotonic() + timeout_s
+        # A fresh process may wait up to 30 s for the maps; that discovery must not
+        # consume this leg's budget, and an earlier leg's deadline must not end it.
+        self.run_deadline_s = None
         self.verify_live_maps()
+        self.run_deadline_s = time.monotonic() + timeout_s
         if not self.wait_until_ready(timeout=10.0):
             raise RuntimeError('navigation data unavailable')
         if not self._parking_parameters_ready():
@@ -969,8 +972,10 @@ class ServiceRoute(CorridorRoute):
         self.pose_id = pose['id']
         self.selected_pose = pose
         self.confirmation = None
-        self.run_deadline_s = time.monotonic() + timeout_s
+        # Map discovery before the budget, as in visit().
+        self.run_deadline_s = None
         self.verify_live_maps()
+        self.run_deadline_s = time.monotonic() + timeout_s
         if not self.wait_until_ready(timeout=10.0):
             raise RuntimeError('navigation data unavailable')
         reverse = pose.get('parking_direction', 'forward') == 'reverse'
