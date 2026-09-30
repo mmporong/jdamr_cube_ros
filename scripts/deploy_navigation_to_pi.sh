@@ -30,8 +30,11 @@ cleanup_local() {
 }
 trap cleanup_local EXIT
 
+# The staged tests read the base geometry from the description package
+# (2026-09-30: two tests failed on the Pi without it). Only the navigation
+# package is installed; the extra config lives in the stage and is removed.
 git -C "$repo_root" archive --format=tar.gz --output="$archive" \
-  "$git_commit" "$package_path"
+  "$git_commit" "$package_path" jdamr_cube_description/config/new_base_geometry.yaml
 archive_sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
 remote_archive_name="jdamr_navigation_${archive_sha256}.tar.gz"
 ssh_options=(-o BatchMode=yes -o ConnectTimeout=5 -o HostKeyAlias=jdamr.local)
