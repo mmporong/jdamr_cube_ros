@@ -139,6 +139,11 @@ def parking_controller_overrides(
         'use_rotate_to_heading': True,
         'allow_reversing': False,
         'stateful': False,
+        # Parking keeps the slowdown it was validated with when transit speeds
+        # up (2026-09-30); only the transit FollowPath changed.
+        'approach_velocity_scaling_dist': 0.6,
+        'regulated_linear_scaling_min_radius': 0.9,
+        'cost_scaling_dist': 0.3,
     })
     configured['Parking'] = parking
     configured['parking_goal_checker'] = {

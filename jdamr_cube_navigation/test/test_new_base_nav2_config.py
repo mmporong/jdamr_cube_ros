@@ -72,7 +72,7 @@ def test_physical_candidate_is_accepted():
     assert amcl['update_min_a'] / 0.3 <= 1.0
     assert 0 < amcl['update_min_d'] <= 0.05
     assert 0 < amcl['update_min_a'] <= 0.05
-    assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.08
+    assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.12
     controller = document['controller_server']['ros__parameters']
     assert controller['progress_checker']['plugin'] == (
         'nav2_controller::PoseProgressChecker')
@@ -1057,7 +1057,7 @@ def test_unknown_registered_controller_plugin_is_rejected(tmp_path):
         _load_validator(invalid)(None)
 
 
-@pytest.mark.parametrize('velocity', [float('nan'), 0.0, -0.01, 0.081])
+@pytest.mark.parametrize('velocity', [float('nan'), 0.0, -0.01, 0.121])
 def test_registered_controller_velocity_is_finite_positive_and_bounded(
         tmp_path, velocity):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))

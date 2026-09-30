@@ -14,6 +14,10 @@ VELOCITY_POLICY_RANGES = {
     'stopped': (-1.0, 1.0, -1.0, 1.0),
 }
 
+# Operator request 2026-09-30: transit +50 % and less slowdown.
+NEW_BASE_MAX_FORWARD_MPS = 0.12
+NEW_BASE_SLOWDOWN_RATIO = 0.8
+
 
 def validate_new_base_params(params, geometry, precision_parking=False):
     """Reject navigation parameters that violate the measured base contract."""
@@ -204,7 +208,7 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             or slow_zone['min_points'] != 3):
         raise RuntimeError('new-base SlowdownZone is not active')
     ratio = slow_zone.get('slowdown_ratio')
-    if type(ratio) not in (int, float) or ratio != 0.6:
+    if type(ratio) not in (int, float) or ratio != NEW_BASE_SLOWDOWN_RATIO:
         raise RuntimeError('new-base slowdown ratio violates approved policy')
     approach = monitor['FootprintApproach']
     if (approach.get('type') != 'polygon'
@@ -328,7 +332,7 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             or amcl_tf_tolerance_s != 1.0):
         raise RuntimeError('new-base AMCL transform tolerance must be 1.0s')
     smoother = params['velocity_smoother']['ros__parameters']
-    if smoother['max_velocity'][0] > 0.08:
+    if smoother['max_velocity'][0] > NEW_BASE_MAX_FORWARD_MPS:
         raise RuntimeError('new-base forward speed exceeds uncalibrated limit')
     controller = params['controller_server']['ros__parameters']
     reverse = controller.get('ParkingReverse')
@@ -373,7 +377,7 @@ def validate_new_base_params(params, geometry, precision_parking=False):
         desired_velocity = plugin.get('desired_linear_vel')
         if (type(desired_velocity) not in (int, float)
                 or not math.isfinite(desired_velocity)
-                or not 0.0 < desired_velocity <= 0.08):
+                or not 0.0 < desired_velocity <= NEW_BASE_MAX_FORWARD_MPS):
             raise RuntimeError(
                 'new-base controller speed exceeds uncalibrated limit')
         if plugin.get('use_collision_detection') is not True:
