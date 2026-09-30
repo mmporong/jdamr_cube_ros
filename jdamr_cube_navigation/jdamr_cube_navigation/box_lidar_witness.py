@@ -13,6 +13,12 @@ MINIMUM_TANGENT_SPREAD_M = 0.08
 MAXIMUM_RESIDUAL_RMS_M = 0.015
 MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD = math.radians(5.0)
 MAXIMUM_MEDIAN_NORMAL_OFFSET_M = 0.02
+# Beyond that agreement the two sensors see the face at different heights
+# (table_02, 2026-09-30: a steady 2.5 cm with a clean 45-point LiDAR line).
+# Up to this bound (inside the 4 cm candidate band) the nearer plane is
+# approached, so the final gap is never smaller than planned; larger offsets
+# are treated as a different object.
+MAXIMUM_NEARER_FACE_OFFSET_M = 0.035
 
 
 def _finite(value, label):
@@ -88,6 +94,7 @@ def witness_box_face_with_lidar(
                 MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD,
             'maximum_median_normal_offset_m':
                 MAXIMUM_MEDIAN_NORMAL_OFFSET_M,
+            'maximum_nearer_face_offset_m': MAXIMUM_NEARER_FACE_OFFSET_M,
         })
     angle_min = _finite(angle_min, 'angle_min')
     angle_increment = _finite(angle_increment, 'angle_increment')
@@ -190,10 +197,18 @@ def witness_box_face_with_lidar(
         raise ValueError('LiDAR face line residual is too large')
     if yaw_difference_rad > MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD:
         raise ValueError('LiDAR and depth face normals disagree')
-    if abs(median_normal_offset_m) > MAXIMUM_MEDIAN_NORMAL_OFFSET_M:
+    if abs(median_normal_offset_m) > MAXIMUM_NEARER_FACE_OFFSET_M:
         raise ValueError('LiDAR and depth face distances disagree')
 
+    # The fitted normal points out of the face, toward the robot.
     face_to_plane_m = float(fitted_normal @ (center - face))
+    face_basis = 'lidar_plane'
+    if abs(median_normal_offset_m) > MAXIMUM_MEDIAN_NORMAL_OFFSET_M:
+        if face_to_plane_m < 0.0:
+            face_to_plane_m = 0.0
+            face_basis = 'depth_face_nearer'
+        else:
+            face_basis = 'lidar_plane_nearer'
     fused_face = face + fitted_normal * face_to_plane_m
     return {
         'fused_face_center_map_xy_m': tuple(float(value) for value in fused_face),
@@ -201,6 +216,7 @@ def witness_box_face_with_lidar(
             float(value) for value in fitted_normal),
         'residual_rms_m': residual_rms_m,
         'distance_difference_m': median_normal_offset_m,
+        'face_basis': face_basis,
         'normal_yaw_difference_rad': yaw_difference_rad,
         'support_count': int(len(selected)),
         'tangent_spread_m': tangent_spread_m,
