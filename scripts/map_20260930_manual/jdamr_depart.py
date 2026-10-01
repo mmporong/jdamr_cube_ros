@@ -311,13 +311,15 @@ def record_start():
     sh(f'systemd-run --user --unit={RECORD_UNIT} --collect '
        f'--property=KillSignal=SIGINT --property=TimeoutStopSec=15 '
        f'/bin/bash -c {shlex.quote(command)}')
+    # Remember the bag before the write check: rosbag2 caches messages, so a slow
+    # first flush must not leave record-stop pointing at the previous bag.
+    state = load_state()
+    state['bag'] = str(bag)
+    save_state(state)
     for _ in range(15):
         time.sleep(2)
         written = sum(f.stat().st_size for f in bag.glob('*.mcap')) if bag.exists() else 0
         if written > 4096:
-            state = load_state()
-            state['bag'] = str(bag)
-            save_state(state)
             log(f'bag recording: {bag} ({written} bytes so far)')
             return
     log(f'bag recorder started but nothing written yet: {bag} '
