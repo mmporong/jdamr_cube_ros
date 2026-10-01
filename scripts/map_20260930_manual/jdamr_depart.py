@@ -57,6 +57,7 @@ PI_SESSION = f'{PI_WS}/src/jdamr_cube_ros/jdamr_cube_navigation/scripts/restaura
 # the session. Without it, go falls back to one systemd unit per run.
 EXECUTOR_UNIT = 'jdamr-box-executor'
 EXECUTOR_SPOOL = '/home/lim/jdamr_data/box_executor_spool'
+PI_TOOLS = '/home/lim/jdamr_data/map_20260930_manual/tools'
 PI_SHARE = f'{PI_WS}/install/jdamr_cube_navigation/share/jdamr_cube_navigation'
 PI_BOX_CONTRACT = f'{PI_SHARE}/config/box_parking_contract.yaml'
 PI_GEOMETRY = (f'{PI_WS}/install/jdamr_cube_description/share/jdamr_cube_description/'
@@ -638,6 +639,7 @@ def run_cycle(args, state, table_id):
     fresh = load_state()
     fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
     save_state(fresh)
+    monitor = start_drop_monitor(run_dir, run)
     stops = ('dock only' if args.dock_only else
              f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
     log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
@@ -659,7 +661,20 @@ def run_cycle(args, state, table_id):
                                               'terminal_status_code', 'nav2_error_code')
                         if k in event}
                 log('  ' + json.dumps(keep, ensure_ascii=False))
+            pi(f'sudo -n systemctl stop {monitor}', check=False)
             return final
+
+
+def start_drop_monitor(run_dir, run):
+    """Sample per-process UDP drops on the Pi for this run (read-only, bounded)."""
+    unit = f'jdamr-udp-drops-{run.replace("_", "-")}'
+    script = shlex.quote(f'{PI_TOOLS}/udp_drop_monitor.py')
+    pi(f'mkdir -p {PI_TOOLS} && cat > {script}', stdin=(TOOLS / 'udp_drop_monitor.py').read_text(),
+       check=False)
+    pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
+       f'--property=RuntimeMaxSec=3600 /usr/bin/python3 {script} '
+       f'{shlex.quote(str(run_dir / "udp_drops.jsonl"))} 5', check=False)
+    return unit
 
 
 def stop_requested_since(started):
