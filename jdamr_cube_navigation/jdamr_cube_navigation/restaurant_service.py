@@ -20,7 +20,8 @@ from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold, pose_errors,
 )
 from jdamr_cube_navigation.reverse_parking import (
-    reverse_waypoints, SERVICE_TRANSIT_MAX_MPS, static_corridor_clear)
+    reverse_curve_waypoints, reverse_waypoints, SERVICE_TRANSIT_MAX_MPS,
+    static_corridor_clear)
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
     map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
@@ -1051,11 +1052,14 @@ class ServiceRoute(CorridorRoute):
         """Leave the parked pose before a home motion; a table pose needs no escape."""
         return True
 
-    def _make_reverse_path(self, start, target, path_contract=None):
+    def _make_reverse_path(self, start, target, path_contract=None, curve=False):
         contract = path_contract or self.parking_contract
-        points = reverse_waypoints(
-            start, target, xy_tolerance_m=contract['xy_tolerance_m'],
-            yaw_tolerance_rad=contract['yaw_tolerance_rad'])
+        if curve:
+            points = reverse_curve_waypoints(start, target)
+        else:
+            points = reverse_waypoints(
+                start, target, xy_tolerance_m=contract['xy_tolerance_m'],
+                yaw_tolerance_rad=contract['yaw_tolerance_rad'])
         path = RosPath()
         path.poses = [self._pose(i, {'x': x, 'y': y, 'yaw': yaw})
                       for i, (x, y, yaw) in enumerate(points)]
@@ -1239,28 +1243,25 @@ class ServiceRoute(CorridorRoute):
         127 s) and the final heading turn followed AMCL, which near the dock was
         off by about 15 deg, so the robot swung the long way and back. The
         position leg now replans only on an invalid, expired or new path; the
-        heading is set by odom Spins whose direction is fixed at rest. The
-        alignment leg runs only when the position itself is off: after a 123 deg
-        turn it spent 38 s correcting 3 deg (2026-10-01).
+        heading is set by odom Spins whose direction is fixed at rest. A position
+        offset is left to the curved dock reverse (_go_home_reverse). Returns the
+        last stationary pose, or None on failure.
         """
         if not self.execute(final_parking=False, staging=True):
-            return False
-        xy_tolerance_m = self.home_contract['xy_tolerance_m']
-        for turn in range(2):   # the large turn, then one small correction
+            return None
+        for _turn in range(2):   # the large turn, then one small correction
             actual, _ = self.capture_stationary_pose()
             delta_rad = math.atan2(math.sin(stage['yaw'] - actual[2]),
                                    math.cos(stage['yaw'] - actual[2]))
             self.emit('staging_heading_measured', delta_yaw_rad=delta_rad)
-            if math.dist(actual[:2], (stage['x'], stage['y'])) > xy_tolerance_m:
-                break
             if abs(delta_rad) <= self.home_contract['yaw_tolerance_rad']:
-                self.emit('staging_aligned_without_leg', turns=turn)
-                return True
+                return actual
             if not self._search_rotation_once(
                     delta_rad, limit_rad=math.pi, event='staging_turn',
                     measure_in_odom=True):
-                return False
-        return self.execute(final_parking=False, alignment=True)
+                return None
+        actual, _ = self.capture_stationary_pose()
+        return actual
 
     def _go_home_reverse(self, pose, execute):
         """
@@ -1323,14 +1324,32 @@ class ServiceRoute(CorridorRoute):
                     self.emit('home_planned_only', parking_direction='reverse',
                               final_path_validation='RECHECK_ACTUAL_PATH_AT_STAGING')
                     return True
+                staged = None
                 if precision_home:
-                    if not self._reach_staging(stage):
+                    staged = self._reach_staging(stage)
+                    if staged is None:
                         return False
                 elif not self.execute():
                     return False
-            # The straight dock path needs staging inside the dock contract,
-            # confirmed with the strict localization bound like the dock itself.
-            if precision_home and not self._verify_parking_stop(0, stage, None, contract=home):
+            curve = False
+            reference = stage
+            if precision_home:
+                # A curved reverse takes out a staging offset; the alignment leg
+                # (turn, move, turn: a full extra turn for 10 cm on 2026-10-01)
+                # runs only when no curve fits.
+                try:
+                    self._make_reverse_path(staged, target, curve=True)
+                    curve = True
+                    reference = {**stage, 'x': staged[0], 'y': staged[1], 'yaw': staged[2]}
+                except ValueError as error:
+                    self.emit('dock_curve_unavailable', reason=str(error),
+                              actual_pose=list(staged))
+                    with self._localization_bound(True):
+                        if not self.execute(final_parking=False, alignment=True):
+                            return False
+            # Confirmed at rest with the strict localization bound like the dock.
+            if precision_home and not self._verify_parking_stop(
+                    0, reference, None, contract=home):
                 return False
         finally:
             self.config, self.waypoints = full_config, full_config['waypoints']
@@ -1340,7 +1359,8 @@ class ServiceRoute(CorridorRoute):
         self.verify_live_maps()
         actual, _evidence = self.capture_stationary_pose()
         try:
-            path = self._make_reverse_path(actual, target, **path_kwargs)
+            path = self._make_reverse_path(
+                actual, target, **path_kwargs, **({'curve': True} if curve else {}))
         except ValueError as error:
             self.emit('reverse_staging_out_of_tolerance', reason=str(error),
                       actual_pose=list(actual))
@@ -1360,7 +1380,8 @@ class ServiceRoute(CorridorRoute):
                 verify_contract={**home, 'reference_frame': 'odom'},
                 send_path=odom_path,
                 verify_waypoint={'x': odom_x, 'y': odom_y, 'yaw': odom_yaw},
-                controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'))
+                controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'),
+                curve=curve)
         else:
             success = self._execute_reverse_path(path)
         self.emit('home_arrived' if success else 'failed',
@@ -1370,7 +1391,7 @@ class ServiceRoute(CorridorRoute):
     def _execute_reverse_path(self, path, path_contract=None, validate_from_m=0.0,
                               goal_checker_id='parking_goal_checker', verify_contract=None,
                               final=True, send_path=None, verify_waypoint=None,
-                              controller_id='ParkingReverse'):
+                              controller_id='ParkingReverse', curve=False):
         """
         Rebuild the remaining reverse path after one confirmed input-gap stop.
 
@@ -1382,6 +1403,9 @@ class ServiceRoute(CorridorRoute):
         first_attempt = True
         # Forward only non-default keywords so existing call shapes are unchanged.
         make_kwargs = {} if path_contract is None else {'path_contract': path_contract}
+        if curve:
+            # A curved dock reverse is rebuilt as a curve from where it stopped.
+            make_kwargs['curve'] = True
         valid_kwargs = {'validate_from_m': validate_from_m} if validate_from_m else {}
         once_kwargs = {}
         if goal_checker_id != 'parking_goal_checker':

@@ -2257,3 +2257,22 @@ def test_final_approach_follows_the_reobserved_face_when_squared_off():
     assert sent['end']['yaw'] == pytest.approx(-math.pi / 2)
     assert sent['final_approach_straight']['travel_m'] == pytest.approx(0.53 - 0.135)
     assert all(pose.yaw == pytest.approx(-math.pi / 2) for pose in sent['path'].poses)
+
+
+def test_staging_offset_is_taken_out_by_a_curved_reverse_without_alignment_leg(
+        monkeypatch, tmp_path):
+    """2026-10-01: a 10 cm staging offset cost a turn-move-turn full circle."""
+    node, _world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    left = stage['yaw'] + math.pi / 2
+    staged = (stage['x'] + 0.10 * math.cos(left), stage['y'] + 0.10 * math.sin(left),
+              stage['yaw'])
+    node.capture_stationary_pose = Mock(side_effect=[(staged, {}), (staged, {})])
+    node._verify_parking_stop = Mock(return_value=True)
+    sent = []
+    node._execute_reverse_path = Mock(side_effect=lambda path, **kw: sent.append(path) or True)
+    assert node._go_home_reverse(HOME, True) is True
+    assert node.execute.call_args_list == [call(final_parking=False, staging=True)]
+    first = sent[0].poses[0].pose.position
+    assert (first.x, first.y) == pytest.approx(staged[:2])
+    events = [record['event'] for record in _events(node)]
+    assert 'dock_curve_unavailable' not in events
