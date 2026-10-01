@@ -659,7 +659,7 @@ class BoxServiceRoute(ServiceRoute):
             if not planned['ok']:
                 continue
             self.emit('box_search_reposition', candidate=candidate)
-            return self.execute(final_parking=False, alignment=True)
+            return self.execute(final_parking=False, alignment=True, face=True)
         return False
 
     def _observe_with_search(self, camera_mount, front_extent_m, gap_m,
@@ -864,7 +864,8 @@ class BoxServiceRoute(ServiceRoute):
                 # Live map callbacks keep checking the verified identity throughout
                 # this visit; do not repeat disk/service configuration audits here.
                 if not self.execute(final_parking=phase == 'final_approach',
-                                    alignment=phase == 'face_alignment'):
+                                    alignment=phase == 'face_alignment',
+                                    face=phase == 'face_alignment'):
                     self.emit('failed', phase=phase, reason='nav2_or_stop_confirmation')
                     return False
         # Motion is over; the deadline must not stop the final stationary capture.

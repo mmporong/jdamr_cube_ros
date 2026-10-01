@@ -194,6 +194,8 @@ class ServiceRoute(CorridorRoute):
             package / 'behavior_trees/navigate_to_pose_alignment.xml')
         self.staging_behavior_tree = str(
             package / 'behavior_trees/navigate_to_pose_staging.xml')
+        self.face_alignment_behavior_tree = str(
+            package / 'behavior_trees/navigate_to_pose_face_alignment.xml')
         self.through_behavior_tree = str(
             package / 'behavior_trees/navigate_through_poses_transit.xml')
         # RPP for the box approach and the dock leg. Graceful (--graceful-final) checks
@@ -696,12 +698,14 @@ class ServiceRoute(CorridorRoute):
         finally:
             self._intermediate_localization = previous
 
-    def execute(self, *, final_parking=True, alignment=False, staging=False):
+    def execute(self, *, final_parking=True, alignment=False, staging=False, face=False):
         """Bound transit and parking actions and retain their terminal result."""
         if not isinstance(final_parking, bool):
             raise ValueError('final_parking must be boolean')
         if not isinstance(alignment, bool) or (alignment and final_parking):
             raise ValueError('alignment requires non-final parking mode')
+        if face and not alignment:
+            raise ValueError('face selects the box face alignment checker')
         if staging and (alignment or final_parking):
             raise ValueError('staging is a plain intermediate leg')
         # The 9/29 transit stopped at x covariance 0.010213 against 0.01 with no
@@ -712,9 +716,10 @@ class ServiceRoute(CorridorRoute):
         with self._localization_bound(intermediate):
             return self._run_with_input_recovery(
                 lambda: self._execute_service_once(
-                    final_parking=final_parking, alignment=alignment, staging=staging))
+                    final_parking=final_parking, alignment=alignment, staging=staging,
+                    **({'face': True} if face else {})))
 
-    def _execute_service_once(self, *, final_parking, alignment, staging=False):
+    def _execute_service_once(self, *, final_parking, alignment, staging=False, face=False):
         """Retry only a canceled input gap, never an unresolved action."""
         if not self.navigate.wait_for_server(timeout_sec=2.0):
             return False
@@ -739,7 +744,9 @@ class ServiceRoute(CorridorRoute):
             final = final_parking and index == len(self.waypoints) - 1
             goal.behavior_tree = self.parking_behavior_tree if final else self.behavior_tree
             if alignment and index == len(self.waypoints) - 1:
-                goal.behavior_tree = self.alignment_behavior_tree
+                goal.behavior_tree = (
+                    getattr(self, 'face_alignment_behavior_tree', self.alignment_behavior_tree)
+                    if face else self.alignment_behavior_tree)
             if staging and index == len(self.waypoints) - 1:
                 goal.behavior_tree = getattr(
                     self, 'staging_behavior_tree', self.alignment_behavior_tree)

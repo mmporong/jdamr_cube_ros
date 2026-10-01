@@ -1609,9 +1609,11 @@ def test_service_launch_adds_parking_without_changing_costmaps(
         controller['goal_checker_plugins'].remove('alignment_goal_checker')
         controller['goal_checker_plugins'].remove('staging_position_checker')
         controller['goal_checker_plugins'].remove('dock_position_checker')
+        controller['goal_checker_plugins'].remove('face_alignment_checker')
         del controller['Parking'], controller['parking_goal_checker']
         del controller['alignment_goal_checker'], controller['GracefulParking']
         del controller['staging_position_checker'], controller['dock_position_checker']
+        del controller['face_alignment_checker']
         # The service session adds the through-poses navigator with our own tree.
         navigator = output['bt_navigator']['ros__parameters']
         assert navigator['navigators'][-1] == 'navigate_through_poses'

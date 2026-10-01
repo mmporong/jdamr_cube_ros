@@ -2129,6 +2129,22 @@ def test_t32a_latched_covariance_allows_alignment_but_not_final(monkeypatch, tmp
     assert _intermediate(node) is False
 
 
+def test_box_face_alignment_uses_its_own_10cm_checker_tree(monkeypatch, tmp_path):
+    """table_02 16:23: chasing the last 5 cm turned 125 deg left and 129 deg right."""
+    node, world, _observations = _latched_box_visit(monkeypatch, tmp_path)
+    node.face_alignment_behavior_tree = str(
+        PACKAGE / 'behavior_trees/navigate_to_pose_face_alignment.xml')
+    _visit(node)
+    kind, goal = world.motions[0]
+    assert kind == 'NavigateToPose'
+    assert goal.behavior_tree.endswith('navigate_to_pose_face_alignment.xml')
+    tree = Path(goal.behavior_tree).read_text()
+    assert 'goal_checker_id="face_alignment_checker"' in tree
+    # The dock staging alignment leg keeps the 5 cm checker before its straight reverse.
+    assert 'goal_checker_id="alignment_goal_checker"' in (
+        PACKAGE / 'behavior_trees/navigate_to_pose_alignment.xml').read_text()
+
+
 def test_t32b_refreshed_covariance_allows_final_approach(monkeypatch, tmp_path):
     """Send the final approach once AMCL republishes a covariance inside 0.01 m2."""
     node, world, observations = _latched_box_visit(

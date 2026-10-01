@@ -30,6 +30,8 @@ COMMAND_ZERO_EPSILON = 1e-9
 STAGING_XY_TOLERANCE_M = 0.15
 # The dock reverse ends on position; the heading is turned in place afterwards.
 DOCK_POSITION_TOLERANCE_M = 0.02
+# Box face alignment only squares the base before the straight final approach.
+FACE_ALIGNMENT_XY_TOLERANCE_M = 0.10
 MAXIMUM_CONTRACT_VALUES = {
     'xy_tolerance_m': 0.05,
     'yaw_tolerance_deg': 3.0,
@@ -166,6 +168,16 @@ def parking_controller_overrides(
     # controller cannot turn at its goal: 0.1 cm from the dock but 4.4 deg off it
     # shuttled +-2 cm/s for 10 s until 105 (2026-10-01 14:45). The dock reverse is
     # judged by position only and the forward Parking controller turns afterwards.
+    # Within 5 cm of the alignment pose the last few centimetres of path pointed
+    # sideways: 0.30 m of travel took 30 s and 125 deg left plus 129 deg right at
+    # table_02 (2026-10-01 16:23). 10 cm, then the heading only.
+    configured['goal_checker_plugins'].append('face_alignment_checker')
+    configured['face_alignment_checker'] = {
+        'plugin': 'nav2_controller::SimpleGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': FACE_ALIGNMENT_XY_TOLERANCE_M,
+        'yaw_goal_tolerance': math.radians(MAXIMUM_CONTRACT_VALUES['yaw_tolerance_deg']),
+    }
     configured['goal_checker_plugins'].append('dock_position_checker')
     configured['dock_position_checker'] = {
         'plugin': 'nav2_controller::PositionGoalChecker',

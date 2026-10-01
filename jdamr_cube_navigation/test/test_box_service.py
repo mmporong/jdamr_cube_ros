@@ -81,7 +81,7 @@ def test_transit_alignment_final_sequence(mission):
     # The final approach is the straight odom leg, not a planned execute.
     assert mission.execute.call_count == 2
     assert [call.kwargs for call in mission.execute.call_args_list] == [
-        {'final_parking': False}, {'final_parking': False, 'alignment': True}]
+        {'final_parking': False}, {'final_parking': False, 'alignment': True, 'face': True}]
     mission._straight_final_approach.assert_called_once()
     assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
     # The final plan only proves the way is free: one 5 cm costmap cell + 1 cm.
@@ -226,7 +226,7 @@ def test_search_reposition_requires_recoverable_result_and_valid_path(mission, e
     mission.plan_pose.side_effect = [{'ok': False}, {'ok': True}]
     assert mission._reposition_search()
     assert mission.plan_pose.call_count == 2
-    mission.execute.assert_called_once_with(final_parking=False, alignment=True)
+    mission.execute.assert_called_once_with(final_parking=False, alignment=True, face=True)
 
 
 def test_failed_alignment_never_dispatches_final_approach(mission):
