@@ -63,6 +63,15 @@ def amcl_pose(stamp_s, covariance):
     )
 
 
+REAL_NAVIGATION_ACTIVE = module.navigation_active
+
+
+@pytest.fixture(autouse=True)
+def _navigation_inactive(monkeypatch):
+    """Startup tests begin from a prepared (inactive) stack, as after session-start."""
+    monkeypatch.setattr(module, 'navigation_active', lambda _node: False)
+
+
 def test_initial_pose_loader_requires_every_explicit_field(tmp_path):
     path = tmp_path / 'pose.yaml'
     pose = initial_pose()
@@ -587,3 +596,27 @@ def test_rollback_waits_despite_stop_requested(monkeypatch):
     assert client.call_async.call_args.args[0].command == ManageLifecycleNodes.Request.RESET
     assert check.call_args.kwargs['state_id'] == State.PRIMARY_STATE_UNCONFIGURED
     node._wait.assert_not_called()
+
+
+def test_reinit_on_an_active_stack_skips_startup(monkeypatch):
+    """2026-10-01 16:18: STARTUP on active servers failed and the rollback reset them."""
+    monkeypatch.setattr(module, 'require_active', Mock())
+    monkeypatch.setattr(module, 'navigation_active', lambda _node: True)
+    rollback = Mock()
+    monkeypatch.setattr(module, 'rollback_navigation', rollback)
+    node, client = prepared_node()
+    module.activate_prepared(node)
+    client.call_async.assert_not_called()
+    rollback.assert_not_called()
+    event, = node.emit.call_args_list
+    assert event.args == ('navigation_activated_without_motion',)
+    assert event.kwargs['already_active'] is True
+    assert node.verify_live_maps.call_count == 2
+
+
+@pytest.mark.parametrize('active', [True, False])
+def test_navigation_active_reads_every_server_state(monkeypatch, active):
+    check = Mock(side_effect=None if active else RuntimeError('state unconfirmed'))
+    monkeypatch.setattr(module, 'require_active', check)
+    assert REAL_NAVIGATION_ACTIVE(SimpleNamespace()) is active
+    assert check.call_args.args[1] == module.NAVIGATION_NODES

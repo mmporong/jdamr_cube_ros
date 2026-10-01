@@ -206,6 +206,15 @@ def rollback_navigation(node, client):
     node.emit('navigation_activation_rolled_back')
 
 
+def navigation_active(node):
+    """Return True when every navigation server already answers active."""
+    try:
+        require_active(node, NAVIGATION_NODES)
+    except RuntimeError:
+        return False
+    return True
+
+
 def activate_prepared(node):
     """Send lifecycle startup only; never set a pose or send a motion goal."""
     require_active(node, LOCALIZATION_NODES)
@@ -224,6 +233,13 @@ def activate_prepared(node):
         failure = node._guard_failure(require_fresh_amcl=True)
         if failure or node.stop_requested:
             raise RuntimeError(failure or 'activation interrupted')
+        if navigation_active(node):
+            # Re-init after a cycle (2026-10-01 16:18): STARTUP on active servers
+            # failed at configure and the rollback reset the whole stack.
+            node.verify_live_maps()
+            node.emit('navigation_activated_without_motion', stationary_pose=pose,
+                      stationary_evidence=evidence, already_active=True)
+            return
         request = ManageLifecycleNodes.Request()
         request.command = ManageLifecycleNodes.Request.STARTUP
         startup_requested = True
