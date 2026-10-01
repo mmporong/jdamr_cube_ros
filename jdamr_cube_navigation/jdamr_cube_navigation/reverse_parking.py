@@ -147,11 +147,8 @@ def reverse_controller_overrides(controller_dict: dict) -> dict:
     parking = controller_dict.get('Parking')
     if not isinstance(parking, dict):
         raise ValueError('Parking configuration must be a mapping')
-    if (parking.get('plugin') != RPP_PLUGIN
-            or parking.get('use_collision_detection') is not True):
-        raise ValueError(
-            'reverse parking requires collision-enabled '
-            'Regulated Pure Pursuit')
+    if parking.get('plugin') != RPP_PLUGIN:
+        raise ValueError('reverse parking requires Regulated Pure Pursuit')
     desired_velocity = _finite_number(
         parking.get('desired_linear_vel'), 'Parking.desired_linear_vel')
     if desired_velocity <= 0.0:
@@ -163,7 +160,6 @@ def reverse_controller_overrides(controller_dict: dict) -> dict:
     reverse.update({
         'use_rotate_to_heading': False,
         'allow_reversing': True,
-        'use_collision_detection': True,
         'desired_linear_vel': min(
             desired_velocity, MAX_REVERSE_LINEAR_VELOCITY_MPS),
     })

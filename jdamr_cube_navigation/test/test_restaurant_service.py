@@ -1578,12 +1578,12 @@ def test_service_launch_adds_parking_without_changing_costmaps(
         output = yaml.safe_load(generated.read_text())
         controller = output['controller_server']['ros__parameters']
         assert controller['Parking']['desired_linear_vel'] == 0.08
-        assert controller['Parking']['use_collision_detection']
+        assert controller['Parking']['use_collision_detection'] is False
         assert controller['parking_goal_checker']['xy_goal_tolerance'] == 0.05
         if reverse:
             assert controller['ParkingReverse']['allow_reversing'] is True
             assert controller['ParkingReverse']['use_rotate_to_heading'] is False
-            assert controller['ParkingReverse']['use_collision_detection'] is True
+            assert controller['ParkingReverse']['use_collision_detection'] is False
             assert output['velocity_smoother']['ros__parameters']['min_velocity'][0] == -.08
             controller['controller_plugins'].remove('ParkingReverse')
             del controller['ParkingReverse']

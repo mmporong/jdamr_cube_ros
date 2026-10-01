@@ -104,7 +104,10 @@ controller_server:
       # Less transit slowdown (operator request 2026-09-30); Parking pins its own.
       min_approach_linear_velocity: 0.075
       approach_velocity_scaling_dist: 0.4
-      use_collision_detection: true
+      # Off (operator request 2026-10-01, test props): the 1.5 s projection on 5 cm
+      # cells stopped a turn with about 10 cm real clearance at the water box. The
+      # Collision Monitor StopZone below still stops at the padded footprint.
+      use_collision_detection: false
       max_allowed_time_to_collision_up_to_carrot: 1.5
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
@@ -390,17 +393,17 @@ collision_monitor:
         theta_min: -1.0
         theta_max: 1.0
       translation_backward:
-        # A bounded recovery can leave a blocked frontal pose. Guard the rear
-        # edge by 50 mm while allowing parallel side clearance. Turning remains
-        # guarded by the projected full footprint.
-        points: '[[0.085, 0.29], [0.085, -0.29], [-0.345, -0.29], [-0.345, 0.29]]'
+        # The padded costmap footprint (2 cm over the body); no extra rear band.
+        points: '[[0.085, 0.29], [0.085, -0.29], [-0.295, -0.29], [-0.295, 0.29]]'
         linear_min: -0.2
         linear_max: -0.005
         theta_min: -1.0
         theta_max: 1.0
       stopped:
-        # Last-entry fallback required by Collision Monitor.
-        points: '[[0.135, 0.34], [0.135, -0.34], [-0.345, -0.34], [-0.345, 0.34]]'
+        # Last-entry fallback required by Collision Monitor. Sides and rear are the
+        # padded footprint: the 5 cm band held the robot still beside the water box
+        # with about 10 cm real clearance (2026-10-01).
+        points: '[[0.135, 0.29], [0.135, -0.29], [-0.295, -0.29], [-0.295, 0.29]]'
         linear_min: -1.0
         linear_max: 1.0
         theta_min: -1.0
@@ -418,7 +421,7 @@ collision_monitor:
       type: polygon
       action_type: approach
       footprint_topic: /local_costmap/published_footprint
-      time_before_collision: 2.0
+      time_before_collision: 0.5
       simulation_time_step: 0.1
       min_points: 3
       visualize: false

@@ -153,7 +153,8 @@ def test_stop_zone_has_requested_geometric_margin():
         max(abs(point[1]) for point in stop)
         - max(abs(point[1]) for point in footprint),
     )
-    assert margins == pytest.approx((0.05, 0.05, 0.05))
+    # Leading edge 0.05 m; rear and sides at the padded footprint (2026-10-01).
+    assert margins == pytest.approx((0.05, 0.0, 0.0))
     assert stop_zone['type'] == 'velocity_polygon'
     assert stop_zone['velocity_polygons'] == [
         'rotation', 'rotation_clockwise', 'translation_forward',
@@ -180,13 +181,14 @@ def test_stop_zone_has_requested_geometric_margin():
         max(abs(point[1]) for point in footprint))
     backward = yaml.safe_load(stop_zone['translation_backward']['points'])
     assert min(point[0] for point in backward) == pytest.approx(
-        min(point[0] for point in footprint) - 0.05)
+        min(point[0] for point in footprint))
     assert max(abs(point[1]) for point in backward) == pytest.approx(
         max(abs(point[1]) for point in footprint))
     assert monitor['source_timeout'] == 1.0
     assert monitor['FootprintApproach']['enabled'] is True
+    # The StopZone above is the collision stop; RPP's own projection is off.
     assert document['controller_server']['ros__parameters']['FollowPath'][
-        'use_collision_detection'] is True
+        'use_collision_detection'] is False
     planner = document['planner_server']['ros__parameters']['GridBased']
     assert planner['plugin'] == 'nav2_navfn_planner::NavfnPlanner'
     assert planner['use_astar'] is False
@@ -997,23 +999,6 @@ def test_polygon_coordinates_must_be_finite_numeric_pairs(tmp_path):
     invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
 
     with pytest.raises(RuntimeError, match='finite numeric pairs'):
-        _load_validator(invalid)(None)
-
-
-@pytest.mark.parametrize('plugin_name', ['FollowPath', 'Parking'])
-def test_registered_rpp_controller_requires_collision_detection(
-        tmp_path, plugin_name):
-    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
-    controller = document['controller_server']['ros__parameters']
-    if plugin_name == 'Parking':
-        controller['controller_plugins'].append(plugin_name)
-        controller[plugin_name] = dict(controller['FollowPath'])
-    controller[plugin_name]['use_collision_detection'] = False
-    invalid = tmp_path / f'{plugin_name}_collision_disabled.yaml'
-    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
-
-    with pytest.raises(RuntimeError, match=(
-            f'{plugin_name} collision detection must be active')):
         _load_validator(invalid)(None)
 
 

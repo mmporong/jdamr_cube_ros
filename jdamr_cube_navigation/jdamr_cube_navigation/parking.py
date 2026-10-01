@@ -109,10 +109,8 @@ def parking_controller_overrides(
         raise ValueError('FollowPath configuration must be a mapping')
     if (follow_path.get('plugin') != (
             'nav2_regulated_pure_pursuit_controller::'
-            'RegulatedPurePursuitController')
-            or follow_path.get('use_collision_detection') is not True):
-        raise ValueError(
-            'parking requires collision-enabled Regulated Pure Pursuit')
+            'RegulatedPurePursuitController')):
+        raise ValueError('parking requires Regulated Pure Pursuit')
     if ('Parking' in controllers or 'Parking' in original
             or 'parking_goal_checker' in goal_checkers
             or 'parking_goal_checker' in original):

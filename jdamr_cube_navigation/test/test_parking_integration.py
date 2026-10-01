@@ -161,7 +161,7 @@ def test_original_route_never_runs_parking_verification():
 @pytest.mark.parametrize('response_delay_s', [0, 3, 6])
 @pytest.mark.parametrize('mismatch', [
     None, 'Parking.stateful', 'parking_goal_checker.xy_goal_tolerance',
-    'Parking.use_collision_detection', 'controller_plugins',
+    'controller_plugins',
     'Parking.regulated_linear_scaling_min_speed',
 ])
 def test_runtime_parameter_check_rejects_missing_or_relaxed_configuration(

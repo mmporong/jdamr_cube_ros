@@ -701,7 +701,6 @@ class CorridorRoute(Node):
             'Parking.stateful': False,
             'Parking.use_rotate_to_heading': True,
             'Parking.allow_reversing': False,
-            'Parking.use_collision_detection': True,
         }
         if reverse:
             expected['controller_plugins'] = ['Parking', 'ParkingReverse']

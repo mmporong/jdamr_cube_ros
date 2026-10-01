@@ -134,16 +134,12 @@ def test_overrides_only_append_parking_plugins_and_deep_copy_follow_path():
                for value in configured.values() if isinstance(value, dict))
 
 
-@pytest.mark.parametrize('field,value', [
-    ('plugin', 'another_controller'),
-    ('use_collision_detection', False),
-])
-def test_override_rejects_non_rpp_or_collision_disabled_source(field, value):
-    """Never derive the parking controller from a weaker safety profile."""
+def test_override_rejects_non_rpp_source():
+    """Derive the parking controller only from Regulated Pure Pursuit."""
     nav2 = _nav2()
-    nav2['controller_server']['ros__parameters']['FollowPath'][field] = value
+    nav2['controller_server']['ros__parameters']['FollowPath']['plugin'] = 'another_controller'
 
-    with pytest.raises(ValueError, match='collision-enabled'):
+    with pytest.raises(ValueError, match='Regulated Pure Pursuit'):
         parking_controller_overrides(nav2, _contract())
 
 

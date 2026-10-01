@@ -163,15 +163,13 @@ def test_controller_override_keeps_stricter_parking_velocity():
     lambda value: value['controller_plugins'].remove('Parking'),
     lambda value: value['controller_plugins'].append('Parking'),
     lambda value: value.pop('Parking'),
-    lambda value: value['Parking'].__setitem__(
-        'use_collision_detection', False),
     lambda value: value['Parking'].__setitem__('plugin', 'not-rpp'),
     lambda value: value['Parking'].__setitem__('desired_linear_vel', True),
     lambda value: value['controller_plugins'].append('ParkingReverse'),
 ])
 def test_controller_override_rejects_missing_duplicate_or_unsafe_source(
         mutate):
-    """Require one collision-enabled RPP Parking source and a free ID."""
+    """Require one RPP Parking source and a free ID."""
     controller = _controller()
     mutate(controller)
     with pytest.raises(ValueError):

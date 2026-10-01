@@ -219,7 +219,7 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             '/local_costmap/published_footprint'):
         raise RuntimeError('new-base approach monitor is not active')
     for parameter, approved_value in (
-            ('time_before_collision', 2.0),
+            ('time_before_collision', 0.5),
             ('simulation_time_step', 0.1)):
         value = approach.get(parameter)
         if (type(value) not in (int, float) or not math.isfinite(value)
@@ -289,13 +289,13 @@ def validate_new_base_params(params, geometry, precision_parking=False):
         raise RuntimeError(
             'new-base rotation StopZone misses the swept corner radius')
     if not (stopped_stop[0] > footprint[0]
-            and stopped_stop[1] < footprint[1]
-            and stopped_stop[2] > footprint[2]):
+            and stopped_stop[1] <= footprint[1] + 1e-6
+            and stopped_stop[2] >= footprint[2] - 1e-6):
         raise RuntimeError('new-base StopZone does not contain footprint')
     front_reference = front if precision_parking else footprint[0]
-    if min(stopped_stop[0] - front_reference,
-           footprint[1] - stopped_stop[1],
-           stopped_stop[2] - footprint[2]) < 0.05 - 1e-6:
+    # Only the leading edge keeps 0.05 m; sides and rear stop at the padded
+    # footprint (operator request 2026-10-01).
+    if stopped_stop[0] - front_reference < 0.05 - 1e-6:
         raise RuntimeError('new-base StopZone margin is below 0.05m')
     if not (forward_stop[0] - front_reference >= 0.05 - 1e-6
             and forward_stop[1] <= footprint[1]
@@ -306,7 +306,7 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             or not math.isclose(stopped_stop[0], front + 0.05, abs_tol=1e-6)
             or forward_stop[0] - footprint[0] < 0.02 - 1e-6):
         raise RuntimeError('precision parking requires physical front clearance and padding')
-    if not (footprint[1] - backward_stop[1] >= 0.05 - 1e-6
+    if not (footprint[1] - backward_stop[1] >= -1e-6
             and backward_stop[0] >= footprint[0]
             and abs(backward_stop[2] - footprint[2]) <= 1e-6):
         raise RuntimeError('new-base backward StopZone shape is invalid')
@@ -347,7 +347,6 @@ def validate_new_base_params(params, geometry, precision_parking=False):
           or 'ParkingReverse' not in controller.get('controller_plugins', [])
           or reverse.get('allow_reversing') is not True
           or reverse.get('use_rotate_to_heading') is not False
-          or reverse.get('use_collision_detection') is not True
           or type(reverse.get('desired_linear_vel')) not in (int, float)
           or not math.isfinite(reverse['desired_linear_vel'])
           or not -0.08 <= minimum_velocity < 0.0
@@ -390,9 +389,6 @@ def validate_new_base_params(params, geometry, precision_parking=False):
                 or not 0.0 < desired_velocity <= NEW_BASE_MAX_FORWARD_MPS):
             raise RuntimeError(
                 'new-base controller speed exceeds uncalibrated limit')
-        if plugin.get('use_collision_detection') is not True:
-            raise RuntimeError(
-                f'new-base {plugin_name} collision detection must be active')
     if params['bt_navigator']['ros__parameters'][
             'robot_base_frame'] != 'base_footprint':
         raise RuntimeError('new-base BT needs base_footprint')
