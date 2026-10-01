@@ -204,7 +204,7 @@ def test_startup_protection_preserves_unknown_identity_until_deadline(monkeypatc
     node = route()
     unknown = publisher('_NODE_NAME_UNKNOWN_', '_NODE_NAMESPACE_UNKNOWN_')
     node.get_publishers_info_by_topic = lambda _topic: [unknown]
-    clock = iter([0.0, 0.0, 2.5])
+    clock = iter([0.0, 0.0, 30.0])
     monkeypatch.setattr(
         'jdamr_cube_navigation.restaurant_service.time.monotonic', lambda: next(clock))
     spin = Mock()

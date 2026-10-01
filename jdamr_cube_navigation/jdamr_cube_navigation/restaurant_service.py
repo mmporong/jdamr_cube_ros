@@ -400,9 +400,15 @@ class ServiceRoute(CorridorRoute):
                 else f'{namespace.rstrip("/")}/{name}')
         return names
 
-    def _startup_protection_ready(self, discovery_timeout_s=2.5,
+    def _startup_protection_ready(self, discovery_timeout_s=30.0,
                                   require_command_path=True):
-        """Wait for unresolved DDS identities, never for a known conflict."""
+        """
+        Wait for unresolved DDS identities, never for a known conflict.
+
+        A fresh process on the Pi missed the /cmd_vel publisher within 2.5 s twice
+        while UDP receive buffers overflowed (2026-10-01); the live maps already
+        get 30 s.
+        """
         expected = {
             '/cmd_vel': 'collision_monitor',
             '/keepout_filter_mask': 'keepout_filter_mask_server',
