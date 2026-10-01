@@ -15,7 +15,8 @@ from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
-from jdamr_cube_navigation.corridor_route import _quaternion_yaw, AMCL_QOS, CorridorRoute
+from jdamr_cube_navigation.corridor_route import (
+    _quaternion_yaw, AMCL_QOS, CorridorRoute, PATH_BLOCKED_NAV2_CODES)
 from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold, pose_errors,
 )
@@ -67,6 +68,30 @@ PRE_DOCK_DISTANCE_M = 0.25
 STRAIGHT_DOCK_LATERAL_M = 0.01
 # The straight entry, then one pull-out, heading set and entry again.
 DOCK_ENTRY_ATTEMPTS = 2
+# Events whose reason may explain why a cycle stopped short (operator_call).
+FAILURE_EVENTS = frozenset({
+    'failed', 'interrupted', 'reverse_interrupted', 'departure_blocked',
+    'path_blocked_give_up', 'path_blocked_wait_aborted', 'dock_heading_out_of_tolerance',
+    'cancel_unconfirmed', 'emergency_stop_requested', 'battery_return'})
+# Operator call levels after VDA 5050 v3: FATAL needs a person before any motion,
+# CRITICAL stops the task, URGENT finishes safely and takes no new task. The first
+# rule whose text appears in a failure reason gives the category; the most severe
+# match over the run wins (evaluation/20261002_ANOMALY_HANDLING_RESEARCH.md 5.4).
+OPERATOR_CALL_RULES = (
+    ('emergency stop', 'emergency_stop', 'FATAL'),
+    ('cancel_unconfirmed', 'software', 'FATAL'),
+    ('AMCL', 'localization', 'FATAL'),
+    ('covariance', 'localization', 'FATAL'),
+    ('map', 'localization', 'FATAL'),
+    ('stale', 'sensor', 'FATAL'),
+    ('missing', 'sensor', 'FATAL'),
+    ('path blocked', 'path_blocked', 'CRITICAL'),
+    ('operator_link_lost', 'operator_link', 'URGENT'),
+    ('battery', 'battery', 'URGENT'),
+)
+OPERATOR_CALL_SEVERITY = {'URGENT': 1, 'CRITICAL': 2, 'FATAL': 3}
+# The PC refreshes the heartbeat on every 10 s poll; a missed poll stays inside this.
+OPERATOR_LINK_TIMEOUT_S = 30.0
 
 
 def _ahead(pose, distance_m):
@@ -385,6 +410,10 @@ class ServiceRoute(CorridorRoute):
                 yaw_covariance if yaw_covariance is not None
                 and math.isfinite(yaw_covariance) else None),
         }
+        if event in FAILURE_EVENTS:
+            text = ' '.join(str(fields[key]) for key in ('reason', 'phase') if fields.get(key))
+            self._failure_trail = [*getattr(self, '_failure_trail', []),
+                                   {'event': event, 'text': f'{event}: {text}'.rstrip(': ')}]
         payload = json.dumps(record, ensure_ascii=False, allow_nan=False)
         self.result_stream.write(payload + '\n')
         self.result_stream.flush()
@@ -623,7 +652,10 @@ class ServiceRoute(CorridorRoute):
             while not self.pending_goal.done() and time.monotonic() < deadline_s:
                 rclpy.spin_once(self, timeout_sec=0.05)
             if not self.pending_goal.done() or self.pending_goal.exception():
-                return self._cancel_navigation_uuid()
+                if self._cancel_navigation_uuid():
+                    return True
+                self._emergency_stop_unconfirmed('cancel_unconfirmed')
+                return False
             handle = self.pending_goal.result()
             self.pending_goal = None
             if handle.accepted:
@@ -645,7 +677,14 @@ class ServiceRoute(CorridorRoute):
         if terminal:
             self.active_handle = None
             self.navigation_result = None
+        else:
+            # A goal that may still be driving is stopped below Nav2.
+            self._emergency_stop_unconfirmed('cancel_unconfirmed')
         return terminal
+
+    def _emergency_stop_unconfirmed(self, reason):
+        self.engage_emergency_stop(reason)
+        self.emit('emergency_stop_requested', reason=reason)
 
     def _cancel_navigation_uuid(self):
         """Cancel our goal even when its acceptance response was lost."""
@@ -690,6 +729,67 @@ class ServiceRoute(CorridorRoute):
                   goal_uuid=bytes(self.navigation_uuid.uuid).hex())
         return False
 
+    def _tag_blocked(self, error_code, final):
+        """Mark a leg that could not move on for the hold-and-retry in the recovery loop."""
+        if not self.stop_requested and not final and error_code in PATH_BLOCKED_NAV2_CODES:
+            self._retry_blocked_reason = f'path blocked: nav2 error {error_code}'
+
+    def _departure_ready(self):
+        """Check, before every goal, the battery reserve and the operator link."""
+        return self._departure_battery_ready() and self._operator_link_ready()
+
+    def _operator_link_ready(self):
+        """
+        Start no further goal once the operator PC has stopped refreshing its heartbeat.
+
+        Without a physical emergency stop the PC is the only remote stop, so a lost
+        link ends the cycle where the current goal ends (VDA 5050: the released part is
+        finished, then the vehicle stops). The robot is not sent home: going home is
+        unsupervised driving as well. A returning link does not resume it either.
+        """
+        heartbeat = getattr(self, 'operator_heartbeat', None)
+        if heartbeat is None:
+            return True
+        try:
+            age_s = time.time() - Path(heartbeat).stat().st_mtime
+        except OSError:
+            age_s = None
+        limit_s = getattr(self, 'operator_link_timeout_s', OPERATOR_LINK_TIMEOUT_S)
+        if age_s is not None and age_s <= limit_s:
+            return True
+        self.emit('departure_blocked', reason='operator_link_lost',
+                  heartbeat_age_s=age_s, limit_s=limit_s)
+        return False
+
+    def battery_return_due(self):
+        """Below the departure reserve between stops: skip the rest and dock (URGENT)."""
+        voltage_v = self.battery_voltage
+        reserve_v = self.service_contract['minimum_start_battery_v']
+        if voltage_v is not None and math.isfinite(voltage_v) and voltage_v >= reserve_v:
+            return False
+        self.emit('battery_return', reason='battery below the departure reserve',
+                  voltage_v=voltage_v if voltage_v is not None and math.isfinite(voltage_v)
+                  else None, minimum_start_battery_v=reserve_v)
+        return True
+
+    def call_operator(self):
+        """Emit one operator_call for a cycle that stopped short, with its cause."""
+        trail = getattr(self, '_failure_trail', [])
+        best = None
+        for entry in trail:
+            for needle, category, level in OPERATOR_CALL_RULES:
+                if needle in entry['text']:
+                    if best is None or (OPERATOR_CALL_SEVERITY[level]
+                                        > OPERATOR_CALL_SEVERITY[best[1]]):
+                        best = (category, level, entry['text'])
+                    break
+        if best is None:
+            best = ('task_failed', 'CRITICAL', trail[-1]['text'] if trail else 'cycle failed')
+        category, level, reason = best
+        self.emit('operator_call', level=level, category=category, reason=reason,
+                  failures=[entry['text'] for entry in trail][-8:])
+        return level
+
     def _departure_battery_ready(self):
         """Require starting reserve once per executor, running cutoff thereafter."""
         voltage_v = self.battery_voltage
@@ -708,7 +808,7 @@ class ServiceRoute(CorridorRoute):
     def wait_until_ready(self, timeout=15.0):
         """Check a departure reserve after fresh battery and sensor samples arrive."""
         return (super().wait_until_ready(timeout=timeout)
-                and self._departure_battery_ready())
+                and self._departure_ready())
 
     @contextmanager
     def _localization_bound(self, intermediate):
@@ -759,7 +859,7 @@ class ServiceRoute(CorridorRoute):
                 if not self.stop_requested and self._input_gap_recoverable(reason):
                     self._retry_guard_reason = reason
                 return False
-            if not self._departure_battery_ready():
+            if not self._departure_ready():
                 return False
             goal = NavigateToPose.Goal()
             goal.pose = self._pose(index, waypoint)
@@ -800,6 +900,7 @@ class ServiceRoute(CorridorRoute):
                 self.navigation_result = None
                 if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
                         or wrapped.result.error_code):
+                    self._tag_blocked(int(wrapped.result.error_code), final)
                     return False
                 if final and not self._verify_parking_stop(index, waypoint, handle):
                     return False
@@ -825,7 +926,7 @@ class ServiceRoute(CorridorRoute):
             if not self.stop_requested and self._input_gap_recoverable(reason):
                 self._retry_guard_reason = reason
             return False
-        if not self._departure_battery_ready():
+        if not self._departure_ready():
             return False
         goal = NavigateThroughPoses.Goal()
         goal.poses = [self._pose(index, self.waypoints[index])
@@ -868,6 +969,7 @@ class ServiceRoute(CorridorRoute):
             self.navigation_result = None
             if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
                     or wrapped.result.error_code):
+                self._tag_blocked(int(wrapped.result.error_code), False)
                 return False
             self._resume_waypoint_index = last
             return True
@@ -927,7 +1029,7 @@ class ServiceRoute(CorridorRoute):
                 self._retry_guard_reason = reason
             self.emit(f'{event}_failed', reason=reason or 'operator_stop')
             return False
-        if (not self._departure_battery_ready()
+        if (not self._departure_ready()
                 or not self.spin_search.wait_for_server(timeout_sec=2.0)
                 or not self._search_parameters_ready()):
             self.emit(f'{event}_failed', reason='spin_profile_or_navigation_unavailable')
@@ -1689,7 +1791,7 @@ class ServiceRoute(CorridorRoute):
             if not self.stop_requested and self._input_gap_recoverable(reason):
                 self._retry_guard_reason = reason
             return False
-        if (not self._departure_battery_ready()
+        if (not self._departure_ready()
                 or not self.follow_reverse.wait_for_server(timeout_sec=2.0)):
             return False
         self.active_action_type = FollowPath

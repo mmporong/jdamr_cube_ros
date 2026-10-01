@@ -395,3 +395,44 @@ def test_sequence_refuses_single_cycle_options(env, monkeypatch, extra):
     monkeypatch.setattr(d, 'run_cycle', lambda *a: pytest.fail('must not depart'))
     with pytest.raises(SystemExit):
         d.cmd_go(go_args(table_ids=['table_01', 'table_02'], **extra))
+
+
+def test_poll_pi_tells_a_failed_link_from_a_finished_cycle(monkeypatch):
+    """ssh exit 255 or a hung ssh is 'unknown', never 'the cycle ended'."""
+    import subprocess
+    answers = iter([SimpleNamespace(returncode=255, stdout=''),
+                    subprocess.TimeoutExpired('ssh', 30),
+                    SimpleNamespace(returncode=0, stdout='running\n'),
+                    SimpleNamespace(returncode=0, stdout='')])
+
+    def pi(*_args, **_kwargs):
+        answer = next(answers)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(d, 'pi', pi)
+    assert d.poll_pi('test -e result || echo running') is None
+    assert d.poll_pi('test -e result || echo running') is None
+    assert d.poll_pi('test -e result || echo running').stdout.strip() == 'running'
+    assert d.poll_pi('test -e result || echo running').stdout.strip() == ''
+
+
+def test_operator_call_event_alerts_the_pc(monkeypatch):
+    """An operator_call rings, notifies the desktop, and uses the optional extra channel."""
+    sent = []
+    monkeypatch.setattr(d, 'sh', lambda command, **kwargs: sent.append(command)
+                        or SimpleNamespace(returncode=0, stdout=''))
+    monkeypatch.setattr(d, 'log', lambda message: sent.append(('log', message)))
+    monkeypatch.delenv('JDAMR_OPERATOR_NOTIFY_CMD', raising=False)
+    d.show_event({'event': 'interrupted', 'reason': 'scan stale'})
+    assert not any(isinstance(item, str) for item in sent)
+    d.show_event({'event': 'operator_call', 'level': 'FATAL', 'category': 'emergency_stop',
+                  'reason': 'interrupted: emergency stop engaged'})
+    assert any(isinstance(item, str) and item.startswith('notify-send') for item in sent)
+    assert ('log', 'OPERATOR CALL FATAL emergency_stop: interrupted: emergency stop engaged') \
+        in sent
+    monkeypatch.setenv('JDAMR_OPERATOR_NOTIFY_CMD', 'echo')
+    sent.clear()
+    d.alert_operator({'level': 'URGENT', 'category': 'battery', 'reason': 'low'})
+    assert any(isinstance(item, str) and item.startswith('echo ') for item in sent)

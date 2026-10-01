@@ -955,6 +955,27 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
 - PC 기록 `bag_20261001_160232`를 00:11에 닫고(906 MB) 보관본에 맞췄다(해시 255건 확인). 다음 주행용으로 PC 표시 유닛 다섯 개와 기록 `bag_20261002_001136`을 다시 띄워 두었다. 유휴 중에도 bag이 커지므로(16:02–00:11에 906 MB) 주행하지 않으면 `python3 $HOME/jdamr_data/map_20260930_manual/tools/jdamr_depart.py display-stop`으로 끈다.
 - 실차 미확인: pre-dock 곡선, 직선 진입 뒤 도크 방향 오차, 빠져나와 다시 진입하는 경로, 정차 2 s, 연속 주행 대기 제거.
 
+### 20.18 돌발상황 대처 로직 (2026-10-02 00:12–00:46, 이동 없음)
+
+현업 조사(표준·VDA 5050·상용 서빙로봇·Nav2 기본값)와 기존 처리 전수 조사를 대조해 우선순위를 정하고, 위에서부터 구현했다. 조사·우선순위 표·구현 내용·남은 공백은 [20261002_ANOMALY_HANDLING_RESEARCH.md](20261002_ANOMALY_HANDLING_RESEARCH.md)에 있다.
+
+- 구현:
+  - 드라이버 래치 비상정지(`/emergency_stop`, `emergency_stop_reset`, `/emergency_stop_state`)
+  - 실행기 가드 연동과 취소 미확인 시 래치
+  - 막힘 20 s 대기 후 재시도 3회
+  - 등급별 `operator_call`과 PC 알림
+  - 운영자 연결 하트비트 30 s
+  - 정차 사이 저전압 도크 복귀
+  - PC ssh 끊김을 "알 수 없음"으로 처리
+  - PC `estop`·`estop-reset`
+- 파이 반영:
+  - 백업 `~/jdamr_data/deploy_backup_20261002_003758/`
+  - 드라이버·실행기 빌드, `recover`로 재시작과 초기화(AMCL과 스캔 정합 0.006 m, DDS OK)
+  - 드라이버는 8월 25일 빌드였어서 `geometry.hpp` 범위 검사도 함께 반영됨
+- 정지 상태 확인: `estop` → engaged, `estop-reset` → released. 드라이버 로그도 둘 다 확인했다.
+- init에서 table_02 영역에 박스 크기 LiDAR 클러스터가 잡히지 않았다(표지 위치 사용). 19:06 init에서는 잡혔다. 박스가 넘어졌거나 옮겨졌을 수 있다(현장 미확인).
+- 실차 미확인: 주행 중 비상정지, 막힘 대기·재시도, 하트비트 끊김 정지, 저전압 복귀, PC 알림 표시.
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.

@@ -28,6 +28,7 @@
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "jdamr_base_driver/estop_latch.hpp"
 #include "jdamr_base_driver/geometry.hpp"
 #include "jdamr_base_driver/protocol.hpp"
 #include "jdamr_base_driver/serial_port.hpp"
@@ -36,6 +37,8 @@
 #include "sensor_msgs/msg/battery_state.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/magnetic_field.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
 using namespace std::chrono_literals;
@@ -130,6 +133,48 @@ public:
         last_cmd_time_ = now();
       });
 
+    // ── 래치 비상정지: /emergency_stop true로 걸고, 리셋은 서비스로만 (false 발행으로는 안 풀림) ──
+    estop_state_pub_ = create_publisher<std_msgs::msg::Bool>(
+      "emergency_stop_state", rclcpp::QoS(1).reliable().transient_local());
+    estop_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "emergency_stop", rclcpp::QoS(10).reliable(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        if (!msg->data) {
+          RCLCPP_WARN(get_logger(), "emergency_stop false 는 무시: 해제는 emergency_stop_reset 서비스");
+          return;
+        }
+        bool changed;
+        {
+          std::lock_guard<std::mutex> lk(cmd_mutex_);
+          changed = estop_.engage();
+        }
+        if (changed) {
+          RCLCPP_ERROR(get_logger(), "비상정지 걸림: 리셋 전까지 바퀴 0 고정");
+          publish_estop_state();
+        }
+      });
+    estop_reset_srv_ = create_service<std_srvs::srv::Trigger>(
+      "emergency_stop_reset",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        bool released;
+        {
+          std::lock_guard<std::mutex> lk(cmd_mutex_);
+          const bool fresh = last_cmd_time_.nanoseconds() != 0 &&
+          (now() - last_cmd_time_).seconds() <= cmd_timeout_;
+          released = estop_.reset(commands_motion(fresh, cmd_v_, cmd_w_));
+        }
+        response->success = released;
+        response->message = released ?
+        "released; motion starts only on a new command" :
+        "refused: a non-zero velocity command is still arriving";
+        if (released) {
+          RCLCPP_WARN(get_logger(), "비상정지 해제 (새 지령이 와야 움직임)");
+          publish_estop_state();
+        }
+      });
+    publish_estop_state();
+
     // ── 시리얼 열기 ──
     std::string err;
     if (!serial_.open(port_, baud_, err)) {
@@ -152,16 +197,38 @@ public:
   }
 
 private:
+  void publish_estop_state()
+  {
+    std_msgs::msg::Bool state;
+    {
+      std::lock_guard<std::mutex> lk(cmd_mutex_);
+      state.data = estop_.engaged();
+    }
+    estop_state_pub_->publish(state);
+  }
+
   // ── 송신 경로 (실행기 스레드, 50Hz 고정) ──
   void send_command()
   {
     double v, w;
     rclcpp::Time last;
+    bool estop;
     {
       std::lock_guard<std::mutex> lk(cmd_mutex_);
       v = cmd_v_;
       w = cmd_w_;
       last = last_cmd_time_;
+      estop = estop_.engaged();
+    }
+    if (++estop_state_tick_ >= 50) {   // 50 Hz 타이머 → 1 Hz 상태 재발행
+      estop_state_tick_ = 0;
+      publish_estop_state();
+    }
+    if (estop) {
+      uint8_t f[kCmdFrameSize];
+      serial_.write_all(f, make_stop_cmd(f));   // 걸려 있는 동안 매 주기 정지 지령
+      stale_notified_ = true;
+      return;
     }
 
     const bool stale =
@@ -368,6 +435,8 @@ private:
   double cmd_v_{0.0}, cmd_w_{0.0};
   rclcpp::Time last_cmd_time_{0, 0, RCL_ROS_TIME};
   bool stale_notified_{false};
+  EmergencyStopLatch estop_;          // cmd_mutex_ 로 보호
+  int estop_state_tick_{0};
 
   // 오도메트리 상태 (읽기 스레드 전용 — 락 불필요)
   State prev_{};
@@ -382,6 +451,9 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::MagneticField>::SharedPtr mag_pub_;
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr batt_pub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_state_pub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr estop_reset_srv_;
   rclcpp::TimerBase::SharedPtr send_timer_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   nav_msgs::msg::Odometry odom_msg_;

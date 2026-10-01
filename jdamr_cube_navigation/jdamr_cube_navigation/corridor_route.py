@@ -30,6 +30,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import BatteryState, JointState, LaserScan
+from std_msgs.msg import Bool
 from tf2_ros import Buffer, TransformException, TransformListener
 import yaml
 
@@ -58,6 +59,16 @@ GOAL_STATUS_NAMES = {
 # A transit goal is judged by the position/general goal checkers' xy
 # tolerance; test_t13 pins this value to new_base_nav2_params.yaml.
 TRANSIT_PLAN_END_TOLERANCE_M = 0.15
+# A blocked path is held, then the current leg is retried; a serving robot waits for
+# a person to step aside (Pudu: 30 s before replanning; Nav2 default tree: 5 s). The
+# start values follow evaluation/20261002_ANOMALY_HANDLING_RESEARCH.md P9.
+PATH_BLOCKED_WAIT_S = 20.0
+PATH_BLOCKED_RETRIES = 3
+# Nav2 Jazzy codes of a leg that could not move on: FollowPath 104 patience
+# exceeded, 105 no progress, 106 no valid control; ComputePathToPose and
+# ComputePathThroughPoses 205/305 start occupied, 206/306 goal occupied,
+# 208/308 no valid path.
+PATH_BLOCKED_NAV2_CODES = frozenset({104, 105, 106, 205, 206, 208, 305, 306, 308})
 
 
 def _expanded_path(value, parent=None):
@@ -291,6 +302,14 @@ class CorridorRoute(Node):
             self, ComputePathThroughPoses, 'compute_path_through_poses')
         self.create_subscription(
             BatteryState, '/battery_state', self._battery_callback, 10)
+        # The base driver latches /emergency_stop until its reset service; while
+        # engaged every guard fails, so goals cancel and no departure starts.
+        self.emergency_stop_engaged = False
+        self.create_subscription(
+            Bool, '/emergency_stop_state', self._emergency_stop_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.emergency_stop_pub = self.create_publisher(Bool, '/emergency_stop', 10)
         self.create_subscription(
             Odometry, '/odom', self._odom_callback, ODOM_QOS)
         self.create_subscription(
@@ -362,6 +381,21 @@ class CorridorRoute(Node):
     def request_stop(self):
         """Ask the current action to cancel without invalidating ROS context."""
         self.stop_requested = True
+
+    def request_operator_stop(self):
+        """Stop on the operator's own request; no operator call follows it."""
+        self.operator_stopped = True
+        self.request_stop()
+
+    def _emergency_stop_callback(self, message):
+        self.emergency_stop_engaged = bool(message.data)
+
+    def engage_emergency_stop(self, reason):
+        """Latch the base driver stop; only its reset service releases it."""
+        publisher = getattr(self, 'emergency_stop_pub', None)
+        if publisher is not None:
+            publisher.publish(Bool(data=True))
+        self.get_logger().error(f'emergency stop requested: {reason}')
 
     def _battery_callback(self, message):
         self.battery_voltage = float(message.voltage)
@@ -444,6 +478,8 @@ class CorridorRoute(Node):
 
     def _guard_failure(self, require_fresh_amcl=True, covariance_limits=None):
         """Describe the exact fail-closed input instead of a generic stop."""
+        if getattr(self, 'emergency_stop_engaged', False):
+            return 'emergency stop engaged'
         now = time.monotonic()
         for name, timestamp in self.samples.items():
             if timestamp is None:
@@ -555,16 +591,57 @@ class CorridorRoute(Node):
         return False
 
     def _run_with_input_recovery(self, attempt):
-        """Keep completed waypoints, with at most one fresh-input retry per call."""
+        """
+        Keep completed waypoints across retries of the current one.
+
+        At most one retry after a fresh-input recovery, and up to
+        PATH_BLOCKED_RETRIES after holding PATH_BLOCKED_WAIT_S on a blocked path.
+        """
         self._resume_waypoint_index = 0
-        for retry in range(2):
+        input_retried = False
+        blocked_waits = 0
+        while True:
             self._retry_guard_reason = None
+            self._retry_blocked_reason = None
             if attempt():
                 return True
-            if (retry or self.stop_requested or not self._wait_for_input_recovery(
-                    self._retry_guard_reason)):
+            if self.stop_requested:
                 return False
-        return False
+            blocked = self._retry_blocked_reason
+            if blocked is not None:
+                if blocked_waits >= PATH_BLOCKED_RETRIES:
+                    self._report('path_blocked_give_up', reason=blocked, waits=blocked_waits)
+                    return False
+                blocked_waits += 1
+                if not self._wait_for_path_clear(blocked, blocked_waits):
+                    return False
+                continue
+            if input_retried or not self._wait_for_input_recovery(self._retry_guard_reason):
+                return False
+            input_retried = True
+
+    def _wait_for_path_clear(self, reason, wait):
+        """Hold still for PATH_BLOCKED_WAIT_S; stop early on an unrecoverable guard."""
+        self._report('path_blocked_wait', reason=reason, wait=wait,
+                     wait_s=PATH_BLOCKED_WAIT_S)
+        started_s = time.monotonic()
+        while time.monotonic() - started_s < PATH_BLOCKED_WAIT_S:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self.stop_requested:
+                return False
+            failure = self._guard_failure(False)
+            if failure and not self._input_gap_recoverable(failure):
+                self._report('path_blocked_wait_aborted', reason=failure)
+                return False
+        return True
+
+    def _report(self, event, **fields):
+        """Record an event in the run log when the node keeps one, else in the ROS log."""
+        emit = getattr(self, 'emit', None)
+        if emit is not None:
+            emit(event, **fields)
+        else:
+            self.get_logger().warning(f'{event} {json.dumps(fields, sort_keys=True)}')
 
     def _revisit_protection_ready(self):
         """Check only the three publishers that make a revisit safe."""

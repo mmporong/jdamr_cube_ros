@@ -17,6 +17,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 add_library(serial_port src/serial_port.cpp)
 target_include_directories(serial_port PUBLIC
@@ -27,7 +29,7 @@ target_compile_features(serial_port PUBLIC cxx_std_17)
 add_executable(base_driver_node src/base_driver_node.cpp)
 target_link_libraries(base_driver_node serial_port)
 ament_target_dependencies(base_driver_node
-  rclcpp nav_msgs sensor_msgs geometry_msgs tf2 tf2_ros)
+  rclcpp nav_msgs sensor_msgs geometry_msgs tf2 tf2_ros std_msgs std_srvs)
 
 install(TARGETS base_driver_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
@@ -41,6 +43,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_geometry test/test_geometry.cpp)
   target_include_directories(test_geometry PRIVATE include)
   target_compile_features(test_geometry PRIVATE cxx_std_17)
+
+  ament_add_gtest(test_estop test/test_estop.cpp)
+  target_include_directories(test_estop PRIVATE include)
+  target_compile_features(test_estop PRIVATE cxx_std_17)
 endif()
 
 ament_package()

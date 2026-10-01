@@ -5,12 +5,15 @@ import inspect
 import io
 import json
 import math
+import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped
+from jdamr_cube_navigation import corridor_route, restaurant_service
 from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import (
@@ -1970,3 +1973,147 @@ def test_t41_deployed_contract_disables_covariance_gates():
                 'intermediate_max_x_covariance_m2', 'intermediate_max_y_covariance_m2',
                 'intermediate_max_yaw_covariance_rad2'):
         assert contract[key] >= 1.0e6
+
+
+def test_engaged_emergency_stop_fails_every_guard_without_retry():
+    """A latched base stop cancels goals and blocks departure; it is never retried."""
+    node = route()
+    # route() stubs both checks; use the real ones.
+    del node._guard_failure, node._navigation_ready
+    node.emergency_stop_engaged = True
+    reason = node._guard_failure(False)
+    assert reason == 'emergency stop engaged'
+    assert not node._input_gap_recoverable(reason)
+    assert not node._navigation_ready(require_fresh_amcl=False)
+
+
+def test_unconfirmed_cancel_latches_the_base_emergency_stop(monkeypatch):
+    """A goal that does not confirm its cancel within 5 s is stopped below Nav2."""
+    clock = iter(range(0, 1000, 3))
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.time.monotonic',
+                        lambda: next(clock))
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once',
+                        lambda *args, **kwargs: None)
+    node = route()
+    node.emergency_stop_pub = Mock()
+    running = Future()
+    node.active_handle = SimpleNamespace(get_result_async=lambda: running)
+    node.navigation_result = running
+    node._cancel = Mock()
+    assert node.finish_navigation() is False
+    published = node.emergency_stop_pub.publish.call_args_list
+    assert len(published) == 1 and published[0].args[0].data is True
+    events = [json.loads(line)['event'] for line in node.result_stream.getvalue().splitlines()]
+    assert events[-2:] == ['cancel_unconfirmed', 'emergency_stop_requested']
+
+
+def _fast_clock(monkeypatch, step_s=5):
+    clock = iter(range(0, 100000, step_s))
+    monkeypatch.setattr('jdamr_cube_navigation.corridor_route.time.monotonic',
+                        lambda: next(clock))
+    monkeypatch.setattr('jdamr_cube_navigation.corridor_route.rclpy.spin_once',
+                        lambda *args, **kwargs: None)
+
+
+def _events(node):
+    return [json.loads(line) for line in node.result_stream.getvalue().splitlines()]
+
+
+def _blocked_attempts(node, blocked_tries):
+    tries = []
+
+    def attempt():
+        tries.append(node._resume_waypoint_index)
+        if len(tries) <= blocked_tries:
+            node._retry_blocked_reason = 'path blocked: nav2 error 105'
+            return False
+        return True
+    return tries, attempt
+
+
+def test_blocked_leg_is_held_then_retried(monkeypatch):
+    """A person in the aisle: hold PATH_BLOCKED_WAIT_S, then retry the same leg."""
+    _fast_clock(monkeypatch)
+    node = route()
+    tries, attempt = _blocked_attempts(node, blocked_tries=2)
+    assert node._run_with_input_recovery(attempt) is True
+    assert len(tries) == 3
+    waits = [e for e in _events(node) if e['event'] == 'path_blocked_wait']
+    assert [e['wait'] for e in waits] == [1, 2]
+    assert waits[0]['wait_s'] == corridor_route.PATH_BLOCKED_WAIT_S
+
+
+def test_blocked_leg_gives_up_after_the_retry_budget(monkeypatch):
+    _fast_clock(monkeypatch)
+    node = route()
+    tries, attempt = _blocked_attempts(node, blocked_tries=99)
+    assert node._run_with_input_recovery(attempt) is False
+    assert len(tries) == corridor_route.PATH_BLOCKED_RETRIES + 1
+    assert _events(node)[-1]['event'] == 'path_blocked_give_up'
+
+
+def test_blocked_wait_ends_on_an_unrecoverable_guard(monkeypatch):
+    """An emergency stop during the hold ends the leg instead of retrying it."""
+    _fast_clock(monkeypatch)
+    node = route()
+    node._guard_failure = lambda *_: 'emergency stop engaged'
+    tries, attempt = _blocked_attempts(node, blocked_tries=99)
+    assert node._run_with_input_recovery(attempt) is False
+    assert len(tries) == 1
+    assert _events(node)[-1] == {**_events(node)[-1], 'event': 'path_blocked_wait_aborted',
+                                 'reason': 'emergency stop engaged'}
+
+
+@pytest.mark.parametrize('code, final, tagged', [
+    (105, False, True), (104, False, True), (208, False, True), (306, False, True),
+    (105, True, False), (101, False, False), (0, False, False)])
+def test_only_blocking_nav2_codes_of_intermediate_legs_are_retried(code, final, tagged):
+    node = route()
+    node._retry_blocked_reason = None
+    node._tag_blocked(code, final)
+    assert (node._retry_blocked_reason is not None) is tagged
+
+
+@pytest.mark.parametrize('failures, level, category', [
+    ([('interrupted', {'reason': 'emergency stop engaged'}), ('failed', {'phase': 'via_dwell'})],
+     'FATAL', 'emergency_stop'),
+    ([('path_blocked_give_up', {'reason': 'path blocked: nav2 error 105'})],
+     'CRITICAL', 'path_blocked'),
+    ([('battery_return', {'reason': 'battery below the departure reserve'})],
+     'URGENT', 'battery'),
+    ([('departure_blocked', {'reason': 'operator_link_lost'}),
+      ('interrupted', {'reason': 'scan stale: age=3.0s limit=2.5s'})], 'FATAL', 'sensor'),
+    ([('failed', {'phase': 'table_dwell'})], 'CRITICAL', 'task_failed'),
+    ([], 'CRITICAL', 'task_failed'),
+])
+def test_operator_call_names_the_most_severe_cause(failures, level, category):
+    node = route()
+    for event, fields in failures:
+        node.emit(event, **fields)
+    assert node.call_operator() == level
+    call = _events(node)[-1]
+    assert (call['event'], call['level'], call['category']) == ('operator_call', level, category)
+
+
+def test_operator_link_blocks_the_next_goal_once_the_heartbeat_is_old(tmp_path):
+    node = route()
+    assert node._operator_link_ready()          # no heartbeat configured: not followed
+    heartbeat = tmp_path / 'run.heartbeat'
+    node.operator_heartbeat = heartbeat
+    assert not node._operator_link_ready()      # never written
+    heartbeat.touch()
+    assert node._operator_link_ready()
+    old = time.time() - restaurant_service.OPERATOR_LINK_TIMEOUT_S - 5.0
+    os.utime(heartbeat, (old, old))
+    assert not node._operator_link_ready()
+    blocked = _events(node)[-1]
+    assert (blocked['event'], blocked['reason']) == ('departure_blocked', 'operator_link_lost')
+
+
+@pytest.mark.parametrize('voltage_v, due', [(10.7, True), (10.8, False), (11.6, False),
+                                            (None, True), (float('nan'), True)])
+def test_battery_return_between_stops(voltage_v, due):
+    node = route()
+    node.battery_voltage = voltage_v
+    assert node.battery_return_due() is due
+    assert any(e['event'] == 'battery_return' for e in _events(node)) is due

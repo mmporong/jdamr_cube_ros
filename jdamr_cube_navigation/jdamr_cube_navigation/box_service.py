@@ -20,7 +20,7 @@ from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profil
 from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, pose_errors,
 )
-from jdamr_cube_navigation.restaurant_service import ServiceRoute
+from jdamr_cube_navigation.restaurant_service import OPERATOR_LINK_TIMEOUT_S, ServiceRoute
 from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
 from nav2_msgs.action import Spin
 from nav_msgs.msg import Path as RosPath
@@ -1159,7 +1159,16 @@ def parse_args(argv=None):
         '--resume-parked-from-log', type=Path,
         help='An earlier run stopped at the first box (via stop if given, else the table): '
              'hold five seconds, escape from the face logged there, then continue')
+    parser.add_argument(
+        '--operator-heartbeat', type=Path,
+        help='file the operator PC touches while it follows the run; no further goal '
+             'starts once it is older than --operator-link-timeout-s')
+    parser.add_argument('--operator-link-timeout-s', type=float,
+                        default=OPERATOR_LINK_TIMEOUT_S)
     args = parser.parse_args(argv)
+    if (not math.isfinite(args.operator_link_timeout_s)
+            or args.operator_link_timeout_s <= 0.0):
+        parser.error('--operator-link-timeout-s must be finite and positive')
     if (not all(math.isfinite(v) for v in args.region_xy)
             or not math.isfinite(args.region_radius_m)
             or not 0.0 < args.region_radius_m <= 0.6):
@@ -1200,6 +1209,16 @@ def parse_args(argv=None):
     return args
 
 
+def _attempt_code(node, ok):
+    """Exit code of one attempt; an attempt that stopped short calls the operator.
+
+    A stop the operator sent (SIGINT from `jdamr_depart.py stop`) needs no call.
+    """
+    if not ok and not getattr(node, 'operator_stopped', False):
+        node.call_operator()
+    return 0 if ok else 1
+
+
 def run_attempt(args, active=None):
     """
     Run one table attempt in an initialized rclpy context; return the exit code.
@@ -1223,12 +1242,15 @@ def run_attempt(args, active=None):
             node = BoxServiceRoute(registry, contract, stream, home_contract=home_contract)
             if active is None:
                 for signum in (signal.SIGINT, signal.SIGTERM):
-                    handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
+                    handlers[signum] = signal.signal(
+                        signum, lambda *_: node.request_operator_stop())
             else:
                 active['node'] = node
             if args.graceful_final:
                 node.final_approach_controller = 'GracefulParking'
                 node.dock_leg_controller = 'GracefulReverse'
+            node.operator_heartbeat = args.operator_heartbeat
+            node.operator_link_timeout_s = args.operator_link_timeout_s
             ok = True
             if args.home_only:
                 # Dock return alone, e.g. to re-dock after a crooked stop.
@@ -1236,7 +1258,7 @@ def run_attempt(args, active=None):
                 if not node.wait_until_ready(timeout=10.0):
                     raise RuntimeError('localization or sensor data unavailable')
                 ok = node.go_home(execute=True, timeout_s=args.return_timeout_s)
-                return 0 if ok else 1
+                return _attempt_code(node, ok)
             if args.resume_parked_from_log is not None:
                 # The first stop was reached by an earlier run: hold and escape only.
                 face = last_logged_face(args.resume_parked_from_log)
@@ -1247,7 +1269,7 @@ def run_attempt(args, active=None):
                 if args.via_id is None:
                     # The parked stop was the table: its escape leads straight home.
                     ok = ok and node.go_home(execute=True, timeout_s=args.return_timeout_s)
-                    return 0 if ok else 1
+                    return _attempt_code(node, ok)
             via_done = False
             if (args.resume_parked_from_log is None and args.via_id is not None
                     and args.resume_at_observation
@@ -1266,6 +1288,10 @@ def run_attempt(args, active=None):
                     resume_at_observation=args.resume_at_observation,
                     search=args.search, task_timeout_s=args.task_timeout_s)
                 ok = ok and node.dwell_and_leave(STOP_DWELL_S)
+                if ok and node.battery_return_due():
+                    # Low between stops: no further stop, dock, then call (research P10).
+                    node.go_home(execute=True, timeout_s=args.return_timeout_s)
+                    return _attempt_code(node, False)
             # A resume applies to the first stop of this run only.
             ok = ok and node.visit_observed_box(
                 args.approach_route, mount, geometry, args.table_id,
@@ -1277,10 +1303,11 @@ def run_attempt(args, active=None):
             # Exit 0 only when every requested stage, including the return, succeeded.
             if ok and args.return_home:
                 ok = node.dwell_and_return_home(STOP_DWELL_S, args.return_timeout_s)
-            return 0 if ok else 1
+            return _attempt_code(node, ok)
         except (ValueError, RuntimeError) as error:
             if node is not None:
                 node.emit('failed', reason=str(error))
+                node.call_operator()
             print(json.dumps({'failed': str(error)}))
             return 1
         finally:
@@ -1314,7 +1341,7 @@ def serve(spool):
 
     def stop_attempt(*_):
         if active['node'] is not None:
-            active['node'].request_stop()
+            active['node'].request_operator_stop()
 
     def leave(*_):
         leaving['now'] = True

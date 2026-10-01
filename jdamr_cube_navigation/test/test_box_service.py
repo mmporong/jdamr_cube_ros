@@ -815,6 +815,8 @@ def test_t28_failed_visit_never_returns_home(monkeypatch, tmp_path):
             self.go_home = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+            self.call_operator = Mock(return_value='CRITICAL')
+            self.battery_return_due = Mock(return_value=False)
             created.append(self)
 
     monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
@@ -825,6 +827,9 @@ def test_t28_failed_visit_never_returns_home(monkeypatch, tmp_path):
     failed, succeeded = created
     failed.dwell_and_return_home.assert_not_called()
     failed.go_home.assert_not_called()
+    # A cycle that stopped short calls the operator once; a finished one does not.
+    failed.call_operator.assert_called_once_with()
+    succeeded.call_operator.assert_not_called()
     succeeded.dwell_and_return_home.assert_called_once_with(2.0, 500.0)
     assert succeeded.visit_observed_box.call_args.kwargs['task_timeout_s'] == 240.0
     assert succeeded.kwargs['home_contract']['xy_tolerance_m'] == 0.05
@@ -908,7 +913,7 @@ def test_t36_via_cli_is_all_or_nothing_and_ends_at_the_dock():
             parse_args(invalid)
 
 
-def _via_main(monkeypatch, tmp_path, via_ok=True, leave_ok=True):
+def _via_main(monkeypatch, tmp_path, via_ok=True, leave_ok=True, battery_low=False):
     for name in ('registry', 'mount', 'geometry', 'route', 'water'):
         (tmp_path / f'{name}.yaml').write_text('{}\n')
     argv = ['--registry', str(tmp_path / 'registry.yaml'),
@@ -937,6 +942,10 @@ def _via_main(monkeypatch, tmp_path, via_ok=True, leave_ok=True):
                 ('dwell_and_return_home', dwell, timeout)) or True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+            self.call_operator = Mock(side_effect=lambda: calls.append(('call_operator',))
+                                      or 'URGENT')
+            self.battery_return_due = Mock(return_value=battery_low)
+            self.go_home = Mock(side_effect=lambda **k: calls.append(('go_home',)) or True)
 
     monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
     code = box_service.main([*argv, '--log', str(tmp_path / f'run_{via_ok}_{leave_ok}.jsonl')])
@@ -953,6 +962,14 @@ def test_t36_water_station_then_table_then_dock(monkeypatch, tmp_path):
                      ('dwell_and_return_home', 2.0, 500.0)]
 
 
+def test_low_battery_after_the_water_stop_docks_and_calls_the_operator(monkeypatch, tmp_path):
+    """Below the departure reserve between stops: no table, straight to the dock, then a call."""
+    code, calls = _via_main(monkeypatch, tmp_path, battery_low=True)
+    assert code == 1
+    assert calls == [('visit', 'water.yaml', 'water_station', [-0.14, -1.53], True),
+                     ('dwell_and_leave', 2.0), ('go_home',), ('call_operator',)]
+
+
 @pytest.mark.parametrize('via_ok,leave_ok,expected', [
     (False, True, [('visit', 'water.yaml')]),
     (True, False, [('visit', 'water.yaml'), ('dwell_and_leave',)]),
@@ -963,7 +980,8 @@ def test_t36_failed_water_stop_never_goes_to_the_table(
     code, calls = _via_main(monkeypatch, tmp_path, via_ok=via_ok, leave_ok=leave_ok)
     assert code == 1
     assert [call[:len(step)] for call, step in zip(calls, expected)] == expected
-    assert len(calls) == len(expected)
+    # Nothing moves after the failed step; the stopped cycle calls the operator.
+    assert calls[len(expected):] == [('call_operator',)]
 
 
 @pytest.mark.parametrize('parked,left,expected', [
@@ -1092,6 +1110,8 @@ def _resume_main(monkeypatch, tmp_path, extra, at_table_observation=False):
             self.wait_until_ready = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+            self.call_operator = Mock(return_value='CRITICAL')
+            self.battery_return_due = Mock(return_value=False)
 
     monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
     code = box_service.main([*argv, '--log', str(tmp_path / 'run.jsonl')])
@@ -1246,3 +1266,16 @@ def test_depth_window_failure_is_recorded_and_does_not_stop_the_observation(clie
     node.last_region_distance_m = 0.7
     assert node._set_depth_window(0.4) is False
     assert events[-1][1]['applied'] is False and events[-1][1]['reason']
+
+
+def test_operator_sent_stop_is_not_called_back_to_the_operator():
+    """`jdamr_depart.py stop` ends the attempt quietly; any other short stop calls."""
+    node = SimpleNamespace(call_operator=Mock())
+    assert box_service._attempt_code(node, True) == 0
+    node.call_operator.assert_not_called()
+    assert box_service._attempt_code(node, False) == 1
+    node.call_operator.assert_called_once_with()
+    node.call_operator.reset_mock()
+    node.operator_stopped = True
+    assert box_service._attempt_code(node, False) == 1
+    node.call_operator.assert_not_called()

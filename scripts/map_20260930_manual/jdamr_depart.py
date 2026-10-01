@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """JD-AMR box service departure runbook as one PC-side command (new map, 2026-09-30).
 
-A call runs: dock -> water_station (face approach, 5 s, escape) -> called table
-(face approach, 5 s, escape) -> reverse docking. The operator's "출발 table_0N" stands in
+A call runs: dock -> water_station (face approach, 2 s, escape) -> called table
+(face approach, 2 s, escape) -> reverse docking. The operator's "출발 table_0N" stands in
 for a web call.
 
 The robot only moves in `go`, which starts the existing `box_service` executor on the Pi.
@@ -14,10 +14,12 @@ localization seeding through the existing `activate_navigation`, home teaching.
     jdamr_depart.py session-start   Pi Nav2 session (precision, prepare-only, LOCALHOST)
     jdamr_depart.py init            registered dock pose -> scan-matched pose -> activation
                                     (--click: RViz click instead, re-teaches home unless --keep-home)
-    jdamr_depart.py go table_01     table cycle: observe -> align -> 5 cm -> 5 s -> escape -> dock
+    jdamr_depart.py go table_01     table cycle: observe -> align -> 5 cm -> 2 s -> escape -> dock
     jdamr_depart.py health          read-only: does a fresh Pi process receive map/TF/scan
     jdamr_depart.py recover         no-motion restart of sensors, session and display + init
     jdamr_depart.py status | stop | display-stop | session-stop
+    jdamr_depart.py estop           latch the base driver stop (wheels at zero), stop the attempt
+    jdamr_depart.py estop-reset     release it (refused while a velocity command still arrives)
 """
 import argparse
 import hashlib
@@ -474,8 +476,23 @@ def refine_pose(scan_path, click):
             'click_offset_deg': float(math.degrees(wrap(seed[2] - pose[2])))}
 
 
+# The cycle runs on the Pi; a PC that loses ssh keeps polling this long before it
+# gives up following (the robot is not stopped by that).
+LINK_LOST_GIVE_UP_S = 600.0
+
+
+def poll_pi(command):
+    """Run a read on the Pi; None when ssh itself failed or hung (exit 255 or timeout)."""
+    try:
+        result = pi(command, timeout=30, check=False)
+    except subprocess.TimeoutExpired:
+        return None
+    return None if result.returncode == 255 else result
+
+
 def read_events(pi_path):
-    text = pi(f'cat {shlex.quote(pi_path)}', check=False).stdout
+    result = poll_pi(f'cat {shlex.quote(pi_path)}')
+    text = result.stdout if result is not None else ''
     events = []
     for line in text.splitlines():
         try:
@@ -607,6 +624,35 @@ def map_wait_failed(events):
             and str(events[0].get('reason', '')).startswith(MAP_WAIT_FAILURE))
 
 
+def show_event(event):
+    keep = {k: event[k] for k in ('event', 'level', 'category', 'phase', 'reason', 'waypoint_id',
+                                  'terminal_status_code', 'nav2_error_code') if k in event}
+    log('  ' + json.dumps(keep, ensure_ascii=False))
+    if event.get('event') == 'operator_call':
+        alert_operator(event)
+
+
+def alert_operator(event):
+    """Bell, desktop notification and an optional extra channel for an operator_call.
+
+    JDAMR_OPERATOR_NOTIFY_CMD, when set, is run with the message as its last argument
+    (for example a Telegram helper). Nothing is sent outside the PC without it.
+    """
+    text = f'{event.get("level")} {event.get("category")}: {event.get("reason")}'
+    log(f'OPERATOR CALL {text}')
+    print('\a', end='', flush=True)
+    title = shlex.quote('JD-AMR 운영자 호출')
+    commands = [f'notify-send -u critical {title} {shlex.quote(text)}']
+    extra = os.environ.get('JDAMR_OPERATOR_NOTIFY_CMD')
+    if extra:
+        commands.append(f'{extra} {shlex.quote("JD-AMR 운영자 호출: " + text)}')
+    for command in commands:
+        try:   # an alert channel never stops the follow-up of the run
+            sh(command, timeout=15, check=False)
+        except subprocess.TimeoutExpired:
+            log(f'alert channel timed out: {command.split()[0]}')
+
+
 def run_cycle(args, state, table_id):
     """Start one box_service run on the Pi and follow its log until the unit ends."""
     region = state['regions'][table_id]
@@ -626,12 +672,17 @@ def run_cycle(args, state, table_id):
     try:
         unit = f'jdamr-table-cycle-{run.replace("_", "-")}'
         route = Path(args.route) if args.route else P2 / f'{table_id}_route.yaml'
+        # Refreshed by every poll below; the executor starts no further goal once it is
+        # older than 30 s (the PC stop is the only remote stop without a physical one).
+        heartbeat = f'{EXECUTOR_SPOOL}/{run}.heartbeat'
+        pi(f'mkdir -p {EXECUTOR_SPOOL} && touch {heartbeat}')
         options = (f'--registry {REGISTRY} --approach-route {route} --camera-mount {PI_MOUNT} '
                    f'--geometry {PI_GEOMETRY} --parking-contract {PI_BOX_CONTRACT} '
                    f'--table-id {table_id} --region-xy {region["xy"][0]} {region["xy"][1]} '
                    f'--region-radius-m {region["radius_m"]} --log {run_dir}/cycle_events.jsonl '
                    f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
                    f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
+                   f'--operator-heartbeat {heartbeat} '
                    + (' --home-only ' if args.dock_only else '')
                    + (' --graceful-final ' if args.graceful_final else '')
                    + (' --resume-at-observation ' if args.resume_at_observation else '')
@@ -651,8 +702,9 @@ def run_cycle(args, state, table_id):
                f'mv {EXECUTOR_SPOOL}/{run}.part {EXECUTOR_SPOOL}/{run}.request', stdin=request)
 
             def running():
-                return pi(f'test -e {EXECUTOR_SPOOL}/{run}.result || echo running',
-                          check=False).stdout.strip() == 'running'
+                result = poll_pi(f'touch {heartbeat}; '
+                                 f'test -e {EXECUTOR_SPOOL}/{run}.result || echo running')
+                return None if result is None else result.stdout.strip() == 'running'
         else:
             command = f'{PI_SOURCE}; exec python3 -m jdamr_cube_navigation.box_service {options}'
             (run_dir / 'command.txt').write_text(command + '\n')
@@ -663,7 +715,8 @@ def run_cycle(args, state, table_id):
                f'{shlex.quote(command)}')
 
             def running():
-                return pi(f'systemctl is-active {unit}', check=False).stdout.strip() in (
+                result = poll_pi(f'touch {heartbeat}; systemctl is-active {unit}')
+                return None if result is None else result.stdout.strip() in (
                     'active', 'activating')
         fresh = load_state()
         fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
@@ -672,7 +725,7 @@ def run_cycle(args, state, table_id):
         stops = ('dock only' if args.dock_only else
                  f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
         log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
-        seen, bag_checked, departed_s = 0, False, time.monotonic()
+        seen, bag_checked, departed_s, lost_since = 0, False, time.monotonic(), None
         while True:
             time.sleep(10)
             # The recorder needs ~13 s to subscribe on a loaded Pi (2026-10-01).
@@ -681,19 +734,28 @@ def run_cycle(args, state, table_id):
                 log('onboard bag: ' + (onboard_bag_bytes(run_dir) or 'nothing written yet'))
             events = read_events(str(run_dir / 'cycle_events.jsonl'))
             for event in events[seen:]:
-                keep = {k: event[k] for k in ('event', 'phase', 'reason', 'waypoint_id',
-                                              'terminal_status_code', 'nav2_error_code')
-                        if k in event}
-                log('  ' + json.dumps(keep, ensure_ascii=False))
-            seen = len(events)
-            if not running():
+                show_event(event)
+            # A failed read returns nothing; keep the count so nothing is repeated.
+            seen = max(seen, len(events))
+            alive = running()
+            if alive is None:
+                # 2026-10-02 inventory: a failed ssh read used to end the follow-up
+                # (monitor and bag stopped, go failed) while the robot drove on.
+                if lost_since is None:
+                    lost_since = time.monotonic()
+                    log('ssh to the Pi failed; the cycle runs on the Pi regardless, still polling')
+                elif time.monotonic() - lost_since > LINK_LOST_GIVE_UP_S:
+                    fail(f'no ssh to the Pi for {LINK_LOST_GIVE_UP_S:.0f} s; the robot may still '
+                         'be in its cycle: run status (and stop or estop) once the link is back')
+                continue
+            if lost_since is not None:
+                log(f'ssh to the Pi back after {time.monotonic() - lost_since:.0f} s')
+                lost_since = None
+            if not alive:
                 # The last lines may land between the read above and this check.
                 final = read_events(str(run_dir / 'cycle_events.jsonl'))
                 for event in final[seen:]:
-                    keep = {k: event[k] for k in ('event', 'phase', 'reason', 'waypoint_id',
-                                                  'terminal_status_code', 'nav2_error_code')
-                            if k in event}
-                    log('  ' + json.dumps(keep, ensure_ascii=False))
+                    show_event(event)
                 pi(f'sudo -n systemctl stop {monitor}', check=False)
                 finish_onboard_bag(bag_unit, run_dir)
                 return final
@@ -928,6 +990,37 @@ def cmd_stop(_args):
         log(f'{unit}: ' + pi(f'systemctl is-active {unit}', check=False).stdout.strip())
 
 
+ESTOP_STATE_READ = ('timeout 8 ros2 topic echo --once --qos-durability transient_local '
+                    '--qos-reliability reliable /emergency_stop_state std_msgs/msg/Bool')
+
+
+def estop_state():
+    """'engaged', 'released', or 'unknown' when the base driver did not answer."""
+    out = pi(f'{PI_SOURCE}; {ESTOP_STATE_READ}', timeout=30, check=False).stdout
+    return ('engaged' if 'data: true' in out else 'released' if 'data: false' in out
+            else 'unknown')
+
+
+def cmd_estop(_args):
+    """Latch the base driver stop (wheels held at zero until estop-reset), then stop the attempt.
+
+    A software stop over ssh: it needs the Wi-Fi link and takes a few seconds. It is
+    not a safety-rated emergency stop.
+    """
+    pi(f'{PI_SOURCE}; timeout 10 ros2 topic pub --once -w 1 /emergency_stop '
+       'std_msgs/msg/Bool "{data: true}"', timeout=40, check=False)
+    log(f'emergency stop: {estop_state()}')
+    cmd_stop(_args)
+
+
+def cmd_estop_reset(_args):
+    """Release the latch; refused while a velocity command is still arriving."""
+    out = pi(f'{PI_SOURCE}; timeout 10 ros2 service call /emergency_stop_reset '
+             'std_srvs/srv/Trigger', timeout=40, check=False).stdout
+    log(('released' if 'success=True' in out else 'NOT released: '
+         + (out.strip().splitlines() or ['no answer'])[-1]) + f'; state: {estop_state()}')
+
+
 def cmd_status(_args):
     state = load_state()
     log('session: ' + pi('systemctl is-active jdamr-restaurant-navigation.service',
@@ -939,6 +1032,7 @@ def cmd_status(_args):
     if state.get('last_unit') and not state['last_unit'].startswith('executor:'):
         log(f'{state["last_unit"]}: ' + pi(f'systemctl is-active {state["last_unit"]}',
                                            check=False).stdout.strip())
+    log(f'emergency stop: {estop_state()}')
     log('state: ' + json.dumps({k: state[k] for k in ('pose', 'home', 'last_run', 'bag')
                                 if k in state}))
 
@@ -948,7 +1042,7 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('sync', 'display-start', 'display-stop', 'session-start', 'session-stop',
-                 'stop', 'status', 'record-start', 'record-stop'):
+                 'stop', 'status', 'record-start', 'record-stop', 'estop', 'estop-reset'):
         sub.add_parser(name)
     init = sub.add_parser('init')
     init.add_argument('--keep-home', action='store_true',
@@ -990,6 +1084,7 @@ def main():
                 'display-stop': cmd_display_stop, 'session-start': cmd_session_start,
                 'session-stop': cmd_session_stop, 'init': cmd_init, 'go': cmd_go,
                 'stop': cmd_stop, 'status': cmd_status, 'health': cmd_health,
+                'estop': cmd_estop, 'estop-reset': cmd_estop_reset,
                 'recover': cmd_recover,
                 'record-start': lambda _a: record_start(),
                 'record-stop': lambda _a: record_stop(),
