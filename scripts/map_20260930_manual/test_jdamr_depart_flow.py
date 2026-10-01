@@ -358,3 +358,40 @@ def test_onboard_bag_is_closed_when_the_run_is_interrupted(env, monkeypatch):
         d.run_cycle(go_args(), d.load_state(), 'table_02')
     assert any(c.startswith('sudo -n systemctl stop jdamr-onboard-bag-') for c in pi.calls)
     assert 'onboard_bag_unit' not in d.load_state()
+
+
+HOME_EVENTS = [{'event': 'box_approach_finished'}, {'event': 'parked_dwell_complete'},
+               {'event': 'box_escape_finished'},
+               {'event': 'home_arrived', 'confirmation': {'confirmed': True}}]
+
+
+def test_sequence_runs_each_table_from_the_dock_with_an_init_between(env, monkeypatch):
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', pi)
+    order = []
+    monkeypatch.setattr(d, 'run_cycle', lambda args, state, table: order.append(table) or HOME_EVENTS)
+    monkeypatch.setattr(d, 'cmd_init', lambda init_args: order.append(
+        ('init', init_args.keep_home, init_args.click, init_args.seed_from_state)))
+    d.cmd_go(go_args(table_ids=['table_01', 'table_02'], dock_wait_s=0.0))
+    assert order == ['table_01', ('init', True, False, False), 'table_02']
+
+
+def test_sequence_stops_at_the_first_cycle_that_does_not_dock(env, monkeypatch):
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', pi)
+    order = []
+    failed = [{'event': 'failed'}]
+    monkeypatch.setattr(d, 'run_cycle', lambda args, state, table: order.append(table) or failed)
+    monkeypatch.setattr(d, 'cmd_init', lambda init_args: order.append('init'))
+    with pytest.raises(SystemExit):
+        d.cmd_go(go_args(table_ids=['table_02', 'table_01'], dock_wait_s=0.0))
+    assert order == ['table_02']
+
+
+@pytest.mark.parametrize('extra', [{'skip_via': True}, {'resume_at_observation': True},
+                                   {'dock_only': True}, {'resume_parked_log': '/log'}])
+def test_sequence_refuses_single_cycle_options(env, monkeypatch, extra):
+    monkeypatch.setattr(d, 'pi', Pi())
+    monkeypatch.setattr(d, 'run_cycle', lambda *a: pytest.fail('must not depart'))
+    with pytest.raises(SystemExit):
+        d.cmd_go(go_args(table_ids=['table_01', 'table_02'], **extra))

@@ -29,6 +29,7 @@ import shlex
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import yaml
 
@@ -139,6 +140,7 @@ SENSOR_UNITS = ('jdamr-base.service', 'jdamr-box-rgbd.service', 'jdamr-box-obser
 # Recorded on the Pi for every go: wheel odom, raw IMU and scan for the odom/IMU EKF
 # comparison (rotation_truth.py), velocity commands for the Spin overshoot.
 ONBOARD_BAG_CHECK_S = 25.0
+DOCK_WAIT_S = 10.0
 ONBOARD_TOPICS = ('/odom', '/imu/data_raw', '/scan', '/tf', '/tf_static', '/amcl_pose',
                   '/cmd_vel_nav', '/cmd_vel_smoothed', '/cmd_vel')
 # box_service's first check (verify_live_maps, 30 s) runs before any motion command.
@@ -759,6 +761,34 @@ def stop_requested_since(started):
 
 
 def cmd_go(args):
+    """One cycle per table: `go table_01 table_02` docks and re-inits between them."""
+    tables = list(getattr(args, 'table_ids', None) or [args.table_id])
+    if len(tables) > 1 and (args.skip_via or args.resume_at_observation or args.resume_parked_log
+                            or args.dock_only or args.route or args.region):
+        fail('a sequence starts every cycle at the dock; resume, route and region options '
+             'apply to a single table')
+    sequence_started = time.time()
+    for index, table_id in enumerate(tables):
+        if index:
+            # Charging is connected by hand and is not detected: the dock wait is the
+            # charging stop of the sequence, then the standard dock init (no motion).
+            wait_s = float(getattr(args, 'dock_wait_s', DOCK_WAIT_S))
+            log(f'docked after {tables[index - 1]}; {table_id} departs after {wait_s:.0f} s '
+                'at the dock and a fresh init (no motion)')
+            deadline = time.monotonic() + wait_s
+            while time.monotonic() < deadline:
+                time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+                stop_requested_since(sequence_started)
+            cmd_init(SimpleNamespace(seed_from_state=False, click=False, local_only=False,
+                                     keep_home=True))
+            stop_requested_since(sequence_started)
+        go_one(args, table_id)
+    if len(tables) > 1:
+        log(f'sequence complete: {" -> dock -> ".join(tables)} -> dock')
+
+
+def go_one(args, table_id):
+    """Run one dock-to-dock cycle for table_id; fail unless it ends confirmed at the dock."""
     started = time.time()
     state = load_state()
     if 'regions' not in state or state.get('localized') is not True:
@@ -767,7 +797,6 @@ def cmd_go(args):
     if not session_active():
         fail('Nav2 session is not active')
     refuse_during_cycle('a new departure')
-    table_id = args.table_id
     events = run_cycle(args, state, table_id)
     if map_wait_failed(events):
         # 2026-09-30: new processes stopped receiving map/TF/scan from the running base
@@ -929,7 +958,10 @@ def main():
     init.add_argument('--click', action='store_true',
                       help='robot placed away from the registered dock: seed with the RViz click')
     go = sub.add_parser('go')
-    go.add_argument('table_id', choices=TABLES)
+    go.add_argument('table_ids', nargs='+', choices=TABLES, metavar='table_id',
+                    help='one or more tables; several run as dock-to-dock cycles in order')
+    go.add_argument('--dock-wait-s', type=float, default=DOCK_WAIT_S,
+                    help='wait at the dock between cycles of a sequence (charging stop)')
     go.add_argument('--route', help='route file (default: <table_id>_route.yaml)')
     go.add_argument('--region', nargs=3, type=float, metavar=('X', 'Y', 'R'))
     go.add_argument('--via-route', help='water_station route (default: <P2>/water_station_route.yaml)')
