@@ -65,14 +65,22 @@ def test_physical_candidate_is_accepted():
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     assert document['amcl']['ros__parameters']['set_initial_pose'] is False
     assert document['amcl']['ros__parameters']['transform_tolerance'] == 1.0
-    assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.08
+    amcl = document['amcl']['ros__parameters']
+    # At the candidate maximum speed, request translation updates at least
+    # once per second rather than waiting 0.25 / 0.08 = 3.125 seconds.
+    assert amcl['update_min_d'] / 0.08 <= 1.0
+    assert amcl['update_min_a'] / 0.3 <= 1.0
+    assert 0 < amcl['update_min_d'] <= 0.05
+    assert 0 < amcl['update_min_a'] <= 0.05
+    assert document['velocity_smoother']['ros__parameters']['max_velocity'][0] == 0.12
     controller = document['controller_server']['ros__parameters']
     assert controller['progress_checker']['plugin'] == (
         'nav2_controller::PoseProgressChecker')
     assert controller['progress_checker']['required_movement_radius'] == 0.05
     assert controller['progress_checker']['required_movement_angle'] == 0.10
     assert controller['progress_checker']['movement_time_allowance'] == 10.0
-    assert controller['FollowPath']['rotate_to_heading_min_angle'] >= 1.57
+    # Large heading changes turn in place: the box escape clearance covers only that.
+    assert controller['FollowPath']['rotate_to_heading_min_angle'] <= 0.785
 
 
 def test_explicit_footprint_margin_is_not_padded_twice():
@@ -145,7 +153,8 @@ def test_stop_zone_has_requested_geometric_margin():
         max(abs(point[1]) for point in stop)
         - max(abs(point[1]) for point in footprint),
     )
-    assert margins == pytest.approx((0.05, 0.05, 0.05))
+    # Leading edge 0.05 m; rear and sides at the padded footprint (2026-10-01).
+    assert margins == pytest.approx((0.05, 0.0, 0.0))
     assert stop_zone['type'] == 'velocity_polygon'
     assert stop_zone['velocity_polygons'] == [
         'rotation', 'rotation_clockwise', 'translation_forward',
@@ -172,13 +181,14 @@ def test_stop_zone_has_requested_geometric_margin():
         max(abs(point[1]) for point in footprint))
     backward = yaml.safe_load(stop_zone['translation_backward']['points'])
     assert min(point[0] for point in backward) == pytest.approx(
-        min(point[0] for point in footprint) - 0.05)
+        min(point[0] for point in footprint))
     assert max(abs(point[1]) for point in backward) == pytest.approx(
         max(abs(point[1]) for point in footprint))
     assert monitor['source_timeout'] == 1.0
     assert monitor['FootprintApproach']['enabled'] is True
+    # The StopZone above is the collision stop; RPP's own projection is off.
     assert document['controller_server']['ros__parameters']['FollowPath'][
-        'use_collision_detection'] is True
+        'use_collision_detection'] is False
     planner = document['planner_server']['ros__parameters']['GridBased']
     assert planner['plugin'] == 'nav2_navfn_planner::NavfnPlanner'
     assert planner['use_astar'] is False
@@ -412,7 +422,7 @@ def test_standalone_keeps_components_parameters_and_required_shutdown(monkeypatc
             'velocity_smoother', 'bt_navigator', 'behavior_server',
             'keepout_filter_mask_server', 'keepout_costmap_filter_info_server',
             'collision_monitor', 'nav2_liveness_guard'} <= nodes.keys()
-    assert len(actions) == len(nodes) * 2  # every process has a required exit handler
+    assert len(actions) == len(nodes) * 2 - 1  # discovery observer is diagnostic only
     controller = nodes['controller_server']
     params = evaluate_parameters(context, controller._Node__parameters)
     rewritten = yaml.safe_load(Path(params[0]).read_text())
@@ -470,7 +480,7 @@ def test_coordinated_startup_uses_one_ordered_required_manager(monkeypatch):
         for action in actions
         if action.__class__.__name__ == 'RegisterEventHandler'
     }
-    assert set(nodes.values()) == exit_targets
+    assert set(nodes.values()) - {nodes['nav2_liveness_guard']} == exit_targets
 
 
 def test_legacy_startup_keeps_three_independent_managers(monkeypatch):
@@ -502,6 +512,43 @@ def test_legacy_startup_keeps_three_independent_managers(monkeypatch):
         'lifecycle_manager_localization',
         'lifecycle_manager_navigation',
     }
+
+
+@pytest.mark.parametrize('coordinated', ['false', 'true'])
+@pytest.mark.parametrize('composition', ['false', 'true'])
+def test_prepare_mode_does_not_activate_navigation_before_localization(
+        monkeypatch, coordinated, composition):
+    spec = importlib.util.spec_from_file_location('prepared_nav', LAUNCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, '_validate_new_base_params', lambda *a, **k: [])
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _: str(ROOT / 'jdamr_cube_navigation'))
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_candidate',
+        'map': '/tmp/reference-map.yaml', 'keepout_mask': '/tmp/reference-mask.yaml',
+        'params_file': str(PARAMS), 'use_sim_time': 'false',
+        'autostart': 'true', 'navigation_autostart': 'false',
+        'use_composition': composition, 'coordinated_startup': coordinated,
+    })
+    if coordinated == 'true':
+        with pytest.raises(RuntimeError, match='independent lifecycle'):
+            module._launch_navigation(context)
+        return
+    actions = module._launch_navigation(context)
+    nodes = {a._Node__node_name: a for a in actions
+             if isinstance(a, Node)}
+    for name in ('keepout', 'localization', 'navigation'):
+        params = evaluate_parameters(
+            context, nodes['lifecycle_manager_' + name]._Node__parameters)
+        assert params[0]['autostart'] is (name != 'navigation')
+    assert 'collision_monitor' in nodes
+    assert 'nav2_liveness_guard' in nodes
+    containers = [a for a in actions if isinstance(a, ComposableNodeContainer)]
+    assert len(containers) == (1 if composition == 'true' else 0)
+    if composition == 'true':
+        assert 'controller_server' not in nodes
 
 
 def test_core_defaults_to_legacy_independent_startup(monkeypatch):
@@ -955,23 +1002,6 @@ def test_polygon_coordinates_must_be_finite_numeric_pairs(tmp_path):
         _load_validator(invalid)(None)
 
 
-@pytest.mark.parametrize('plugin_name', ['FollowPath', 'Parking'])
-def test_registered_rpp_controller_requires_collision_detection(
-        tmp_path, plugin_name):
-    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
-    controller = document['controller_server']['ros__parameters']
-    if plugin_name == 'Parking':
-        controller['controller_plugins'].append(plugin_name)
-        controller[plugin_name] = dict(controller['FollowPath'])
-    controller[plugin_name]['use_collision_detection'] = False
-    invalid = tmp_path / f'{plugin_name}_collision_disabled.yaml'
-    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
-
-    with pytest.raises(RuntimeError, match=(
-            f'{plugin_name} collision detection must be active')):
-        _load_validator(invalid)(None)
-
-
 @pytest.mark.parametrize('plugins', [[], ['Parking']])
 def test_registered_controllers_require_follow_path(tmp_path, plugins):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
@@ -1013,7 +1043,7 @@ def test_unknown_registered_controller_plugin_is_rejected(tmp_path):
         _load_validator(invalid)(None)
 
 
-@pytest.mark.parametrize('velocity', [float('nan'), 0.0, -0.01, 0.081])
+@pytest.mark.parametrize('velocity', [float('nan'), 0.0, -0.01, 0.121])
 def test_registered_controller_velocity_is_finite_positive_and_bounded(
         tmp_path, velocity):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
@@ -1107,3 +1137,68 @@ def test_explicit_scan_source_is_allowed_for_safety_polygons(tmp_path):
     valid = tmp_path / 'explicit_polygon_sources.yaml'
     valid.write_text(yaml.safe_dump(document), encoding='utf-8')
     assert _load_validator(valid)(None) == []
+
+
+def test_t12_amcl_quiet_constants_match_amcl_update_rule():
+    """Pin the quiet AMCL exemption to AMCL's own update thresholds."""
+    from jdamr_cube_navigation import restaurant_service
+    amcl = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))['amcl']['ros__parameters']
+    axis_m = getattr(restaurant_service, 'AMCL_QUIET_MAX_AXIS_M', None)
+    yaw_rad = getattr(restaurant_service, 'AMCL_QUIET_MAX_YAW_RAD', None)
+    assert axis_m is not None and yaw_rad is not None, 'NEW[T12]: quiet AMCL constants'
+    assert axis_m == amcl['update_min_d']
+    assert yaw_rad == amcl['update_min_a']
+    assert amcl['resample_interval'] == 1
+
+
+def test_t13_transit_end_tolerance_matches_goal_checkers():
+    """Pin the transit plan-end tolerance to the transit goal checkers."""
+    from jdamr_cube_navigation import corridor_route
+    controller = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))[
+        'controller_server']['ros__parameters']
+    tolerance_m = getattr(corridor_route, 'TRANSIT_PLAN_END_TOLERANCE_M', None)
+    assert tolerance_m is not None, 'NEW[T13]: TRANSIT_PLAN_END_TOLERANCE_M'
+    assert tolerance_m == controller['position_goal_checker']['xy_goal_tolerance']
+    assert tolerance_m == controller['general_goal_checker']['xy_goal_tolerance']
+
+
+def test_t29_escape_constants_match_geometry():
+    """Derive the box escape clearance, excluded band and path contract."""
+    from jdamr_cube_navigation import box_service
+    from jdamr_cube_navigation.parking import MAXIMUM_CONTRACT_VALUES
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    clearance_m = getattr(box_service, 'ESCAPE_CLEARANCE_M', None)
+    exclude_m = getattr(box_service, 'ESCAPE_VALIDATION_EXCLUDE_M', None)
+    contract = getattr(box_service, 'ESCAPE_PATH_CONTRACT', None)
+    assert None not in (clearance_m, exclude_m, contract), 'NEW[T29]: escape constants'
+    rotation = yaml.safe_load(document['collision_monitor']['ros__parameters'][
+        'StopZone']['rotation']['points'])
+    assert max(math.hypot(*point) for point in rotation) + 0.1 <= clearance_m
+    resolutions = {document[name][name]['ros__parameters']['resolution']
+                   for name in ('global_costmap', 'local_costmap')}
+    assert resolutions == {0.05}
+    resolution_m = resolutions.pop()
+    assert exclude_m == pytest.approx(
+        math.ceil((math.sqrt(2.0) * resolution_m + 0.01) / 0.025) * 0.025)
+    assert exclude_m == pytest.approx(0.10)
+    assert contract == {
+        'xy_tolerance_m': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
+        'yaw_tolerance_rad': math.radians(MAXIMUM_CONTRACT_VALUES['yaw_tolerance_deg'])}
+
+
+def test_t30_observer_timing_matches_provenance():
+    """Pin the observer silence threshold to its recorded status timing."""
+    from jdamr_cube_navigation import box_service
+    provenance = yaml.safe_load((
+        ROOT / 'jdamr_cube_navigation/evaluation/depth_box_parking_provenance.yaml'
+    ).read_text(encoding='utf-8'))
+    timing = provenance['measurements'].get('observer_status_timing_20260929')
+    silent_s = getattr(box_service, 'OBSERVER_SILENT_S', None)
+    assert timing is not None and silent_s is not None, 'NEW[T30]: observer timing'
+    assert timing['unit'] == 's'
+    assert timing['value'] < silent_s
+    assert timing['derived']['observer_silent_s'] == silent_s
+    observer = yaml.safe_load((
+        ROOT / 'jdamr_cube_navigation/config/depth_box_parking.yaml'
+    ).read_text(encoding='utf-8'))['jdamr_depth_box_parking']['ros__parameters']
+    assert isinstance(observer['stable_frames'], int) and observer['stable_frames'] >= 1

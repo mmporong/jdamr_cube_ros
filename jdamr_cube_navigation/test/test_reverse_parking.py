@@ -5,7 +5,7 @@ from copy import deepcopy  # noqa: I100
 from pathlib import Path
 
 from jdamr_cube_navigation.reverse_parking import (  # noqa: I101
-    RPP_PLUGIN, reverse_controller_overrides, reverse_waypoints,
+    RPP_PLUGIN, reverse_controller_overrides, reverse_curve_waypoints, reverse_waypoints,
     static_corridor_clear,
 )
 
@@ -163,15 +163,13 @@ def test_controller_override_keeps_stricter_parking_velocity():
     lambda value: value['controller_plugins'].remove('Parking'),
     lambda value: value['controller_plugins'].append('Parking'),
     lambda value: value.pop('Parking'),
-    lambda value: value['Parking'].__setitem__(
-        'use_collision_detection', False),
     lambda value: value['Parking'].__setitem__('plugin', 'not-rpp'),
     lambda value: value['Parking'].__setitem__('desired_linear_vel', True),
     lambda value: value['controller_plugins'].append('ParkingReverse'),
 ])
 def test_controller_override_rejects_missing_duplicate_or_unsafe_source(
         mutate):
-    """Require one collision-enabled RPP Parking source and a free ID."""
+    """Require one RPP Parking source and a free ID."""
     controller = _controller()
     mutate(controller)
     with pytest.raises(ValueError):
@@ -300,3 +298,19 @@ def test_static_corridor_rejects_rotated_grid_origins(tmp_path):
             source, keepout, [(0.45, 0.35, 0.0)],
             [(-0.04, -0.04), (0.04, -0.04), (0.04, 0.04),
              (-0.04, 0.04)])
+
+
+def test_reverse_curve_takes_out_a_staging_offset_while_backing_up():
+    """A 10 cm lateral, 1.2 deg offset ends exactly on the dock pose, always backing."""
+    target = (-0.204, 0.184, 0.0)
+    start = (0.496, 0.284, math.radians(-1.2))
+    path = reverse_curve_waypoints(start, target)
+    assert path[0] == pytest.approx(start)
+    assert path[-1] == pytest.approx(target)
+    for (x0, y0, yaw0), (x1, y1, _yaw1) in zip(path, path[1:]):
+        assert (x1 - x0) * math.cos(yaw0) + (y1 - y0) * math.sin(yaw0) < 0.0
+
+
+def test_reverse_curve_rejects_a_turn_tighter_than_the_bound():
+    with pytest.raises(ValueError, match='tighter'):
+        reverse_curve_waypoints((0.2, 0.4, 0.0), (0.0, 0.0, 0.0))

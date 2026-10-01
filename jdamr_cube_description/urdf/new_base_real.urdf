@@ -74,4 +74,11 @@
     <parent link="base_link"/><child link="laser_link"/>
     <origin xyz="-0.010 0 0.150" rpy="0 0 3.141592653589793"/>
   </joint>
+  <!-- ESP32 board IMU: z down, board y forward, board x left
+       (config/new_base_geometry.yaml imu_rotation_rpy). Position not measured. -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/><child link="imu_link"/>
+    <origin xyz="0 0 0" rpy="3.141592653589793 0 1.5707963267948966"/>
+  </joint>
 </robot>

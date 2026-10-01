@@ -13,6 +13,12 @@ MINIMUM_TANGENT_SPREAD_M = 0.08
 MAXIMUM_RESIDUAL_RMS_M = 0.015
 MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD = math.radians(5.0)
 MAXIMUM_MEDIAN_NORMAL_OFFSET_M = 0.02
+# Beyond that agreement the two sensors see the face at different heights
+# (table_02, 2026-09-30: a steady 2.5 cm with a clean 45-point LiDAR line).
+# Up to this bound (inside the 4 cm candidate band) the nearer plane is
+# approached, so the final gap is never smaller than planned; larger offsets
+# are treated as a different object.
+MAXIMUM_NEARER_FACE_OFFSET_M = 0.035
 
 
 def _finite(value, label):
@@ -71,8 +77,25 @@ def _angle_difference(first, second):
 
 def witness_box_face_with_lidar(
         ranges, *, angle_min, angle_increment, range_min, range_max,
-        geometry, depth_target, robot_pose):
+        geometry, depth_target, robot_pose, diagnostics=None):
     """Confirm local LiDAR/depth face agreement without claiming accuracy."""
+    if diagnostics is not None:
+        if not isinstance(diagnostics, dict):
+            raise ValueError('diagnostics must be a mapping')
+        diagnostics.clear()
+        diagnostics.update({
+            'minimum_support': MINIMUM_SUPPORT,
+            'maximum_candidate_plane_distance_m':
+                MAX_CANDIDATE_PLANE_DISTANCE_M,
+            'maximum_tangent_half_width_m': MAX_TANGENT_HALF_WIDTH_M,
+            'minimum_tangent_spread_m': MINIMUM_TANGENT_SPREAD_M,
+            'maximum_residual_rms_m': MAXIMUM_RESIDUAL_RMS_M,
+            'maximum_normal_yaw_difference_rad':
+                MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD,
+            'maximum_median_normal_offset_m':
+                MAXIMUM_MEDIAN_NORMAL_OFFSET_M,
+            'maximum_nearer_face_offset_m': MAXIMUM_NEARER_FACE_OFFSET_M,
+        })
     angle_min = _finite(angle_min, 'angle_min')
     angle_increment = _finite(angle_increment, 'angle_increment')
     range_min = _finite(range_min, 'range_min')
@@ -118,6 +141,8 @@ def witness_box_face_with_lidar(
                             raw_range * math.sin(angle)))
     if not scan_points:
         raise ValueError('scan has no valid ranges')
+    if diagnostics is not None:
+        diagnostics['valid_scan_points'] = len(scan_points)
     base_points = _rotate(scan_points, laser_yaw)
     base_points += np.array((laser_x, laser_y))
     map_points = _rotate(base_points, robot_yaw)
@@ -126,9 +151,16 @@ def witness_box_face_with_lidar(
     relative = map_points - face
     normal_offsets = relative @ depth_normal
     tangent_offsets = relative @ tangent
-    selected = map_points[
-        (np.abs(normal_offsets) <= MAX_CANDIDATE_PLANE_DISTANCE_M)
-        & (np.abs(tangent_offsets) <= MAX_TANGENT_HALF_WIDTH_M)]
+    plane_band = np.abs(normal_offsets) <= MAX_CANDIDATE_PLANE_DISTANCE_M
+    tangent_band = np.abs(tangent_offsets) <= MAX_TANGENT_HALF_WIDTH_M
+    selected = map_points[plane_band & tangent_band]
+    if diagnostics is not None:
+        diagnostics.update({
+            'plane_band_only_count': int(np.count_nonzero(plane_band)),
+            'tangent_band_only_count': int(np.count_nonzero(tangent_band)),
+            'support_count': int(len(selected)),
+            'closest_normal_distance_m': float(np.min(np.abs(normal_offsets))),
+        })
     if len(selected) < MINIMUM_SUPPORT:
         raise ValueError('LiDAR face support is below five points')
 
@@ -149,6 +181,15 @@ def witness_box_face_with_lidar(
     fitted_yaw = math.atan2(fitted_normal[1], fitted_normal[0])
     depth_yaw = math.atan2(depth_normal[1], depth_normal[0])
     yaw_difference_rad = _angle_difference(fitted_yaw, depth_yaw)
+    if diagnostics is not None:
+        diagnostics.update({
+            'residual_rms_m': residual_rms_m,
+            'tangent_spread_m': tangent_spread_m,
+            'median_normal_offset_m': median_normal_offset_m,
+            'normal_yaw_difference_rad': yaw_difference_rad,
+            'fitted_normal_map_xy': tuple(
+                float(value) for value in fitted_normal),
+        })
 
     if tangent_spread_m < MINIMUM_TANGENT_SPREAD_M:
         raise ValueError('LiDAR face tangent spread is too narrow')
@@ -156,10 +197,18 @@ def witness_box_face_with_lidar(
         raise ValueError('LiDAR face line residual is too large')
     if yaw_difference_rad > MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD:
         raise ValueError('LiDAR and depth face normals disagree')
-    if abs(median_normal_offset_m) > MAXIMUM_MEDIAN_NORMAL_OFFSET_M:
+    if abs(median_normal_offset_m) > MAXIMUM_NEARER_FACE_OFFSET_M:
         raise ValueError('LiDAR and depth face distances disagree')
 
+    # The fitted normal points out of the face, toward the robot.
     face_to_plane_m = float(fitted_normal @ (center - face))
+    face_basis = 'lidar_plane'
+    if abs(median_normal_offset_m) > MAXIMUM_MEDIAN_NORMAL_OFFSET_M:
+        if face_to_plane_m < 0.0:
+            face_to_plane_m = 0.0
+            face_basis = 'depth_face_nearer'
+        else:
+            face_basis = 'lidar_plane_nearer'
     fused_face = face + fitted_normal * face_to_plane_m
     return {
         'fused_face_center_map_xy_m': tuple(float(value) for value in fused_face),
@@ -167,6 +216,7 @@ def witness_box_face_with_lidar(
             float(value) for value in fitted_normal),
         'residual_rms_m': residual_rms_m,
         'distance_difference_m': median_normal_offset_m,
+        'face_basis': face_basis,
         'normal_yaw_difference_rad': yaw_difference_rad,
         'support_count': int(len(selected)),
         'tangent_spread_m': tangent_spread_m,

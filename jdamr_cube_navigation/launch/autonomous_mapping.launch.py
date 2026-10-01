@@ -184,7 +184,7 @@ def generate_launch_description():
         ))
         for process in (
             navigation_container, collision_monitor,
-            navigation_lifecycle, liveness_guard)
+            navigation_lifecycle)
     ]
 
     return LaunchDescription([

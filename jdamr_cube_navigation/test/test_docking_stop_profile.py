@@ -43,7 +43,7 @@ def changed_paths(before, after, prefix=()):
     return set()
 
 
-def test_only_two_stopzone_point_fields_change_and_input_is_untouched():
+def test_only_stopzone_front_and_slowdown_switch_change_and_input_is_untouched():
     nav2, geometry = documents()
     original = deepcopy(nav2)
     output = apply_docking_stop_profile(nav2, geometry)
@@ -53,6 +53,7 @@ def test_only_two_stopzone_point_fields_change_and_input_is_untouched():
          'translation_forward', 'points'),
         ('collision_monitor', 'ros__parameters', 'StopZone',
          'stopped', 'points'),
+        ('collision_monitor', 'ros__parameters', 'SlowdownZone', 'enabled'),
     }
 
 
@@ -84,7 +85,7 @@ def test_backward_side_rotation_scan_timeouts_and_approach_are_identical():
     assert after['StopZone']['rotation'] == before['StopZone']['rotation']
     assert after['StopZone']['rotation_clockwise'] == (
         before['StopZone']['rotation_clockwise'])
-    assert after['SlowdownZone'] == before['SlowdownZone']
+    assert after['SlowdownZone'] == {**before['SlowdownZone'], 'enabled': False}
     assert after['FootprintApproach'] == before['FootprintApproach']
     assert after['scan'] == before['scan']
     assert after['source_timeout'] == before['source_timeout']
@@ -142,9 +143,17 @@ def test_precision_profile_requires_explicit_launch_contract():
     nav2, geometry = documents()
     profile = apply_docking_stop_profile(nav2, geometry)
     validate_new_base_params(nav2, geometry)
-    with pytest.raises(RuntimeError, match='margin'):
+    with pytest.raises(RuntimeError, match='margin|SlowdownZone is not active'):
         validate_new_base_params(profile, geometry)
     validate_new_base_params(profile, geometry, precision_parking=True)
+
+
+def test_t37_standard_session_still_requires_the_slowdown_ring():
+    """Only the precision session may run without the slowdown ring."""
+    nav2, geometry = documents()
+    nav2['collision_monitor']['ros__parameters']['SlowdownZone']['enabled'] = False
+    with pytest.raises(RuntimeError, match='SlowdownZone is not active'):
+        validate_new_base_params(nav2, geometry)
 
 
 def test_precision_contract_still_rejects_smaller_than_requested_clearance():
@@ -160,3 +169,34 @@ def test_precision_contract_still_rejects_smaller_than_requested_clearance():
             'StopZone'][name]['points'] = json.dumps(polygon)
     with pytest.raises(RuntimeError, match='margin|shape|clearance'):
         validate_new_base_params(profile, geometry, precision_parking=True)
+
+
+def test_t37_precision_final_approach_outruns_the_progress_checker():
+    """
+    The slowest final-approach command must clear the progress checker twice over.
+
+    On 2026-09-30 the water-station approach stopped 8 cm short: the Parking
+    minimum 0.01 m/s was cut to 0.004 m/s by the 0.6 SlowdownZone, below the
+    0.05 m / 10 s progress requirement (FAILED_TO_MAKE_PROGRESS, 105).
+    """
+    nav2, geometry = documents()
+    output = apply_docking_stop_profile(nav2, geometry)
+    monitor = output['collision_monitor']['ros__parameters']
+    contract = yaml.safe_load((ROOT / 'jdamr_cube_navigation/config/'
+                               'box_parking_contract.yaml').read_text(encoding='utf-8'))
+    progress = output['controller_server']['ros__parameters']['progress_checker']
+    required_mps = (progress['required_movement_radius']
+                    / progress['movement_time_allowance'])
+    slowdown = monitor['SlowdownZone']
+    factor = (1.0 - slowdown['slowdown_ratio']) if slowdown.get('enabled', True) else 1.0
+    assert contract['min_approach_linear_mps'] * factor >= 2.0 * required_mps
+
+
+def test_t37_precision_profile_keeps_stop_and_approach_protection():
+    """Disabling the slowdown ring leaves the 5 cm StopZone and approach active."""
+    nav2, geometry = documents()
+    monitor = apply_docking_stop_profile(nav2, geometry)['collision_monitor']['ros__parameters']
+    assert monitor['StopZone']['enabled'] is True
+    assert monitor['FootprintApproach']['enabled'] is True
+    assert monitor['SlowdownZone']['enabled'] is False
+    assert 'SlowdownZone' in monitor['polygons']

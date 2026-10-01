@@ -22,6 +22,16 @@ JD-AMR 복도 왕복 주행의 실측 산출물. 사이트 그림을 실물로 �
 
 경로 총연장은 **76.42 m**, waypoint 20개다. 사이트에 80 m로 적혀 있다면 고쳐야 한다.
 
+### 충전소 후진 도킹 (2026-09-30)
+
+- `dock_return_20260930_overview.png` — 수정 지도·keepout 위의 출발 자세, staging·도크 차체 윤곽, 후진 직선, 도킹 뒤 LiDAR
+- `dock_return_20260930_dock_detail.png` — 도크 통로 흔적 3칸과 keepout 경계의 수정 전후
+- `dock_return_20260930_timeline.png` — 세션 재시작부터 후진 도킹까지 시각
+
+원본은 `$HOME/jdamr_data/dock_return_success_20260930/`, 생성 스크립트는
+`jdamr_cube_navigation/evaluation/dock_return_20260930_figures.py`, 사용 범위는
+`jdamr_cube_navigation/evaluation/20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md`에 있다.
+
 ## analysis/ — bag에서 뽑은 수치
 
 원본 bag: `corridor_keepout_roundtrip_20260901T150446` (905.09초, 128,791 메시지)

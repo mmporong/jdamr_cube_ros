@@ -143,8 +143,35 @@ def test_fewer_than_five_points_is_rejected():
     valid = [index for index, value in enumerate(full) if math.isfinite(value)]
     for index in valid[:4]:
         ranges[index] = full[index]
+    diagnostics = {}
     with pytest.raises(ValueError, match='below five'):
-        witness(ranges)
+        witness_box_face_with_lidar(
+            ranges, angle_min=ANGLE_MIN, angle_increment=ANGLE_INCREMENT,
+            range_min=RANGE_MIN, range_max=RANGE_MAX, geometry=GEOMETRY,
+            depth_target=target(),
+            robot_pose={'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0},
+            diagnostics=diagnostics)
+    assert diagnostics['valid_scan_points'] == 4
+    assert diagnostics['support_count'] == 4
+    assert diagnostics['plane_band_only_count'] == 4
+    assert diagnostics['tangent_band_only_count'] == 4
+    assert diagnostics['closest_normal_distance_m'] == pytest.approx(0.0)
+    assert diagnostics['minimum_support'] == 5
+
+
+def test_optional_diagnostics_do_not_change_successful_selection():
+    robot = {'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0}
+    ranges = scan_for_face((0.5, 0.0), (-1.0, 0.0), robot)
+    baseline = witness(ranges, robot=robot)
+    diagnostics = {}
+    instrumented = witness_box_face_with_lidar(
+        ranges, angle_min=ANGLE_MIN, angle_increment=ANGLE_INCREMENT,
+        range_min=RANGE_MIN, range_max=RANGE_MAX, geometry=GEOMETRY,
+        depth_target=target(), robot_pose=robot, diagnostics=diagnostics)
+    assert instrumented == baseline
+    assert diagnostics['support_count'] == baseline['support_count']
+    assert diagnostics['residual_rms_m'] == baseline['residual_rms_m']
+    assert diagnostics['tangent_spread_m'] == baseline['tangent_spread_m']
 
 
 def test_narrow_tangent_support_is_rejected():
@@ -173,10 +200,25 @@ def test_uniform_small_offset_projects_depth_face_to_lidar_plane():
     assert result['distance_difference_m'] == pytest.approx(-0.01)
 
 
-def test_uniform_offset_beyond_distance_agreement_is_rejected():
+@pytest.mark.parametrize('offset_m,face_x_m,basis', [
+    (-0.03, 0.50, 'depth_face_nearer'),
+    (0.03, 0.47, 'lidar_plane_nearer'),
+])
+def test_offset_beyond_agreement_approaches_the_nearer_face(offset_m, face_x_m, basis):
+    """2026-09-30 table_02: a clean LiDAR line 2.5 cm behind the depth face."""
     robot = {'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0}
     ranges = scan_for_face(
-        (0.5, 0.0), (-1.0, 0.0), robot, offset=lambda _index: -0.03)
+        (0.5, 0.0), (-1.0, 0.0), robot, offset=lambda _index: offset_m)
+    result = witness(ranges, robot=robot)
+    assert result['fused_face_center_map_xy_m'] == pytest.approx((face_x_m, 0.0))
+    assert result['distance_difference_m'] == pytest.approx(offset_m)
+    assert result['face_basis'] == basis
+
+
+def test_uniform_offset_beyond_nearer_face_bound_is_rejected():
+    robot = {'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0}
+    ranges = scan_for_face(
+        (0.5, 0.0), (-1.0, 0.0), robot, offset=lambda _index: -0.038)
     with pytest.raises(ValueError, match='distances disagree'):
         witness(ranges, robot=robot)
 

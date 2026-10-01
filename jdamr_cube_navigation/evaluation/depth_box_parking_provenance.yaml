@@ -56,6 +56,26 @@ measurements:
     method: 박스 평면 검출 후보의 소프트웨어 허용 하한
     status: CONFIGURED_NOT_SENSOR_VALIDATED
 
+  observer_status_timing_20260929:
+    value: 0.795
+    unit: s
+    measured_at: '2026-09-29'
+    valid_for: 파이 관측기 유닛(processing_hz 2.0)의 정상 부하 정지·접근 구간
+    method: >-
+      table_departure_20260929_latest_bag(294 s, 563건)의
+      /box_parking/perception_status 수신 시각 차분; value는 최대 수신 간격
+    summary:
+      receive_interval_median_s: 0.521
+      receive_interval_p99_s: 0.657
+      receive_interval_over_1s_count: 0
+      observer_latency_rejection_count: 0
+      receive_age_median_s: 0.121
+      receive_age_p99_s: 0.28
+    derived:
+      observer_silent_s: 1.5
+      basis: 최대 0.795 s의 약 1.9배, 1.0 s 초과 0건
+    status: DERIVED_FROM_PRESERVED_BAG
+
 targets:
   requested_front_clearance:
     value: 0.05

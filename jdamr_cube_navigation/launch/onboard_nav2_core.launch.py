@@ -203,13 +203,24 @@ def _launch_navigation(context):
     if profile in ('new_base_candidate', 'new_base_revisit_candidate'):
         _validate_new_base_params(
             context, revisit=profile == 'new_base_revisit_candidate')
+    box_search = LaunchConfiguration(
+        'enable_box_search', default='false').perform(context) == 'true'
+    if box_search and (profile not in ('new_base_candidate', 'new_base_revisit_candidate')
+                       or LaunchConfiguration('precision_parking', default='false').perform(
+                           context) != 'true'):
+        raise RuntimeError('box search requires the precision-parking new-base profile')
     map_yaml = LaunchConfiguration('map')
     keepout_mask = LaunchConfiguration('keepout_mask')
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    navigation_autostart = LaunchConfiguration(
+        'navigation_autostart', default=autostart)
     coordinated_startup = LaunchConfiguration(
         'coordinated_startup', default='false').perform(context).lower() == 'true'
+    if (coordinated_startup
+            and navigation_autostart.perform(context) != autostart.perform(context)):
+        raise RuntimeError('separate navigation autostart requires independent lifecycle managers')
     selected_bt = os.path.join(package_share, 'behavior_trees', behavior_tree)
     protection = None
     if profile == 'obstacle_candidate':
@@ -250,9 +261,11 @@ def _launch_navigation(context):
     )
     remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
     lifecycle_bond = {
-        # Allow lifecycle service and bond handling to tolerate scheduler
-        # jitter.  The executable threshold is covered by launch tests.
-        'bond_timeout': 10.0,
+        # Bonds off (as in the mapping launches): on 2026-09-30 a departing
+        # executor stalled heartbeats past 10 s on the loaded Pi and the managers
+        # shut the stack down (15:54, 16:57). Collision stop, command timeouts and
+        # stale-sensor checks are unaffected.
+        'bond_timeout': 0.0,
         'bond_respawn_max_duration': 20.0,
     }
 
@@ -320,14 +333,17 @@ def _launch_navigation(context):
     required_nodes = list(DEFAULT_REQUIRED)
     if profile in {'obstacle_candidate', 'obstacle_base_candidate',
                    'new_base_candidate', 'new_base_revisit_candidate'}:
-        # The candidate BT calls Wait during bounded recovery.  Load only
-        # that plugin; selecting this profile must not enable spin or backup.
+        # Ordinary transit keeps Wait only. Precision service can expose Spin
+        # for explicit bounded search actions, never automatic backup/recovery.
+        behavior_options = {'behavior_plugins': ['wait'], 'use_sim_time': use_sim_time}
+        if box_search:
+            behavior_options.update(behavior_plugins=['wait', 'spin'],
+                                    spin={'plugin': 'nav2_behaviors::Spin'})
         nav2_components.insert(-1, ComposableNode(
             package='nav2_behaviors',
             plugin='behavior_server::BehaviorServer',
             name='behavior_server',
-            parameters=[configured_params, {
-                'behavior_plugins': ['wait'], 'use_sim_time': use_sim_time}],
+            parameters=[configured_params, behavior_options, {'use_sim_time': use_sim_time}],
             remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
         ))
         navigation_nodes.insert(-1, 'behavior_server')
@@ -395,7 +411,7 @@ def _launch_navigation(context):
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'autostart': autostart,
+            'autostart': navigation_autostart,
             'node_names': navigation_nodes,
             **lifecycle_bond,
         }],
@@ -457,7 +473,6 @@ def _launch_navigation(context):
     ])
     required_processes = [
         *navigation_processes, collision_monitor, *lifecycle_processes,
-        liveness_guard,
     ]
     required_exit_handlers = [
         RegisterEventHandler(OnProcessExit(
@@ -467,7 +482,8 @@ def _launch_navigation(context):
         for process in required_processes
     ]
 
-    return [*required_exit_handlers, *required_processes]
+    # Discovery diagnostics do not own motor or lifecycle shutdown.
+    return [*required_exit_handlers, *required_processes, liveness_guard]
 
 
 def generate_launch_description():
@@ -476,6 +492,8 @@ def generate_launch_description():
     discovery_range = LaunchConfiguration('discovery_range')
     return LaunchDescription([
         DeclareLaunchArgument('precision_parking', default_value='false',
+                              choices=['true', 'false']),
+        DeclareLaunchArgument('enable_box_search', default_value='false',
                               choices=['true', 'false']),
         DeclareLaunchArgument('use_composition', default_value='true',
                               choices=['true', 'false']),
@@ -487,12 +505,13 @@ def generate_launch_description():
                 'ordered lifecycle transaction')),
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetEnvironmentVariable('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4'),
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '0'),
         DeclareLaunchArgument(
             'discovery_range', default_value='LOCALHOST',
             choices=['LOCALHOST', 'SUBNET'],
             description=(
-                'The physical wrapper selects SUBNET to consume LOCALHOST '
-                'sensor publishers on this host')),
+                'Use the same discovery scope as onboard sensors and the '
+                'route executor; LOCALHOST excludes remote ROS clients')),
         SetEnvironmentVariable(
             'ROS_AUTOMATIC_DISCOVERY_RANGE', discovery_range),
         DeclareLaunchArgument(
@@ -511,6 +530,9 @@ def generate_launch_description():
         DeclareLaunchArgument('asset_registry', default_value='',
                               description='Hash-bound named map and keepout registry'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('navigation_autostart',
+                              default_value=LaunchConfiguration('autostart'),
+                              choices=['true', 'false']),
         DeclareLaunchArgument('revisit_initial_x', default_value='0.0'),
         DeclareLaunchArgument('revisit_initial_y', default_value='-0.1'),
         DeclareLaunchArgument('revisit_initial_yaw', default_value='0.0'),

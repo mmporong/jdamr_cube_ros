@@ -96,7 +96,15 @@ def _set_front(points, front_m):
 
 
 def apply_docking_stop_profile(nav2_document, geometry):
-    """Return a copy with only forward/stopped StopZone front X adjusted."""
+    """
+    Return a copy for the 5 cm precision session.
+
+    Only the forward/stopped StopZone front X moves to the approved clearance,
+    and the SlowdownZone is switched off: its 0.5 m ring always contains the
+    target face during the final approach and cut the Parking minimum speed
+    below the progress checker (2026-09-30 water station, 105). The StopZone,
+    rotation guards and FootprintApproach stay unchanged.
+    """
     if not isinstance(nav2_document, dict):
         raise ValueError('Nav2 document must be a mapping')
     physical_front_m = _geometry_front(geometry)
@@ -121,4 +129,9 @@ def apply_docking_stop_profile(nav2_document, geometry):
         _set_front(points, target_front_m)
         stop_zone[name]['points'] = (
             json.dumps(points) if isinstance(original, str) else points)
+    try:
+        slowdown = result['collision_monitor']['ros__parameters']['SlowdownZone']
+    except (KeyError, TypeError) as error:
+        raise ValueError('collision_monitor SlowdownZone is missing') from error
+    slowdown['enabled'] = False
     return result

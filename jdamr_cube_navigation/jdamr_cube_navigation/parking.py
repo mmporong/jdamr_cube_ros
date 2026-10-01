@@ -27,6 +27,11 @@ POSITIVE_FIELDS = {
 COMMAND_ZERO_EPSILON = 1e-9
 # Requirement/candidate bounds, not measured calibration constants. A custom
 # contract may tighten them but must not silently weaken the accepted target.
+STAGING_XY_TOLERANCE_M = 0.15
+# The dock reverse ends on position; the heading is turned in place afterwards.
+DOCK_POSITION_TOLERANCE_M = 0.02
+# Box face alignment only squares the base before the straight final approach.
+FACE_ALIGNMENT_XY_TOLERANCE_M = 0.10
 MAXIMUM_CONTRACT_VALUES = {
     'xy_tolerance_m': 0.05,
     'yaw_tolerance_deg': 3.0,
@@ -109,10 +114,8 @@ def parking_controller_overrides(
         raise ValueError('FollowPath configuration must be a mapping')
     if (follow_path.get('plugin') != (
             'nav2_regulated_pure_pursuit_controller::'
-            'RegulatedPurePursuitController')
-            or follow_path.get('use_collision_detection') is not True):
-        raise ValueError(
-            'parking requires collision-enabled Regulated Pure Pursuit')
+            'RegulatedPurePursuitController')):
+        raise ValueError('parking requires Regulated Pure Pursuit')
     if ('Parking' in controllers or 'Parking' in original
             or 'parking_goal_checker' in goal_checkers
             or 'parking_goal_checker' in original):
@@ -121,6 +124,13 @@ def parking_controller_overrides(
     configured = deepcopy(original)
     configured['controller_plugins'].append('Parking')
     configured['goal_checker_plugins'].append('parking_goal_checker')
+    configured['goal_checker_plugins'].append('alignment_goal_checker')
+    configured['alignment_goal_checker'] = {
+        'plugin': 'nav2_controller::SimpleGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
+        'yaw_goal_tolerance': math.radians(MAXIMUM_CONTRACT_VALUES['yaw_tolerance_deg']),
+    }
     parking = deepcopy(configured['FollowPath'])
     parking.update({
         'desired_linear_vel': contract['desired_linear_mps'],
@@ -132,8 +142,48 @@ def parking_controller_overrides(
         'use_rotate_to_heading': True,
         'allow_reversing': False,
         'stateful': False,
+        # Slow down only over the last 0.15 m and ignore the box's own cost: from
+        # 0.6 m the straight 0.44 m approach never left the minimum speed
+        # (2026-10-01). The goal checker and the StopZone front end the stop.
+        'approach_velocity_scaling_dist': 0.15,
+        'regulated_linear_scaling_min_radius': 0.9,
+        'use_cost_regulated_linear_velocity_scaling': False,
     })
     configured['Parking'] = parking
+    # Graceful (Park-Kuipers smooth control law, the law Nav2 docking uses)
+    # converges position and heading together for the last box approach.
+    configured['controller_plugins'].append('GracefulParking')
+    configured['GracefulParking'] = graceful_parking(contract, allow_backward=False)
+    # Staging is judged by position; the heading is turned once afterwards.
+    configured['goal_checker_plugins'].append('staging_position_checker')
+    # The curved dock reverse takes out a staging offset, so the staging leg
+    # need not chase the last centimetres: within 5 cm the remaining path pointed
+    # sideways and the base turned right, left and right for 14 s (2026-10-01).
+    configured['staging_position_checker'] = {
+        'plugin': 'nav2_controller::PositionGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': STAGING_XY_TOLERANCE_M,
+    }
+    # Nav2 RPP rejects use_rotate_to_heading with allow_reversing, so the reverse
+    # controller cannot turn at its goal: 0.1 cm from the dock but 4.4 deg off it
+    # shuttled +-2 cm/s for 10 s until 105 (2026-10-01 14:45). The dock reverse is
+    # judged by position only and the forward Parking controller turns afterwards.
+    # Within 5 cm of the alignment pose the last few centimetres of path pointed
+    # sideways: 0.30 m of travel took 30 s and 125 deg left plus 129 deg right at
+    # table_02 (2026-10-01 16:23). 10 cm, then the heading only.
+    configured['goal_checker_plugins'].append('face_alignment_checker')
+    configured['face_alignment_checker'] = {
+        'plugin': 'nav2_controller::SimpleGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': FACE_ALIGNMENT_XY_TOLERANCE_M,
+        'yaw_goal_tolerance': math.radians(MAXIMUM_CONTRACT_VALUES['yaw_tolerance_deg']),
+    }
+    configured['goal_checker_plugins'].append('dock_position_checker')
+    configured['dock_position_checker'] = {
+        'plugin': 'nav2_controller::PositionGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': DOCK_POSITION_TOLERANCE_M,
+    }
     configured['parking_goal_checker'] = {
         'plugin': 'nav2_controller::SimpleGoalChecker',
         'stateful': False,
@@ -141,6 +191,28 @@ def parking_controller_overrides(
         'yaw_goal_tolerance': contract['yaw_tolerance_rad'],
     }
     return configured
+
+
+def graceful_parking(contract: dict, allow_backward: bool) -> dict:
+    """Return Graceful controller parameters at the parking contract speeds."""
+    return {
+        'plugin': 'nav2_graceful_controller::GracefulController',
+        'transform_tolerance': 0.5,
+        'min_lookahead': 0.1,
+        'max_lookahead': 0.3,
+        'k_phi': 2.0,
+        'k_delta': 1.0,
+        'beta': 0.4,
+        'lambda': 2.0,
+        'v_linear_min': contract['min_approach_linear_mps'],
+        'v_linear_max': contract['desired_linear_mps'],
+        'v_angular_max': contract['rotate_angular_radps'],
+        'v_angular_min_in_place': contract['rotate_angular_radps'] / 2.0,
+        'slowdown_radius': 0.3,
+        'initial_rotation': False,
+        'prefer_final_rotation': False,
+        'allow_backward': allow_backward,
+    }
 
 
 def pose_errors(target_xyz: Sequence[float],

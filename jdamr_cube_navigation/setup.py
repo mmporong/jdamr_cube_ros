@@ -39,6 +39,8 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
+            'rviz_display_relay = '
+            'jdamr_cube_navigation.rviz_display_relay:main',
             'box_service = jdamr_cube_navigation.box_service:main',
             'frontier_explorer = jdamr_cube_navigation.frontier_explorer:main',
             'corridor_route = jdamr_cube_navigation.corridor_route:main',
@@ -48,6 +50,8 @@ setup(
             'jdamr_cube_navigation.keepout_zone_capture:main',
             'tf_replay_filter = '
             'jdamr_cube_navigation.tf_replay_filter:main',
+            'imu_bias_relay = '
+            'jdamr_cube_navigation.imu_bias_relay:main',
             'soak_metrics = jdamr_cube_navigation.soak_metrics:main',
             'nav2_liveness_guard = '
             'jdamr_cube_navigation.nav2_liveness_guard:main',

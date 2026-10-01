@@ -1,8 +1,8 @@
 """Validate the boot-time Astra USB recovery contract without USB hardware."""
 
 import os
-import subprocess
 from pathlib import Path
+import subprocess
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -13,7 +13,7 @@ BASE_OVERRIDE = (
     PACKAGE / 'systemd/jdamr-base.service.d/15-astra-usb-recover.conf')
 
 
-def run_recovery(tmp_path, lsusb_bin):
+def run_recovery(tmp_path, lsusb_bin, **overrides):
     """Run the helper against a temporary port-control file."""
     port = tmp_path / 'disable'
     port.write_text('unchanged', encoding='utf-8')
@@ -26,6 +26,8 @@ def run_recovery(tmp_path, lsusb_bin):
         'ASTRA_USB_RETRY_COUNT': '1',
         'LSUSB_BIN': lsusb_bin,
         'SLEEP_BIN': '/bin/true',
+        'ASTRA_USB_FORCE_RECOVERY': '0',
+        **overrides,
     }
     result = subprocess.run(
         [str(SCRIPT)], env=environment, capture_output=True, text=True,
@@ -40,6 +42,21 @@ def test_present_camera_does_not_cycle_port(tmp_path):
     assert result.returncode == 0
     assert port_state == 'unchanged'
     assert 'already present' in result.stdout
+
+
+def test_explicit_recovery_cycles_present_but_unopenable_camera(tmp_path):
+    result, port_state = run_recovery(
+        tmp_path, '/bin/true', ASTRA_USB_FORCE_RECOVERY='1')
+    assert result.returncode == 0
+    assert port_state == '0'
+    assert 'recovery attempt 1/1' in result.stdout
+
+
+def test_invalid_recovery_mode_leaves_port_untouched(tmp_path):
+    result, port_state = run_recovery(
+        tmp_path, '/bin/true', ASTRA_USB_FORCE_RECOVERY='yes')
+    assert result.returncode == 2
+    assert port_state == 'unchanged'
 
 
 def test_failed_recovery_leaves_port_enabled(tmp_path):

@@ -1,8 +1,11 @@
 """Regression tests for physical-robot DDS transport configuration."""
 
 import ast
+import importlib.util
 from pathlib import Path
 import xml.etree.ElementTree as ET
+
+import pytest
 
 
 LAUNCH_PATH = (
@@ -40,16 +43,29 @@ def test_real_bringup_forces_udp_before_starting_nodes():
     assert ast.literal_eval(first_action.args[1]) == 'UDPv4'
 
 
-def test_real_bringup_uses_subnet_discovery_for_sensor_delivery():
-    syntax = ast.parse(LAUNCH_PATH.read_text(encoding='utf-8'))
-    environment = {
-        ast.literal_eval(node.args[0]): ast.literal_eval(node.args[1])
-        for node in ast.walk(syntax)
-        if isinstance(node, ast.Call)
-        and _call_name(node) == 'SetEnvironmentVariable'
-    }
-
-    assert environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'SUBNET'
+@pytest.mark.parametrize('override,expected', [
+    (None, 'SUBNET'), ('LOCALHOST', 'LOCALHOST'), ('SUBNET', 'SUBNET')])
+def test_real_bringup_resolves_discovery_before_nodes(monkeypatch, override, expected):
+    from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+    from launch_ros.actions import Node
+    spec = importlib.util.spec_from_file_location('physical_launch', LAUNCH_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory',
+                        lambda _: str(URDF_PATH.parent.parent))
+    context = LaunchContext()
+    context.environment['ROS_LOCALHOST_ONLY'] = '1'
+    if override is not None:
+        context.launch_configurations['discovery_range'] = override
+    for action in module.generate_launch_description().entities:
+        if isinstance(action, Node):
+            break
+        if isinstance(action, (DeclareLaunchArgument, SetEnvironmentVariable)):
+            action.execute(context)
+    assert context.environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == expected
+    assert context.environment['ROS_LOCALHOST_ONLY'] == '0'
+    assert context.environment['FASTDDS_BUILTIN_TRANSPORTS'] == 'UDPv4'
 
 
 def test_real_bringup_uses_measured_base_geometry():

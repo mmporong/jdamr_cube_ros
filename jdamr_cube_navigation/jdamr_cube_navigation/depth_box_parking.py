@@ -1,5 +1,6 @@
 """Publish perception-only box-parking observations from Astra depth."""
 
+from dataclasses import replace
 import json
 import math
 import time
@@ -14,6 +15,7 @@ from jdamr_cube_navigation.box_top_detection import (
 from jdamr_cube_navigation.depth_obstacle_core import _depth_view
 from jdamr_cube_navigation.depth_obstacle_filter import camera_intrinsics
 import numpy as np
+from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy._rclpy_pybind11 import RCLError
 from rclpy.executors import ExternalShutdownException
@@ -105,6 +107,8 @@ class DepthBoxParkingNode(Node):
             field: self.get_parameter(field).value
             for field in BoxTopConfig.__dataclass_fields__
         })
+        # The configured range is the ceiling; the executor narrows it per table.
+        self._depth_ceiling_m = float(self._config.maximum_depth_m)
         self._stability = DetectionStability(
             required_frames=int(self.get_parameter('stable_frames').value),
             maximum_distance_spread_m=float(
@@ -141,9 +145,31 @@ class DepthBoxParkingNode(Node):
         self.create_subscription(
             Image, '/camera/depth/image_raw',
             self._on_depth, LATEST_SENSOR_QOS)
+        self.add_on_set_parameters_callback(self._on_parameters)
         self.get_logger().info(
             'depth box parking perception started; '
             'velocity output is disabled')
+
+    def _on_parameters(self, parameters) -> SetParametersResult:
+        """Accept only a maximum_depth_m inside the configured range at run time."""
+        depth_m = None
+        for parameter in parameters:
+            value = parameter.value
+            if parameter.name != 'maximum_depth_m':
+                return SetParametersResult(
+                    successful=False, reason=f'{parameter.name} is fixed at start')
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or not self._config.minimum_depth_m < value <= self._depth_ceiling_m):
+                return SetParametersResult(
+                    successful=False,
+                    reason='maximum_depth_m must lie in (minimum_depth_m, configured maximum]')
+            depth_m = float(value)
+        if depth_m is not None:
+            self._config = replace(self._config, maximum_depth_m=depth_m)
+            # Frames judged with the old range must not count toward stability.
+            self._stability.update(None)
+        return SetParametersResult(successful=True)
 
     def _on_camera_info(self, message: CameraInfo) -> None:
         self._camera_info = message
@@ -228,6 +254,7 @@ class DepthBoxParkingNode(Node):
             'surface_kind': detection.surface_kind,
             'front_distance_m': detection.front_distance_m,
             'desired_standoff_m': self._config.desired_standoff_m,
+            'maximum_depth_m': self._config.maximum_depth_m,
             'standoff_error_m': (
                 detection.front_distance_m
                 - self._config.desired_standoff_m),

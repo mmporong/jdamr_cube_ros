@@ -22,6 +22,13 @@ MAX_YAW_TOLERANCE_RAD = math.radians(3.0)
 MAX_REVERSE_DISTANCE_M = 2.0
 MAX_WAYPOINT_SPACING_M = 0.025
 MAX_REVERSE_LINEAR_VELOCITY_MPS = 0.08
+# Tightest turn the curved dock reverse may ask for: the transit curve slowdown
+# radius (FollowPath regulated_linear_scaling_min_radius).
+REVERSE_CURVE_MIN_RADIUS_M = 0.3
+# Service-session transit speed: the configured 0.12 m/s transit (operator,
+# 2026-10-01: 0.06 m/s was too slow). Parking controllers keep their own
+# contract speeds.
+SERVICE_TRANSIT_MAX_MPS = 0.12
 RPP_PLUGIN = (
     'nav2_regulated_pure_pursuit_controller::'
     'RegulatedPurePursuitController')
@@ -127,6 +134,77 @@ def reverse_waypoints(
     return waypoints
 
 
+def reverse_curve_waypoints(
+        start_pose: Sequence[float], target_pose: Sequence[float],
+        min_radius_m: float = REVERSE_CURVE_MIN_RADIUS_M,
+        max_distance_m: float = 2.0,
+        spacing_m: float = 0.025,
+) -> list[tuple[float, float, float]]:
+    """
+    Reverse from the start pose onto the target pose along one smooth curve.
+
+    A cubic Hermite curve leaves the start along its rear direction and arrives
+    along the target's rear direction, so a lateral or heading offset is taken
+    out while backing up instead of by turn-move-turn in front of the dock
+    (2026-10-01: a 10 cm staging offset cost a full extra turn). The robot faces
+    away from its motion at every point. Rejected when any part of the curve is
+    tighter than min_radius_m, so only small offsets are absorbed this way.
+    """
+    start = _pose(start_pose, 'start_pose')
+    target = _pose(target_pose, 'target_pose')
+    min_radius = _finite_number(min_radius_m, 'min_radius_m')
+    max_distance = _finite_number(max_distance_m, 'max_distance_m')
+    spacing = _finite_number(spacing_m, 'spacing_m')
+    if not 0.0 < max_distance <= MAX_REVERSE_DISTANCE_M:
+        raise ValueError('max_distance_m exceeds the accepted bound')
+    if not 0.0 < spacing <= MAX_WAYPOINT_SPACING_M:
+        raise ValueError('spacing_m exceeds the accepted bound')
+    chord = (target[0] - start[0], target[1] - start[1])
+    distance = math.hypot(*chord)
+    if distance <= ALREADY_AT_GOAL_DISTANCE_M:
+        raise ValueError('already at goal')
+    if distance > max_distance:
+        raise ValueError('reverse path exceeds max_distance_m')
+    if -sum(c * h for c, h in zip(chord, (math.cos(target[2]), math.sin(target[2])))) <= 0.0:
+        raise ValueError('start_pose must be in front of target_pose')
+    # Motion directions (rearward) scaled by the chord length.
+    d0 = (-math.cos(start[2]) * distance, -math.sin(start[2]) * distance)
+    d1 = (-math.cos(target[2]) * distance, -math.sin(target[2]) * distance)
+
+    def point(t):
+        h00, h10 = 2 * t ** 3 - 3 * t ** 2 + 1, t ** 3 - 2 * t ** 2 + t
+        h01, h11 = -2 * t ** 3 + 3 * t ** 2, t ** 3 - t ** 2
+        return tuple(h00 * start[i] + h10 * d0[i] + h01 * target[i] + h11 * d1[i]
+                     for i in (0, 1))
+
+    def velocity(t):
+        a, b = 6 * t ** 2 - 6 * t, 3 * t ** 2 - 4 * t + 1
+        c, d = -6 * t ** 2 + 6 * t, 3 * t ** 2 - 2 * t
+        return tuple(a * start[i] + b * d0[i] + c * target[i] + d * d1[i] for i in (0, 1))
+
+    def acceleration(t):
+        a, b, c, d = 12 * t - 6, 6 * t - 4, -12 * t + 6, 6 * t - 2
+        return tuple(a * start[i] + b * d0[i] + c * target[i] + d * d1[i] for i in (0, 1))
+
+    count = max(2, math.ceil(distance / spacing))
+    waypoints = []
+    for index in range(count + 1):
+        t = index / count
+        vx, vy = velocity(t)
+        ax, ay = acceleration(t)
+        speed = math.hypot(vx, vy)
+        if speed <= 1e-9 or abs(vx * ay - vy * ax) > speed ** 3 / min_radius:
+            raise ValueError('reverse curve is tighter than min_radius_m')
+        if index == 0:
+            waypoints.append(start)
+        elif index == count:
+            waypoints.append(target)
+        else:
+            x, y = point(t)
+            waypoints.append((x, y, math.atan2(-vy, -vx)))
+    return waypoints
+
+
 def reverse_controller_overrides(controller_dict: dict) -> dict:
     """Append an isolated, collision-enabled reverse Parking controller."""
     if not isinstance(controller_dict, dict):
@@ -143,11 +221,8 @@ def reverse_controller_overrides(controller_dict: dict) -> dict:
     parking = controller_dict.get('Parking')
     if not isinstance(parking, dict):
         raise ValueError('Parking configuration must be a mapping')
-    if (parking.get('plugin') != RPP_PLUGIN
-            or parking.get('use_collision_detection') is not True):
-        raise ValueError(
-            'reverse parking requires collision-enabled '
-            'Regulated Pure Pursuit')
+    if parking.get('plugin') != RPP_PLUGIN:
+        raise ValueError('reverse parking requires Regulated Pure Pursuit')
     desired_velocity = _finite_number(
         parking.get('desired_linear_vel'), 'Parking.desired_linear_vel')
     if desired_velocity <= 0.0:
@@ -159,11 +234,14 @@ def reverse_controller_overrides(controller_dict: dict) -> dict:
     reverse.update({
         'use_rotate_to_heading': False,
         'allow_reversing': True,
-        'use_collision_detection': True,
         'desired_linear_vel': min(
             desired_velocity, MAX_REVERSE_LINEAR_VELOCITY_MPS),
     })
     configured['ParkingReverse'] = reverse
+    graceful = configured.get('GracefulParking')
+    if isinstance(graceful, dict):
+        configured['controller_plugins'].append('GracefulReverse')
+        configured['GracefulReverse'] = {**graceful, 'allow_backward': True}
     return configured
 
 

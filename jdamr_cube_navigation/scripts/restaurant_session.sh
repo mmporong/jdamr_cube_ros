@@ -7,6 +7,9 @@ WORKSPACE="${JDAMR_WORKSPACE:-$HOME/jdamr_ws}"
 REGISTRY="${JDAMR_RESTAURANT_REGISTRY:-}"
 PARAMS_FILE="${JDAMR_RESTAURANT_PARAMS:-}"
 PRECISION_PARKING=false
+PREPARE_ONLY=false
+USE_COMPOSITION=true
+DISCOVERY_RANGE=LOCALHOST
 
 usage() {
   cat <<'EOF'
@@ -14,11 +17,21 @@ usage() {
   restaurant_session.sh status
   restaurant_session.sh start [--workspace PATH] [--registry PATH] [--params-file PATH]
                               [--precision-parking]
+                              [--prepare-only]
+                              [--use-composition true|false]
+                              [--discovery-range LOCALHOST|SUBNET]
   restaurant_session.sh stop
 
 start는 센서가 이미 실행 중인 Pi에서 식당 서비스용 Nav2 서버만 시작한다.
 초기 pose, NavigateToPose, FollowPath 등 이동 명령은 보내지 않는다.
 --precision-parking은 명시적으로 승인된 5 cm 박스 주차 시험에서만 사용한다.
+--prepare-only는 지도·AMCL만 활성화하고 Nav2 이동 실행부는 미활성 상태로 준비한다.
+--use-composition은 Nav2 서버 실행 방식을 선택한다. 기본값은 완주 검증에 사용한 true이며,
+false는 독립 프로세스 비교 진단용 폴백이다.
+--discovery-range는 베이스·카메라·관측기·실행기와 동일하게 설정해야 한다.
+기본값은 온보드 제어용 LOCALHOST이며, PC 관제는 표시 중계를 사용한다.
+LOCALHOST에서는 다른 PC의 ROS 구독이 연결되지 않는다.
+배치 후 위치추정 확인을 마친 뒤 navigation lifecycle startup이 필요하다.
 
 기본값:
   workspace   $HOME/jdamr_ws
@@ -63,7 +76,8 @@ load_ros_environment() {
   set -u
 
   export ROS_DOMAIN_ID=12
-  export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+  export ROS_LOCALHOST_ONLY=0
+  export ROS_AUTOMATIC_DISCOVERY_RANGE="$DISCOVERY_RANGE"
   export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 }
 
@@ -95,7 +109,7 @@ reject_conflicting_services() {
 check_ros_graph_and_sensors() {
   local nodes topics conflict missing="" topic
   if ! nodes=$(timeout 15 ros2 node list --no-daemon --spin-time 2 2>/dev/null); then
-    die "ROS 노드 목록 조회 실패: domain 12/SUBNET 센서 연결을 확인할 것"
+    die "ROS 노드 목록 조회 실패: domain 12/$DISCOVERY_RANGE 센서 연결을 확인할 것"
   fi
   conflict=$(grep -E \
     '(^|/)(amcl|map_server|controller_server|planner_server|bt_navigator|behavior_server|waypoint_follower|velocity_smoother|collision_monitor|slam_toolbox|lifecycle_manager_localization|lifecycle_manager_navigation)$|cartographer' \
@@ -110,6 +124,15 @@ check_ros_graph_and_sensors() {
   for topic in /scan /odom /tf; do
     grep -qx "$topic" <<<"$topics" || missing="$missing $topic"
   done
+  if [ -n "$missing" ]; then
+    # A short first discovery sample can miss a running sensor after teardown.
+    topics=$(timeout 15 ros2 topic list --no-daemon --spin-time 5 2>/dev/null) || \
+      die "ROS 토픽 재조회 실패: 센서 연결을 확인할 것"
+    missing=""
+    for topic in /scan /odom /tf; do
+      grep -qx "$topic" <<<"$topics" || missing="$missing $topic"
+    done
+  fi
   [ -z "$missing" ] || die "센서 진단 실패: 다음 토픽이 없다:$missing (jdamr-base.service와 센서 상태 확인)"
   printf '센서 진단: /scan /odom /tf 발견 (데이터 품질이나 주행 준비 완료 판정은 아님)\n'
 }
@@ -128,25 +151,70 @@ PY
   fi
 }
 
+parking_contract_path() {
+  local name=parking_contract.yaml
+  if [ "$PRECISION_PARKING" = true ]; then
+    name=box_parking_contract.yaml
+  fi
+  printf '%s/config/%s' \
+    "$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation" "$name"
+}
+
+session_identity() {
+  local asset_hashes digest parking_contract
+  parking_contract=$(parking_contract_path)
+  absolute_file "$parking_contract" "주차 contract"
+  asset_hashes=$(sha256sum -- "$REGISTRY" "$PARAMS_FILE" "$parking_contract" \
+    "${BASH_SOURCE[0]}") || \
+    die "세션 설정 해시 계산 실패"
+  digest=$(printf '%s\0' "$WORKSPACE" "$REGISTRY" "$PARAMS_FILE" \
+    "$PRECISION_PARKING" "$PREPARE_ONLY" "$USE_COMPOSITION" "$DISCOVERY_RANGE" \
+    "$asset_hashes" | sha256sum) || \
+    die "세션 식별자 계산 실패"
+  printf '%s' "${digest%% *}"
+}
+
+reuse_active_navigation() {
+  local identity="$1" snapshot line state="" environment="" expected
+  snapshot=$(systemctl show "$UNIT" --property=ActiveState --property=Environment) || \
+    die "$UNIT 실행 설정 조회 실패"
+  while IFS= read -r line; do
+    case "$line" in
+      ActiveState=*) state="${line#ActiveState=}" ;;
+      Environment=*) environment="${line#Environment=}" ;;
+    esac
+  done <<<"$snapshot"
+  [ "$state" = active ] || die "$UNIT가 실행 중이 아니다: ${state:-상태 미수신}"
+  expected="JDAMR_RESTAURANT_SESSION_ID=$identity"
+  if [[ " $environment " != *" $expected "* ]]; then
+    die "$UNIT 실행 설정을 확인할 수 없거나 요청과 다르다; 기존 세션을 변경하지 않았다"
+  fi
+  printf '%s\n' "$UNIT가 같은 설정으로 실행 중이다. 재시작하지 않았다."
+  printf '%s\n' "이는 주행 준비 완료 판정이 아니다. 초기 위치나 이동 명령을 보내지 않았다."
+}
+
 run_navigation() {
   local parking_contract
+  local coordinated=true navigation_autostart=true
+  if [ "$PREPARE_ONLY" = true ]; then
+    coordinated=false
+    navigation_autostart=false
+  fi
   load_ros_environment
   validate_registry
-  parking_contract="$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation/config/parking_contract.yaml"
-  if [ "$PRECISION_PARKING" = true ]; then
-    parking_contract="$WORKSPACE/install/jdamr_cube_navigation/share/jdamr_cube_navigation/config/box_parking_contract.yaml"
-  fi
+  parking_contract=$(parking_contract_path)
   cd "$WORKSPACE" || die "workspace로 이동할 수 없다: $WORKSPACE"
   exec ros2 launch jdamr_cube_navigation restaurant_service.launch.py \
     "registry:=$REGISTRY" \
     "params_file:=$PARAMS_FILE" \
     navigation_profile:=new_base_candidate \
-    use_composition:=false \
-    coordinated_startup:=true \
+    "use_composition:=$USE_COMPOSITION" \
+    "coordinated_startup:=$coordinated" \
+    "navigation_autostart:=$navigation_autostart" \
     "precision_parking:=$PRECISION_PARKING" \
     "parking_contract:=$parking_contract" \
     use_box_observer:=false \
-    discovery_range:=SUBNET
+    "discovery_range:=$DISCOVERY_RANGE"
 }
 
 start_navigation() {
@@ -156,18 +224,24 @@ start_navigation() {
   load_ros_environment
   validate_registry
 
+  local identity
+  identity=$(session_identity) || die "세션 식별자 생성 실패"
   system_service_state jdamr-base.service || die "jdamr-base.service가 active가 아니다; 이 스크립트는 베이스를 시작하지 않는다"
-  if system_service_state "$UNIT"; then
-    die "$UNIT가 이미 active다; singleton 세션을 중복 시작하지 않는다"
-  fi
   reject_conflicting_services
+  if system_service_state "$UNIT"; then
+    reuse_active_navigation "$identity"
+    return
+  fi
   check_ros_graph_and_sensors
 
-  local script_path run_user precision_argument=()
+  local script_path run_user precision_argument=() prepare_argument=()
   script_path=$(readlink -f "${BASH_SOURCE[0]}") || die "스크립트 경로 확인 실패"
   run_user=$(id -un) || die "실행 사용자 확인 실패"
   if [ "$PRECISION_PARKING" = true ]; then
     precision_argument=(--precision-parking)
+  fi
+  if [ "$PREPARE_ONLY" = true ]; then
+    prepare_argument=(--prepare-only)
   fi
   sudo -n systemd-run \
     --unit="$UNIT" --collect \
@@ -178,10 +252,13 @@ start_navigation() {
     --setenv="HOME=$HOME" \
     --setenv="ROS_DISTRO=${ROS_DISTRO:-jazzy}" \
     --setenv=JDAMR_RESTAURANT_INTERNAL=1 \
+    --setenv="JDAMR_RESTAURANT_SESSION_ID=$identity" \
     --working-directory="$WORKSPACE" \
     /bin/bash "$script_path" __run \
     --workspace "$WORKSPACE" --registry "$REGISTRY" --params-file "$PARAMS_FILE" \
-    "${precision_argument[@]}" \
+    --use-composition "$USE_COMPOSITION" \
+    --discovery-range "$DISCOVERY_RANGE" \
+    "${precision_argument[@]}" "${prepare_argument[@]}" \
     || die "$UNIT 기동 요청 실패"
 
   printf '%s\n' "$UNIT 기동 요청을 수락했다."
@@ -227,6 +304,26 @@ case "$COMMAND" in
         --precision-parking)
           PRECISION_PARKING=true
           shift
+          ;;
+        --prepare-only)
+          PREPARE_ONLY=true
+          shift
+          ;;
+        --use-composition)
+          [ $# -ge 2 ] || die "$1 값이 필요하다"
+          case "$2" in
+            true|false) USE_COMPOSITION="$2" ;;
+            *) die "--use-composition 값은 true 또는 false여야 한다: $2" ;;
+          esac
+          shift 2
+          ;;
+        --discovery-range)
+          [ $# -ge 2 ] || die "$1 값이 필요하다"
+          case "$2" in
+            LOCALHOST|SUBNET) DISCOVERY_RANGE="$2" ;;
+            *) die "--discovery-range 값은 LOCALHOST 또는 SUBNET이어야 한다: $2" ;;
+          esac
+          shift 2
           ;;
         *) die "알 수 없는 인자: $1 (도움말: --help)" ;;
       esac

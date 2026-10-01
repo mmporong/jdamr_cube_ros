@@ -107,9 +107,17 @@ def test_overrides_only_append_parking_plugins_and_deep_copy_follow_path():
 
     assert nav2 == before
     assert configured['controller_plugins'] == (
-        original['controller_plugins'] + ['Parking'])
+        original['controller_plugins'] + ['Parking', 'GracefulParking'])
     assert configured['goal_checker_plugins'] == (
-        original['goal_checker_plugins'] + ['parking_goal_checker'])
+        original['goal_checker_plugins']
+        + ['parking_goal_checker', 'alignment_goal_checker', 'staging_position_checker',
+           'face_alignment_checker', 'dock_position_checker'])
+    face = configured['face_alignment_checker']
+    assert face['xy_goal_tolerance'] == 0.10 and face['stateful'] is True
+    assert face['yaw_goal_tolerance'] == pytest.approx(math.radians(3.0))
+    dock = configured['dock_position_checker']
+    assert dock['plugin'] == 'nav2_controller::PositionGoalChecker'
+    assert dock['xy_goal_tolerance'] == 0.02 and dock['stateful'] is True
     unchanged = set(original) - {
         'controller_plugins', 'goal_checker_plugins', 'FollowPath'}
     assert all(configured[key] == original[key] for key in unchanged)
@@ -133,16 +141,12 @@ def test_overrides_only_append_parking_plugins_and_deep_copy_follow_path():
                for value in configured.values() if isinstance(value, dict))
 
 
-@pytest.mark.parametrize('field,value', [
-    ('plugin', 'another_controller'),
-    ('use_collision_detection', False),
-])
-def test_override_rejects_non_rpp_or_collision_disabled_source(field, value):
-    """Never derive the parking controller from a weaker safety profile."""
+def test_override_rejects_non_rpp_source():
+    """Derive the parking controller only from Regulated Pure Pursuit."""
     nav2 = _nav2()
-    nav2['controller_server']['ros__parameters']['FollowPath'][field] = value
+    nav2['controller_server']['ros__parameters']['FollowPath']['plugin'] = 'another_controller'
 
-    with pytest.raises(ValueError, match='collision-enabled'):
+    with pytest.raises(ValueError, match='Regulated Pure Pursuit'):
         parking_controller_overrides(nav2, _contract())
 
 

@@ -55,6 +55,9 @@ GOAL_STATUS_NAMES = {
     GoalStatus.STATUS_CANCELED: 'STATUS_CANCELED',
     GoalStatus.STATUS_ABORTED: 'STATUS_ABORTED',
 }
+# A transit goal is judged by the position/general goal checkers' xy
+# tolerance; test_t13 pins this value to new_base_nav2_params.yaml.
+TRANSIT_PLAN_END_TOLERANCE_M = 0.15
 
 
 def _expanded_path(value, parent=None):
@@ -366,6 +369,10 @@ class CorridorRoute(Node):
 
     def _odom_callback(self, _message):
         self.samples['odom'] = time.monotonic()
+        self.latest_motion = (
+            self.samples['odom'],
+            math.hypot(_message.twist.twist.linear.x, _message.twist.twist.linear.y),
+            float(_message.twist.twist.angular.z))
         position = _message.pose.pose.position
         yaw = _quaternion_yaw(_message.pose.pose.orientation)
         odom_pose = (position.x, position.y, yaw)
@@ -435,7 +442,7 @@ class CorridorRoute(Node):
             float(message.pose.pose.position.y),
         )
 
-    def _guard_failure(self, require_fresh_amcl=True):
+    def _guard_failure(self, require_fresh_amcl=True, covariance_limits=None):
         """Describe the exact fail-closed input instead of a generic stop."""
         now = time.monotonic()
         for name, timestamp in self.samples.items():
@@ -487,7 +494,7 @@ class CorridorRoute(Node):
                 f'limit={amcl_limit_s:.3f}s')
         for axis, covariance, limit in zip(
                 ('x', 'y'), self.amcl_covariance,
-                self.max_amcl_covariance):
+                covariance_limits or self.max_amcl_covariance):
             if not math.isfinite(covariance):
                 return (
                     f'AMCL {axis} covariance non-finite: '
@@ -517,6 +524,47 @@ class CorridorRoute(Node):
 
     def _navigation_ready(self, require_fresh_amcl=True):
         return self._guard_failure(require_fresh_amcl) is None
+
+    @staticmethod
+    def _input_gap_recoverable(reason):
+        """Do not retry operator stops, invalid geometry, low power or bad poses."""
+        return isinstance(reason, str) and reason.startswith((
+            'scan stale:', 'odom stale:', 'AMCL pose stale:', 'AMCL stale after motion'))
+
+    def _wait_for_input_recovery(self, reason, timeout_s=8.0):
+        """Wait after the previous action is terminal without sending commands."""
+        if not self._input_gap_recoverable(reason):
+            return False
+        started_s = time.monotonic()
+        self.get_logger().warning(f'paused for input recovery: {reason}')
+        while not self.stop_requested and time.monotonic() - started_s < timeout_s:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self.stop_requested:
+                return False
+            failure = self._guard_failure(False)
+            if failure and not self._input_gap_recoverable(failure):
+                return False
+            motion = getattr(self, 'latest_motion', None)
+            if motion is None or motion[0] <= started_s:
+                continue
+            _, linear_mps, angular_radps = motion
+            if (failure is None and all(math.isfinite(v) for v in motion)
+                    and abs(linear_mps) <= 0.01 and abs(angular_radps) <= 0.01):
+                self.get_logger().info('inputs recovered; resume current waypoint')
+                return True
+        return False
+
+    def _run_with_input_recovery(self, attempt):
+        """Keep completed waypoints, with at most one fresh-input retry per call."""
+        self._resume_waypoint_index = 0
+        for retry in range(2):
+            self._retry_guard_reason = None
+            if attempt():
+                return True
+            if (retry or self.stop_requested or not self._wait_for_input_recovery(
+                    self._retry_guard_reason)):
+                return False
+        return False
 
     def _revisit_protection_ready(self):
         """Check only the three publishers that make a revisit safe."""
@@ -626,6 +674,8 @@ class CorridorRoute(Node):
         self.get_logger().info(
             f'route preflight passed: poses={len(result.path.poses)} '
             f'length={length:.3f}m')
+        end = result.path.poses[-1].pose.position
+        self.preflight_path_end_xy = (end.x, end.y)
         return True
 
     def _parking_parameters_ready(self, reverse=False):
@@ -651,7 +701,6 @@ class CorridorRoute(Node):
             'Parking.stateful': False,
             'Parking.use_rotate_to_heading': True,
             'Parking.allow_reversing': False,
-            'Parking.use_collision_detection': True,
         }
         if reverse:
             expected['controller_plugins'] = ['Parking', 'ParkingReverse']
@@ -661,11 +710,11 @@ class CorridorRoute(Node):
             })
             expected['ParkingReverse.use_rotate_to_heading'] = False
             expected['ParkingReverse.allow_reversing'] = True
-        if not self.parking_parameters.wait_for_services(timeout_sec=2.0):
+        if not self.parking_parameters.wait_for_services(timeout_sec=5.0):
             self.get_logger().error('parking controller parameters unavailable')
             return False
         future = self.parking_parameters.get_parameters(list(expected))
-        deadline_s = time.monotonic() + 2.0
+        deadline_s = time.monotonic() + 5.0
         while (not future.done() and not self.stop_requested and
                time.monotonic() < deadline_s):
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -690,13 +739,13 @@ class CorridorRoute(Node):
                 return False
         return True
 
-    def _parking_observation(self):
-        """Read current map pose and independent odometry without commanding."""
+    def _parking_observation(self, reference_frame=None):
+        """Read current map (or odom) pose and independent odometry without commanding."""
         contract = self.parking_contract
         if self.parking_odom is None or self.parking_command is None:
             raise ValueError('parking odometry or final command missing')
         transform = self.parking_tf.lookup_transform(
-            contract['reference_frame'], contract['robot_base_frame'],
+            reference_frame or contract['reference_frame'], contract['robot_base_frame'],
             rclpy.time.Time())
         ros_now_s = self.get_clock().now().nanoseconds * 1e-9
         now_s = time.monotonic()
@@ -728,9 +777,10 @@ class CorridorRoute(Node):
             'sample_age_s': max(ages_s),
         }
 
-    def _verify_parking_stop(self, index, waypoint, handle, hold_s=None):
+    def _verify_parking_stop(self, index, waypoint, handle, hold_s=None,
+                             contract=None):
         """Confirm a bounded stationary pose window after Nav2 succeeds."""
-        contract = dict(self.parking_contract)
+        contract = dict(contract or self.parking_contract)
         if hold_s is not None:
             if (isinstance(hold_s, bool) or not isinstance(hold_s, (int, float))
                     or not math.isfinite(hold_s) or hold_s <= 0.0):
@@ -741,6 +791,7 @@ class CorridorRoute(Node):
         deadline_s = time.monotonic() + contract['observation_timeout_s']
         last_stamp = None
         motion_revision = self.parking_motion_revision
+        input_recovery_reason = None
         result = {'confirmed': False, 'reason': 'NO_FRESH_OBSERVATION',
                   'physical_accuracy': 'NOT_MEASURED'}
         while time.monotonic() < deadline_s and not self.stop_requested:
@@ -754,7 +805,19 @@ class CorridorRoute(Node):
                 gate = ParkingHold(contract)
                 motion_revision = self.parking_motion_revision
             if not self._navigation_ready(require_fresh_amcl=False):
-                result['reason'] = self._guard_failure(False)
+                reason = self._guard_failure(False)
+                # One recoverable input gap restarts the whole stationary
+                # window without a command; nothing observed before it counts.
+                if (input_recovery_reason is None and not self.stop_requested
+                        and self._input_gap_recoverable(reason)
+                        and self._wait_for_input_recovery(reason)):
+                    input_recovery_reason = reason
+                    gate = ParkingHold(contract)
+                    deadline_s = time.monotonic() + contract['observation_timeout_s']
+                    last_stamp = None
+                    motion_revision = self.parking_motion_revision
+                    continue
+                result['reason'] = reason
                 break
             if self.parking_odom is None:
                 continue
@@ -769,7 +832,11 @@ class CorridorRoute(Node):
                 continue
             last_stamp = stamp_key
             try:
-                observation = self._parking_observation()
+                frame = contract.get('reference_frame')
+                observation = (
+                    self._parking_observation()
+                    if frame == self.parking_contract.get('reference_frame')
+                    else self._parking_observation(frame))
                 result = gate.observe(
                     now_s=time.monotonic(),
                     target_pose=(waypoint['x'], waypoint['y'], waypoint['yaw']),
@@ -782,12 +849,12 @@ class CorridorRoute(Node):
                 self._route_event(
                     'parking_estimate_confirmed', index, handle,
                     observation_ages_s=self.parking_observation_diagnostics,
-                    **result)
+                    input_recovery_reason=input_recovery_reason, **result)
                 return True
         self._route_event(
             'parking_not_confirmed', index, handle,
             observation_ages_s=self.parking_observation_diagnostics,
-            **result)
+            input_recovery_reason=input_recovery_reason, **result)
         return False
 
     def _feedback(self, route_index, message):
@@ -814,7 +881,11 @@ class CorridorRoute(Node):
         return future.done()
 
     def execute(self):
-        """Execute each waypoint once and stop on the first fault."""
+        """Resume the current waypoint once after a confirmed input-gap stop."""
+        return self._run_with_input_recovery(self._execute_route_once)
+
+    def _execute_route_once(self):
+        """Run the remaining waypoints without restarting completed segments."""
         if not self.navigate.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('navigate_to_pose unavailable')
             return False
@@ -822,12 +893,18 @@ class CorridorRoute(Node):
         # current pose.  AMCL's pose topic may remain quiet while stationary.
         # New-base movement without an AMCL update eventually cancels the goal.
         for index, waypoint in enumerate(self.waypoints):
+            if index < self._resume_waypoint_index:
+                continue
+            self._resume_waypoint_index = index
             if (
                     self.stop_requested or
                     not self._navigation_ready(require_fresh_amcl=False)):
                 self.get_logger().error(
                     'navigation guard blocked next goal: '
                     f'{self._guard_failure(False) or "operator stop"}')
+                reason = self._guard_failure(False)
+                if not self.stop_requested and self._input_gap_recoverable(reason):
+                    self._retry_guard_reason = reason
                 return False
             goal = NavigateToPose.Goal()
             if getattr(self, 'navigation_profile', None) == (
@@ -864,11 +941,17 @@ class CorridorRoute(Node):
                     self._cancel(handle, 'operator interrupt', index)
                     return False
                 if not self._navigation_ready(require_fresh_amcl=False):
-                    self._cancel(
-                        handle,
-                        self._guard_failure(False) or
-                        'navigation guard failure',
-                        index)
+                    reason = self._guard_failure(False) or 'navigation guard failure'
+                    canceled = self._cancel(handle, reason, index)
+                    if canceled and self._input_gap_recoverable(reason):
+                        deadline_s = time.monotonic() + 5.0
+                        while not result_future.done() and time.monotonic() < deadline_s:
+                            rclpy.spin_once(self, timeout_sec=0.05)
+                        if (result_future.done() and result_future.exception() is None
+                                and result_future.result().status in (
+                                    GoalStatus.STATUS_CANCELED, GoalStatus.STATUS_ABORTED,
+                                    GoalStatus.STATUS_SUCCEEDED)):
+                            self._retry_guard_reason = reason
                     return False
             wrapped = result_future.result()
             self._route_event(

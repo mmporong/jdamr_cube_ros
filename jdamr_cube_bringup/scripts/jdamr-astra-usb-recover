@@ -8,6 +8,7 @@ initial_wait_s="${ASTRA_USB_INITIAL_WAIT_S:-8}"
 port_off_s="${ASTRA_USB_PORT_OFF_S:-2}"
 recovery_wait_s="${ASTRA_USB_RECOVERY_WAIT_S:-12}"
 retry_count="${ASTRA_USB_RETRY_COUNT:-2}"
+force_recovery="${ASTRA_USB_FORCE_RECOVERY:-0}"
 lsusb_bin="${LSUSB_BIN:-/usr/bin/lsusb}"
 sleep_bin="${SLEEP_BIN:-/usr/bin/sleep}"
 
@@ -17,6 +18,10 @@ for value in "$initial_wait_s" "$port_off_s" "$recovery_wait_s" "$retry_count"; 
     exit 2
   fi
 done
+[[ "$force_recovery" = 0 || "$force_recovery" = 1 ]] || {
+  echo "ASTRA_USB_FORCE_RECOVERY must be 0 or 1" >&2
+  exit 2
+}
 
 camera_present() {
   "$lsusb_bin" -d "$usb_id" >/dev/null 2>&1
@@ -57,7 +62,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if wait_for_camera "$initial_wait_s"; then
+if [ "$force_recovery" = 0 ] && wait_for_camera "$initial_wait_s"; then
   echo "Astra USB device already present: $usb_id"
   exit 0
 fi

@@ -51,6 +51,14 @@ laser_yaw:
   valid_for: current_g4_mount_orientation_candidate
   source: user_orientation_estimate
   status: verify_against_scan_directions
+imu_rotation_rpy:
+  value: [3.141592653589793, 0.0, 1.5707963267948966]
+  unit: rad
+  measured_at: 2026-10-01
+  valid_for: current_esp32_board_mount
+  source: scripts/map_20260930_manual/imu_axes.py on /data/lim/jdamr_artifacts/new_base_revisit_* (2026-09-15/16 driving bags)
+  evidence: gyro z per wheel yaw rate -0.966 to -0.996 (5 bags); board y against wheel forward acceleration +1.15 to +1.25 (r 0.87-0.93, 4 bags); board x against centripetal v*w positive in the same 4 bags; still accel z -9.35 to -9.45
+  status: rotation_measured_translation_unmeasured
 wheel_visual_width:
   value: 0.030
   unit: m

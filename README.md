@@ -21,7 +21,7 @@
 | 새 차체 재방문 | 부분 완료 | 2026-09-16 기존 지도로 20/20 목표 완료, recovery 0회. 오도메트리 보정값과 새 지도·Keepout은 `candidate` 단계 | [NEW_BASE_REVISIT_CAPTURE.md](jdamr_cube_navigation/evaluation/NEW_BASE_REVISIT_CAPTURE.md) |
 | 시뮬레이션·디지털 트윈 | 완료 | 실차 점유격자를 Gazebo 충돌 메시로 바꿔 20 waypoint와 장애물 장면 3건을 재실행 | [2.5D 디지털 트윈](jdamr_cube_navigation/evaluation/20260912_2_5D_DIGITAL_TWIN_PORTFOLIO_HANDOFF.md) |
 | RGB-D Visual SLAM | 진행 중 | 입력·visual odometry·RTAB-Map DB 생성은 검증. 저텍스처 P턴에서 연속 3D 지도는 아직 통과하지 못함 | [jdamr_cube_vslam/README.md](jdamr_cube_vslam/README.md) |
-| 식당 서빙·박스 정밀 주차 | 진행 중 | 충전소 출발 → 테이블 이동 → 박스 면 정렬 → 5cm 접근 → 복귀 흐름을 연결. 2026-09-22 실차에서 목표 수락·이동까지 확인했으나 저전압(10.464V < 10.5V)으로 취소. 테이블 도착·정밀 주차·복귀는 미완료 | [20260922_SERVICE_DEPARTURE_FAILURES.md](jdamr_cube_navigation/evaluation/20260922_SERVICE_DEPARTURE_FAILURES.md) |
+| 식당 서빙·박스 정밀 주차 | 진행 중 | 충전소 출발 → 테이블 관측 위치 → 박스 면 정렬 → 5cm 접근 → 5 s 대기 → 박스 이탈 후진 → 충전소 후면 주차를 한 실행기(`box_service --return-home`)로 연결. 2026-09-29 실차에서 관측 위치까지 이동했으나 도착 방향이 강제되지 않아 테이블 표지가 카메라 시야 밖이었고, 안정된 박스 앞면을 확보하지 못함. 2026-09-30 입력 공백 회복·정지 위치추정 판정·계획 끝점 검사·박스 이탈 복귀를 구현해 테스트와 파이 반영까지 마침. 같은 날 실차에서 충전소 후진 도킹(도크 앞 0.7 m 정렬 → 직선 후진)으로 도크 정위치에 도달(현장 확인, 끝 구간 yaw 보정 중 Nav2 105로 서비스 판정은 실패). table_01 박스는 관측·회전 공간이 부족한 자리여서 면 정렬 단계에 들어가지 못함. 같은 날 새 지도(벽 정렬)와 목적지(물 받는 곳·테이블 2곳)를 다시 정하고, 도크 → 물 받는 곳 → 호출 테이블 → 도크를 한 실행으로 잇는 경유 정지를 구현·파이 반영. 실차에서 물 받는 곳·table_02 5cm 정밀 주차와 5 s 대기, 도크 후면 도킹까지 도달했다. table_02 구간은 odom 고정 직선 최종 접근·후진으로 주차(중앙 5.42 cm, 0.87°)·대기·이탈·도킹을 한 실행으로 마쳤다(내부 추정, 외부 실측 없음). 2026-10-01 오전 실차에서 물 받는 곳(간격 5.42 cm, 0.04°)과 table_02(5.53 cm, 1.48°) 정밀 주차·대기·이탈, 도크 대기점 한 방향 회전, 후면 도킹을 모두 지났다(수정 배포로 실행은 세 번에 나뉨, 내부 추정). 현재 파이 반영본은 최종 접근·도크 후진을 RPP로 추종하고, 45°가 넘는 방향 전환은 제자리 회전, 도크 대기점은 위치만 맞춘 뒤 odom 기준 한 방향 회전으로 정렬하고 3차 곡선 후진(회전 반경 0.3 m 이상)으로 도킹하며, 이동 구간 경유점은 NavigateThroughPoses 한 목표로 잇고, 박스 실행기는 Nav2 세션과 함께 상주한다. 이동 0.12 m/s·정밀 주차와 후진 0.08 m/s(감속은 마지막 0.15 m)다. RPP의 예측 충돌 검사는 끄고 차체 외곽 기준 StopZone 정지를 남겼다. 전역 경로는 새 지도 오프라인 비교(NavFn·Smac2D·Smac Lattice)에서 NavFn을 유지했다. 2026-10-01 실차에서 도크 → 물 받는 곳 → 테이블 → 도크 한 사이클을 한 실행으로 마쳤다(table_02 186.5 s, table_01 175.0 s, 박스 앞면 5.4–5.6 cm, 도킹 1.3–4.2 cm, 내부 추정). `jdamr_depart.py go table_02 table_01`처럼 여러 테이블을 주면 사이에 도크 정차·재정합을 두고 이어 돈다(2번 → 1번 연속 주행 성공). 깊이 관측은 테이블 영역 거리로 범위를 좁히고, 박스 면 정렬은 10 cm 위치 뒤 방향만 맞추며, 도크 후진은 위치로 끝낸 뒤 남은 방향을 제자리 회전으로 맞춘다. IMU 장착 방향(z 아래·y 앞)은 URDF `imu_link`로 선언했고, 바퀴 odom + 자이로 EKF와 주행마다 파이 원시 기록은 준비돼 있다(EKF는 실행 구성 미연결). 포트폴리오 데이터는 [20261001_PORTFOLIO_HANDOFF_FOR_CODEX.md](jdamr_cube_navigation/evaluation/20261001_PORTFOLIO_HANDOFF_FOR_CODEX.md). 주행 중 반복 중단 원인(정밀 구간 감속, 탐색 회전 확인, 공분산 정지, 방향 허용, 이탈 확인, 새 프로세스 DDS 수신)은 조치해 파이에 반영 | [20260929_PARKING_FAILURES.md](jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md) |
 | 캡스톤 픽앤플레이스 (시뮬) | 완료 | 비전 접근 수렴 오차 3~6mm, YOLO mAP50 0.98, 사이클 약 30초(4배속). 수치의 정본은 구현 기록 저장소 | [capstone_pick/](capstone_pick), [gazebo-so101-capstone](https://github.com/mmporong/gazebo-so101-capstone) |
 
 AMCL은 외부 ground truth가 아니다. 이 저장소의 정렬 RMS·복귀 오차는 ATE나 절대 정확도가
@@ -37,13 +37,15 @@ ESP32 펌웨어 ─┘    ├─ jdamr_base_driver: cmd_vel ↔ UART, 50Hz odom
                     ├─ Nav2 (planner·controller·BT) → velocity smoother
                     └─ Collision Monitor → /cmd_vel (최종 속도 감독)
 
-노트북: 기록(MCAP)·RViz·재생·평가·미디어 생성 (제어 경로에는 참여하지 않음)
+노트북: 기록(MCAP)·RViz(SSH 표시 중계)·재생·평가·미디어 생성 (제어 경로에는 참여하지 않음)
 ```
 
 로봇 제어 그래프는 파이 안에서 닫고, 노트북은 기록과 시각화만 소비한다. 무선 구간이 약해도
-원격 구독 상태가 로봇 제어를 멈추지 않게 하기 위한 구조다. DDS 탐색 범위는 센서 브링업과
-Nav2가 같은 `SUBNET`을 쓴다. LOCALHOST와 SUBNET을 나눴을 때 `/tf`와 Collision Monitor
-lifecycle 서비스가 간헐적으로 보이지 않았기 때문이다.
+원격 구독 상태가 로봇 제어를 멈추지 않게 하기 위한 구조다. 파이의 베이스·센서·박스 관측기·Nav2는
+domain 12에서 모두 `LOCALHOST` 탐색 범위(UDPv4)를 쓴다. 한쪽만 다른 범위로 나눴을 때
+`/tf`와 Collision Monitor lifecycle 서비스가 간헐적으로 보이지 않았기 때문에 같은 범위로 맞춘다.
+노트북 RViz는 DDS에 붙지 않고 `rviz_display_relay`가 SSH로 전달하는 표시용 토픽만 받는다.
+주행·실험이 끝나면 띄운 RViz·중계·임시 노드를 종료한다([AGENTS.md](AGENTS.md)).
 
 ## 패키지
 
@@ -92,6 +94,12 @@ ros2 launch jdamr_cube_navigation keepout_navigation.launch.py
 bash jdamr_cube_navigation/scripts/restaurant_session.sh start
 # --precision-parking은 승인된 5cm 박스 주차 시험에서만 추가한다
 
+# 테이블 박스 정밀 주차 → 5 s 대기 → 이탈 후진 → 충전소 복귀 (정밀 세션·위치 초기화 뒤, 출발 요청 시)
+python3 -m jdamr_cube_navigation.box_service --registry <registry> --approach-route <route> \
+  --camera-mount <mount> --geometry <geometry> --parking-contract <box 계약> \
+  --table-id table_01 --region-xy <x> <y> --log <새 jsonl> \
+  --candidate-trial --execute --search --return-home --return-timeout-s <s>
+
 # 기록 bag을 격리 도메인에서 재생해 SLAM 백엔드 하나를 실행
 bash jdamr_cube_navigation/scripts/offline_slam_replay.sh \
   --bag <bag 경로> --backend cartographer --out <결과 디렉터리>
@@ -113,6 +121,11 @@ ros2 launch jdamr_cube_gazebo gazebo.launch.py
 | [20260921_NAVIGATION_JD_GAP_ROADMAP.md](jdamr_cube_navigation/evaluation/20260921_NAVIGATION_JD_GAP_ROADMAP.md) | 물류 AMR 채용 요건 대조와 고도화 항목 P1~P6·A1~A2 |
 | [20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md](jdamr_cube_navigation/evaluation/20260918_RESTAURANT_SERVICE_IMPLEMENTATION.md) | 서비스 위치 교시·정밀 배치 구현 범위 |
 | [20260922_SERVICE_PORTFOLIO_HANDOFF.md](jdamr_cube_navigation/evaluation/20260922_SERVICE_PORTFOLIO_HANDOFF.md) | 서빙 주행 RViz 화면과 기록 재생 인계 |
+| [20260929_PARKING_FAILURES.md](jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md) | 테이블 정밀 주차 실패 원인·수정·파이 반영 기록과 남은 실차 확인 항목 |
+| [20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md](jdamr_cube_navigation/evaluation/20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md) | 충전소 후진 도킹 자료 묶음·그림·주장 범위·포트폴리오 문안 |
+| [20260930_MAP_BOX_LAYOUT_PLAN.md](jdamr_cube_navigation/evaluation/20260930_MAP_BOX_LAYOUT_PLAN.md) | 새 지도 작성·keepout 재설계·도크 등록·테이블 박스 배치 계획(승인 대기) |
+| [20260929_NAV2_PLATFORM_RESEARCH.md](jdamr_cube_navigation/evaluation/20260929_NAV2_PLATFORM_RESEARCH.md) | 파이 Nav2 부하·통신 구성 조사와 판단 한계 |
+| [AGENTS.md](AGENTS.md) | 실차 출발·재개·주행 뒤 정리 운영 규칙 |
 | [PORTFOLIO_20260826.md](PORTFOLIO_20260826.md) | 캡스톤 시점의 Physical AI 적용안 |
 
 ## 관련 저장소

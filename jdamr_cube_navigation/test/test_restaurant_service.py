@@ -1,6 +1,7 @@
 """Exercise service routing with ROS messages and in-memory action peers."""
 
 import importlib.util
+import inspect
 import io
 import json
 import math
@@ -10,18 +11,20 @@ from unittest.mock import Mock
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped
+from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import (
-    BLOCKED_PLAN_CODES, BoxDwell, load_service_contract, parse_args,
+    BLOCKED_PLAN_CODES, BoxDwell, load_service_contract, main, parse_args,
     select_destination, ServiceRoute,
 )
 from jdamr_cube_navigation.service_destinations import route_config, taught_pose
-from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose
+from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose, Spin
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import Path as RosPath
 import pytest
 from rclpy.parameter import Parameter
 from rclpy.task import Future
+from rclpy.time import Time
 import yaml
 
 
@@ -58,6 +61,23 @@ def publisher(name, namespace='/'):
     return SimpleNamespace(node_name=name, node_namespace=namespace)
 
 
+@pytest.mark.parametrize('command_publisher', [None, 'web_teleop', 'collision_monitor'])
+def test_prepare_identity_allows_absent_command_but_never_other_publishers(
+        command_publisher):
+    node = route()
+    expected = {
+        '/cmd_vel': ([publisher(command_publisher)] if command_publisher else []),
+        '/keepout_filter_mask': [publisher('keepout_filter_mask_server')],
+        '/keepout_costmap_filter_info': [publisher('keepout_costmap_filter_info_server')],
+    }
+    node.get_publishers_info_by_topic = lambda topic: expected[topic]
+    failure = node._startup_protection_ready(
+        discovery_timeout_s=0.0, require_command_path=False)
+    assert (failure is None) == (command_publisher != 'web_teleop')
+    strict = node._startup_protection_ready(discovery_timeout_s=0.0)
+    assert (strict is None) == (command_publisher == 'collision_monitor')
+
+
 def route():
     """Create the service adapter without touching DDS or robot hardware."""
     node = object.__new__(ServiceRoute)
@@ -74,12 +94,13 @@ def route():
     node.amcl_yaw_covariance_rad2 = 0.01
     node.amcl_covariance = (0.001, 0.001)
     node.service_contract = load_service_contract(
-        PACKAGE / 'config/restaurant_service_contract.yaml')
+        Path(__file__).parent / 'fixtures/restaurant_service_contract_gated.yaml')
     node.battery_voltage = 12.0
     node.minimum_battery_v = node.service_contract['minimum_running_battery_v']
     node.live_grids = {}
     node.expected_grids = {}
     node.map_mismatch = None
+    node._parameter_readers = {}
     node.confirmation = None
     node.start_index = 0
     node.navigation_profile = 'obstacle_base_candidate'
@@ -120,8 +141,10 @@ def test_startup_protection_retries_only_empty_discovery(monkeypatch):
 
 
 @pytest.mark.parametrize('actual', [
-    [publisher('_NODE_NAME_UNKNOWN_', '_NODE_NAMESPACE_UNKNOWN_')],
+    [publisher('unsafe_commander')],
+    [publisher('collision_monitor', '/other_robot')],
     [publisher('collision_monitor'), publisher('unsafe_commander')],
+    [publisher('collision_monitor'), publisher('_NODE_NAME_UNKNOWN_')],
 ])
 def test_startup_protection_immediately_rejects_known_bad_publishers(
         monkeypatch, actual):
@@ -133,6 +156,97 @@ def test_startup_protection_immediately_rejects_known_bad_publishers(
     failure = node._startup_protection_ready()
     assert 'actual=' in failure
     assert actual[0].node_name in failure
+    spin.assert_not_called()
+
+
+@pytest.mark.parametrize('unresolved', [
+    publisher('_NODE_NAME_UNKNOWN_', '_NODE_NAMESPACE_UNKNOWN_'),
+    publisher('collision_monitor', '_NODE_NAMESPACE_UNKNOWN_'),
+])
+def test_startup_protection_waits_for_unresolved_identity(monkeypatch, unresolved):
+    node = route()
+    calls = {'count': 0}
+
+    def publishers(topic):
+        expected = {
+            '/cmd_vel': 'collision_monitor',
+            '/keepout_filter_mask': 'keepout_filter_mask_server',
+            '/keepout_costmap_filter_info': 'keepout_costmap_filter_info_server',
+        }[topic]
+        if topic == '/cmd_vel':
+            calls['count'] += 1
+            if calls['count'] == 1:
+                return [unresolved]
+        return [publisher(expected)]
+
+    node.get_publishers_info_by_topic = publishers
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    assert node._startup_protection_ready() is None
+    assert calls['count'] == 2
+    spin.assert_called_once_with(node, timeout_sec=0.05)
+
+
+def test_startup_protection_does_not_accept_persistent_unknown_identity(monkeypatch):
+    node = route()
+    node.get_publishers_info_by_topic = lambda _topic: [
+        publisher('_NODE_NAME_UNKNOWN_', '_NODE_NAMESPACE_UNKNOWN_')]
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    failure = node._startup_protection_ready(discovery_timeout_s=0.0)
+    assert '_NODE_NAME_UNKNOWN_' in failure
+    spin.assert_not_called()
+
+
+def test_startup_protection_preserves_unknown_identity_until_deadline(monkeypatch):
+    node = route()
+    unknown = publisher('_NODE_NAME_UNKNOWN_', '_NODE_NAMESPACE_UNKNOWN_')
+    node.get_publishers_info_by_topic = lambda _topic: [unknown]
+    clock = iter([0.0, 0.0, 30.0])
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.time.monotonic', lambda: next(clock))
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    assert '_NODE_NAME_UNKNOWN_' in node._startup_protection_ready()
+    spin.assert_called_once_with(node, timeout_sec=0.05)
+
+
+def test_startup_protection_does_not_accept_identity_after_stop(monkeypatch):
+    node = route()
+    node.stop_requested = True
+    node.get_publishers_info_by_topic = lambda topic: [publisher({
+        '/cmd_vel': 'collision_monitor',
+        '/keepout_filter_mask': 'keepout_filter_mask_server',
+        '/keepout_costmap_filter_info': 'keepout_costmap_filter_info_server',
+    }[topic])]
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    assert node._startup_protection_ready() is not None
+    spin.assert_not_called()
+
+
+def test_startup_protection_does_not_accept_stop_during_last_graph_read(monkeypatch):
+    node = route()
+
+    def publishers(topic):
+        expected = {
+            '/cmd_vel': 'collision_monitor',
+            '/keepout_filter_mask': 'keepout_filter_mask_server',
+            '/keepout_costmap_filter_info': 'keepout_costmap_filter_info_server',
+        }[topic]
+        if topic == '/keepout_costmap_filter_info':
+            node.stop_requested = True
+        return [publisher(expected)]
+
+    node.get_publishers_info_by_topic = publishers
+    spin = Mock()
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    assert node._startup_protection_ready() is not None
     spin.assert_not_called()
 
 
@@ -558,6 +672,256 @@ def test_reverse_lost_acceptance_uses_follow_path_cancel_and_query(monkeypatch):
     node.cancel_navigation.call_async.assert_not_called()
 
 
+def test_reverse_single_waypoint_tracks_accepted_goal_before_logging_failure():
+    node = reverse_route()
+    node.waypoints = node.waypoints[-1:]
+    node.follow_reverse = Mock()
+    accepted = handle()
+    node.follow_reverse.send_goal_async.return_value = done(accepted)
+    node._verify_parking_stop = Mock(return_value=True)
+    assert node._execute_reverse_path(RosPath())
+    assert node._verify_parking_stop.call_args.args[0] == 0
+
+
+def test_reverse_logging_exception_still_owns_goal_for_cancellation():
+    node = reverse_route()
+    node.follow_reverse = Mock()
+    accepted = handle()
+    node.follow_reverse.send_goal_async.return_value = done(accepted)
+    node._route_event = Mock(side_effect=RuntimeError('log failed'))
+    owned = []
+    node.finish_navigation = lambda: owned.append(node.active_handle) or True
+    with pytest.raises(RuntimeError, match='log failed'):
+        node._execute_reverse_path(RosPath())
+    assert owned == [accepted]
+
+
+@pytest.mark.parametrize('angle', [0.0, math.nan, math.inf, True, math.pi])
+def test_search_rotation_rejects_unbounded_request_before_motion(angle):
+    node = route()
+    node.spin_search = Mock()
+    with pytest.raises(ValueError):
+        node.search_rotation(angle)
+    node.spin_search.send_goal_async.assert_not_called()
+
+
+@pytest.mark.parametrize('status,error,observed_yaw,expected', [
+    (GoalStatus.STATUS_SUCCEEDED, 0, math.pi / 6, True),
+    (GoalStatus.STATUS_SUCCEEDED, 0, -math.pi / 6, False),
+    (GoalStatus.STATUS_SUCCEEDED, 0, 0.0, False),
+    (GoalStatus.STATUS_ABORTED, 0, math.pi / 6, False),
+    (GoalStatus.STATUS_SUCCEEDED, 1, math.pi / 6, False),
+])
+def test_search_uses_spin_and_observed_turn_not_xy_parking(
+        status, error, observed_yaw, expected):
+    node = route()
+    node.spin_search = Mock()
+    node.spin_search.send_goal_async.return_value = done(handle(status, error))
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, observed_yaw), {})])
+    node._search_parameters_ready = Mock(return_value=True)
+    node.navigate = Mock()
+    node._verify_parking_stop = Mock()
+    assert node.search_rotation(math.pi / 6) is expected
+    goal = node.spin_search.send_goal_async.call_args.args[0]
+    assert goal.target_yaw == pytest.approx(math.pi / 6)
+    assert 0 < goal.time_allowance.sec <= 20
+    node.navigate.send_goal_async.assert_not_called()
+    node._verify_parking_stop.assert_not_called()
+    assert node.active_handle is None
+    assert node.active_action_type is Spin
+
+
+def test_spin_lost_acceptance_cancels_only_its_action_uuid(monkeypatch):
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once',
+                        lambda *args, **kwargs: None)
+    node = route()
+    node.active_action_type = Spin
+    node.navigation_uuid = Spin.Impl.SendGoalService.Request().goal_id
+    node.cancel_spin = Mock()
+    node.cancel_spin.call_async.return_value = done(None)
+    node.query_spin = Mock()
+    node.query_spin.call_async.return_value = done(
+        SimpleNamespace(status=GoalStatus.STATUS_CANCELED))
+    node.cancel_navigation = Mock()
+    assert node._cancel_navigation_uuid()
+    node.cancel_spin.call_async.assert_called_once()
+    node.cancel_navigation.call_async.assert_not_called()
+
+
+@pytest.mark.parametrize('maximum,minimum,plugins,stamped,ready', [
+    (.2, .1, ['wait', 'spin'], False, True),
+    (.7, .1, ['wait', 'spin'], False, False),
+    (.2, .4, ['wait', 'spin'], False, False),
+    (.2, .1, ['wait'], False, False),
+    (.2, .1, ['wait', 'spin'], True, False),
+])
+def test_search_checks_installed_spin_profile(
+        monkeypatch, maximum, minimum, plugins, stamped, ready):
+    node = route()
+    client = Mock()
+    values = [Parameter('p', value=v).get_parameter_value() for v in (
+        plugins, maximum, minimum, 'odom', 'base_footprint', stamped)]
+    client.call_async.return_value = done(SimpleNamespace(values=values))
+    node.create_client = Mock(return_value=client)
+    assert node._search_parameters_ready() is ready
+
+
+@pytest.mark.parametrize('guard_failure,operator_stop,repositionable', [
+    (None, False, True), ('scan stale: age=1s', False, False),
+    (None, True, False),
+])
+def test_search_timeout_cancels_accepted_spin(
+        monkeypatch, guard_failure, operator_stop, repositionable):
+    node = route()
+    node.spin_search = Mock()
+    pending = Future()
+    accepted = handle(future=pending)
+    node.spin_search.send_goal_async.return_value = done(accepted)
+    node.capture_stationary_pose = Mock(return_value=((0., 0., 0.), {}))
+    node._search_parameters_ready = lambda: True
+    clock = {'now': 0.0}
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.time.monotonic',
+                        lambda: clock['now'])
+
+    def spin_once(*args, **kwargs):
+        clock['now'] += 21.0
+        node.stop_requested = operator_stop
+        node._guard_failure = lambda *_: guard_failure
+
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin_once)
+
+    def cancel(handle, reason):
+        assert handle is accepted
+        pending.set_result(SimpleNamespace(status=GoalStatus.STATUS_CANCELED))
+
+    node._cancel = cancel
+    assert not node.search_rotation(math.pi / 6)
+    assert node.active_handle is None
+    assert node.capture_stationary_pose.call_count == 1
+    assert node.last_search_error_code == (Spin.Result.TIMEOUT if repositionable else None)
+
+
+def test_repeated_spin_profile_reads_do_not_accumulate_ros_clients(monkeypatch):
+    """Count real rclpy clients, with only remote responses substituted."""
+    import rclpy
+    from rclpy.client import Client
+    from rclpy.context import Context
+    from rclpy.node import Node
+    from rclpy.parameter_client import AsyncParameterClient
+
+    monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+    monkeypatch.setenv('ROS_LOCALHOST_ONLY', '0')
+    monkeypatch.setattr(AsyncParameterClient, 'wait_for_services',
+                        lambda *args, **kwargs: True)
+    monkeypatch.setattr(Client, 'wait_for_service', lambda *args, **kwargs: True)
+    context = Context()
+    rclpy.init(context=context, domain_id=91)
+    node = Node('parameter_reader_regression', context=context,
+                start_parameter_services=False, enable_rosout=False)
+    node.parking_contract = {'rotate_angular_radps': .2}
+    node._parameter_readers = {}
+    node._read_parameters = lambda remote, names: ServiceRoute._read_parameters(
+        node, remote, names)
+    response = SimpleNamespace(values=[
+        Parameter('p', value=value).get_parameter_value() for value in
+        (['wait', 'spin'], .2, .1, 'odom', 'base_footprint', False)])
+    monkeypatch.setattr(Client, 'call_async', lambda *args: done(response))
+    node._wait = lambda future, timeout: future.result()
+    try:
+        for _ in range(12):
+            assert ServiceRoute._search_parameters_ready(node)
+        assert len(list(node.clients)) == 1
+    finally:
+        node.destroy_node()
+        rclpy.shutdown(context=context)
+
+
+def test_parameter_reader_reuses_endpoint_but_not_returned_values():
+    node = route()
+    client = Mock()
+    first = SimpleNamespace(values=['old'])
+    second = SimpleNamespace(values=['new'])
+    client.call_async.side_effect = [done(first), done(second)]
+    node.create_client = Mock(return_value=client)
+    assert node._read_parameters('map_server', ['yaml_filename']) is first
+    assert node._read_parameters('map_server', ['yaml_filename']) is second
+    node.create_client.assert_called_once()
+    assert client.call_async.call_count == 2
+    assert client.call_async.call_args.args[0].names == ['yaml_filename']
+    client.remove_pending_request.assert_not_called()
+
+
+def test_parameter_reader_absent_service_never_sends_request():
+    node = route()
+    client = Mock()
+    client.wait_for_service.return_value = False
+    node.create_client = Mock(return_value=client)
+    assert node._read_parameters('map_server', ['yaml_filename']) is None
+    client.call_async.assert_not_called()
+
+
+def test_parameter_reader_discards_pending_request_on_interruption():
+    node = route()
+    client = Mock()
+    pending = Future()
+    client.call_async.return_value = pending
+    node.create_client = Mock(return_value=client)
+    node._wait = Mock(side_effect=RuntimeError('request interrupted, failed or timed out'))
+    with pytest.raises(RuntimeError, match='request interrupted'):
+        node._read_parameters('map_server', ['yaml_filename'])
+    client.remove_pending_request.assert_called_once_with(pending)
+
+
+def test_parameter_reader_uses_real_read_only_service_and_fresh_responses(monkeypatch):
+    """A get-only peer works without five unrelated parameter services."""
+    import rclpy
+    from rcl_interfaces.srv import GetParameters
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+
+    monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+    monkeypatch.setenv('ROS_LOCALHOST_ONLY', '0')
+    context = Context()
+    rclpy.init(context=context, domain_id=91)
+    executor = SingleThreadedExecutor(context=context)
+    server = Node('read_only_peer', context=context, start_parameter_services=False,
+                  enable_rosout=False)
+    node = Node('fresh_parameter_reader', context=context, start_parameter_services=False,
+                enable_rosout=False)
+    node._parameter_readers = {}
+    requests = []
+
+    def respond(request, response):
+        requests.append(list(request.names))
+        response.values = [Parameter('revision', value=len(requests)).get_parameter_value()]
+        return response
+
+    server.create_service(GetParameters, 'read_only_peer/get_parameters', respond)
+    executor.add_node(server)
+    executor.add_node(node)
+
+    def wait(future, timeout):
+        executor.spin_until_future_complete(future, timeout_sec=timeout)
+        assert future.done()
+        return future.result()
+
+    node._wait = wait
+    try:
+        first = ServiceRoute._read_parameters(node, 'read_only_peer', ['revision'])
+        second = ServiceRoute._read_parameters(node, 'read_only_peer', ['revision'])
+        assert first.values[0].integer_value == 1
+        assert second.values[0].integer_value == 2
+        assert requests == [['revision'], ['revision']]
+        assert len(list(node.clients)) == 1
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        server.destroy_node()
+        rclpy.shutdown(context=context)
+
+
 @pytest.mark.parametrize('minimum,maximum,ready', [
     (-.08, .08, True), (0.0, .08, False), (-.09, .08, False), (-.08, .2, False),
 ])
@@ -566,9 +930,8 @@ def test_reverse_checks_actual_smoother_velocity_bounds(monkeypatch, minimum, ma
     client = Mock()
     values = [Parameter('min_velocity', value=[minimum, 0.0, -.3]).get_parameter_value(),
               Parameter('max_velocity', value=[maximum, 0.0, .3]).get_parameter_value()]
-    client.get_parameters.return_value = done(SimpleNamespace(values=values))
-    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.AsyncParameterClient',
-                        lambda *args: client)
+    client.call_async.return_value = done(SimpleNamespace(values=values))
+    node.create_client = Mock(return_value=client)
     assert node._reverse_smoother_ready() is ready
 
 
@@ -653,6 +1016,85 @@ def test_navigation_terminal_failure_is_propagated():
     assert '"event": "arrived"' not in node.result_stream.getvalue()
 
 
+def test_verified_maps_reuse_asset_audit_but_keep_live_identity_and_command_check():
+    node = route()
+    node.registry = {'map': {'yaml_path': 'map'}, 'keepout': {'yaml_path': 'mask'}}
+    node._verified_map_identity = json.dumps(node.registry, sort_keys=True)
+    node.live_grids = node.expected_grids = {'map': 'a', 'keepout': 'b'}
+    node._startup_protection_ready = Mock(return_value=None)
+    node._read_parameters = Mock()
+    node.verify_live_maps()
+    node._read_parameters.assert_not_called()
+    node._startup_protection_ready.assert_called_once_with(require_command_path=True)
+    node.live_grids = {'map': 'changed', 'keepout': 'b'}
+    with pytest.raises(RuntimeError, match='changed'):
+        node.verify_live_maps()
+
+
+def test_map_audit_cache_is_created_by_first_call_not_seeded_by_test(monkeypatch):
+    node = route()
+    node.registry = {'map': {'yaml_path': 'map'}, 'keepout': {'yaml_path': 'mask'}}
+    node.live_grids = {'map': 'map', 'keepout': 'mask'}
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    validate = Mock()
+    monkeypatch.setattr(module + 'validate_registry', validate)
+    monkeypatch.setattr(module + 'map_grid_signature', lambda path: path)
+    monkeypatch.setattr(module + 'verify_identity', Mock())
+    node._read_parameters = Mock(side_effect=lambda name, _: SimpleNamespace(values=[
+        Parameter('yaml_filename', value='map' if name == 'map_server' else 'mask')
+        .get_parameter_value()]))
+    node._startup_protection_ready = Mock(return_value=None)
+    node.verify_live_maps(require_command_path=False)
+    node.verify_live_maps()
+    assert node._read_parameters.call_count == 2
+    validate.assert_called_once()
+    assert [call.kwargs for call in node._startup_protection_ready.call_args_list] == [
+        {'require_command_path': False}, {'require_command_path': True}]
+
+
+def test_input_gap_between_waypoints_recovers_without_restarting_completed_leg():
+    node = route()
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = lambda *_, **__: done(handle())
+    node._navigation_ready = Mock(side_effect=[True, False, True])
+    node._guard_failure = Mock(return_value='scan stale: age=1s')
+    node._wait_for_input_recovery = Mock(side_effect=node._input_gap_recoverable)
+    assert node.execute(final_parking=False)
+    assert node.navigate.send_goal_async.call_count == 2
+    node._wait_for_input_recovery.assert_called_once_with('scan stale: age=1s')
+
+
+@pytest.mark.parametrize('entry', ['service', 'corridor', 'spin', 'reverse'])
+@pytest.mark.parametrize('reason,stopped,retry', [
+    ('scan stale: age=1s', False, True),
+    ('scan stale: age=1s', True, False),
+    ('battery low: voltage=10.4V', False, False),
+    (None, False, False),
+])
+def test_action_boundary_marks_only_recoverable_input_gaps(entry, reason, stopped, retry):
+    node = route()
+    node.navigate = Mock()
+    node.spin_search = Mock()
+    node.follow_reverse = Mock()
+    node._resume_waypoint_index = 0
+    node._retry_guard_reason = None
+    node.stop_requested = stopped
+    node._navigation_ready = lambda **_: False
+    node._guard_failure = lambda *_: reason
+    if entry == 'service':
+        result = node._execute_service_once(final_parking=False, alignment=False)
+    elif entry == 'corridor':
+        result = CorridorRoute._execute_route_once(node)
+    elif entry == 'spin':
+        result = node._search_rotation_once(math.pi / 6)
+    else:
+        result = node._execute_reverse_once(RosPath())
+    assert not result
+    assert node._retry_guard_reason == (reason if retry else None)
+    for client in (node.navigate, node.spin_search, node.follow_reverse):
+        client.send_goal_async.assert_not_called()
+
+
 @pytest.mark.parametrize('execute', [False, True])
 def test_alternate_selection_retains_waypoints_and_gap_evidence(execute):
     """Plan and report the selected table's two poses without reusing the primary."""
@@ -670,6 +1112,8 @@ def test_alternate_selection_retains_waypoints_and_gap_evidence(execute):
     failed.error_code = ComputePathThroughPoses.Result.GOAL_OCCUPIED
     successful = ComputePathThroughPoses.Result()
     successful.path.poses = [PoseStamped()]
+    successful.path.poses[-1].pose.position.x = 3.0
+    successful.path.poses[-1].pose.position.y = 4.0
     node.compute = Mock()
     node.compute.send_goal_async.side_effect = [
         done(SimpleNamespace(accepted=True, get_result_async=lambda: done(
@@ -706,6 +1150,99 @@ def test_final_action_uses_parking_and_requires_confirmation(confirmed):
     goals = [call.args[0] for call in node.navigate.send_goal_async.call_args_list]
     assert [goal.behavior_tree for goal in goals] == ['transit.xml', 'parking.xml']
     assert node._verify_parking_stop.call_count == 1
+
+
+def test_observation_transit_replans_without_forcing_final_parking_yaw():
+    node = route()
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = lambda *_, **__: done(handle())
+    node._verify_parking_stop = Mock(return_value=False)
+    assert node.execute(final_parking=False)
+    goals = [call.args[0] for call in node.navigate.send_goal_async.call_args_list]
+    assert [goal.behavior_tree for goal in goals] == ['transit.xml', 'transit.xml']
+    node._verify_parking_stop.assert_not_called()
+
+
+def test_intermediate_alignment_uses_separate_checker_without_final_confirmation():
+    node = route()
+    node.alignment_behavior_tree = 'alignment.xml'
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = lambda *_, **__: done(handle())
+    node._verify_parking_stop = Mock(return_value=False)
+    assert node.execute(final_parking=False, alignment=True)
+    goals = [call.args[0] for call in node.navigate.send_goal_async.call_args_list]
+    assert [goal.behavior_tree for goal in goals] == ['transit.xml', 'alignment.xml']
+    node._verify_parking_stop.assert_not_called()
+
+
+def test_sensor_gap_cancels_terminal_then_retries_only_current_waypoint(monkeypatch):
+    node = route()
+    result = Future()
+    interrupted = handle(future=result)
+    node.navigate = Mock()
+    node.navigate.send_goal_async.side_effect = [done(handle()), done(interrupted), done(handle())]
+    node._navigation_ready = Mock(side_effect=[True, True, False, True])
+    node._guard_failure = Mock(return_value='scan stale: age=1s')
+    node._wait_for_input_recovery = Mock(return_value=True)
+
+    def spin(_node, timeout_sec):
+        if interrupted.cancel_goal_async.called and not result.done():
+            result.set_result(SimpleNamespace(status=GoalStatus.STATUS_CANCELED))
+
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.rclpy.spin_once', spin)
+    assert node.execute(final_parking=False)
+    interrupted.cancel_goal_async.assert_called_once()
+    node._wait_for_input_recovery.assert_called_once_with('scan stale: age=1s')
+    assert node.navigate.send_goal_async.call_count == 3
+    records = [json.loads(line) for line in node.result_stream.getvalue().splitlines()]
+    accepted = [item['waypoint_id'] for item in records if item['event'] == 'accepted']
+    assert accepted == ['approach', 'main', 'main']
+
+
+def test_search_input_recovery_uses_remaining_angle_not_another_full_turn():
+    node = route()
+    node._wait_for_input_recovery = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(return_value=((0, 0, math.radians(10)), {}))
+    angles = []
+
+    def attempt(angle):
+        angles.append(angle)
+        node._search_target_yaw = math.radians(30)
+        node._retry_guard_reason = 'scan stale: age=1s'
+        return len(angles) == 2
+
+    node._search_rotation_once = attempt
+    assert node.search_rotation(math.radians(30))
+    assert angles == pytest.approx([math.radians(30), math.radians(20)])
+
+
+def test_reverse_recovery_rebuilds_and_revalidates_remaining_path():
+    node = route()
+    node._wait_for_input_recovery = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(return_value=((0.7, 0, 0.2), {}))
+    node._make_reverse_path = Mock(return_value='remaining')
+    node._reverse_path_valid = Mock(return_value=True)
+    paths = []
+
+    def attempt(path):
+        paths.append(path)
+        node._retry_guard_reason = 'odom stale: age=1s'
+        return len(paths) == 2
+
+    node._execute_reverse_once = attempt
+    assert node._execute_reverse_path('original')
+    assert paths == ['original', 'remaining']
+    node._make_reverse_path.assert_called_once_with((0.7, 0, 0.2), (1.0, 0.0, 0.2))
+    node._reverse_path_valid.assert_called_once_with('remaining')
+
+
+@pytest.mark.parametrize('value', [None, 0, 1, 'false'])
+def test_final_parking_mode_rejects_non_boolean_before_dispatch(value):
+    node = route()
+    node.navigate = Mock()
+    with pytest.raises(ValueError, match='final_parking must be boolean'):
+        node.execute(final_parking=value)
+    node.navigate.send_goal_async.assert_not_called()
 
 
 def test_action_failure_does_not_send_parking_goal():
@@ -785,7 +1322,7 @@ def test_amcl_stale_after_motion_is_blocked(monkeypatch):
     del node._guard_failure
     monkeypatch.setattr(
         'jdamr_cube_navigation.restaurant_service.CorridorRoute._guard_failure',
-        lambda *_: None)
+        lambda *_, **__: None)
     node.amcl_covariance = (0.01, 0.01)
     node.amcl_seen = 0.0
     node.amcl_motion_distance_m = 0.3
@@ -801,7 +1338,7 @@ def test_amcl_stale_after_motion_is_blocked(monkeypatch):
     node.amcl_yaw_covariance_rad2 = math.nan
     assert node._guard_failure(False) == 'AMCL yaw covariance invalid'
     node.amcl_yaw_covariance_rad2 = 1.0
-    assert node._guard_failure(False) == 'AMCL yaw covariance high'
+    assert node._guard_failure(False).startswith('AMCL yaw covariance high')
 
 
 def test_planner_cancellation_without_error_is_not_success():
@@ -829,15 +1366,79 @@ def test_wrong_live_map_prevents_any_goal(monkeypatch):
     monkeypatch.setattr(
         'jdamr_cube_navigation.restaurant_service.validate_registry', lambda _: None)
     client = Mock()
-    client.get_parameters.return_value = done(SimpleNamespace(values=[
+    client.call_async.return_value = done(SimpleNamespace(values=[
         Parameter('yaml_filename', value='/wrong/map.yaml').get_parameter_value()]))
-    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.AsyncParameterClient',
-                        lambda *_: client)
+    node.create_client = Mock(return_value=client)
     verify = Mock(side_effect=ValueError('map hash mismatch'))
     monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.verify_identity', verify)
     with pytest.raises(ValueError, match='hash mismatch'):
         node.verify_live_maps()
     assert verify.call_args.args[1] == '/wrong/map.yaml'
+
+
+def test_delayed_live_map_discovery_preserves_identity_checks(monkeypatch):
+    node = route()
+    node.registry = {'map': {'yaml_path': 'expected'}, 'keepout': {'yaml_path': 'mask'}}
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    monkeypatch.setattr(module + 'map_grid_signature', lambda x: x)
+    monkeypatch.setattr(module + 'validate_registry', lambda _: None)
+    clock = {'now': 0.0}
+    monkeypatch.setattr(module + 'time.monotonic', lambda: clock['now'])
+
+    def spin(*_, **__):
+        clock['now'] += 1.0
+        if clock['now'] >= 4.0:
+            node.live_grids = {'map': 'wrong', 'keepout': 'mask'}
+
+    monkeypatch.setattr(module + 'rclpy.spin_once', spin)
+    with pytest.raises(RuntimeError, match='does not match registered data'):
+        node.verify_live_maps()
+    assert clock['now'] == 4.0
+
+
+@pytest.mark.parametrize('stage', ['visit', 'go_home'])
+def test_live_map_wait_does_not_consume_leg_budget(monkeypatch, stage):
+    """A fresh process waits up to 30 s for maps; the leg budget starts afterwards."""
+    node = serving_route()
+    node.registry['home'] = taught_pose('home_dock', (-0.5, 0.4, -1.2), {},
+                                        approach_offset_m=0.7)
+    clock = {'now': 100.0}
+    monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.time.monotonic',
+                        lambda: clock['now'])
+    node.run_deadline_s = 50.0  # an earlier leg's expired deadline
+    seen = []
+
+    def discover():
+        seen.append(node.run_deadline_s)
+        clock['now'] += 30.0
+
+    node.verify_live_maps = Mock(side_effect=discover)
+    node.wait_until_ready = Mock(return_value=False)
+    with pytest.raises(RuntimeError, match='navigation data unavailable'):
+        if stage == 'visit':
+            node.visit('table_01')
+        else:
+            node.go_home()
+    assert seen == [None]
+    assert node.run_deadline_s == 130.0 + 180.0
+
+
+def test_missing_live_map_reports_missing_streams(monkeypatch):
+    node = route()
+    node.registry = {'map': {'yaml_path': 'expected'}, 'keepout': {'yaml_path': 'mask'}}
+    node.live_grids = {'map': 'expected'}
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    monkeypatch.setattr(module + 'map_grid_signature', lambda x: x)
+    monkeypatch.setattr(module + 'validate_registry', lambda _: None)
+    clock = {'now': 0.0}
+    monkeypatch.setattr(module + 'time.monotonic', lambda: clock['now'])
+    monkeypatch.setattr(module + 'rclpy.spin_once',
+                        lambda *_, **__: clock.update(now=clock['now'] + 1.0))
+    with pytest.raises(RuntimeError, match='live map data unavailable: keepout'):
+        node.verify_live_maps()
+    # 30 s: an idle Pi delivered /map to a fresh process in 1-6 s; under driving
+    # load a 10 s wait failed (2026-09-30 table_02 legs).
+    assert clock['now'] == 30.0
 
 
 def test_live_map_reload_is_detected_even_with_unchanged_parameters():
@@ -862,10 +1463,36 @@ def test_live_map_reload_is_detected_even_with_unchanged_parameters():
 
 def test_localization_limits_use_squared_si_units():
     """The candidate confidence thresholds have explicit independent units."""
-    contract = load_service_contract(PACKAGE / 'config/restaurant_service_contract.yaml')
+    contract = load_service_contract(
+        Path(__file__).parent / 'fixtures/restaurant_service_contract_gated.yaml')
     assert contract['max_x_covariance_m2'] == pytest.approx(0.1 ** 2)
     assert contract['max_y_covariance_m2'] == pytest.approx(0.1 ** 2)
     assert contract['max_yaw_covariance_rad2'] == pytest.approx(math.radians(10.0) ** 2)
+    # Intermediate legs stop between the recorded converged and unconverged states.
+    assert contract['intermediate_max_x_covariance_m2'] == pytest.approx(0.2 ** 2)
+    assert contract['intermediate_max_y_covariance_m2'] == pytest.approx(0.2 ** 2)
+    assert contract['intermediate_max_yaw_covariance_rad2'] == pytest.approx(
+        math.radians(15.0) ** 2)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('intermediate_max_x_covariance_m2', None), ('intermediate_max_y_covariance_m2', 0.005),
+    ('intermediate_max_yaw_covariance_rad2', math.inf),
+    ('intermediate_max_x_covariance_m2', math.nan), ('intermediate_max_y_covariance_m2', True),
+    ('intermediate_max_x_covariance_m2', '0.25')],
+    ids=['missing', 'below_strict', 'inf', 'nan', 'bool', 'string'])
+def test_intermediate_limits_never_below_strict_limits(tmp_path, key, value):
+    """Reject an intermediate bound that is missing, non-finite or tighter than strict."""
+    document = yaml.safe_load(
+        (PACKAGE / 'config/restaurant_service_contract.yaml').read_text(encoding='utf-8'))
+    if value is None:
+        document.pop(key, None)
+    else:
+        document[key] = value
+    path = tmp_path / 'contract.yaml'
+    path.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(ValueError, match=key):
+        load_service_contract(path)
 
 
 @pytest.mark.parametrize('sequence,confirmed', [('steady', True), ('moving', False)])
@@ -951,34 +1578,63 @@ def test_service_launch_adds_parking_without_changing_costmaps(
         output = yaml.safe_load(generated.read_text())
         controller = output['controller_server']['ros__parameters']
         assert controller['Parking']['desired_linear_vel'] == 0.08
-        assert controller['Parking']['use_collision_detection']
+        assert controller['Parking']['use_collision_detection'] is False
         assert controller['parking_goal_checker']['xy_goal_tolerance'] == 0.05
         if reverse:
             assert controller['ParkingReverse']['allow_reversing'] is True
             assert controller['ParkingReverse']['use_rotate_to_heading'] is False
-            assert controller['ParkingReverse']['use_collision_detection'] is True
+            assert controller['ParkingReverse']['use_collision_detection'] is False
             assert output['velocity_smoother']['ros__parameters']['min_velocity'][0] == -.08
             controller['controller_plugins'].remove('ParkingReverse')
             del controller['ParkingReverse']
             output['velocity_smoother']['ros__parameters']['min_velocity'][0] = 0.0
+            # Transit is capped at the service speed, not the parking contract.
+            smoother = output['velocity_smoother']['ros__parameters']
+            assert smoother['max_velocity'][0] == 0.12
+            smoother['max_velocity'][0] = original['velocity_smoother'][
+                'ros__parameters']['max_velocity'][0]
+            for key in ('desired_linear_vel', 'min_approach_linear_velocity',
+                        'regulated_linear_scaling_min_speed'):
+                assert controller['FollowPath'][key] <= 0.12
+                controller['FollowPath'][key] = original['controller_server'][
+                    'ros__parameters']['FollowPath'][key]
+            controller['controller_plugins'].remove('GracefulReverse')
+            del controller['GracefulReverse']
         else:
             assert 'ParkingReverse' not in controller
             assert output['velocity_smoother']['ros__parameters']['min_velocity'][0] == 0.0
         controller['controller_plugins'].remove('Parking')
+        controller['controller_plugins'].remove('GracefulParking')
         controller['goal_checker_plugins'].remove('parking_goal_checker')
+        controller['goal_checker_plugins'].remove('alignment_goal_checker')
+        controller['goal_checker_plugins'].remove('staging_position_checker')
+        controller['goal_checker_plugins'].remove('dock_position_checker')
+        controller['goal_checker_plugins'].remove('face_alignment_checker')
         del controller['Parking'], controller['parking_goal_checker']
+        del controller['alignment_goal_checker'], controller['GracefulParking']
+        del controller['staging_position_checker'], controller['dock_position_checker']
+        del controller['face_alignment_checker']
+        # The service session adds the through-poses navigator with our own tree.
+        navigator = output['bt_navigator']['ros__parameters']
+        assert navigator['navigators'][-1] == 'navigate_through_poses'
+        assert navigator.pop('default_nav_through_poses_bt_xml').endswith(
+            'navigate_through_poses_transit.xml')
+        assert navigator.pop('navigate_through_poses')['plugin'] == (
+            'nav2_bt_navigator::NavigateThroughPosesNavigator')
+        navigator['navigators'].pop()
         assert output == original
         assert arguments['map'] == '/maps/new_base_room.yaml'
         assert arguments['asset_registry'].perform(context) == '/registry.yaml'
         assert arguments['discovery_range'].perform(context) == discovery_range
-        assert arguments['use_composition'].perform(context) == 'false'
+        assert arguments['use_composition'].perform(context) == 'true'
         assert arguments['coordinated_startup'].perform(context) == 'true'
     finally:
         generated.unlink()
 
 
-def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
-    """Use the same discovery scope as the physical keepout wrapper."""
+@pytest.mark.parametrize('override,expected', [(None, 'LOCALHOST'), ('SUBNET', 'SUBNET')])
+def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch, override, expected):
+    """Match onboard sensors by default and retain explicit network overrides."""
     from launch.actions import DeclareLaunchArgument
     from launch import LaunchContext
     spec = importlib.util.spec_from_file_location(
@@ -991,12 +1647,84 @@ def test_service_launch_defaults_to_physical_sensor_discovery(monkeypatch):
                        if isinstance(action, DeclareLaunchArgument)
                        and action.name == 'discovery_range')
     context = LaunchContext()
+    if override is not None:
+        context.launch_configurations['discovery_range'] = override
     declaration.execute(context)
-    assert context.launch_configurations['discovery_range'] == 'SUBNET'
+    assert context.launch_configurations['discovery_range'] == expected
 
 
-def test_service_launch_defaults_to_ordered_standalone_startup(monkeypatch):
-    """Avoid parallel lifecycle transitions on the physical service stack."""
+def test_precision_launch_matches_box_contract_speed_and_search_capability(monkeypatch):
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'precision_service_launch', PACKAGE / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE if name == 'jdamr_cube_navigation' else PACKAGE.parent / name))
+    monkeypatch.setattr(module, 'load_registry', lambda _: {
+        'home': {'parking_direction': 'reverse'},
+        'map': {'yaml_path': '/map.yaml'}, 'keepout': {'yaml_path': '/mask.yaml'}})
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'registry': '/registry.yaml',
+        'params_file': str(PACKAGE / 'config/new_base_nav2_params.yaml'),
+        'parking_contract': str(PACKAGE / 'config/box_parking_contract.yaml'),
+        'precision_parking': 'true'})
+    actions = module._configure(context)
+    arguments = dict(actions[1].launch_arguments)
+    generated = Path(arguments['params_file'])
+    try:
+        document = yaml.safe_load(generated.read_text())
+        smoother = document['velocity_smoother']['ros__parameters']
+        assert smoother['min_velocity'][0] == -.08
+        # Transit at the configured 0.12 m/s; reverse at the box contract speed.
+        assert smoother['max_velocity'][0] == .12
+        behavior = document['behavior_server']['ros__parameters']
+        assert behavior['max_rotational_vel'] == .2
+        assert behavior['min_rotational_vel'] == .1
+        assert behavior['enable_stamped_cmd_vel'] is False
+        assert arguments['enable_box_search'].perform(context) == 'true'
+        assert document['collision_monitor']['ros__parameters']['source_timeout'] == 1.0
+    finally:
+        generated.unlink()
+
+
+@pytest.mark.parametrize('search', [False, True])
+def test_core_spin_opt_in_uses_guarded_command_route(monkeypatch, search):
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'core_spin_launch', PACKAGE / 'launch/onboard_nav2_core.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda _: str(PACKAGE))
+    monkeypatch.setattr(module, '_validate_new_base_params', lambda *a, **k: None)
+    captured = []
+    original = module.ComposableNode
+
+    def capture(**kwargs):
+        captured.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(module, 'ComposableNode', capture)
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'navigation_profile': 'new_base_candidate',
+        'map': '/map.yaml', 'keepout_mask': '/mask.yaml',
+        'params_file': str(PACKAGE / 'config/new_base_nav2_params.yaml'),
+        'use_sim_time': 'false', 'autostart': 'true', 'use_composition': 'true',
+        'precision_parking': 'true', 'enable_box_search': str(search).lower()})
+    module._launch_navigation(context)
+    behavior = next(value for value in captured if value['name'] == 'behavior_server')
+    parameters = next(value for value in behavior['parameters']
+                      if isinstance(value, dict) and 'behavior_plugins' in value)
+    assert parameters['behavior_plugins'] == (['wait', 'spin'] if search else ['wait'])
+    if search:
+        assert parameters['spin']['plugin'] == 'nav2_behaviors::Spin'
+    assert ('cmd_vel', 'cmd_vel_nav') in behavior['remappings']
+
+
+def test_service_launch_defaults_to_composed_ordered_startup(monkeypatch):
+    """Keep the verified composed stack while preserving ordered activation."""
     from launch.actions import DeclareLaunchArgument
     from launch import LaunchContext
     spec = importlib.util.spec_from_file_location(
@@ -1015,7 +1743,7 @@ def test_service_launch_defaults_to_ordered_standalone_startup(monkeypatch):
     context = LaunchContext()
     declarations['use_composition'].execute(context)
     declarations['coordinated_startup'].execute(context)
-    assert context.launch_configurations['use_composition'] == 'false'
+    assert context.launch_configurations['use_composition'] == 'true'
     assert context.launch_configurations['coordinated_startup'] == 'true'
 
 
@@ -1033,3 +1761,212 @@ def test_service_launch_keeps_box_observer_explicit():
         if isinstance(action, DeclareLaunchArgument)
         and action.name == 'use_box_observer')
     assert declaration.default_value[0].text == 'false'
+
+
+PLANNED_POSE = {'id': 'main', 'x_m': 1.0, 'y_m': 2.0, 'yaw_rad': 0.4,
+                'approach_offset_m': 0.5}
+
+
+def _planned_route(end_xy, contract='config/parking_contract.yaml'):
+    """Run the real plan_pose against a planner path ending at end_xy."""
+    node = route()
+    del node._pose
+    node.parking_contract = load_parking_contract(PACKAGE / contract)
+    node.get_clock = lambda: SimpleNamespace(now=lambda: Time(nanoseconds=10 ** 12))
+    result = ComputePathThroughPoses.Result()
+    start, finish = PoseStamped(), PoseStamped()
+    finish.pose.position.x, finish.pose.position.y = end_xy
+    result.path.poses = [start, finish]
+    wrapped = SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED, result=result)
+    node.compute = Mock()
+    node.compute.wait_for_server.return_value = True
+    node.compute.send_goal_async.return_value = done(SimpleNamespace(
+        accepted=True, get_result_async=lambda: done(wrapped)))
+    return node
+
+
+def test_t16a_plan_end_shortfall_is_not_success():
+    """Reject an error-free plan that ends 0.15 m short of the final goal."""
+    planned = _planned_route((0.85, 2.0)).plan_pose(PLANNED_POSE)
+    assert planned['ok'] is False, f'HEADFAIL[T16a]: truncated plan accepted: {planned}'
+    assert planned['reason'] == 'goal_not_reachable_within_tolerance'
+    assert planned['end_error_m'] == pytest.approx(0.15)
+    assert planned['end_tolerance_m'] == pytest.approx(0.05)
+
+
+def test_t16b_nonfinite_plan_end_is_not_success():
+    """Reject a non-finite plan end and keep the result strict JSON."""
+    planned = _planned_route((math.nan, 2.0)).plan_pose(PLANNED_POSE)
+    assert planned['ok'] is False, f'HEADFAIL[T16b]: non-finite plan end accepted: {planned}'
+    assert planned['end_error_m'] is None
+    json.dumps(planned, allow_nan=False)
+
+
+def test_t16c_exact_plan_end_remains_success():
+    """Keep the bench-proven exact plan end successful."""
+    planned = _planned_route((1.0, 2.0)).plan_pose(PLANNED_POSE)
+    assert planned['ok'] is True
+    assert planned['reason'] == 'planned'
+
+
+def test_t16d_alignment_plan_end_tolerance():
+    """Judge intermediate alignment plans with the 0.05 m alignment checker."""
+    assert 'end_tolerance_m' in inspect.signature(ServiceRoute.plan_pose).parameters, (
+        'NEW[T16d]: plan_pose has no end_tolerance_m')
+    contract = 'config/box_parking_contract.yaml'
+    rejected = _planned_route((0.94, 2.0), contract).plan_pose(
+        PLANNED_POSE, single=True, end_tolerance_m=0.05)
+    accepted = _planned_route((0.96, 2.0), contract).plan_pose(
+        PLANNED_POSE, single=True, end_tolerance_m=0.05)
+    assert rejected['ok'] is False and rejected['end_error_m'] == pytest.approx(0.06)
+    assert accepted['ok'] is True and accepted['end_error_m'] == pytest.approx(0.04)
+
+
+def test_t18_end_point_failure_tries_alternate():
+    """Try the registered alternate when the first goal cell is unreachable."""
+    poses = [{'id': 'main'}, {'id': 'alternate'}, {'id': 'not_allowed'}]
+    planner = Mock(side_effect=[
+        {'ok': False, 'error_code': 0, 'reason': 'goal_not_reachable_within_tolerance',
+         'end_error_m': 0.15, 'end_tolerance_m': 0.05},
+        {'ok': True, 'error_code': 0, 'reason': 'planned'}])
+    chosen, attempts = select_destination(poses, planner)
+    assert planner.call_count == 2, 'HEADFAIL[T18]: alternate not attempted'
+    assert chosen == poses[1] and len(attempts) == 2
+
+
+def test_t14_parking_contract_option_is_home_only():
+    """Accept --parking-contract for home only, never for table or serve commands."""
+    base = ['service', 'home', '--registry', '/tmp/r.yaml', '--log', '/tmp/h.jsonl']
+    try:
+        args = parse_args([*base, '--parking-contract', '/tmp/box.yaml'])
+    except SystemExit as error:
+        raise AssertionError('NEW[T14]: home rejects --parking-contract') from error
+    assert args.parking_contract == Path('/tmp/box.yaml')
+    assert parse_args(base).parking_contract is None
+    for command in (['go', '--table-id', 'table_01'], ['serve', '--table-id', 'table_01'],
+                    ['roundtrip', '--table-id', 'table_01'], ['teach-home']):
+        with pytest.raises(SystemExit):
+            parse_args(['service', command[0], '--registry', '/tmp/r.yaml',
+                        '--log', '/tmp/x.jsonl', *command[1:],
+                        '--parking-contract', '/tmp/box.yaml'])
+
+
+def test_t14b_home_main_loads_session_and_home_contracts(monkeypatch, tmp_path):
+    """Use the session contract for home motion and keep the dock contract apart."""
+    argv = ['service', 'home', '--registry', str(tmp_path / 'registry.yaml'),
+            '--log', str(tmp_path / 'home.jsonl'), '--execute',
+            '--parking-contract', str(PACKAGE / 'config/box_parking_contract.yaml')]
+    try:
+        parse_args(argv)
+    except SystemExit as error:
+        raise AssertionError('NEW[T14b]: home rejects --parking-contract') from error
+    module = 'jdamr_cube_navigation.restaurant_service.'
+    monkeypatch.setattr(module + 'load_registry', lambda _path: {'home': {}})
+    monkeypatch.setattr(module + 'get_package_share_directory', lambda _name: str(PACKAGE))
+    monkeypatch.setattr(module + 'rclpy.init', lambda **_kwargs: None)
+    monkeypatch.setattr(module + 'rclpy.shutdown', lambda **_kwargs: None)
+    created = []
+
+    class Route:
+        def __init__(self, _registry, contract, _stream, home_contract=None):
+            self.contract, self.home_contract = contract, home_contract
+            self.go_home = Mock(return_value=True)
+            self.finish_navigation = Mock(return_value=True)
+            self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+            created.append(self)
+
+    monkeypatch.setattr(module + 'ServiceRoute', Route)
+    main(argv)
+    (node,) = created
+    assert node.contract['xy_tolerance_m'] == 0.01
+    assert node.home_contract['xy_tolerance_m'] == 0.05
+    node.go_home.assert_called_once()
+
+
+def test_t15_precision_params_match_box_contract_only(monkeypatch):
+    """Match live precision parking parameters to the box contract, not home."""
+    from launch import LaunchContext
+    spec = importlib.util.spec_from_file_location(
+        'precision_contract_launch', PACKAGE / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE if name == 'jdamr_cube_navigation' else PACKAGE.parent / name))
+    monkeypatch.setattr(module, 'load_registry', lambda _: {
+        'home': {'parking_direction': 'reverse'},
+        'map': {'yaml_path': '/map.yaml'}, 'keepout': {'yaml_path': '/mask.yaml'}})
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'registry': '/registry.yaml',
+        'params_file': str(PACKAGE / 'config/new_base_nav2_params.yaml'),
+        'parking_contract': str(PACKAGE / 'config/box_parking_contract.yaml'),
+        'precision_parking': 'true'})
+    generated = Path(dict(module._configure(context)[1].launch_arguments)['params_file'])
+    try:
+        controller = yaml.safe_load(generated.read_text())['controller_server'][
+            'ros__parameters']
+    finally:
+        generated.unlink()
+    flat = {}
+
+    def flatten(prefix, value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                flatten(f'{prefix}{key}.', item)
+        else:
+            flat[prefix[:-1]] = value
+
+    flatten('', controller)
+    client = Mock()
+    client.wait_for_services.return_value = True
+    client.get_parameters.side_effect = lambda names: done(SimpleNamespace(values=[
+        Parameter('value', value=flat.get(name)).get_parameter_value() for name in names]))
+    node = route()
+    node.parking_parameters = client
+    node.parking_contract = load_parking_contract(
+        PACKAGE / 'config/box_parking_contract.yaml')
+    assert node._parking_parameters_ready(reverse=True)
+    home = load_parking_contract(PACKAGE / 'config/parking_contract.yaml')
+    node.parking_contract = home
+    assert not node._parking_parameters_ready(reverse=True)
+    assert flat['alignment_goal_checker.xy_goal_tolerance'] == home['xy_tolerance_m']
+    assert flat['alignment_goal_checker.yaw_goal_tolerance'] == pytest.approx(
+        home['yaw_tolerance_rad'])
+
+
+def test_m2_home_help_forbids_use_in_front_of_a_box(capsys):
+    """State that `home` must not start in front of a box; box_service escapes first."""
+    with pytest.raises(SystemExit):
+        parse_args(['service', 'home', '--help'])
+    text = ' '.join(capsys.readouterr().out.split())
+    assert '0.6 m' in text and 'box_service --return-home' in text, (
+        f'REVIEW[M2]: home --help lacks the box-front rule: {text}')
+
+
+@pytest.mark.parametrize('observed_deg,expected', [
+    (38.2, True),    # 2026-09-30 water station: Spin at 0.7 rad/s overshot 30 deg by 8.2 deg
+    (18.0, True),
+    (44.0, True),
+    (50.0, False),
+    (10.0, False),
+    (0.0, False),
+])
+def test_t38_search_rotation_tolerates_spin_overshoot_but_not_a_missing_turn(
+        observed_deg, expected):
+    """A 30 deg look-around step accepts +/-15 deg; a stalled or runaway turn fails."""
+    node = route()
+    node.spin_search = Mock()
+    node.spin_search.send_goal_async.return_value = done(handle(GoalStatus.STATUS_SUCCEEDED, 0))
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, math.radians(observed_deg)), {})])
+    node._search_parameters_ready = Mock(return_value=True)
+    assert node.search_rotation(math.pi / 6) is expected
+
+
+def test_t41_deployed_contract_disables_covariance_gates():
+    """Operator decision 2026-09-30: no AMCL covariance stop in the deployed contract."""
+    contract = load_service_contract(PACKAGE / 'config/restaurant_service_contract.yaml')
+    for key in ('max_x_covariance_m2', 'max_y_covariance_m2', 'max_yaw_covariance_rad2',
+                'intermediate_max_x_covariance_m2', 'intermediate_max_y_covariance_m2',
+                'intermediate_max_yaw_covariance_rad2'):
+        assert contract[key] >= 1.0e6
