@@ -1466,13 +1466,16 @@ class ServiceRoute(CorridorRoute):
             self.emit('dock_leg_frozen_in_odom',
                       odom_target_pose=[odom_x, odom_y, odom_yaw],
                       controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'))
-            success = self._execute_reverse_path(
-                path, path_contract=home, goal_checker_id=dock_checker,
-                verify_contract={**home, 'reference_frame': 'odom'},
-                send_path=odom_path,
-                verify_waypoint={'x': odom_x, 'y': odom_y, 'yaw': odom_yaw},
+            dock = {'x': odom_x, 'y': odom_y, 'yaw': odom_yaw}
+            success = (self._execute_reverse_path(
+                path, path_contract=home, goal_checker_id='dock_position_checker',
+                final=False, send_path=odom_path,
                 controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'),
                 curve=curve)
+                and self._turn_to_dock_heading(dock, home, dock_checker)
+                and self._verify_parking_stop(
+                    len(self.waypoints) - 1, dock, None,
+                    contract={**home, 'reference_frame': 'odom'}))
         else:
             success = self._execute_reverse_path(path)
         self.emit('home_arrived' if success else 'failed',
@@ -1546,9 +1549,34 @@ class ServiceRoute(CorridorRoute):
 
         return self._run_with_input_recovery(attempt)
 
+    def _turn_to_dock_heading(self, dock, contract, goal_checker_id):
+        """Turn in place to the dock heading once the reverse reached the dock position.
+
+        The forward Parking controller turns to the goal heading in place (as in the
+        box face alignment) and its goal checker ends the turn inside the tolerance.
+        """
+        x, y, yaw = self._odom_pose()
+        error = math.atan2(math.sin(dock['yaw'] - yaw), math.cos(dock['yaw'] - yaw))
+        self.emit('dock_heading_measured', delta_yaw_rad=error)
+        if abs(error) <= contract['yaw_tolerance_rad']:
+            return True
+        turn = RosPath()
+        turn.header.frame_id = 'odom'
+        turn.header.stamp = self.get_clock().now().to_msg()
+        for heading in (yaw, dock['yaw']):
+            pose = PoseStamped()
+            pose.header = turn.header
+            pose.pose.position.x, pose.pose.position.y = x, y
+            pose.pose.orientation.z = math.sin(heading / 2.0)
+            pose.pose.orientation.w = math.cos(heading / 2.0)
+            turn.poses.append(pose)
+        return self._execute_reverse_once(
+            turn, goal_checker_id=goal_checker_id, final=False, controller_id='Parking',
+            motion='turn_in_place')
+
     def _execute_reverse_once(self, path, goal_checker_id='parking_goal_checker',
                               verify_contract=None, final=True, verify_waypoint=None,
-                              controller_id='ParkingReverse'):
+                              controller_id='ParkingReverse', motion='reverse'):
         """Keep reverse motion in controller → smoother → monitor → base."""
         if not self.waypoints:
             raise ValueError('reverse execution requires a target waypoint')
@@ -1577,7 +1605,7 @@ class ServiceRoute(CorridorRoute):
             if not handle.accepted:
                 return False
             self.active_handle = handle
-            self._route_event('accepted', target_index, handle, motion='reverse')
+            self._route_event('accepted', target_index, handle, motion=motion)
             self.navigation_result = handle.get_result_async()
             while not self.navigation_result.done():
                 rclpy.spin_once(self, timeout_sec=0.05)
@@ -1589,7 +1617,7 @@ class ServiceRoute(CorridorRoute):
                         self._retry_guard_reason = reason
                     return False
             wrapped = self.navigation_result.result()
-            self._route_event('result', target_index, handle, motion='reverse',
+            self._route_event('result', target_index, handle, motion=motion,
                               terminal_status_code=int(wrapped.status),
                               nav2_error_code=int(wrapped.result.error_code))
             self.navigation_result = None

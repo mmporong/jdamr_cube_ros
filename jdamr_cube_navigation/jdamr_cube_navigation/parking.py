@@ -28,6 +28,8 @@ COMMAND_ZERO_EPSILON = 1e-9
 # Requirement/candidate bounds, not measured calibration constants. A custom
 # contract may tighten them but must not silently weaken the accepted target.
 STAGING_XY_TOLERANCE_M = 0.15
+# The dock reverse ends on position; the heading is turned in place afterwards.
+DOCK_POSITION_TOLERANCE_M = 0.02
 MAXIMUM_CONTRACT_VALUES = {
     'xy_tolerance_m': 0.05,
     'yaw_tolerance_deg': 3.0,
@@ -159,6 +161,16 @@ def parking_controller_overrides(
         'plugin': 'nav2_controller::PositionGoalChecker',
         'stateful': True,
         'xy_goal_tolerance': STAGING_XY_TOLERANCE_M,
+    }
+    # Nav2 RPP rejects use_rotate_to_heading with allow_reversing, so the reverse
+    # controller cannot turn at its goal: 0.1 cm from the dock but 4.4 deg off it
+    # shuttled +-2 cm/s for 10 s until 105 (2026-10-01 14:45). The dock reverse is
+    # judged by position only and the forward Parking controller turns afterwards.
+    configured['goal_checker_plugins'].append('dock_position_checker')
+    configured['dock_position_checker'] = {
+        'plugin': 'nav2_controller::PositionGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': DOCK_POSITION_TOLERANCE_M,
     }
     configured['parking_goal_checker'] = {
         'plugin': 'nav2_controller::SimpleGoalChecker',

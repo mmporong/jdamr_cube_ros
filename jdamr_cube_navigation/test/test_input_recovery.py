@@ -1511,10 +1511,10 @@ def test_t25a_dock_retry_rebuilds_with_home_contract(monkeypatch, tmp_path):
     assert len(attempts) == 2
     start = attempts[1].poses[0].pose.position
     assert (start.x, start.y) == pytest.approx((-1.2, 0.02))
-    # The resumed dock keeps the dock's goal checker and acceptance contract.
-    home = load_parking_contract(CONTRACT)
-    assert options[1].get('goal_checker_id') == 'alignment_goal_checker'
-    assert options[1].get('verify_contract') == {**home, 'reference_frame': 'odom'}
+    # The resumed dock keeps the position-only dock checker; the dock contract
+    # is confirmed after the in-place heading turn.
+    assert options[1].get('goal_checker_id') == 'dock_position_checker'
+    assert options[1].get('final') is False and 'verify_contract' not in options[1]
     assert options[1] == options[0]
 
 
@@ -1564,10 +1564,44 @@ def test_t26_precision_staging_and_dock_use_home_contract(monkeypatch, tmp_path)
     assert all(item.kwargs.get('contract') == {**home, 'reference_frame': 'odom'}
                for item in verified[1:])
     kinds = [kind for kind, _goal in world.motions]
+    # Reaching the dock heading exactly needs no in-place turn.
     assert kinds == ['FollowPath']
-    assert world.motions[0][1].goal_checker_id == 'alignment_goal_checker'
+    assert world.motions[0][1].goal_checker_id == 'dock_position_checker'
     assert any('alignment_goal_checker.xy_goal_tolerance' in names
                for _remote, names in world.parameter_reads)
+
+
+@pytest.mark.parametrize('offset_deg, turns', [(4.4, 1), (2.0, 0)])
+def test_t27_dock_heading_is_turned_in_place_after_the_reverse(
+        monkeypatch, tmp_path, offset_deg, turns):
+    """Turn the 4.4 deg left at the dock with the forward controller, not by shuttling."""
+    node, world, _stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    reverse = node._execute_reverse_path
+
+    def reverse_then_off_heading(*args, **kwargs):
+        ok = reverse(*args, **kwargs)
+        world.pose[2] += math.radians(offset_deg)   # RPP reverse lags the heading
+        return ok
+
+    node._execute_reverse_path = reverse_then_off_heading
+    assert node._go_home_reverse(HOME, True) is True
+    dock, *turn = [goal for kind, goal in world.motions if kind == 'FollowPath']
+    assert dock.goal_checker_id == 'dock_position_checker'
+    assert len(turn) == turns
+    measured = [e for e in _events(node) if e.get('event') == 'dock_heading_measured']
+    assert measured and math.degrees(measured[-1]['delta_yaw_rad']) == pytest.approx(
+        -offset_deg, abs=1e-6)
+    if turns:
+        goal = turn[0]
+        assert goal.controller_id == 'Parking'
+        assert goal.goal_checker_id == 'alignment_goal_checker'
+        start, end = (item.pose for item in goal.path.poses)
+        assert (start.position.x, start.position.y) == (end.position.x, end.position.y)
+        end_pose = dock.path.poses[-1].pose
+        assert _pose_xyyaw(end)[2] == pytest.approx(_pose_xyyaw(end_pose)[2])
+    verified = node._verify_parking_stop.call_args_list[-1]
+    home = load_parking_contract(CONTRACT)
+    assert verified.kwargs['contract'] == {**home, 'reference_frame': 'odom'}
 
 
 def test_t26_standard_home_keeps_head_call_arguments(monkeypatch, tmp_path):
