@@ -734,6 +734,21 @@ class BoxServiceRoute(ServiceRoute):
                     search_cumulative_yaw_rad=(
                         search_budget.cumulative_yaw_rad))
 
+    def at_observation(self, route_path):
+        """Return True when the stationary robot stands in a route's observation region."""
+        route = load_route(route_path)
+        limit_m = route.get('max_route_start_distance_m')
+        if (isinstance(limit_m, bool) or not isinstance(limit_m, (float, int))
+                or not math.isfinite(limit_m) or not 0.0 < limit_m <= 0.3):
+            raise ValueError('observation route requires a bounded start pose')
+        self.verify_live_maps()
+        with self._localization_bound(True):
+            if not self.wait_until_ready(timeout=10.0):
+                raise RuntimeError('localization or sensor data unavailable')
+            actual, _ = self.capture_stationary_pose()
+        end = route['waypoints'][-1]
+        return math.dist(actual[:2], (end['x'], end['y'])) <= limit_m
+
     def visit_observed_box(self, route_path, camera_mount, geometry,
                            table_id, region_xy, region_radius_m, execute=False,
                            candidate_trial=False, resume_at_observation=False,
@@ -1229,7 +1244,16 @@ def run_attempt(args, active=None):
                     # The parked stop was the table: its escape leads straight home.
                     ok = ok and node.go_home(execute=True, timeout_s=args.return_timeout_s)
                     return 0 if ok else 1
-            elif args.via_id is not None:
+            via_done = False
+            if (args.resume_parked_from_log is None and args.via_id is not None
+                    and args.resume_at_observation
+                    and node.at_observation(args.approach_route)):
+                # Stopped at the table's observation point (2026-10-01 15:49): the
+                # water stop is already done, so the resume belongs to the table.
+                node.emit('via_skipped', via_id=args.via_id,
+                          reason='robot is at the table observation region')
+                via_done = True
+            elif args.resume_parked_from_log is None and args.via_id is not None:
                 # The via stop is a full box visit; its escape starts the table route.
                 ok = node.visit_observed_box(
                     args.via_route, mount, geometry, args.via_id,
@@ -1243,7 +1267,8 @@ def run_attempt(args, active=None):
                 args.approach_route, mount, geometry, args.table_id,
                 args.region_xy, args.region_radius_m, execute=args.execute,
                 candidate_trial=args.candidate_trial,
-                resume_at_observation=(args.resume_at_observation and args.via_id is None),
+                resume_at_observation=(args.resume_at_observation
+                                       and (args.via_id is None or via_done)),
                 search=args.search, task_timeout_s=args.task_timeout_s)
             # Exit 0 only when every requested stage, including the return, succeeded.
             if ok and args.return_home:

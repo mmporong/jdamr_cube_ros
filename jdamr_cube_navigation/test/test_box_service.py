@@ -1,5 +1,6 @@
 """Verify bounded table transit and face-based parking without hardware."""
 
+import contextlib
 from copy import deepcopy
 import inspect
 import json
@@ -1055,7 +1056,7 @@ def test_t43_resume_options_parse():
             parse_args(invalid)
 
 
-def _resume_main(monkeypatch, tmp_path, extra):
+def _resume_main(monkeypatch, tmp_path, extra, at_table_observation=False):
     for name in ('registry', 'mount', 'geometry', 'route', 'water'):
         (tmp_path / f'{name}.yaml').write_text('{}\n')
     log = tmp_path / 'previous.jsonl'
@@ -1085,6 +1086,8 @@ def _resume_main(monkeypatch, tmp_path, extra):
             self.dwell_and_return_home = Mock(side_effect=lambda dwell, timeout: calls.append(
                 ('dwell_and_return_home', dwell)) or True)
             self.go_home = Mock(side_effect=lambda **k: calls.append(('go_home',)) or True)
+            self.at_observation = Mock(side_effect=lambda route: calls.append(
+                ('at_observation', Path(route).name)) or at_table_observation)
             self.verify_live_maps = Mock()
             self.wait_until_ready = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
@@ -1100,8 +1103,35 @@ def test_t43_resume_at_via_observation_applies_to_the_water_stop_only(monkeypatc
                                [*VIA_ARGS[:2], '--via-route', str(tmp_path / 'water.yaml'),
                                 *VIA_ARGS[4:], '--resume-at-observation'])
     assert code == 0
-    assert calls == [('visit', 'water.yaml', 'water_station', True), ('dwell_and_leave', 5.0),
+    assert calls == [('at_observation', 'route.yaml'),
+                     ('visit', 'water.yaml', 'water_station', True), ('dwell_and_leave', 5.0),
                      ('visit', 'route.yaml', 'table_02', False), ('dwell_and_return_home', 5.0)]
+
+
+def test_resume_at_the_table_observation_skips_the_done_water_stop(monkeypatch, tmp_path):
+    """2026-10-01 15:49: a resume at table_01 must not demand the water station."""
+    code, calls = _resume_main(monkeypatch, tmp_path,
+                               [*VIA_ARGS[:2], '--via-route', str(tmp_path / 'water.yaml'),
+                                *VIA_ARGS[4:], '--resume-at-observation'],
+                               at_table_observation=True)
+    assert code == 0
+    assert calls == [('at_observation', 'route.yaml'),
+                     ('visit', 'route.yaml', 'table_02', True), ('dwell_and_return_home', 5.0)]
+
+
+@pytest.mark.parametrize('pose, expected', [((0.80, -1.86, 0.2), True),
+                                            ((0.40, -1.82, 0.0), False)])
+def test_at_observation_compares_the_still_pose_with_the_route_end(
+        monkeypatch, pose, expected):
+    route = BoxServiceRoute.__new__(BoxServiceRoute)
+    monkeypatch.setattr(box_service, 'load_route', lambda _path: {
+        'max_route_start_distance_m': 0.3,
+        'waypoints': [{'x': 0.438, 'y': -1.817}, {'x': 0.858, 'y': -1.817, 'yaw': 0.0}]})
+    route.verify_live_maps = Mock()
+    route.wait_until_ready = Mock(return_value=True)
+    route._localization_bound = lambda _relaxed: contextlib.nullcontext()
+    route.capture_stationary_pose = Mock(return_value=(pose, {}))
+    assert route.at_observation('table_01_route.yaml') is expected
 
 
 def test_t43_parked_water_stop_resumes_with_logged_face_then_table(monkeypatch, tmp_path):

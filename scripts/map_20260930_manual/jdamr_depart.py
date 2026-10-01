@@ -138,6 +138,7 @@ CLICK_MAX_AGE_S = 1800.0
 SENSOR_UNITS = ('jdamr-base.service', 'jdamr-box-rgbd.service', 'jdamr-box-observer.service')
 # Recorded on the Pi for every go: wheel odom, raw IMU and scan for the odom/IMU EKF
 # comparison (rotation_truth.py), velocity commands for the Spin overshoot.
+ONBOARD_BAG_CHECK_S = 25.0
 ONBOARD_TOPICS = ('/odom', '/imu/data_raw', '/scan', '/tf', '/tf_static', '/amcl_pose',
                   '/cmd_vel_nav', '/cmd_vel_smoothed', '/cmd_vel')
 # box_service's first check (verify_live_maps, 30 s) runs before any motion command.
@@ -667,10 +668,11 @@ def run_cycle(args, state, table_id):
         stops = ('dock only' if args.dock_only else
                  f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
         log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
-        seen, bag_checked = 0, False
+        seen, bag_checked, departed_s = 0, False, time.monotonic()
         while True:
             time.sleep(10)
-            if not bag_checked:
+            # The recorder needs ~13 s to subscribe on a loaded Pi (2026-10-01).
+            if not bag_checked and time.monotonic() - departed_s >= ONBOARD_BAG_CHECK_S:
                 bag_checked = True
                 log('onboard bag: ' + (onboard_bag_bytes(run_dir) or 'nothing written yet'))
             events = read_events(str(run_dir / 'cycle_events.jsonl'))
@@ -936,7 +938,8 @@ def main():
     go.add_argument('--graceful-final', action='store_true',
                     help='Graceful box approach and dock leg instead of RPP (default)')
     go.add_argument('--resume-at-observation', action='store_true',
-                    help='robot already at the first stop observation point (water_station unless --skip-via)')
+                    help='robot already at an observation point: the table one skips the '
+                         'water stop, the water one resumes there (--skip-via forces the table)')
     go.add_argument('--resume-parked-log',
                     help='cycle_events.jsonl of a run that stopped at the first box: hold, escape, continue')
     sub.add_parser('health')
