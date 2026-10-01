@@ -214,3 +214,32 @@ def test_age_includes_detection_processing_time(monkeypatch):
     assert document['age_s'] == pytest.approx(.7)
     assert document['processing_duration_s'] >= 0.
     assert document['control_ready'] is False
+
+
+def test_executor_may_narrow_only_the_maximum_depth_within_the_configured_range():
+    """table_01 (2026-10-01): a far wide plane beat the box; the window cuts it."""
+    class StabilityRecorder:
+        def __init__(self):
+            self.updates = []
+
+        def update(self, detection):
+            self.updates.append(detection)
+            return False
+
+    node = object.__new__(DepthBoxParkingNode)
+    node._config = BoxTopConfig()
+    node._depth_ceiling_m = node._config.maximum_depth_m
+    node._stability = StabilityRecorder()
+
+    def set_(name, value):
+        return node._on_parameters([SimpleNamespace(name=name, value=value)])
+
+    assert set_('maximum_depth_m', 1.15).successful
+    assert node._config.maximum_depth_m == 1.15
+    assert node._stability.updates == [None]
+    assert set_('maximum_depth_m', node._depth_ceiling_m).successful
+    for value in (node._depth_ceiling_m + 0.1, node._config.minimum_depth_m, True,
+                  float('nan')):
+        assert not set_('maximum_depth_m', value).successful
+    assert not set_('minimum_width_m', 0.1).successful
+    assert node._config.maximum_depth_m == node._depth_ceiling_m

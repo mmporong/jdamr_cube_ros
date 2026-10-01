@@ -25,7 +25,7 @@ from jdamr_cube_navigation.service_destinations import load_registry, verify_ide
 from nav2_msgs.action import Spin
 from nav_msgs.msg import Path as RosPath
 import rclpy
-from rclpy.parameter import parameter_value_to_python
+from rclpy.parameter import Parameter, parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
@@ -34,6 +34,8 @@ import yaml
 
 
 SEARCH_STEP_RAD = math.radians(30.0)
+# config/depth_box_parking.yaml maximum_depth_m: the observer accepts no wider range.
+DEPTH_WINDOW_CEILING_M = 2.0
 SEARCH_MAX_STEPS = 12
 SEARCH_MAX_CUMULATIVE_RAD = math.tau
 # A region bearing smaller than this is treated as centred: the failure is not a
@@ -208,6 +210,7 @@ class BoxServiceRoute(ServiceRoute):
         """Record the camera bearing to the table region; never aim or judge."""
         # The search reads only the latest bearing; a failed diagnostic leaves none.
         self.last_region_bearing_error_rad = None
+        self.last_region_distance_m = None
         try:
             self._ensure_depth_info()
             info = getattr(self, 'depth_camera_info', None)
@@ -234,6 +237,7 @@ class BoxServiceRoute(ServiceRoute):
                                            math.cos(bearing - camera_yaw))
                 distance_m = math.dist(camera_xy, region_xy)
                 self.last_region_bearing_error_rad = bearing_error
+                self.last_region_distance_m = distance_m
                 fields.update(
                     camera_xy=list(camera_xy), camera_yaw_rad=camera_yaw,
                     bearing_error_rad=bearing_error, camera_region_distance_m=distance_m,
@@ -391,6 +395,35 @@ class BoxServiceRoute(ServiceRoute):
                 return False
         return True
 
+    def _set_depth_window(self, region_radius_m):
+        """Limit the observer's depth range to the table region and its radius.
+
+        The detector keeps the largest plane in view. At table_01 a 1 m wide
+        surface 1.33 m away won over the box 0.64 m away for all 12 search
+        turns (2026-10-01 15:37); beyond the region there is no box to see.
+        """
+        distance_m = getattr(self, 'last_region_distance_m', None)
+        window_m = DEPTH_WINDOW_CEILING_M if distance_m is None else min(
+            DEPTH_WINDOW_CEILING_M, max(MINIMUM_DISTANCE_M + 0.1, distance_m + region_radius_m))
+        reason = None
+        try:
+            client = getattr(self, 'observer_parameters', None)
+            if client is None:
+                client = AsyncParameterClient(self, 'jdamr_depth_box_parking')
+                self.observer_parameters = client
+            if not client.wait_for_services(timeout_sec=1.0):
+                raise RuntimeError('observer parameter service unavailable')
+            response = self._wait(client.set_parameters(
+                [Parameter('maximum_depth_m', value=float(window_m))]), 2.0)
+            if not all(result.successful for result in response.results):
+                raise RuntimeError('; '.join(result.reason for result in response.results))
+        except Exception as error:
+            reason = str(error) or type(error).__name__
+        # Without the window the observer keeps its previous range: record, go on.
+        self.emit('box_depth_window', maximum_depth_m=window_m,
+                  region_distance_m=distance_m, applied=reason is None, reason=reason)
+        return reason is None
+
     def observe_target(self, camera_mount, front_extent_m, gap_m, region_xy,
                        region_radius_m, timeout_s=12.0):
         """
@@ -407,6 +440,7 @@ class BoxServiceRoute(ServiceRoute):
         self._ensure_depth_info()
         robot_pose, _ = self.capture_stationary_pose()
         self._observation_pose_diagnostic(robot_pose, camera_mount, region_xy)
+        self._set_depth_window(region_radius_m)
         revision = self.parking_motion_revision
         cutoff_s = self.get_clock().now().nanoseconds * 1e-9
         # A later cutoff advances by elapsed monotonic time, not another clock read.
@@ -446,6 +480,7 @@ class BoxServiceRoute(ServiceRoute):
                     fresh_since_latency = 0
                     robot_pose, _ = self.capture_stationary_pose()
                     self._observation_pose_diagnostic(robot_pose, camera_mount, region_xy)
+                    self._set_depth_window(region_radius_m)
                     revision = self.parking_motion_revision
                     now_monotonic_s = time.monotonic()
                     cutoff_s += now_monotonic_s - cutoff_monotonic_s

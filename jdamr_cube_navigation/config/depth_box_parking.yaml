@@ -8,7 +8,9 @@ jdamr_depth_box_parking:
     minimum_normal_y: 0.65
     minimum_front_normal_z: 0.90
     maximum_top_y_m: 0.05
-    minimum_width_m: 0.18
+    # table_01's box shows a 0.16 m face (5-95 % extent, 2026-10-01 15:50); at 0.18
+    # every frame was dropped. The LiDAR witness still has to support the face.
+    minimum_width_m: 0.12
     maximum_width_m: 1.20
     minimum_height_m: 0.08
     maximum_height_m: 0.80

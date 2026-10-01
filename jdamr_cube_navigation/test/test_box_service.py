@@ -1167,3 +1167,49 @@ def test_resident_executor_runs_requests_in_one_context(tmp_path, monkeypatch):
     assert json.loads((tmp_path / '1.result').read_text()) == {'code': 0}
     assert json.loads((tmp_path / '2.result').read_text()) == {'code': 1}
     assert not list(tmp_path.glob('*.running'))
+
+
+class _ParameterClientStub:
+    """Answers set_parameters with the given success, recording the request."""
+
+    def __init__(self, successful=True, available=True):
+        self.successful, self.available, self.requests = successful, available, []
+
+    def wait_for_services(self, timeout_sec=None):
+        return self.available
+
+    def set_parameters(self, parameters):
+        self.requests.append([(p.name, p.value) for p in parameters])
+        return SimpleNamespace(results=[SimpleNamespace(
+            successful=self.successful, reason='' if self.successful else 'rejected')])
+
+
+@pytest.mark.parametrize('distance_m, radius_m, expected_m', [
+    (0.746, 0.4, 1.146),     # table_01 15:37: the 1.33 m wall is left out
+    (1.9, 0.4, 2.0),         # never wider than the configured observer range
+    (None, 0.4, 2.0),        # no region bearing: the full range
+])
+def test_observation_limits_the_observer_depth_to_the_region(distance_m, radius_m, expected_m):
+    node = object.__new__(BoxServiceRoute)
+    events = []
+    node.emit = lambda event, **fields: events.append((event, fields))
+    node._wait = lambda future, timeout_s: future
+    node.observer_parameters = _ParameterClientStub()
+    node.last_region_distance_m = distance_m
+    assert node._set_depth_window(radius_m) is True
+    (name, value), = node.observer_parameters.requests[0]
+    assert name == 'maximum_depth_m' and value == pytest.approx(expected_m)
+    assert events[-1][0] == 'box_depth_window' and events[-1][1]['applied'] is True
+
+
+@pytest.mark.parametrize('client', [_ParameterClientStub(successful=False),
+                                    _ParameterClientStub(available=False)])
+def test_depth_window_failure_is_recorded_and_does_not_stop_the_observation(client):
+    node = object.__new__(BoxServiceRoute)
+    events = []
+    node.emit = lambda event, **fields: events.append((event, fields))
+    node._wait = lambda future, timeout_s: future
+    node.observer_parameters = client
+    node.last_region_distance_m = 0.7
+    assert node._set_depth_window(0.4) is False
+    assert events[-1][1]['applied'] is False and events[-1][1]['reason']
