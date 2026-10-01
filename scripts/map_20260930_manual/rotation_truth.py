@@ -66,7 +66,8 @@ def read(bag):
 
 
 def stationary(odom, min_s=1.0):
-    still = (np.abs(odom[:, 1]) < 1e-6) & (np.abs(odom[:, 2]) < 1e-6)
+    # One encoder count per 20 ms sample (0.00126 m/s, 0.00495 rad/s) shows at rest.
+    still = (np.abs(odom[:, 1]) < 0.002) & (np.abs(odom[:, 2]) < 0.006)
     out, i = [], 0
     while i < len(odom):
         if still[i]:
@@ -211,6 +212,9 @@ def main():
         if rows:
             r = np.array(rows)
             good = r[:, 3] < 0.02
+            if not good.any():
+                print('  no rotation with a scan fit under 2 cm; rows above are indicative')
+                continue
             cols = (('odom', 0), ('gyro', 1)) + ((('ekf', 4),) if ekf is not None else ())
             for name, col in cols:
                 ratio = r[good, col] / r[good, 2]

@@ -76,10 +76,11 @@ def analyse(odom, imu):
     a_lat = high_pass(v * w)
     hx, hy = high_pass(ax), high_pass(ay)
     use = (np.abs(a_fwd) > MOVING_ACCEL_MPS2) | (np.abs(a_lat) > MOVING_ACCEL_MPS2)
+    # One encoder count per 20 ms sample (0.00126 m/s, 0.00495 rad/s) shows at rest.
+    still = (np.abs(v) < 0.002) & (np.abs(w) < 0.006)
     out = {'seconds': round(float(t1 - t0), 1), 'turning_samples': int(turning.sum()),
-           'gyro_z_per_wheel_yaw': round(zs, 3), 'still_accel_z': round(float(np.median(
-               az[(np.abs(v) < 1e-6) & (np.abs(w) < 1e-6)])) if np.any(
-               (np.abs(v) < 1e-6) & (np.abs(w) < 1e-6)) else float('nan'), 2),
+           'gyro_z_per_wheel_yaw': round(zs, 3),
+           'still_accel_z': round(float(np.median(az[still])), 2) if still.any() else None,
            'accel_samples': int(use.sum())}
     if use.sum() < 100:
         return out, None

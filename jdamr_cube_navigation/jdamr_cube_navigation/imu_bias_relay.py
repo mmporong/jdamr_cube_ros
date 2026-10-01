@@ -1,7 +1,7 @@
 """Republish /imu/data_raw with the gyro bias removed, for the odom+IMU EKF.
 
-The bias is learned only while the wheels report no motion (/odom twist exactly zero
-for STILL_MIN_S), so turning the robot never feeds the estimate. The output keeps the
+The bias is learned only while the wheels report no motion (/odom twist within one
+encoder count for STILL_MIN_S), so turning the robot never feeds the estimate. The output keeps the
 sensor axes and declares frame imu_link; the URDF imu_joint gives the base_link->imu_link
 rotation (z down, board y forward, board x left; new_base_geometry.yaml imu_rotation_rpy).
 """
@@ -14,9 +14,20 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
 
 STILL_MIN_S = 1.0
+# The driver reports one encoder count on one wheel within a 20 ms odom sample as
+# 0.00126 m/s and 0.00495 rad/s while the base stands still (2026-10-01 bag);
+# exact zero never held for 1 s, so one count still counts as still.
+STILL_LINEAR_MPS = 0.002
+STILL_ANGULAR_RADPS = 0.006
 BIAS_TIME_CONSTANT_S = 5.0
 # Stationary gz spread measured 0.0017-0.0068 rad/s (std) on 2026-09-15/16 bags.
 GYRO_Z_VARIANCE = 0.005 ** 2
+
+
+def wheels_moving(twist):
+    """Return True when the odom twist is more than one encoder count."""
+    return (abs(twist.linear.x) > STILL_LINEAR_MPS
+            or abs(twist.angular.z) > STILL_ANGULAR_RADPS)
 
 
 class GyroBias:
@@ -63,10 +74,9 @@ class ImuBiasRelay(Node):
         self.create_timer(5.0, self.report)
 
     def on_odom(self, msg):
-        """Wheels are still when the driver reports zero twist."""
+        """Wheels are still while the twist stays within one encoder count."""
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        twist = msg.twist.twist
-        self.estimator.wheels(t, twist.linear.x != 0.0 or twist.angular.z != 0.0)
+        self.estimator.wheels(t, wheels_moving(msg.twist.twist))
 
     def on_imu(self, msg):
         """Remove the bias and republish in imu_link."""
