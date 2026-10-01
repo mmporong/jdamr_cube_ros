@@ -54,9 +54,31 @@ AMCL_QUIET_MAX_YAW_RAD = 0.05
 # AMCL stamps map->odom at every scan plus transform_tolerance, so an older
 # map->base_link TF means AMCL or odometry has gone silent.
 AMCL_QUIET_MAX_TF_AGE_S = 0.5
-# A staging heading left within this goes to the curved dock reverse as is
+# A staging heading left within this goes to the curved pre-dock reverse as is
 # (reverse_curve_waypoints accepts a 15 deg heading with a 10 cm offset).
 STAGING_CORRECTION_MIN_RAD = math.radians(10.0)
+# The heading is set this far in front of the dock and the rest is reversed
+# straight. 2026-10-01: a curve ending at the dock left about 0.7 deg of heading
+# per cm of staging offset (0.9-6.9 deg for 0.4-9.6 cm), turned in place inside
+# the dock. 0.25 m keeps the curve wider than its 0.3 m radius for the 10 cm
+# offsets seen from 0.70 m staging distances.
+PRE_DOCK_DISTANCE_M = 0.25
+# A staging offset up to this is reversed straight from the staging position.
+STRAIGHT_DOCK_LATERAL_M = 0.01
+# The straight entry, then one pull-out, heading set and entry again.
+DOCK_ENTRY_ATTEMPTS = 2
+
+
+def _ahead(pose, distance_m):
+    """Return the pose distance_m in front of pose along its heading."""
+    x, y, yaw = pose
+    return (x + distance_m * math.cos(yaw), y + distance_m * math.sin(yaw), yaw)
+
+
+def _lateral_offset(pose, axis):
+    """Return the distance of pose from the line through axis along its heading."""
+    return abs(-(pose[0] - axis[0]) * math.sin(axis[2])
+               + (pose[1] - axis[1]) * math.cos(axis[2]))
 
 
 def load_service_contract(path):
@@ -1338,7 +1360,7 @@ class ServiceRoute(CorridorRoute):
         off by about 15 deg, so the robot swung the long way and back. The
         position leg now replans only on an invalid, expired or new path; the
         heading is set by odom Spins whose direction is fixed at rest. A position
-        offset is left to the curved dock reverse (_go_home_reverse). Returns the
+        offset is left to the curved pre-dock reverse (_dock_straight). Returns the
         last stationary pose, or None on failure.
         """
         if not self.execute(final_parking=False, staging=True):
@@ -1429,22 +1451,26 @@ class ServiceRoute(CorridorRoute):
                         return False
                 elif not self.execute():
                     return False
-            curve = False
+            pre_dock = None
             reference = stage
             if precision_home:
-                # A curved reverse takes out a staging offset; the alignment leg
-                # (turn, move, turn: a full extra turn for 10 cm on 2026-10-01)
-                # runs only when no curve fits.
-                try:
-                    self._make_reverse_path(staged, target, curve=True)
-                    curve = True
-                    reference = {**stage, 'x': staged[0], 'y': staged[1], 'yaw': staged[2]}
-                except ValueError as error:
-                    self.emit('dock_curve_unavailable', reason=str(error),
-                              actual_pose=list(staged))
-                    with self._localization_bound(True):
-                        if not self.execute(final_parking=False, alignment=True):
-                            return False
+                # A curved reverse to the pre-dock pose takes out a staging
+                # offset (_dock_straight); the alignment leg (turn, move, turn: a
+                # full extra turn for 10 cm on 2026-10-01) runs only when no
+                # curve fits.
+                reference = {**stage, 'x': staged[0], 'y': staged[1], 'yaw': staged[2]}
+                if _lateral_offset(staged, target) > STRAIGHT_DOCK_LATERAL_M:
+                    candidate = _ahead(target, PRE_DOCK_DISTANCE_M)
+                    try:
+                        self._make_reverse_path(staged, candidate, curve=True)
+                        pre_dock = candidate
+                    except ValueError as error:
+                        self.emit('dock_curve_unavailable', reason=str(error),
+                                  actual_pose=list(staged))
+                        reference = stage
+                        with self._localization_bound(True):
+                            if not self.execute(final_parking=False, alignment=True):
+                                return False
             # Confirmed at rest with the strict localization bound like the dock.
             if precision_home and not self._verify_parking_stop(
                     0, reference, None, contract=home):
@@ -1456,34 +1482,17 @@ class ServiceRoute(CorridorRoute):
         # the path. Reject misalignment before any reverse action is sent.
         self.verify_live_maps()
         actual, _evidence = self.capture_stationary_pose()
-        try:
-            path = self._make_reverse_path(
-                actual, target, **path_kwargs, **({'curve': True} if curve else {}))
-        except ValueError as error:
-            self.emit('reverse_staging_out_of_tolerance', reason=str(error),
-                      actual_pose=list(actual))
-            return False
-        if not self._reverse_path_valid(path):
-            return False
         if precision_home:
-            # Staging was confirmed on the map; the dock leg runs and is
-            # confirmed in odom from there, so AMCL jumps cannot bend it.
-            odom_path, to_odom = self._frozen_in_odom(path)
-            odom_x, odom_y, odom_yaw = to_odom(*target)
-            self.emit('dock_leg_frozen_in_odom',
-                      odom_target_pose=[odom_x, odom_y, odom_yaw],
-                      controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'))
-            dock = {'x': odom_x, 'y': odom_y, 'yaw': odom_yaw}
-            success = (self._execute_reverse_path(
-                path, path_contract=home, goal_checker_id='dock_position_checker',
-                final=False, send_path=odom_path,
-                controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'),
-                curve=curve)
-                and self._turn_to_dock_heading(dock, home, dock_checker)
-                and self._verify_parking_stop(
-                    len(self.waypoints) - 1, dock, None,
-                    contract={**home, 'reference_frame': 'odom'}))
+            success = self._dock_straight(actual, target, pre_dock, home, dock_checker)
         else:
+            try:
+                path = self._make_reverse_path(actual, target, **path_kwargs)
+            except ValueError as error:
+                self.emit('reverse_staging_out_of_tolerance', reason=str(error),
+                          actual_pose=list(actual))
+                return False
+            if not self._reverse_path_valid(path):
+                return False
             success = self._execute_reverse_path(path)
         self.emit('home_arrived' if success else 'failed',
                   parking_direction='reverse', confirmation=self.confirmation)
@@ -1492,14 +1501,15 @@ class ServiceRoute(CorridorRoute):
     def _execute_reverse_path(self, path, path_contract=None, validate_from_m=0.0,
                               goal_checker_id='parking_goal_checker', verify_contract=None,
                               final=True, send_path=None, verify_waypoint=None,
-                              controller_id='ParkingReverse', curve=False):
+                              controller_id='ParkingReverse', curve=False, retry_goal=None):
         """
         Rebuild the remaining reverse path after one confirmed input-gap stop.
 
         A retry keeps the first path's contract. Its excluded front band
         shrinks by the distance already reversed. A non-final reverse (a box
         escape) already at its goal is left to the caller's fresh stationary
-        capture.
+        capture. retry_goal replaces the route's last waypoint as the rebuilt
+        path's end (the pre-dock pose).
         """
         first_attempt = True
         # Forward only non-default keywords so existing call shapes are unchanged.
@@ -1527,7 +1537,7 @@ class ServiceRoute(CorridorRoute):
             remaining = path if send_path is None else send_path
             if not first_attempt:
                 actual, _ = self.capture_stationary_pose()
-                goal = self.waypoints[-1]
+                goal = retry_goal or self.waypoints[-1]
                 try:
                     remaining = self._make_reverse_path(
                         actual, (goal['x'], goal['y'], goal['yaw']), **make_kwargs)
@@ -1556,29 +1566,115 @@ class ServiceRoute(CorridorRoute):
 
         return self._run_with_input_recovery(attempt)
 
-    def _turn_to_dock_heading(self, dock, contract, goal_checker_id):
-        """Turn in place to the dock heading once the reverse reached the dock position.
+    def _dock_straight(self, actual, target, pre_dock, home, dock_checker):
+        """
+        Reverse into the dock along its axis with the heading set beforehand.
+
+        A curve ending at the dock left its heading lag inside the dock and the
+        robot turned in place there (2026-10-01, see PRE_DOCK_DISTANCE_M). A
+        staging offset is now taken out by a curved reverse to pre_dock, the
+        heading is set where the straight part starts, and nothing turns inside
+        the dock: a heading still off there pulls straight out to that start,
+        sets the heading and enters once more. Staging was confirmed on the map;
+        every leg runs and is confirmed in odom as frozen here, so AMCL jumps
+        cannot bend it.
+        """
+        controller = getattr(self, 'dock_leg_controller', 'ParkingReverse')
+        # The straight part starts on the dock axis, heading set first.
+        entry = pre_dock or (actual[0], actual[1], target[2])
+        try:
+            legs = ([self._make_reverse_path(actual, pre_dock, curve=True)]
+                    if pre_dock is not None else [])
+            legs.append(self._make_reverse_path(entry, target, path_contract=home))
+        except ValueError as error:
+            self.emit('reverse_staging_out_of_tolerance', reason=str(error),
+                      actual_pose=list(actual))
+            return False
+        if not all(self._reverse_path_valid(path) for path in legs):
+            return False
+        frozen, to_odom = self._frozen_in_odom(legs[0])
+        dock = dict(zip(('x', 'y', 'yaw'), to_odom(*target)))
+        self.emit('dock_leg_frozen_in_odom',
+                  odom_target_pose=[dock['x'], dock['y'], dock['yaw']],
+                  controller_id=controller, pre_dock_pose=pre_dock and list(pre_dock),
+                  staging_lateral_offset_m=_lateral_offset(actual, target))
+        if pre_dock is not None and not self._execute_reverse_path(
+                legs[0], path_contract=home, goal_checker_id='dock_position_checker',
+                final=False, send_path=frozen, controller_id=controller, curve=True,
+                retry_goal=dict(zip(('x', 'y', 'yaw'), pre_dock))):
+            return False
+        entry_odom = to_odom(*entry)
+        for attempt in range(DOCK_ENTRY_ATTEMPTS):
+            if attempt and not self._pull_out_to(entry_odom, dock['yaw']):
+                return False
+            if not self._turn_to_dock_heading(
+                    dock, home, dock_checker, event='dock_entry_heading_measured'):
+                return False
+            start = self._odom_pose()
+            try:
+                points = reverse_waypoints(
+                    start, (dock['x'], dock['y'], dock['yaw']),
+                    xy_tolerance_m=home['xy_tolerance_m'],
+                    yaw_tolerance_rad=home['yaw_tolerance_rad'])
+            except ValueError as error:
+                self.emit('reverse_staging_out_of_tolerance', reason=str(error),
+                          actual_pose=list(start), frame='odom')
+                return False
+            if not self._execute_reverse_path(
+                    legs[-1], path_contract=home, goal_checker_id='dock_position_checker',
+                    final=False, send_path=self._odom_path(points),
+                    controller_id=controller):
+                return False
+            _x, _y, yaw = self._odom_pose()
+            error = math.atan2(math.sin(dock['yaw'] - yaw), math.cos(dock['yaw'] - yaw))
+            self.emit('dock_heading_measured', delta_yaw_rad=error, attempt=attempt + 1)
+            if abs(error) <= home['yaw_tolerance_rad']:
+                return self._verify_parking_stop(
+                    len(self.waypoints) - 1, dock, None,
+                    contract={**home, 'reference_frame': 'odom'})
+        self.emit('dock_heading_out_of_tolerance', delta_yaw_rad=error,
+                  attempts=DOCK_ENTRY_ATTEMPTS)
+        return False
+
+    def _odom_path(self, points):
+        """Return (x, y, yaw) points as a path in odom."""
+        path = RosPath()
+        path.header.frame_id = 'odom'
+        path.header.stamp = self.get_clock().now().to_msg()
+        for x, y, yaw in points:
+            pose = PoseStamped()
+            pose.header = path.header
+            pose.pose.position.x, pose.pose.position.y = x, y
+            pose.pose.orientation.z = math.sin(yaw / 2.0)
+            pose.pose.orientation.w = math.cos(yaw / 2.0)
+            path.poses.append(pose)
+        return path
+
+    def _pull_out_to(self, entry, heading):
+        """Drive forward along the dock axis back to the straight entry pose."""
+        x, y, _yaw = self._odom_pose()
+        count = max(2, math.ceil(math.dist((x, y), entry[:2]) / 0.025))
+        points = [(x + (entry[0] - x) * i / count, y + (entry[1] - y) * i / count, heading)
+                  for i in range(count + 1)]
+        return self._execute_reverse_once(
+            self._odom_path(points), goal_checker_id='dock_position_checker', final=False,
+            controller_id='Parking', motion='pull_out')
+
+    def _turn_to_dock_heading(self, dock, contract, goal_checker_id,
+                              event='dock_heading_measured'):
+        """Turn in place to the dock heading where the robot stands.
 
         The forward Parking controller turns to the goal heading in place (as in the
         box face alignment) and its goal checker ends the turn inside the tolerance.
         """
         x, y, yaw = self._odom_pose()
         error = math.atan2(math.sin(dock['yaw'] - yaw), math.cos(dock['yaw'] - yaw))
-        self.emit('dock_heading_measured', delta_yaw_rad=error)
+        self.emit(event, delta_yaw_rad=error)
         if abs(error) <= contract['yaw_tolerance_rad']:
             return True
-        turn = RosPath()
-        turn.header.frame_id = 'odom'
-        turn.header.stamp = self.get_clock().now().to_msg()
-        for heading in (yaw, dock['yaw']):
-            pose = PoseStamped()
-            pose.header = turn.header
-            pose.pose.position.x, pose.pose.position.y = x, y
-            pose.pose.orientation.z = math.sin(heading / 2.0)
-            pose.pose.orientation.w = math.cos(heading / 2.0)
-            turn.poses.append(pose)
         return self._execute_reverse_once(
-            turn, goal_checker_id=goal_checker_id, final=False, controller_id='Parking',
+            self._odom_path([(x, y, yaw), (x, y, dock['yaw'])]),
+            goal_checker_id=goal_checker_id, final=False, controller_id='Parking',
             motion='turn_in_place')
 
     def _execute_reverse_once(self, path, goal_checker_id='parking_goal_checker',

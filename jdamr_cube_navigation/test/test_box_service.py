@@ -825,7 +825,7 @@ def test_t28_failed_visit_never_returns_home(monkeypatch, tmp_path):
     failed, succeeded = created
     failed.dwell_and_return_home.assert_not_called()
     failed.go_home.assert_not_called()
-    succeeded.dwell_and_return_home.assert_called_once_with(5.0, 500.0)
+    succeeded.dwell_and_return_home.assert_called_once_with(2.0, 500.0)
     assert succeeded.visit_observed_box.call_args.kwargs['task_timeout_s'] == 240.0
     assert succeeded.kwargs['home_contract']['xy_tolerance_m'] == 0.05
 
@@ -948,9 +948,9 @@ def test_t36_water_station_then_table_then_dock(monkeypatch, tmp_path):
     code, calls = _via_main(monkeypatch, tmp_path)
     assert code == 0
     assert calls == [('visit', 'water.yaml', 'water_station', [-0.14, -1.53], True),
-                     ('dwell_and_leave', 5.0),
+                     ('dwell_and_leave', 2.0),
                      ('visit', 'route.yaml', 'table_01', [1.5, -1.49], True),
-                     ('dwell_and_return_home', 5.0, 500.0)]
+                     ('dwell_and_return_home', 2.0, 500.0)]
 
 
 @pytest.mark.parametrize('via_ok,leave_ok,expected', [
@@ -1104,8 +1104,8 @@ def test_t43_resume_at_via_observation_applies_to_the_water_stop_only(monkeypatc
                                 *VIA_ARGS[4:], '--resume-at-observation'])
     assert code == 0
     assert calls == [('at_observation', 'route.yaml'),
-                     ('visit', 'water.yaml', 'water_station', True), ('dwell_and_leave', 5.0),
-                     ('visit', 'route.yaml', 'table_02', False), ('dwell_and_return_home', 5.0)]
+                     ('visit', 'water.yaml', 'water_station', True), ('dwell_and_leave', 2.0),
+                     ('visit', 'route.yaml', 'table_02', False), ('dwell_and_return_home', 2.0)]
 
 
 def test_resume_at_the_table_observation_skips_the_done_water_stop(monkeypatch, tmp_path):
@@ -1116,7 +1116,7 @@ def test_resume_at_the_table_observation_skips_the_done_water_stop(monkeypatch, 
                                at_table_observation=True)
     assert code == 0
     assert calls == [('at_observation', 'route.yaml'),
-                     ('visit', 'route.yaml', 'table_02', True), ('dwell_and_return_home', 5.0)]
+                     ('visit', 'route.yaml', 'table_02', True), ('dwell_and_return_home', 2.0)]
 
 
 @pytest.mark.parametrize('pose, expected', [((0.80, -1.86, 0.2), True),
@@ -1139,14 +1139,14 @@ def test_t43_parked_water_stop_resumes_with_logged_face_then_table(monkeypatch, 
                                [*VIA_ARGS[:2], '--via-route', str(tmp_path / 'water.yaml'),
                                 *VIA_ARGS[4:], '--resume-parked-from-log', 'LOG'])
     assert code == 0
-    assert calls == [('resume_parked', [0.02, -1.2], 5.0),
-                     ('visit', 'route.yaml', 'table_02', False), ('dwell_and_return_home', 5.0)]
+    assert calls == [('resume_parked', [0.02, -1.2], 2.0),
+                     ('visit', 'route.yaml', 'table_02', False), ('dwell_and_return_home', 2.0)]
 
 
 def test_t43_parked_table_resumes_with_logged_face_then_docks(monkeypatch, tmp_path):
     code, calls = _resume_main(monkeypatch, tmp_path, ['--resume-parked-from-log', 'LOG'])
     assert code == 0
-    assert calls == [('resume_parked', [0.02, -1.2], 5.0), ('go_home',)]
+    assert calls == [('resume_parked', [0.02, -1.2], 2.0), ('go_home',)]
 
 
 def test_t43_last_logged_face_requires_an_observed_face(tmp_path):

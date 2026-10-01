@@ -140,7 +140,9 @@ SENSOR_UNITS = ('jdamr-base.service', 'jdamr-box-rgbd.service', 'jdamr-box-obser
 # Recorded on the Pi for every go: wheel odom, raw IMU and scan for the odom/IMU EKF
 # comparison (rotation_truth.py), velocity commands for the Spin overshoot.
 ONBOARD_BAG_CHECK_S = 25.0
-DOCK_WAIT_S = 10.0
+# No wait at the dock between cycles of a sequence (operator, 2026-10-01); the
+# init that re-localizes at the dock still runs.
+DOCK_WAIT_S = 0.0
 ONBOARD_TOPICS = ('/odom', '/imu/data_raw', '/scan', '/tf', '/tf_static', '/amcl_pose',
                   '/cmd_vel_nav', '/cmd_vel_smoothed', '/cmd_vel')
 # box_service's first check (verify_live_maps, 30 s) runs before any motion command.
@@ -770,11 +772,11 @@ def cmd_go(args):
     sequence_started = time.time()
     for index, table_id in enumerate(tables):
         if index:
-            # Charging is connected by hand and is not detected: the dock wait is the
-            # charging stop of the sequence, then the standard dock init (no motion).
+            # Charging is connected by hand and is not detected; --dock-wait-s adds a
+            # charging stop before the standard dock init (no motion).
             wait_s = float(getattr(args, 'dock_wait_s', DOCK_WAIT_S))
-            log(f'docked after {tables[index - 1]}; {table_id} departs after {wait_s:.0f} s '
-                'at the dock and a fresh init (no motion)')
+            log(f'docked after {tables[index - 1]}; {table_id} departs after a fresh init '
+                f'(no motion){f" and {wait_s:.0f} s at the dock" if wait_s > 0 else ""}')
             deadline = time.monotonic() + wait_s
             while time.monotonic() < deadline:
                 time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
@@ -961,7 +963,7 @@ def main():
     go.add_argument('table_ids', nargs='+', choices=TABLES, metavar='table_id',
                     help='one or more tables; several run as dock-to-dock cycles in order')
     go.add_argument('--dock-wait-s', type=float, default=DOCK_WAIT_S,
-                    help='wait at the dock between cycles of a sequence (charging stop)')
+                    help='wait at the dock between cycles of a sequence (charging stop; default none)')
     go.add_argument('--route', help='route file (default: <table_id>_route.yaml)')
     go.add_argument('--region', nargs=3, type=float, metavar=('X', 'Y', 'R'))
     go.add_argument('--via-route', help='water_station route (default: <P2>/water_station_route.yaml)')

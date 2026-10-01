@@ -81,6 +81,9 @@ ESCAPE_PATH_CONTRACT = {
     'xy_tolerance_m': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
     'yaw_tolerance_rad': math.radians(MAXIMUM_CONTRACT_VALUES['yaw_tolerance_deg']),
 }
+# Held stop at the water station and the table before leaving (operator,
+# 2026-10-01: 5 s -> 2 s).
+STOP_DWELL_S = 2.0
 
 
 class BoxObservationUnavailable(RuntimeError):
@@ -1240,7 +1243,7 @@ def run_attempt(args, active=None):
                 node.verify_live_maps()
                 if not node.wait_until_ready(timeout=10.0):
                     raise RuntimeError('localization or sensor data unavailable')
-                ok = node.resume_parked(face, 5.0)
+                ok = node.resume_parked(face, STOP_DWELL_S)
                 if args.via_id is None:
                     # The parked stop was the table: its escape leads straight home.
                     ok = ok and node.go_home(execute=True, timeout_s=args.return_timeout_s)
@@ -1262,7 +1265,7 @@ def run_attempt(args, active=None):
                     candidate_trial=args.candidate_trial,
                     resume_at_observation=args.resume_at_observation,
                     search=args.search, task_timeout_s=args.task_timeout_s)
-                ok = ok and node.dwell_and_leave(5.0)
+                ok = ok and node.dwell_and_leave(STOP_DWELL_S)
             # A resume applies to the first stop of this run only.
             ok = ok and node.visit_observed_box(
                 args.approach_route, mount, geometry, args.table_id,
@@ -1273,7 +1276,7 @@ def run_attempt(args, active=None):
                 search=args.search, task_timeout_s=args.task_timeout_s)
             # Exit 0 only when every requested stage, including the return, succeeded.
             if ok and args.return_home:
-                ok = node.dwell_and_return_home(5.0, args.return_timeout_s)
+                ok = node.dwell_and_return_home(STOP_DWELL_S, args.return_timeout_s)
             return 0 if ok else 1
         except (ValueError, RuntimeError) as error:
             if node is not None:

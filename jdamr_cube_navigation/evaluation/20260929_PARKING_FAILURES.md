@@ -891,6 +891,70 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
 3. 연속 주행에서 사이클 사이 도크 대기를 없앨 것(지금 `--dock-wait-s` 기본 10 s).
 4. 각 정차 지점(물 받는 곳·테이블)의 5 s 대기를 2 s로 줄일 것.
 
+### 20.17 비교 뒤 수정과 계획 탐침 (2026-10-01 19:45 – 10-02 00:12, 이동 없음)
+
+§20.16의 처리 항목 네 건을 반영했다. 계획기 선택은 파이 실세션에서 계획만 해서 정했다. 로봇은 움직이지 않았다.
+
+**계획기 선택: 구간별 선택 유지 (이동 구간 NavFn, 대기점 구간 Lattice)**
+
+| 구간 (경유점 없이 시작 → 목표) | NavFn 길이 비 | Lattice 길이 비 | Lattice 계획 시간 |
+|---|---|---|---|
+| A 도크 → 물 받는 곳 관측 | 1.08 | 2.78 | 0.109 s |
+| B 물 받는 곳 → table_02 관측 | 1.05 | 3.14 | 0.004 s |
+| C 물 받는 곳 → table_01 관측 | 1.05 | 2.64 | 0.008 s |
+| D table_01 → 도크 대기점 | 1.00 | 1.03 | 0.200 s |
+| E table_02 → 도크 대기점 | 1.02 | 1.04 | 0.175 s |
+
+- 경유점을 포함한 같은 날 19:45 계획에서는 A 2.05, C 2.23이었다(NavFn 1.12, 1.03). 경유점을 빼면 Lattice가 더 길어지므로, Lattice 통일 판정 기준(길이 비 1.1 이하)은 계획 단계에서 통과하지 못했다. 통일 판정용 주행 3회는 하지 않는다.
+- 계획 시간은 NavFn 0.001–0.039 s, Lattice 0.004–0.543 s. 두 계획기를 올린 `planner_server` 메모리는 77 MB(파이 사용 1.1 / 3.8 GB).
+- Smac Hybrid-A*는 후보에서 뺀다. 설치본 `constants.hpp`의 모션 모델은 `TWOD`, `DUBIN`, `REEDS_SHEPP`, `STATE_LATTICE`이고 Hybrid-A*는 DUBIN·REEDS_SHEPP(최소 회전 반경 곡선)만 쓰므로 제자리 회전을 쓰지 못한다.
+- Jazzy 1.3.12 Smac 헤더에 `goal_heading_mode`가 없다. 경유점마다 정해진 방향으로 도착해야 하는 것이 이동 구간 우회의 원인으로 보인다(추론).
+- NavFn 헤더 주석은 "ROS values of 253 are obstacles"다. 우리 내접 반경이 0.085 m여서 NavFn은 약 0.25 m 이상 틈을 지나갈 수 있다고 본다(차체 폭 0.58 m, 회전 지름 0.83 m). 이동 구간에 NavFn을 남긴 대가이고, 지금은 Collision Monitor 정지 구역이 막는다. 좁아진 통로 실측은 하지 않았다.
+- 원본: `$HOME/jdamr_data/map_20260930_manual/aligned/plan_compare_20261001_1945.jsonl`, `plan_probe_direct_staging_20261001_2356.jsonl`, `plan_probe_rotation_penalty_20261001_2357.jsonl`, 탐침 `plan_probe_20261001.py` (보관본 `/data/lim/jdamr_artifacts/jdamr_runs_20261001/plan_probes/`).
+
+**처리 항목 2 (Lattice 대기점의 방향 판정): 효과 없음으로 보류**
+
+- 대기점 구간 Lattice 경로는 직진한 뒤 목표점에서 제자리 회전으로 끝난다. 마지막 0.3 m 안의 제자리 회전이 D 63.4°, E 90.0°다. 회전 패널티를 1.5·3.0·5.0으로 올려도 D·E 모두 제자리 회전 63.4°로 같았다(길이 비 1.03–1.14).
+- 판정에 방향을 넣으면 그 회전을 Spin 대신 RPP가 하게 된다. RPP의 끝 회전은 AMCL 방향을 따르며, 2026-09-30 도크 근처에서 AMCL이 약 15° 튀어 먼 쪽으로 돌았다가 돌아왔다(§`_reach_staging` 설명). 그래서 odom Spin을 유지한다.
+- 18:51의 방향 정렬 도착(0.4°)은 그 실행의 시작 자세에서 나온 경로 모양으로 본다(추론). Lattice의 대기점 이점은 Spin이 92–112°로 NavFn의 115–136°보다 작은 것이다.
+- 탐침 중 사고: 회전 패널티 원래 값 읽기가 "Node not found"로 비어 복원 명령이 실패했고, 실행 중 `planner_server`의 `Lattice.rotation_penalty`가 23:57부터 복원 명령까지 약 1–2분 5.0으로 남았다. 설정 파일 값 0.5로 다시 설정하고 `Double value is: 0.5`를 확인했다. 그 사이 주행은 없었다.
+
+**처리 항목 1 (도크 안 제자리 회전 없애기): 방향을 도크 밖에서 맞춘 뒤 직선 후진**
+
+도크 끝 방향 오차는 대기점의 옆 어긋남에서 나왔다. 대기점 Spin 뒤 방향은 0.3–2.3°로 정확했지만, 곡선 후진이 옆 어긋남을 도크까지 끌고 가 바로잡으면서 방향이 그만큼 남았다(odom, onboard bag).
+
+| run | 대기점 옆 어긋남 | 도크 끝 방향 오차 |
+|---|---|---|
+| table_01 15:54 | −0.4 cm | −0.87° |
+| table_01 16:06 | −4.5 cm | −2.39° |
+| table_02 19:02 | −4.1 cm | −2.00° |
+| table_01 18:58 | −4.4 cm | −2.99° |
+| table_01 19:07 | +4.6 cm | +3.32° |
+| table_02 16:22 | −7.5 cm | −4.27° |
+| table_01 16:26 | −8.3 cm | −5.93° |
+| table_02 18:51 | −9.6 cm | −6.93° |
+
+옆 어긋남 1 cm마다 약 0.7°이고, 도크 끝 위치는 모두 0.2 cm 안·1.7–1.9 cm 앞에서 멈췄다. 수정(`restaurant_service.py` `_dock_straight`):
+
+1. 대기점 옆 어긋남이 1 cm를 넘으면 도크 앞 0.25 m의 도크 축 위 지점(pre-dock)까지만 곡선 후진한다. 0.25 m는 10 cm 어긋남에서도 곡선 반경이 0.3 m보다 크게 남는 거리다. 곡선이 안 맞으면 기존 정렬 구간(turn-move-turn)으로 간다.
+2. 직선 시작점(pre-dock 또는 대기점)에서 방향이 3°를 넘으면 그 자리에서 Parking 컨트롤러로 제자리 회전한다. 도크 밖이라 회전 원(반경 0.414 m)이 도크 위치의 차체 뒤 끝보다 0.13 m 앞에 머문다.
+3. 도크까지는 odom 직선 후진(`reverse_waypoints`, 5 cm·3°)이고 위치 판정 2 cm로 끝낸다.
+4. 도크 끝 방향이 3°를 넘으면 도크 안에서 돌지 않는다. 직선 시작점까지 직선 전진으로 빠져나와 방향을 맞추고 한 번 더 들어간다. 그래도 넘으면 `dock_heading_out_of_tolerance`로 실패한다.
+5. 모든 구간은 대기점에서 고정한 odom 기준이다. 이벤트: `dock_leg_frozen_in_odom`(대기점 옆 어긋남·pre-dock 자세), `dock_entry_heading_measured`, `dock_heading_measured`(시도 번호), `dock_heading_out_of_tolerance`.
+
+**처리 항목 3·4**
+
+- 3: `jdamr_depart.py` `DOCK_WAIT_S` 10 → 0 s. 연속 주행 사이의 init(스캔 정합 재위치추정, 이동 없음)은 남겼다. 19:02 연속 주행의 사이클 사이 61 s는 대기 10 s, init 41 s(클릭 5 s, 스캔 정합 18 s, 활성화 확인 14 s, 지역 확인 3 s), 출발 준비 10 s였다. 이 init에서 스캔 정합이 클릭 기준 0.10 m·1.2° 차이를 잡았다.
+- 4: `box_service.py` `STOP_DWELL_S` 2.0 s. 물 받는 곳, 테이블, 정차 재개(`resume_parked`) 모두 같은 값이다. restaurant_service의 `serve` 흐름(지금 쓰지 않음)의 5 s는 그대로다.
+
+**검증과 배치**
+
+- 테스트: `test_input_recovery.py`·`test_restaurant_service.py`·`test_box_service.py` 390건, `test_jdamr_depart_flow.py` 36건 통과. 도크 테스트 t27(2.0°는 한 번에, 4.4°는 빠져나와 다시 진입, 회전은 직선 시작점에서만), t27b(두 번째에도 넘으면 실패, 도크 안 회전 없음), t27c(6 cm 어긋남은 pre-dock 곡선 후 직선). 변경 Python 4개 `ament_flake8` 통과.
+- 파이: 기존 두 파일을 `~/jdamr_data/deploy_backup_20261002_000927/`에 백업하고 `box_service.py`·`restaurant_service.py`만 반영, `colcon build --packages-select jdamr_cube_navigation` 통과. 설치본 SHA-256이 로컬과 같다. Nav2 세션은 설정 변화가 없어 그대로 두고 `jdamr-box-executor`만 00:10:43에 재시작했다(설치 00:09:30 이후).
+- 파이 소스의 `service_visualization.py`는 로컬과 다르지만 이번 변경과 무관해 반영하지 않았다.
+- PC 기록 `bag_20261001_160232`를 00:11에 닫고(906 MB) 보관본에 맞췄다(해시 255건 확인). 다음 주행용으로 PC 표시 유닛 다섯 개와 기록 `bag_20261002_001136`을 다시 띄워 두었다. 유휴 중에도 bag이 커지므로(16:02–00:11에 906 MB) 주행하지 않으면 `python3 $HOME/jdamr_data/map_20260930_manual/tools/jdamr_depart.py display-stop`으로 끈다.
+- 실차 미확인: pre-dock 곡선, 직선 진입 뒤 도크 방향 오차, 빠져나와 다시 진입하는 경로, 정차 2 s, 연속 주행 대기 제거.
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.

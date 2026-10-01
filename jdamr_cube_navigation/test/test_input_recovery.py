@@ -1480,6 +1480,8 @@ def _home_stub_node(monkeypatch, tmp_path, contract, home_contract):
     stage = route_config(node.registry, HOME)['waypoints'][0]
     node.capture_stationary_pose = Mock(return_value=((stage['x'], stage['y'], stage['yaw']),
                                                       {}))
+    # Staging (a mock here) leaves the robot at the staging pose.
+    world.pose = [stage['x'], stage['y'], stage['yaw']]
     return node, world, stage
 
 
@@ -1571,37 +1573,108 @@ def test_t26_precision_staging_and_dock_use_home_contract(monkeypatch, tmp_path)
                for _remote, names in world.parameter_reads)
 
 
-@pytest.mark.parametrize('offset_deg, turns', [(4.4, 1), (2.0, 0)])
-def test_t27_dock_heading_is_turned_in_place_after_the_reverse(
-        monkeypatch, tmp_path, offset_deg, turns):
-    """Turn the 4.4 deg left at the dock with the forward controller, not by shuttling."""
-    node, world, _stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
-    reverse = node._execute_reverse_path
+def _dock_entries(node, world, offset_deg, every_entry=False):
+    """Leave offset_deg of heading after the straight entry; a pull-out keeps it."""
+    reverse, pull_out = node._execute_reverse_path, node._pull_out_to
+    entries = []
 
     def reverse_then_off_heading(*args, **kwargs):
         ok = reverse(*args, **kwargs)
-        world.pose[2] += math.radians(offset_deg)   # RPP reverse lags the heading
+        entries.append(kwargs)
+        if every_entry or len(entries) == 1:
+            world.pose[2] += math.radians(offset_deg)   # RPP reverse lags the heading
+        return ok
+
+    def pull_out_keeping_heading(*args, **kwargs):
+        heading = world.pose[2]
+        ok = pull_out(*args, **kwargs)
+        world.pose[2] = heading
         return ok
 
     node._execute_reverse_path = reverse_then_off_heading
+    node._pull_out_to = pull_out_keeping_heading
+    return entries
+
+
+def _in_place_turns(world):
+    turns = []
+    for kind, goal in world.motions:
+        if kind != 'FollowPath' or goal.controller_id != 'Parking':
+            continue
+        start = _pose_xyyaw(goal.path.poses[0].pose)
+        end = _pose_xyyaw(goal.path.poses[-1].pose)
+        if start[:2] == end[:2]:
+            turns.append(goal)
+    return turns
+
+
+@pytest.mark.parametrize('offset_deg, entries', [(2.0, 1), (4.4, 2)])
+def test_t27_dock_heading_is_set_outside_the_dock(monkeypatch, tmp_path, offset_deg, entries):
+    """Pull out and set a 4.4 deg dock heading before entering again, never inside the dock."""
+    node, world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    _dock_entries(node, world, offset_deg)
     assert node._go_home_reverse(HOME, True) is True
-    dock, *turn = [goal for kind, goal in world.motions if kind == 'FollowPath']
-    assert dock.goal_checker_id == 'dock_position_checker'
-    assert len(turn) == turns
-    measured = [e for e in _events(node) if e.get('event') == 'dock_heading_measured']
-    assert measured and math.degrees(measured[-1]['delta_yaw_rad']) == pytest.approx(
-        -offset_deg, abs=1e-6)
-    if turns:
-        goal = turn[0]
-        assert goal.controller_id == 'Parking'
+    goals = [goal for kind, goal in world.motions if kind == 'FollowPath']
+    reverses = [goal for goal in goals if goal.controller_id == 'ParkingReverse']
+    assert len(reverses) == entries
+    assert all(goal.goal_checker_id == 'dock_position_checker' for goal in reverses)
+    turns = _in_place_turns(world)
+    assert len(turns) == entries - 1
+    for goal in turns:
+        # The heading is set at the straight entry (staging here), not at the dock.
+        assert _pose_xyyaw(goal.path.poses[0].pose)[:2] == pytest.approx((stage['x'], stage['y']))
         assert goal.goal_checker_id == 'alignment_goal_checker'
-        start, end = (item.pose for item in goal.path.poses)
-        assert (start.position.x, start.position.y) == (end.position.x, end.position.y)
-        end_pose = dock.path.poses[-1].pose
-        assert _pose_xyyaw(end)[2] == pytest.approx(_pose_xyyaw(end_pose)[2])
+    if entries > 1:
+        pull_out = goals[1]
+        assert pull_out.controller_id == 'Parking'
+        assert pull_out.goal_checker_id == 'dock_position_checker'
+        end = _pose_xyyaw(pull_out.path.poses[-1].pose)
+        assert end[:2] == pytest.approx((stage['x'], stage['y']))
+    measured = [e for e in _events(node) if e.get('event') == 'dock_heading_measured']
+    assert math.degrees(measured[0]['delta_yaw_rad']) == pytest.approx(-offset_deg, abs=1e-6)
+    assert len(measured) == entries
     verified = node._verify_parking_stop.call_args_list[-1]
     home = load_parking_contract(CONTRACT)
     assert verified.kwargs['contract'] == {**home, 'reference_frame': 'odom'}
+
+
+def test_t27b_dock_heading_still_off_after_the_second_entry_fails(monkeypatch, tmp_path):
+    """Stop after one re-entry instead of turning inside the dock."""
+    node, world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    _dock_entries(node, world, 4.4, every_entry=True)
+    assert node._go_home_reverse(HOME, True) is False
+    reverses = [goal for kind, goal in world.motions
+                if kind == 'FollowPath' and goal.controller_id == 'ParkingReverse']
+    assert len(reverses) == 2
+    assert all(_pose_xyyaw(goal.path.poses[0].pose)[:2]
+               == pytest.approx((stage['x'], stage['y'])) for goal in _in_place_turns(world))
+    assert any(e.get('event') == 'dock_heading_out_of_tolerance' for e in _events(node))
+    # Staging only; the dock stop is never confirmed off its heading.
+    assert len(node._verify_parking_stop.call_args_list) == 1
+
+
+def test_t27c_staging_offset_is_taken_out_before_the_straight_entry(monkeypatch, tmp_path):
+    """Curve a 6 cm staging offset out to the pre-dock pose, then reverse straight in."""
+    node, world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    staged = (stage['x'], stage['y'] + 0.06, stage['yaw'])
+    node.capture_stationary_pose = Mock(return_value=(staged, {}))
+    world.pose = list(staged)
+    assert node._go_home_reverse(HOME, True) is True
+    reverses = [goal for kind, goal in world.motions
+                if kind == 'FollowPath' and goal.controller_id == 'ParkingReverse']
+    assert len(reverses) == 2
+    dock = (HOME['x_m'], HOME['y_m'], HOME['yaw_rad'])
+    pre_dock = (dock[0] + restaurant_service.PRE_DOCK_DISTANCE_M * math.cos(dock[2]),
+                dock[1] + restaurant_service.PRE_DOCK_DISTANCE_M * math.sin(dock[2]))
+    assert _pose_xyyaw(reverses[0].path.poses[-1].pose)[:2] == pytest.approx(pre_dock)
+    straight = [_pose_xyyaw(item.pose) for item in reverses[1].path.poses]
+    assert straight[0][:2] == pytest.approx(pre_dock, abs=1e-6)
+    assert straight[-1][:2] == pytest.approx(dock[:2])
+    assert all(point[1] == pytest.approx(dock[1], abs=1e-6)
+               and point[2] == pytest.approx(dock[2], abs=1e-6) for point in straight)
+    frozen = [e for e in _events(node) if e.get('event') == 'dock_leg_frozen_in_odom'][-1]
+    assert frozen['staging_lateral_offset_m'] == pytest.approx(0.06)
+    assert frozen['pre_dock_pose'][:2] == pytest.approx(pre_dock)
 
 
 def test_t26_standard_home_keeps_head_call_arguments(monkeypatch, tmp_path):
