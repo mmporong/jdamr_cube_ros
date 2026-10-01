@@ -22,10 +22,10 @@ MAX_YAW_TOLERANCE_RAD = math.radians(3.0)
 MAX_REVERSE_DISTANCE_M = 2.0
 MAX_WAYPOINT_SPACING_M = 0.025
 MAX_REVERSE_LINEAR_VELOCITY_MPS = 0.08
-# Service-session transit speed: operator request 2026-09-30, +50 % over the
-# 0.04 m/s the robot actually drove (the smoother was capped to the parking
-# contract speed). Parking controllers keep their own contract speeds.
-SERVICE_TRANSIT_MAX_MPS = 0.06
+# Service-session transit speed: the configured 0.12 m/s transit (operator,
+# 2026-10-01: 0.06 m/s was too slow). Parking controllers keep their own
+# contract speeds.
+SERVICE_TRANSIT_MAX_MPS = 0.12
 RPP_PLUGIN = (
     'nav2_regulated_pure_pursuit_controller::'
     'RegulatedPurePursuitController')

@@ -103,15 +103,18 @@ controller_server:
       use_velocity_scaled_lookahead_dist: true
       # Less transit slowdown (operator request 2026-09-30); Parking pins its own.
       min_approach_linear_velocity: 0.075
-      approach_velocity_scaling_dist: 0.4
+      # Slow down over the last 0.2 m of each leg only (operator, 2026-10-01).
+      approach_velocity_scaling_dist: 0.2
       # Off (operator request 2026-10-01, test props): the 1.5 s projection on 5 cm
       # cells stopped a turn with about 10 cm real clearance at the water box. The
       # Collision Monitor StopZone below still stops at the padded footprint.
       use_collision_detection: false
       max_allowed_time_to_collision_up_to_carrot: 1.5
       use_regulated_linear_velocity_scaling: true
-      use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.6
+      # No cost slowdown in the cluttered room and curve slowdown only on tight
+      # turns (operator, 2026-10-01: slowed too early and too much).
+      use_cost_regulated_linear_velocity_scaling: false
+      regulated_linear_scaling_min_radius: 0.3
       regulated_linear_scaling_min_speed: 0.075
       cost_scaling_dist: 0.2
       cost_scaling_gain: 1.0

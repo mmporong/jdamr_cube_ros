@@ -1590,12 +1590,12 @@ def test_service_launch_adds_parking_without_changing_costmaps(
             output['velocity_smoother']['ros__parameters']['min_velocity'][0] = 0.0
             # Transit is capped at the service speed, not the parking contract.
             smoother = output['velocity_smoother']['ros__parameters']
-            assert smoother['max_velocity'][0] == 0.06
+            assert smoother['max_velocity'][0] == 0.12
             smoother['max_velocity'][0] = original['velocity_smoother'][
                 'ros__parameters']['max_velocity'][0]
             for key in ('desired_linear_vel', 'min_approach_linear_velocity',
                         'regulated_linear_scaling_min_speed'):
-                assert controller['FollowPath'][key] <= 0.06
+                assert controller['FollowPath'][key] <= 0.12
                 controller['FollowPath'][key] = original['controller_server'][
                     'ros__parameters']['FollowPath'][key]
             controller['controller_plugins'].remove('GracefulReverse')
@@ -1665,9 +1665,9 @@ def test_precision_launch_matches_box_contract_speed_and_search_capability(monke
     try:
         document = yaml.safe_load(generated.read_text())
         smoother = document['velocity_smoother']['ros__parameters']
-        assert smoother['min_velocity'][0] == -.04
-        # Transit +50 % over the 0.04 m/s parking cap (operator request).
-        assert smoother['max_velocity'][0] == .06
+        assert smoother['min_velocity'][0] == -.08
+        # Transit at the configured 0.12 m/s; reverse at the box contract speed.
+        assert smoother['max_velocity'][0] == .12
         behavior = document['behavior_server']['ros__parameters']
         assert behavior['max_rotational_vel'] == .2
         assert behavior['min_rotational_vel'] == .1

@@ -137,11 +137,12 @@ def parking_controller_overrides(
         'use_rotate_to_heading': True,
         'allow_reversing': False,
         'stateful': False,
-        # Parking keeps the slowdown it was validated with when transit speeds
-        # up (2026-09-30); only the transit FollowPath changed.
-        'approach_velocity_scaling_dist': 0.6,
+        # Slow down only over the last 0.15 m and ignore the box's own cost: from
+        # 0.6 m the straight 0.44 m approach never left the minimum speed
+        # (2026-10-01). The goal checker and the StopZone front end the stop.
+        'approach_velocity_scaling_dist': 0.15,
         'regulated_linear_scaling_min_radius': 0.9,
-        'cost_scaling_dist': 0.3,
+        'use_cost_regulated_linear_velocity_scaling': False,
     })
     configured['Parking'] = parking
     # Graceful (Park-Kuipers smooth control law, the law Nav2 docking uses)

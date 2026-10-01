@@ -1542,10 +1542,9 @@ def test_t26_precision_staging_and_dock_use_home_contract(monkeypatch, tmp_path)
     node, world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
     home = load_parking_contract(CONTRACT)
     assert node._go_home_reverse(HOME, True) is True
-    # Staging position leg, then the alignment leg (one odom turn only when needed).
+    # Staging position leg; the alignment leg runs only when the position is off.
     assert node.execute.call_args_list == [
-        call(final_parking=False, staging=True),
-        call(final_parking=False, alignment=True)], (
+        call(final_parking=False, staging=True)], (
         f'HEADFAIL[T26]: precision staging used {node.execute.call_args_list}')
     # The staging plan is judged with the alignment checker's 0.05 m tolerance.
     assert len(node.plan_pose.call_args_list) == 1
@@ -1698,11 +1697,11 @@ def test_m3_escape_success_clears_face_then_stages(monkeypatch, tmp_path):
     world.complete_motion = complete
     assert node.go_home(execute=True, timeout_s=500.0) is True
     assert [kind for kind, _goal in world.motions] == [
-        'FollowPath', 'NavigateToPose', 'NavigateToPose', 'FollowPath']
+        'FollowPath', 'NavigateToPose', 'FollowPath']
     events = [record['event'] for record in _events(node)]
     assert events.index('box_escape_finished') < events.index('reverse_staging_planned')
-    # Staging position leg and alignment leg both run after the face is gone.
-    assert node.last_box_face is None and faces_at_staging == [None, None]
+    # The staging position leg runs after the face is gone.
+    assert node.last_box_face is None and faces_at_staging == [None]
     finished = _events(node, 'box_escape_finished')[0]
     assert finished['face_distance_m'] == pytest.approx(
         _new_symbol('M3', box_service, 'ESCAPE_CLEARANCE_M'))
@@ -1758,7 +1757,7 @@ def test_t44_escape_heading_drift_still_clears_face(monkeypatch, tmp_path):
     assert finished['yaw_error_rad'] == pytest.approx(math.radians(6.0), abs=0.01)
     assert finished['position_error_m'] == pytest.approx(0.04, abs=0.005)
     assert [kind for kind, _goal in world.motions] == [
-        'FollowPath', 'NavigateToPose', 'NavigateToPose', 'FollowPath']
+        'FollowPath', 'NavigateToPose', 'FollowPath']
 
 
 @pytest.mark.parametrize('case,pose', [
@@ -1825,7 +1824,7 @@ def test_short_reverse_counts_only_with_rotation_clearance(
     if home:
         assert _box_escape_failures(node) == []
         assert _events(node, 'box_escape_finished')[0]['nav2_goal_reached'] is False
-        assert kinds == ['FollowPath', 'NavigateToPose', 'NavigateToPose', 'FollowPath']
+        assert kinds == ['FollowPath', 'NavigateToPose', 'FollowPath']
     else:
         assert [r['reason'] for r in _box_escape_failures(node)] == ['box_escape_failed']
         assert kinds == ['FollowPath']
@@ -2154,6 +2153,7 @@ def test_staging_turns_once_in_odom_when_the_heading_is_far_off(monkeypatch, tmp
     spins = []
     node.capture_stationary_pose = Mock(side_effect=[
         ((stage['x'], stage['y'], stage['yaw'] + math.radians(150.0)), {}),
+        ((stage['x'], stage['y'], stage['yaw']), {}),
         ((stage['x'], stage['y'], stage['yaw']), {})])
     node._search_rotation_once = Mock(side_effect=lambda delta, **kw: spins.append(
         (delta, kw)) or True)
@@ -2180,8 +2180,9 @@ def test_t34b_precision_dock_stays_strict_after_staging(monkeypatch, tmp_path):
     node.verify_live_maps = Mock()
     result = node._go_home_reverse(HOME, True)
     kinds = [kind for kind, _goal in world.motions]
-    # Staging position leg and alignment leg; the strict confirmation refuses.
-    assert kinds == ['NavigateToPose', 'NavigateToPose'], f'HEADFAIL[T34b]: {kinds} ({result})'
+    # Staging position leg (already aligned, no alignment leg); the strict
+    # confirmation refuses before the dock leg.
+    assert kinds == ['NavigateToPose'], f'HEADFAIL[T34b]: {kinds} ({result})'
     assert result is False
     confirmation = node.confirmation or {}
     assert 'covariance high' in json.dumps(confirmation), confirmation

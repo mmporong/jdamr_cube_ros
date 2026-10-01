@@ -54,11 +54,6 @@ AMCL_QUIET_MAX_YAW_RAD = 0.05
 AMCL_QUIET_MAX_TF_AGE_S = 0.5
 
 
-# Below this the alignment leg's own rotation turns the rest; above it one
-# odom Spin turns in a direction fixed at rest (never near a +-180 flip).
-STAGING_TURN_MIN_RAD = math.radians(30.0)
-
-
 def load_service_contract(path):
     """Load candidate localization bounds with distinct SI units."""
     document = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
@@ -1238,24 +1233,33 @@ class ServiceRoute(CorridorRoute):
 
     def _reach_staging(self, stage):
         """
-        Reach the staging position, turn once toward the dock heading, then align.
+        Reach the staging position, then turn in place toward the dock heading.
 
         On 2026-09-30 the staging leg replanned every second (113 times in
         127 s) and the final heading turn followed AMCL, which near the dock was
         off by about 15 deg, so the robot swung the long way and back. The
         position leg now replans only on an invalid, expired or new path; the
-        large turn is one odom Spin whose direction is fixed at rest; the
-        existing alignment leg only corrects what is left.
+        heading is set by odom Spins whose direction is fixed at rest. The
+        alignment leg runs only when the position itself is off: after a 123 deg
+        turn it spent 38 s correcting 3 deg (2026-10-01).
         """
         if not self.execute(final_parking=False, staging=True):
             return False
-        actual, _ = self.capture_stationary_pose()
-        delta_rad = math.atan2(math.sin(stage['yaw'] - actual[2]),
-                               math.cos(stage['yaw'] - actual[2]))
-        self.emit('staging_heading_measured', delta_yaw_rad=delta_rad)
-        if abs(delta_rad) > STAGING_TURN_MIN_RAD and not self._search_rotation_once(
-                delta_rad, limit_rad=math.pi, event='staging_turn', measure_in_odom=True):
-            return False
+        xy_tolerance_m = self.home_contract['xy_tolerance_m']
+        for turn in range(2):   # the large turn, then one small correction
+            actual, _ = self.capture_stationary_pose()
+            delta_rad = math.atan2(math.sin(stage['yaw'] - actual[2]),
+                                   math.cos(stage['yaw'] - actual[2]))
+            self.emit('staging_heading_measured', delta_yaw_rad=delta_rad)
+            if math.dist(actual[:2], (stage['x'], stage['y'])) > xy_tolerance_m:
+                break
+            if abs(delta_rad) <= self.home_contract['yaw_tolerance_rad']:
+                self.emit('staging_aligned_without_leg', turns=turn)
+                return True
+            if not self._search_rotation_once(
+                    delta_rad, limit_rad=math.pi, event='staging_turn',
+                    measure_in_odom=True):
+                return False
         return self.execute(final_parking=False, alignment=True)
 
     def _go_home_reverse(self, pose, execute):
