@@ -975,6 +975,10 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
 - 정지 상태 확인: `estop` → engaged, `estop-reset` → released. 드라이버 로그도 둘 다 확인했다.
 - init에서 table_02 영역에 박스 크기 LiDAR 클러스터가 잡히지 않았다(표지 위치 사용). 19:06 init에서는 잡혔다. 박스가 넘어졌거나 옮겨졌을 수 있다(현장 미확인).
 - 실차 미확인: 주행 중 비상정지, 막힘 대기·재시도, 하트비트 끊김 정지, 저전압 복귀, PC 알림 표시.
+- 켜 둔 것 (다음 주행 준비):
+  - 파이: Nav2 세션, `jdamr-box-executor`
+  - PC: 표시 유닛 다섯 개와 기록 `bag_20261002_004248`. `recover`가 앞의 `bag_20261002_001136`을 닫았다.
+  - 주행하지 않으면 `python3 $HOME/jdamr_data/map_20260930_manual/tools/jdamr_depart.py display-stop`, 이어서 `session-stop`으로 끈다.
 
 ## 앞선 충전 중 수정본 검증
 
