@@ -192,6 +192,9 @@ class ServiceRoute(CorridorRoute):
         # 5 cm stop at a box ended in 105 (2026-10-01).
         self.final_approach_controller = 'Parking'
         self.dock_leg_controller = 'ParkingReverse'
+        # Box search resume target; the staging turn shares the Spin helper and
+        # ran in a process that never searched (2026-10-01 AttributeError).
+        self._search_target_yaw = None
         self.service_contract = load_service_contract(
             package / 'config/restaurant_service_contract.yaml')
         self.minimum_battery_v = self.service_contract['minimum_running_battery_v']
@@ -814,7 +817,7 @@ class ServiceRoute(CorridorRoute):
         before, _ = self.capture_stationary_pose()
         if measure_in_odom:
             before = self._odom_pose()
-        if self._search_target_yaw is None:
+        if event == 'search_rotation' and getattr(self, '_search_target_yaw', None) is None:
             self._search_target_yaw = before[2] + delta_yaw_rad
         self.active_action_type = Spin
         goal = Spin.Goal()
