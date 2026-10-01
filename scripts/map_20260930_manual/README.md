@@ -9,6 +9,8 @@
 | `dds_probe.py` | 파이에서 새 참가자로 `/map`·`/keepout_filter_mask`·`/tf_static`의 `laser_link`·`/scan`을 실행기와 같은 30 s 안에 받는지 한 줄로 보고한다(구독만, 박스 관측 상태는 수만 기록) | 없음 |
 | `box_escape_once.py` | 박스 앞에서 멈춘 로봇에 실행기 `_leave_parked_pose` 후진 이탈만 한 번 실행한다. 앞면은 로봇 방향+측정 거리 또는 로그의 관측 면(단위 법선만 허용). 선택적으로 정지 확인 대기, `--stop-id`로 로그 표지 지정. SIGINT·SIGTERM·SIGHUP이면 후진을 취소한다 | 후진 이탈 |
 | `test_jdamr_depart_flow.py` | `jdamr_depart.py`의 출발·복구 흐름을 ssh 없이 모의로 확인한다(22건). 지도 데이터가 있는 PC에서만 돈다 | 없음 |
+| `analyze_run.py` | 한 실행의 `cycle_events.jsonl`(+ PC 중계 bag)을 단계별 시간·재계획 수·회전 방향 전환·map→odom 보정으로 요약한다 | 없음 |
+| `udp_drop_monitor.py` | 파이에서 5 s마다 UDP 수신 넘침을 프로세스별로 기록한다. `go`가 실행 동안 transient 유닛으로 띄우고 끝나면 멈춘다(`runs/<run>/udp_drops.jsonl`) | 없음 |
 | `table_click_capture.py` | PC 전용 도메인 78에서 RViz 2D Pose Estimate 클릭을 목적지 후보로 기록하고 지도 축 0/90/180/270°로 고정해 표시한다 | 없음 |
 
 사용 순서와 결과는 `jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md` §18.
