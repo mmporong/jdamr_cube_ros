@@ -692,6 +692,28 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
 - UDP 넘침이 다시 늘면 `udp_drops.jsonl`로 프로세스를 가린다. 이번 실행에서는 늘지 않았다.
 - 포트폴리오 데이터 묶음: `$HOME/jdamr_data/portfolio_20261001/`(지표 `metrics.json`, 궤적·타임라인 그림, run 이벤트 사본, `make_figures.py`, `MANIFEST.sha256`).
 
+### 20.8 IMU 장착 방향 확정과 주행마다 파이 원시 기록 (2026-10-01 12:10–12:45, 이동 없음)
+
+지금까지 주행은 바퀴 odom과 AMCL만 썼고 IMU(`/imu/data_raw`, 50 Hz)는 어디에도 연결되지 않았다. 3·4번 브랜치 분석에서 "자이로 z 부호 반대"만 확인하고 x·y 방향은 정하지 못했다.
+
+| 확인 | 결과 |
+|---|---|
+| 자이로 z / 바퀴 회전율 기울기 | −0.966 ~ −0.996 (9/15–16 bag 5개) → 보드 z 아래 |
+| 보드 y / 바퀴 전진 가속 | +1.15 ~ +1.25, 상관 0.87–0.93 (bag 4개) → 보드 y가 로봇 앞 |
+| 보드 x / 바퀴 전진 가속 | −0.06 ~ −0.26, 원심 가속 v·ω에는 4개 모두 양수 → 보드 x가 로봇 왼쪽 |
+| 정지 가속도 z | −9.35 ~ −9.45 m/s² |
+
+- 보드는 뒤집힌 채 90° 돌아가 있다(base_link 기준 roll 180°, yaw 90°). 그런데 드라이버는 `frame_id: base_link`로 내고 있었다. z축만 쓰는 회전율 융합에는 영향이 없지만, 가속도나 x·y 회전율을 쓰면 축이 틀린다. 앞선 분석의 정적 TF(roll 180°만)는 x·y가 틀렸다.
+- 조치: URDF `imu_joint`(`rpy 3.1416 0 1.5708`, 위치는 재지 않아 0)를 추가했고, 근거는 `new_base_geometry.yaml` `imu_rotation_rpy`에 남겼다. 드라이버 `imu_frame`은 `imu_link`로 바꿨다. 보정 대장도 `esp32_imu_base_link_to_imu_link_v2`로 바꿨다(UNVERIFIED, 융합 불허 유지). 파이에 반영(백업 `$HOME/jdamr_data/deploy_backup_20261001_1236_imu`)한 뒤 `jdamr-base`를 재시작했다. 확인 결과 `/imu/data_raw` frame `imu_link`, TF base_link→imu_link RPY (180°, 0°, 90°), `/odom`·`/imu/data_raw` 50 Hz, `/scan` 9.7 Hz.
+- odom+IMU EKF(`imu_bias_relay`, `ekf_odom_imu.yaml`, 오프라인 `ekf_replay.sh`, `rotation_truth.py`)를 메인 브랜치로 가져왔다. 실행 구성에는 아직 넣지 않았다. 9/15 bag 재생 결과(제자리 회전 4건, 스캔 기준 오차 중앙값)는 이전과 같다. odom 0.50°, 자이로 원값 0.40°, EKF 0.10°(최대 0.18°)다.
+- 표본을 늘리려고 `go`가 출발 요청 직전 파이에서 `/odom`·`/imu/data_raw`·`/scan`·`/tf`·`/tf_static`·`/amcl_pose`·속도 명령(`/cmd_vel_nav`·`/cmd_vel_smoothed`·`/cmd_vel`)을 기록한다. 유닛은 `jdamr-onboard-bag-<run>`이고 캐시 1 MB, 최대 1시간·400 MB로 묶었다. 사이클이 끝나면 닫고(메타데이터가 없으면 reindex) run 폴더째 PC로 복사한다. 이동 없는 26.5 s 시험에서 IMU·odom 1,326건, 스캔 257건이 기록됐고 static TF에 imu_link가 들어 있었다. 약 8 MB/분이다. 기록기가 첫 메시지를 쓰기까지 약 8 s 걸리므로 출발 전 정지 구간은 짧다. 바이어스는 주행 중 정지 구간(주차 확인·대기)에서 배운다.
+- 주행 뒤 분석: `scripts/map_20260930_manual/imu_check.sh <run_dir>` → `runs/<run>/imu_check/`(보드 축, EKF 재생, 정지 구간으로 감싼 회전의 odom·자이로·EKF 오차). 도크 대기점 Spin(약 133°)과 박스 앞 회전이 표본이 된다. 같은 기록의 속도 명령으로 Spin 3.2° 초과 회전도 본다.
+
+남은 확인:
+
+- 다음 주행 bag으로 보드 축이 지금 장착에서도 같은지(`imu_check.sh`의 `axes.jsonl`)와 큰 회전에서 EKF가 odom보다 나은지 확인. 나으면 드라이버 `publish_tf:=false` + EKF가 odom TF를 내도록 연결하고, Nav2가 읽는 `/odom` 속도를 바꿀지는 따로 정한다.
+- 보드 위치와 가속도 스케일(정지 0.95 g)은 재지 않았다. 가속도는 융합하지 않는다.
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.

@@ -323,3 +323,38 @@ def test_go_hands_the_run_to_the_resident_executor(env, monkeypatch):
     assert d.load_state()['last_unit'].startswith('executor:')
     d.cmd_stop(SimpleNamespace())
     assert f'sudo -n systemctl kill --signal=SIGINT {d.EXECUTOR_UNIT}' in pi.calls
+
+
+def test_onboard_bag_brackets_the_run_and_is_copied(env, monkeypatch):
+    pi = ExecutorPi()
+    copies = []
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'sh', lambda command, **k: copies.append(command) or
+                        SimpleNamespace(returncode=0, stdout=''))
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    d.run_cycle(go_args(), d.load_state(), 'table_02')
+    start = next(i for i, c in enumerate(pi.calls) if 'systemd-run --unit=jdamr-onboard-bag-' in c)
+    request = next(i for i, c in enumerate(pi.calls) if c.endswith('.request'))
+    assert start < request
+    assert all(topic in pi.calls[start] for topic in ('/odom', '/imu/data_raw', '/scan'))
+    assert 'RuntimeMaxSec=' in pi.calls[start] and 'MemoryMax=' in pi.calls[start]
+    unit = pi.calls[start].split('--unit=')[1].split()[0]
+    stop = pi.calls.index(f'sudo -n systemctl stop {unit}')
+    assert stop > request
+    assert any(c.startswith(f'rsync -a --partial {d.HOST}:') for c in copies)
+    assert 'onboard_bag_unit' not in d.load_state()
+    d.cmd_stop(SimpleNamespace())
+    assert pi.calls.count(f'sudo -n systemctl stop {unit}') == 1
+
+
+def test_onboard_bag_is_closed_when_the_run_is_interrupted(env, monkeypatch):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+
+    def interrupted(_path):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(d, 'read_events', interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        d.run_cycle(go_args(), d.load_state(), 'table_02')
+    assert any(c.startswith('sudo -n systemctl stop jdamr-onboard-bag-') for c in pi.calls)
+    assert 'onboard_bag_unit' not in d.load_state()

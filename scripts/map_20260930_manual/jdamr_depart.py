@@ -136,6 +136,10 @@ AMCL_AGREE_YAW_RAD = math.radians(2.0)
 CLICK_MAX_AGE_S = 1800.0
 # The 2026-09-30 morning fix for new processes receiving nothing restarted all three.
 SENSOR_UNITS = ('jdamr-base.service', 'jdamr-box-rgbd.service', 'jdamr-box-observer.service')
+# Recorded on the Pi for every go: wheel odom, raw IMU and scan for the odom/IMU EKF
+# comparison (rotation_truth.py), velocity commands for the Spin overshoot.
+ONBOARD_TOPICS = ('/odom', '/imu/data_raw', '/scan', '/tf', '/tf_static', '/amcl_pose',
+                  '/cmd_vel_nav', '/cmd_vel_smoothed', '/cmd_vel')
 # box_service's first check (verify_live_maps, 30 s) runs before any motion command.
 MAP_WAIT_FAILURE = 'live map data unavailable'
 
@@ -608,72 +612,130 @@ def run_cycle(args, state, table_id):
     run_dir = P2 / 'runs' / f'{table_id}_{run}'
     run_dir.mkdir(parents=True)
     pi(f'mkdir -p {shlex.quote(str(run_dir))}')
-    unit = f'jdamr-table-cycle-{run.replace("_", "-")}'
-    route = Path(args.route) if args.route else P2 / f'{table_id}_route.yaml'
-    options = (f'--registry {REGISTRY} --approach-route {route} --camera-mount {PI_MOUNT} '
-               f'--geometry {PI_GEOMETRY} --parking-contract {PI_BOX_CONTRACT} '
-               f'--table-id {table_id} --region-xy {region["xy"][0]} {region["xy"][1]} '
-               f'--region-radius-m {region["radius_m"]} --log {run_dir}/cycle_events.jsonl '
-               f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
-               f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
-               + (' --home-only ' if args.dock_only else '')
-               + (' --graceful-final ' if args.graceful_final else '')
-               + (' --resume-at-observation ' if args.resume_at_observation else '')
-               + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
-                  if args.resume_parked_log else '')
-               + ('' if args.skip_via or args.dock_only else
-                  f'--via-id {VIA_ID} --via-route {args.via_route or P2 / (VIA_ID + "_route.yaml")} '
-                  f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
-                  f'--via-region-radius-m {via["radius_m"]}'))
-    if executor_active():
-        # The resident executor already knows the graph: no rediscovery per run.
-        unit = f'executor:{run}'
-        (run_dir / 'command.txt').write_text(f'{EXECUTOR_UNIT} request: {options}\n')
-        request = json.dumps({'argv': shlex.split(options)})
-        pi(f'mkdir -p {EXECUTOR_SPOOL} && cat > {EXECUTOR_SPOOL}/{run}.part && '
-           f'mv {EXECUTOR_SPOOL}/{run}.part {EXECUTOR_SPOOL}/{run}.request', stdin=request)
+    # Before the request: the executor needs ~10 s to move, so the bag holds a still
+    # stretch for the gyro bias and no departure time is spent waiting on it.
+    bag_unit = start_onboard_bag(run_dir, run)
+    early = load_state()
+    early.update({'onboard_bag_unit': bag_unit, 'onboard_bag_run': str(run_dir)})
+    save_state(early)
+    try:
+        unit = f'jdamr-table-cycle-{run.replace("_", "-")}'
+        route = Path(args.route) if args.route else P2 / f'{table_id}_route.yaml'
+        options = (f'--registry {REGISTRY} --approach-route {route} --camera-mount {PI_MOUNT} '
+                   f'--geometry {PI_GEOMETRY} --parking-contract {PI_BOX_CONTRACT} '
+                   f'--table-id {table_id} --region-xy {region["xy"][0]} {region["xy"][1]} '
+                   f'--region-radius-m {region["radius_m"]} --log {run_dir}/cycle_events.jsonl '
+                   f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
+                   f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
+                   + (' --home-only ' if args.dock_only else '')
+                   + (' --graceful-final ' if args.graceful_final else '')
+                   + (' --resume-at-observation ' if args.resume_at_observation else '')
+                   + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
+                      if args.resume_parked_log else '')
+                   + ('' if args.skip_via or args.dock_only else
+                      f'--via-id {VIA_ID} '
+                      f'--via-route {args.via_route or P2 / (VIA_ID + "_route.yaml")} '
+                      f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
+                      f'--via-region-radius-m {via["radius_m"]}'))
+        if executor_active():
+            # The resident executor already knows the graph: no rediscovery per run.
+            unit = f'executor:{run}'
+            (run_dir / 'command.txt').write_text(f'{EXECUTOR_UNIT} request: {options}\n')
+            request = json.dumps({'argv': shlex.split(options)})
+            pi(f'mkdir -p {EXECUTOR_SPOOL} && cat > {EXECUTOR_SPOOL}/{run}.part && '
+               f'mv {EXECUTOR_SPOOL}/{run}.part {EXECUTOR_SPOOL}/{run}.request', stdin=request)
 
-        def running():
-            return pi(f'test -e {EXECUTOR_SPOOL}/{run}.result || echo running',
-                      check=False).stdout.strip() == 'running'
-    else:
-        command = f'{PI_SOURCE}; exec python3 -m jdamr_cube_navigation.box_service {options}'
-        (run_dir / 'command.txt').write_text(command + '\n')
-        pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
-           '--property=KillMode=mixed --property=KillSignal=SIGINT --property=TimeoutStopSec=20 '
-           f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c '
-           f'{shlex.quote(command)}')
+            def running():
+                return pi(f'test -e {EXECUTOR_SPOOL}/{run}.result || echo running',
+                          check=False).stdout.strip() == 'running'
+        else:
+            command = f'{PI_SOURCE}; exec python3 -m jdamr_cube_navigation.box_service {options}'
+            (run_dir / 'command.txt').write_text(command + '\n')
+            pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
+               '--property=KillMode=mixed --property=KillSignal=SIGINT '
+               '--property=TimeoutStopSec=20 '
+               f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c '
+               f'{shlex.quote(command)}')
 
-        def running():
-            return pi(f'systemctl is-active {unit}', check=False).stdout.strip() in (
-                'active', 'activating')
-    fresh = load_state()
-    fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
-    save_state(fresh)
-    monitor = start_drop_monitor(run_dir, run)
-    stops = ('dock only' if args.dock_only else
-             f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
-    log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
-    seen = 0
-    while True:
-        time.sleep(10)
-        events = read_events(str(run_dir / 'cycle_events.jsonl'))
-        for event in events[seen:]:
-            keep = {k: event[k] for k in ('event', 'phase', 'reason', 'waypoint_id',
-                                          'terminal_status_code', 'nav2_error_code')
-                    if k in event}
-            log('  ' + json.dumps(keep, ensure_ascii=False))
-        seen = len(events)
-        if not running():
-            # The last lines may land between the read above and this check.
-            final = read_events(str(run_dir / 'cycle_events.jsonl'))
-            for event in final[seen:]:
+            def running():
+                return pi(f'systemctl is-active {unit}', check=False).stdout.strip() in (
+                    'active', 'activating')
+        fresh = load_state()
+        fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
+        save_state(fresh)
+        monitor = start_drop_monitor(run_dir, run)
+        stops = ('dock only' if args.dock_only else
+                 f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
+        log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
+        seen, bag_checked = 0, False
+        while True:
+            time.sleep(10)
+            if not bag_checked:
+                bag_checked = True
+                log('onboard bag: ' + (onboard_bag_bytes(run_dir) or 'nothing written yet'))
+            events = read_events(str(run_dir / 'cycle_events.jsonl'))
+            for event in events[seen:]:
                 keep = {k: event[k] for k in ('event', 'phase', 'reason', 'waypoint_id',
                                               'terminal_status_code', 'nav2_error_code')
                         if k in event}
                 log('  ' + json.dumps(keep, ensure_ascii=False))
-            pi(f'sudo -n systemctl stop {monitor}', check=False)
-            return final
+            seen = len(events)
+            if not running():
+                # The last lines may land between the read above and this check.
+                final = read_events(str(run_dir / 'cycle_events.jsonl'))
+                for event in final[seen:]:
+                    keep = {k: event[k] for k in ('event', 'phase', 'reason', 'waypoint_id',
+                                                  'terminal_status_code', 'nav2_error_code')
+                            if k in event}
+                    log('  ' + json.dumps(keep, ensure_ascii=False))
+                pi(f'sudo -n systemctl stop {monitor}', check=False)
+                finish_onboard_bag(bag_unit, run_dir)
+                return final
+    except BaseException:
+        # Ctrl-C, ssh or request failures: close and copy what was recorded.
+        finish_onboard_bag(bag_unit, run_dir)
+        raise
+
+
+def start_onboard_bag(run_dir, run):
+    """Record the Pi's raw odom, IMU and scan for this run (bounded, no motion)."""
+    unit = f'jdamr-onboard-bag-{run.replace("_", "-")}'
+    bag = shlex.quote(str(run_dir / 'onboard_bag'))
+    # A 1 MB cache flushes every few seconds; the default 100 MB held a whole run.
+    command = (f'{PI_SOURCE}; exec ros2 bag record -s mcap --max-cache-size 1000000 '
+               f'-o {bag} --topics ' + ' '.join(ONBOARD_TOPICS))
+    pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
+       '--property=KillSignal=SIGINT --property=TimeoutStopSec=30 '
+       '--property=RuntimeMaxSec=3600 --property=MemoryMax=400M '
+       '--setenv=HOME=/home/lim --setenv=ROS_LOG_DIR=/home/lim/.ros/log '
+       f'--working-directory={PI_WS} /bin/bash -c {shlex.quote(command)}', check=False)
+    return unit
+
+
+def onboard_bag_bytes(run_dir):
+    """Return the bytes written so far as text, or '' when the recorder wrote nothing."""
+    bag = shlex.quote(str(run_dir / 'onboard_bag'))
+    out = pi(f'du -cb {bag}/*.mcap 2>/dev/null | tail -1', check=False).stdout.split()
+    return f'{out[0]} bytes' if out and out[0].isdigit() and int(out[0]) > 4096 else ''
+
+
+def finish_onboard_bag(unit, run_dir):
+    """Close the onboard bag and copy the whole run directory to the PC."""
+    pi(f'sudo -n systemctl stop {unit}', timeout=60, check=False)
+    bag = shlex.quote(str(run_dir / 'onboard_bag'))
+    # The 11:52 PC bag closed without metadata.yaml; reindex rebuilds it from the mcap.
+    pi(f'test -e {bag}/metadata.yaml || ({PI_SOURCE}; ros2 bag reindex {bag} -s mcap)',
+       timeout=120, check=False)
+    sh(f'rsync -a --partial {HOST}:{shlex.quote(str(run_dir))}/ {shlex.quote(str(run_dir))}/',
+       timeout=600, check=False)
+    copied = (run_dir / 'onboard_bag' / 'metadata.yaml').exists()
+    log(f'onboard bag: {run_dir / "onboard_bag"} ({"copied" if copied else "not copied"})')
+    state = load_state()
+    if state.get('onboard_bag_unit') == unit:
+        # Finished: a later stop has no recorder to close.
+        state.pop('onboard_bag_unit')
+        state.pop('onboard_bag_run', None)
+        save_state(state)
 
 
 def start_drop_monitor(run_dir, run):
@@ -820,6 +882,9 @@ def cmd_stop(_args):
     state = load_state()
     state['stop_unix'] = time.time()
     save_state(state)
+    if state.get('onboard_bag_unit'):
+        # go closes and copies it; this covers a go that is no longer running.
+        finish_onboard_bag(state['onboard_bag_unit'], Path(state['onboard_bag_run']))
     unit = state.get('last_unit')
     if unit and unit.startswith('executor:'):
         # SIGINT stops the running attempt; the executor stays for the next go.
