@@ -369,8 +369,17 @@ exit 4
 '''
 
 
+def start_sensor_services():
+    """After a reboot only jdamr-base starts by itself; bring up camera and observer."""
+    for unit in SENSOR_UNITS:
+        if pi(f'systemctl is-active {unit}', check=False).stdout.strip() != 'active':
+            pi(f'sudo -n systemctl start {unit}', timeout=120, check=False)
+            log(f'{unit}: ' + pi(f'systemctl is-active {unit}', check=False).stdout.strip())
+
+
 def cmd_session_start(_args):
     refuse_during_cycle('session-start')
+    start_sensor_services()
     script = SESSION_SCRIPT.format(source=PI_SOURCE, session=PI_SESSION, registry=REGISTRY,
                                    discovery=SESSION_DISCOVERY,
                                    composition=SESSION_COMPOSITION)
