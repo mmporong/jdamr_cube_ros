@@ -1,0 +1,33 @@
+# Wheel odom + gyro yaw rate (robot_localization EKF, planar). Not included in any
+# bringup: see evaluation/20260930_ITEMS34_LOCALIZATION_LATTICE.md for the wiring
+# (base driver publish_tf false) and the measurements behind it.
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+    # vx, vy (0 for a differential base) and vyaw from the wheels; the driver's twist
+    # covariance is 1e-3 for vx and 1e-2 for vyaw.
+    odom0: /odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    # vyaw from the bias-removed gyro (imu_bias_relay, variance 2.5e-5), so the fused
+    # yaw rate follows the gyro. Accelerations are not fused: the board position and
+    # accelerometer scale (0.95 g at rest) are not calibrated.
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_remove_gravitational_acceleration: false
