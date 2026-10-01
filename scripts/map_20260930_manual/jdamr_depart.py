@@ -53,6 +53,10 @@ CLICK = P2 / 'rviz_initialpose.json'
 STATE = P2 / 'state.json'
 PI_WS = '/home/lim/jdamr_ws'
 PI_SESSION = f'{PI_WS}/src/jdamr_cube_ros/jdamr_cube_navigation/scripts/restaurant_session.sh'
+# Resident box executor (2026-10-01): one DDS participant for every go, started with
+# the session. Without it, go falls back to one systemd unit per run.
+EXECUTOR_UNIT = 'jdamr-box-executor'
+EXECUTOR_SPOOL = '/home/lim/jdamr_data/box_executor_spool'
 PI_SHARE = f'{PI_WS}/install/jdamr_cube_navigation/share/jdamr_cube_navigation'
 PI_BOX_CONTRACT = f'{PI_SHARE}/config/box_parking_contract.yaml'
 PI_GEOMETRY = (f'{PI_WS}/install/jdamr_cube_description/share/jdamr_cube_description/'
@@ -195,7 +199,9 @@ def session_active():
 def refuse_during_cycle(action):
     """Session stops and sensor restarts would end a running cycle mid-drive."""
     result = pi("systemctl list-units --type=service --state=active,activating,deactivating "
-                "--no-legend 'jdamr-table-cycle-*'", check=False)
+                "--no-legend 'jdamr-table-cycle-*'; "
+                f"ls {EXECUTOR_SPOOL}/*.request {EXECUTOR_SPOOL}/*.running 2>/dev/null; true",
+                check=False)
     if result.returncode == 255:
         fail(f'ssh to the Pi failed; cannot tell whether a cycle is running: {result.stdout[-200:]}')
     busy = result.stdout.strip()
@@ -381,11 +387,31 @@ def cmd_session_start(_args):
     log(f'Nav2 session {tail[-1] if tail else ""}: precision, prepare-only, '
         f'{SESSION_DISCOVERY}, composition={SESSION_COMPOSITION}; '
         'AMCL waits for init, motion servers inactive')
+    start_executor()
+
+
+def executor_active():
+    return pi(f'systemctl is-active {EXECUTOR_UNIT}', check=False).stdout.strip() == 'active'
+
+
+def start_executor():
+    """Start the resident box executor once the Nav2 session is up (no motion)."""
+    if executor_active():
+        return
+    command = (f'{PI_SOURCE}; exec python3 -m jdamr_cube_navigation.box_service '
+               f'--serve {EXECUTOR_SPOOL}')
+    pi(f'mkdir -p {EXECUTOR_SPOOL} && sudo -n systemd-run --unit={EXECUTOR_UNIT} --collect '
+       '--property=User=lim --property=KillSignal=SIGTERM --property=TimeoutStopSec=30 '
+       f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c {shlex.quote(command)}',
+       check=False)
+    log(f'{EXECUTOR_UNIT}: ' + ('active' if executor_active() else 'not active (go runs one unit '
+                                                                    'per departure)'))
 
 
 def cmd_session_stop(_args):
     refuse_during_cycle('session-stop')
     mark_localized(False)
+    pi(f'sudo -n systemctl stop {EXECUTOR_UNIT}', timeout=60, check=False)
     pi(f'{PI_SOURCE}; bash {PI_SESSION} stop', timeout=90, check=False)
     log('session: ' + pi('systemctl is-active jdamr-restaurant-navigation.service',
                          check=False).stdout.strip())
@@ -572,8 +598,7 @@ def run_cycle(args, state, table_id):
     pi(f'mkdir -p {shlex.quote(str(run_dir))}')
     unit = f'jdamr-table-cycle-{run.replace("_", "-")}'
     route = Path(args.route) if args.route else P2 / f'{table_id}_route.yaml'
-    command = (f'{PI_SOURCE}; exec python3 -m jdamr_cube_navigation.box_service '
-               f'--registry {REGISTRY} --approach-route {route} --camera-mount {PI_MOUNT} '
+    options = (f'--registry {REGISTRY} --approach-route {route} --camera-mount {PI_MOUNT} '
                f'--geometry {PI_GEOMETRY} --parking-contract {PI_BOX_CONTRACT} '
                f'--table-id {table_id} --region-xy {region["xy"][0]} {region["xy"][1]} '
                f'--region-radius-m {region["radius_m"]} --log {run_dir}/cycle_events.jsonl '
@@ -588,10 +613,28 @@ def run_cycle(args, state, table_id):
                   f'--via-id {VIA_ID} --via-route {args.via_route or P2 / (VIA_ID + "_route.yaml")} '
                   f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
                   f'--via-region-radius-m {via["radius_m"]}'))
-    (run_dir / 'command.txt').write_text(command + '\n')
-    pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
-       '--property=KillMode=mixed --property=KillSignal=SIGINT --property=TimeoutStopSec=20 '
-       f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c {shlex.quote(command)}')
+    if executor_active():
+        # The resident executor already knows the graph: no rediscovery per run.
+        unit = f'executor:{run}'
+        (run_dir / 'command.txt').write_text(f'{EXECUTOR_UNIT} request: {options}\n')
+        request = json.dumps({'argv': shlex.split(options)})
+        pi(f'mkdir -p {EXECUTOR_SPOOL} && cat > {EXECUTOR_SPOOL}/{run}.part && '
+           f'mv {EXECUTOR_SPOOL}/{run}.part {EXECUTOR_SPOOL}/{run}.request', stdin=request)
+
+        def running():
+            return pi(f'test -e {EXECUTOR_SPOOL}/{run}.result || echo running',
+                      check=False).stdout.strip() == 'running'
+    else:
+        command = f'{PI_SOURCE}; exec python3 -m jdamr_cube_navigation.box_service {options}'
+        (run_dir / 'command.txt').write_text(command + '\n')
+        pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
+           '--property=KillMode=mixed --property=KillSignal=SIGINT --property=TimeoutStopSec=20 '
+           f'--setenv=HOME=/home/lim --working-directory={PI_WS} /bin/bash -c '
+           f'{shlex.quote(command)}')
+
+        def running():
+            return pi(f'systemctl is-active {unit}', check=False).stdout.strip() in (
+                'active', 'activating')
     fresh = load_state()
     fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
     save_state(fresh)
@@ -608,8 +651,7 @@ def run_cycle(args, state, table_id):
                     if k in event}
             log('  ' + json.dumps(keep, ensure_ascii=False))
         seen = len(events)
-        active = pi(f'systemctl is-active {unit}', check=False).stdout.strip()
-        if active not in ('active', 'activating'):
+        if not running():
             # The last lines may land between the read above and this check.
             final = read_events(str(run_dir / 'cycle_events.jsonl'))
             for event in final[seen:]:
@@ -753,7 +795,11 @@ def cmd_stop(_args):
     state['stop_unix'] = time.time()
     save_state(state)
     unit = state.get('last_unit')
-    if unit:
+    if unit and unit.startswith('executor:'):
+        # SIGINT stops the running attempt; the executor stays for the next go.
+        pi(f'sudo -n systemctl kill --signal=SIGINT {EXECUTOR_UNIT}', check=False)
+        log(f'{unit}: stop sent to {EXECUTOR_UNIT}')
+    elif unit:
         pi(f'sudo -n systemctl stop {unit}', check=False)
         log(f'{unit}: ' + pi(f'systemctl is-active {unit}', check=False).stdout.strip())
 
@@ -764,7 +810,9 @@ def cmd_status(_args):
                          check=False).stdout.strip())
     for unit in (*DISPLAY_UNITS, RECORD_UNIT):
         log(f'{unit}: ' + sh(f'systemctl --user is-active {unit}', check=False).stdout.strip())
-    if state.get('last_unit'):
+    log(f'{EXECUTOR_UNIT}: ' + pi(f'systemctl is-active {EXECUTOR_UNIT}',
+                                  check=False).stdout.strip())
+    if state.get('last_unit') and not state['last_unit'].startswith('executor:'):
         log(f'{state["last_unit"]}: ' + pi(f'systemctl is-active {state["last_unit"]}',
                                            check=False).stdout.strip())
     log('state: ' + json.dumps({k: state[k] for k in ('pose', 'home', 'last_run', 'bag')

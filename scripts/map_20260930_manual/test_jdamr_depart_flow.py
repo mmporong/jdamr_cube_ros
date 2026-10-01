@@ -293,3 +293,33 @@ def test_stop_during_recovery_prevents_the_second_departure(env, monkeypatch):
     with pytest.raises(SystemExit):
         d.cmd_go(go_args())
     assert len(runs) == 1
+
+
+class ExecutorPi(Pi):
+    """The resident executor is up; requests finish at once."""
+
+    def __init__(self):
+        super().__init__()
+        self.stdins = []
+
+    def __call__(self, command, timeout=120, check=True, stdin=None):
+        self.stdins.append(stdin)
+        if command == f'systemctl is-active {d.EXECUTOR_UNIT}':
+            self.calls.append(command)
+            return SimpleNamespace(returncode=0, stdout='active')
+        return super().__call__(command, timeout, check, stdin)
+
+
+def test_go_hands_the_run_to_the_resident_executor(env, monkeypatch):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    events = d.run_cycle(go_args(), d.load_state(), 'table_02')
+    assert events == [{'event': 'home_arrived'}]
+    request = next(s for s in pi.stdins if s)
+    argv = json.loads(request)['argv']
+    assert argv[argv.index('--table-id') + 1] == 'table_02'
+    assert not any('systemd-run --unit=jdamr-table-cycle' in c for c in pi.calls)
+    assert d.load_state()['last_unit'].startswith('executor:')
+    d.cmd_stop(SimpleNamespace())
+    assert f'sudo -n systemctl kill --signal=SIGINT {d.EXECUTOR_UNIT}' in pi.calls

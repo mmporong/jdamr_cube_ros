@@ -1142,3 +1142,28 @@ def test_t43_resume_parked_holds_still_then_escapes(monkeypatch, moved, left, ex
     assert route._leave_parked_pose.call_count == (0 if moved else 1)
     if moved == 0.0:
         assert route.last_box_face == face
+
+
+def test_resident_executor_runs_requests_in_one_context(tmp_path, monkeypatch):
+    """One rclpy context for every attempt; results land beside the requests."""
+    import signal
+    calls = []
+    monkeypatch.setattr(box_service.rclpy, 'init', lambda **_kw: calls.append('init'))
+    monkeypatch.setattr(box_service.rclpy, 'shutdown', lambda: calls.append('shutdown'))
+    monkeypatch.setattr(box_service, 'parse_args', lambda argv: SimpleNamespace(argv=argv))
+
+    def attempt(args, active):
+        calls.append(tuple(args.argv))
+        assert active == {'node': None}
+        if args.argv == ['b']:
+            signal.raise_signal(signal.SIGTERM)   # leave after this attempt
+        return 0 if args.argv == ['a'] else 1
+
+    monkeypatch.setattr(box_service, 'run_attempt', attempt)
+    (tmp_path / '1.request').write_text(json.dumps({'argv': ['a']}))
+    (tmp_path / '2.request').write_text(json.dumps({'argv': ['b']}))
+    assert box_service.serve(tmp_path) == 0
+    assert calls == ['init', ('a',), ('b',), 'shutdown']
+    assert json.loads((tmp_path / '1.result').read_text()) == {'code': 0}
+    assert json.loads((tmp_path / '2.result').read_text()) == {'code': 1}
+    assert not list(tmp_path.glob('*.running'))

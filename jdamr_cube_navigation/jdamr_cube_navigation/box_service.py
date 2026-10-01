@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import signal
+import sys
 import time
 
 from ament_index_python.packages import get_package_share_directory
@@ -1139,9 +1140,13 @@ def parse_args(argv=None):
     return args
 
 
-def main(argv=None):
-    """Run one table attempt without changing taught destinations or home."""
-    args = parse_args(argv)
+def run_attempt(args, active=None):
+    """
+    Run one table attempt in an initialized rclpy context; return the exit code.
+
+    A one-shot run installs its own stop handlers. The resident executor
+    (serve) passes `active` instead and routes its signals to the node there.
+    """
     registry = load_registry(args.registry)
     mount = yaml.safe_load(args.camera_mount.read_text())
     geometry = yaml.safe_load(args.geometry.read_text())
@@ -1149,7 +1154,6 @@ def main(argv=None):
     node = None
     handlers = {}
     with args.log.open('x', encoding='utf-8') as stream:
-        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
         try:
             # The dock is accepted with the user's contract, not the box
             # contract; a load failure takes the failure path below.
@@ -1157,8 +1161,11 @@ def main(argv=None):
                 Path(get_package_share_directory('jdamr_cube_navigation'))
                 / 'config/parking_contract.yaml')
             node = BoxServiceRoute(registry, contract, stream, home_contract=home_contract)
-            for signum in (signal.SIGINT, signal.SIGTERM):
-                handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
+            if active is None:
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
+            else:
+                active['node'] = node
             if args.graceful_final:
                 node.final_approach_controller = 'GracefulParking'
                 node.dock_leg_controller = 'GracefulReverse'
@@ -1213,9 +1220,78 @@ def main(argv=None):
             finally:
                 for signum, handler in handlers.items():
                     signal.signal(signum, handler)
+                if active is not None:
+                    active['node'] = None
                 if node is not None:
                     node.destroy_node()
-                rclpy.shutdown()
+
+
+def serve(spool):
+    """
+    Keep one rclpy context (one DDS participant) and run requested attempts in it.
+
+    Every one-shot run was a new participant that rediscovered the graph and
+    twice missed the /cmd_vel publisher before moving (2026-10-01). A request
+    is <spool>/<id>.request holding {"argv": [...]} (moved in whole); while it
+    runs it is <id>.running, and <id>.result holds {"code": n}. Each attempt
+    gets a fresh node, so no state carries over. SIGINT stops the running
+    attempt; SIGTERM stops it and ends the executor.
+    """
+    spool = Path(spool)
+    spool.mkdir(parents=True, exist_ok=True)
+    active = {'node': None}
+    leaving = {'now': False}
+
+    def stop_attempt(*_):
+        if active['node'] is not None:
+            active['node'].request_stop()
+
+    def leave(*_):
+        leaving['now'] = True
+        stop_attempt()
+
+    previous = {signal.SIGINT: signal.signal(signal.SIGINT, stop_attempt),
+                signal.SIGTERM: signal.signal(signal.SIGTERM, leave)}
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    try:
+        while not leaving['now']:
+            requests = sorted(spool.glob('*.request'))
+            if not requests:
+                time.sleep(0.2)
+                continue
+            request = requests[0]
+            name = request.name[:-len('.request')]
+            running = spool / f'{name}.running'
+            request.rename(running)
+            try:
+                code = run_attempt(parse_args(json.loads(running.read_text())['argv']), active)
+            except SystemExit as error:   # argparse rejected the request
+                code = error.code if isinstance(error.code, int) else 2
+            except Exception as error:  # noqa: B902 - report, keep serving
+                print(json.dumps({'failed': f'{type(error).__name__}: {error}'}), flush=True)
+                code = 1
+            (spool / f'{name}.result').write_text(json.dumps({'code': code}))
+            running.unlink()
+        return 0
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        rclpy.shutdown()
+
+
+def main(argv=None):
+    """Run one table attempt, or serve attempts with --serve SPOOL_DIR."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['--serve']:
+        if len(argv) != 2:
+            raise SystemExit('usage: box_service --serve SPOOL_DIR')
+        return serve(argv[1])
+    args = parse_args(argv)
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    try:
+        return run_attempt(args)
+    finally:
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
