@@ -97,7 +97,8 @@ def generate_launch_description():
                 'wheel_separation': wheel_separation,
                 'wheel_radius_ratio': wheel_radius_ratio,
                 'base_frame': 'base_footprint',
-                'imu_frame': 'base_link',   # 보드가 base_link 에 장착 — 전용 imu_link 추가 전까지
+                # 보드는 z 아래·y 앞·x 왼쪽으로 달려 있다. 회전은 URDF imu_joint가 낸다.
+                'imu_frame': 'imu_link',
                 # /odom은 50Hz 유지, TF만 20Hz로 제한해 Pi의 Nav2 fan-out 부하를 줄인다.
                 'tf_publish_hz': 20.0,
             }],

@@ -40,6 +40,9 @@ def test_new_base_footprint_lidar_and_wheels():
     assert _xyz(joints['laser_joint']) == tuple(geometry['laser_translation']['value'])
     assert float(joints['laser_joint'].find('origin').attrib['rpy'].split()[2]) == \
         geometry['laser_yaw']['value']
+    imu_rpy = [float(v) for v in joints['imu_joint'].find('origin').attrib['rpy'].split()]
+    assert imu_rpy == geometry['imu_rotation_rpy']['value']
+    assert joints['imu_joint'].find('parent').attrib['link'] == 'base_link'
     assert 'arm_base_link' not in links
     assert 'caster_link_front' not in links
     assert {'rear_left_caster_contact_projection',

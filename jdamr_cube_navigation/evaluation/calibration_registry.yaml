@@ -35,17 +35,17 @@ calibrations:
       - 평면 벽 왕복 주행으로 yaw 부호와 전방 축을 확인한다.
       - 정지 구간과 회전 구간에서 scan-to-odom 시간 오프셋을 추정한다.
 
-  - calibration_id: g4_imu_base_link_identity_v1
+  - calibration_id: esp32_imu_base_link_to_imu_link_v2
     sensor: imu
-    source: jdamr_cube_bringup/launch/real_bringup.launch.py
+    source: jdamr_cube_description/urdf/new_base_real.urdf
     timestamp_evidence: jdamr_base_driver/src/base_driver_node.cpp
-    transform_kind: identity_frame_assignment
+    transform_kind: static_urdf_joint
     parent_frame: base_link
-    child_frame: base_link
+    child_frame: imu_link
     translation_m: [0.0, 0.0, 0.0]
-    rotation_rpy_rad: [0.0, 0.0, 0.0]
-    canonical_transform: base_link->base_link|xyz=0,0,0|rpy=0,0,0
-    canonical_sha256: 0f8a884078e0ea3eabde307412f7c36618c943b4bab85e4ce4c98a52c79bbd6c
+    rotation_rpy_rad: [3.141592653589793, 0.0, 1.5707963267948966]
+    canonical_transform: base_link->imu_link|xyz=0,0,0|rpy=3.141592653589793,0,1.5707963267948966
+    canonical_sha256: 1b6da1675525fbef1b7908f28646d5ca00f4f23de190d8be112fa95d1e49ad72
     timestamp_source: ros_receipt
     status: UNVERIFIED
     verified_at: null
@@ -55,7 +55,9 @@ calibrations:
     fusion_allowed: false
     warnings:
       - 활성 C++ 드라이버는 펌웨어 상태 수신 시각의 ROS now()를 사용한다.
-      - 비활성 레거시 Python 노드는 URDF에 없는 imu_link를 발행하므로 혼용하지 않는다.
+      - 회전은 2026-10-01 주행 bag으로 정했다(new_base_geometry.yaml imu_rotation_rpy). 위치는 재지 않아 0으로 둔다.
+      - 2026-10-01 이전 bag의 /imu/data_raw는 frame_id base_link로 기록됐지만 축은 이 회전을 따른다.
     verification_needed:
       - 정지 상태 바이어스와 Allan deviation을 측정한다.
       - 급정지·회전 데이터로 수신 지연과 드롭을 확인한다.
+      - 보드 위치(가속도 융합 시 필요)를 잰다.
