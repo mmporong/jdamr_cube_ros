@@ -36,6 +36,11 @@ import yaml
 SEARCH_STEP_RAD = math.radians(30.0)
 # config/depth_box_parking.yaml maximum_depth_m: the observer accepts no wider range.
 DEPTH_WINDOW_CEILING_M = 2.0
+# The final-approach plan only proves the way to the box is free; the straight
+# approach and the 1 cm stop confirmation decide the pose. On 5 cm costmap cells a
+# goal 0.135 m from a LiDAR-marked face can sit one cell inside its inflation, and
+# the plan then ends 0.05 m short (table_01, 2026-10-01 15:50): one cell + 1 cm.
+FINAL_PLAN_END_TOLERANCE_M = 0.06
 SEARCH_MAX_STEPS = 12
 SEARCH_MAX_CUMULATIVE_RAD = math.tau
 # A region bearing smaller than this is treated as centred: the failure is not a
@@ -819,7 +824,8 @@ class BoxServiceRoute(ServiceRoute):
                             target, single=True,
                             end_tolerance_m=MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'])
                     else:
-                        planned = self.plan_pose(target, single=True)
+                        planned = self.plan_pose(
+                            target, single=True, end_tolerance_m=FINAL_PLAN_END_TOLERANCE_M)
                     reason = planned.get('guard_failure')
                     if (planned['ok'] or planned.get('reason') != 'navigation_not_ready'
                             or plan_input_recovered or self.stop_requested

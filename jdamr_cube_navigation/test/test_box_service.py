@@ -83,6 +83,9 @@ def test_transit_alignment_final_sequence(mission):
         {'final_parking': False}, {'final_parking': False, 'alignment': True}]
     mission._straight_final_approach.assert_called_once()
     assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
+    # The final plan only proves the way is free: one 5 cm costmap cell + 1 cm.
+    assert [call.kwargs.get('end_tolerance_m') for call in mission.plan_pose.call_args_list] == [
+        0.05, 0.06]
     assert mission.emit.call_args.args == ('box_approach_finished',)
     assert mission.emit.call_args.kwargs['estimated_front_gap_m'] == pytest.approx(0.05)
     assert mission.emit.call_args.kwargs['physical_accuracy'] == 'NOT_EXTERNALLY_MEASURED'
