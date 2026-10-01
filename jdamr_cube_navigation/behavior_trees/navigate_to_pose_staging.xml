@@ -19,7 +19,7 @@
               </Inverter>
               <IsPathValid path="{path}"/>
             </ReactiveSequence>
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="Lattice" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
           </Fallback>
         </RateController>
         <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="staging_position_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>

@@ -16,6 +16,7 @@
 | `ekf_replay.sh` | bag의 `/odom`·`/imu/data_raw`를 `imu_bias_relay` + robot_localization에 PC 도메인 89로 흘려 `/odometry/filtered`를 기록한다 | 없음 |
 | `imu_check.sh` | 한 run의 `onboard_bag`에 `imu_axes.py` → `ekf_replay.sh` → `rotation_truth.py`를 차례로 돌려 `runs/<run>/imu_check/`에 남긴다. URDF를 파이에 반영한 뒤에는 `ros2 run tf2_ros tf2_echo base_footprint imu_link`로 RPY (180°, 0°, 90°)를 확인한다 | 없음 |
 | `test_imu_axes.py` | 보드를 z 아래·y 앞·x 왼쪽으로 단 합성 신호에서 `imu_axes.analyse`가 축을 되찾는지 확인한다 | 없음 |
+| `plan_compare.py` | 파이의 살아 있는 세션에서 이동 구간 5개(도크→물 받는 곳, 물 받는 곳→각 테이블, 각 테이블→도크 대기점)를 `GridBased`와 `Lattice`로 계획만 해 길이 비·계획 시간·끝 오차를 비교한다(이동 없음) | 없음 |
 | `table_click_capture.py` | PC 전용 도메인 78에서 RViz 2D Pose Estimate 클릭을 목적지 후보로 기록하고 지도 축 0/90/180/270°로 고정해 표시한다 | 없음 |
 
 사용 순서와 결과는 `jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md` §18.

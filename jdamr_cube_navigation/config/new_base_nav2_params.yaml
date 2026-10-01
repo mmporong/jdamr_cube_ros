@@ -221,7 +221,9 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 0.3
+        # >= circumscribed 0.414 m so Lattice checks the footprint cheaply; NavFn paths
+        # were identical at 0.45 on this map (2026-09-30 bench).
+        inflation_radius: 0.45
       always_send_full_costmap: false
 map_server:
   ros__parameters:
@@ -237,12 +239,47 @@ planner_server:
     expected_planner_frequency: 1.0
     planner_plugins:
     - GridBased
+    - Lattice
     costmap_update_timeout: 1.0
     GridBased:
       plugin: nav2_navfn_planner::NavfnPlanner
       tolerance: 0.5
       use_astar: false
       allow_unknown: false
+    # Trial (feat/lattice-planner-trial): the dock staging leg only. Live plans on the
+    # Pi (2026-10-01 18:35-18:40): escape -> staging 1.01-1.04x in ~0.2 s, arriving
+    # with the dock heading; through-pose transits looped 2-5x at any rotation penalty
+    # (Lattice also meets every intermediate heading), so they keep NavFn.
+    Lattice:
+      plugin: nav2_smac_planner::SmacPlannerLattice
+      allow_unknown: false
+      tolerance: 0.10
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      analytic_expansion_max_cost: 200.0
+      analytic_expansion_max_cost_override: false
+      reverse_penalty: 2.0
+      change_penalty: 0.05
+      non_straight_penalty: 1.05
+      cost_penalty: 2.0
+      rotation_penalty: 0.5
+      retrospective_penalty: 0.015
+      lattice_filepath: /opt/ros/jazzy/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json
+      lookup_table_size: 20.0
+      cache_obstacle_heuristic: true
+      allow_reverse_expansion: false
+      smooth_path: true
+      debug_visualizations: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
 smoother_server:
   ros__parameters:
     smoother_plugins:

@@ -826,6 +826,23 @@ RViz 2D Pose Estimate 클릭(화살표 = 박스 앞면 바깥 법선, 지도 축
   - 합계 30.5 s, 왼쪽 124.8°·오른쪽 129.4°, 방향 전환 5번. 도크 대기점 좌우 회전(`4621399`)과 같은 현상이다.
 - **조치 `46e50d2`.** 박스 면 정렬은 `face_alignment_checker`(위치 0.10 m, 방향 3°)와 전용 BT `navigate_to_pose_face_alignment.xml`을 쓴다. 이 기록이었다면 6.5 s에 위치를 채우고 약 35°만 돌았을 것이다. 도크 대기점 정렬 대체 경로는 직선 후진이 이어지므로 5 cm `alignment_goal_checker`를 유지한다. 관련 635건 통과, 파이 반영·세션 재기동·init 완료(16:38), 실차 확인 전.
 
+### 20.14 Lattice 시험 (브랜치 `feat/lattice-planner-trial`, 18:30–18:40, 이동 없음)
+
+파이의 살아 있는 세션에서 `scripts/map_20260930_manual/plan_compare.py`로 같은 시작·목표를 `GridBased`(NavFn)와 `Lattice`(SmacPlannerLattice, 차동 0.5 m 프리미티브, 전역 팽창 0.45)로 계획만 했다.
+
+| 구간 | NavFn 길이 비 | Lattice 회전 패널티 1.5 | 0.5 | 0.0 |
+|---|---|---|---|---|
+| A 도크 → 물 받는 곳(경유 3) | 1.11 | 실패(도크 출발, NO_VALID_PATH) | 2.00 | 1.99 |
+| B 물 받는 곳 → table_02(경유 2) | 1.04 | 1.00 | 3.91 | 1.02 |
+| C 물 받는 곳 → table_01(경유 2) | 1.03 | 5.18 | 5.30 | 3.83 |
+| D table_01 → 도크 대기점 | 1.04 | 1.34 | 1.03 | 1.02 |
+| E table_02 → 도크 대기점 | 1.05 | 1.05 | 1.04 | 1.01 |
+
+- 계획 시간은 파이에서 0.02–0.8 s로, 9/30 PC 비교의 수십 초 문제는 재현되지 않았다.
+- 경유점 구간은 Lattice가 중간 경유점의 방향까지 맞추려고 2–5배 돌아간다. 도크 안 출발은 차체 외곽 충돌 검사에 걸릴 때가 있다.
+- 도크 대기점 구간은 1.01–1.04에 도크 방향으로 도착한다. 대기점에서의 약 −122° Spin을 줄일 수 있는 후보다.
+- 브랜치 마지막 설정: 대기점 BT만 Lattice(회전 패널티 0.5), 경유점 이동은 NavFn. 실차 주행은 하지 않았다. 메인은 Lattice 이전 상태로 두었다.
+
 ## 앞선 충전 중 수정본 검증
 
 - 로컬: box service, restaurant service, relay, new-base 설정, keepout, reverse parking, parking contract/integration, depth target, LiDAR witness, session, stop profile 관련 570개 테스트 통과.
