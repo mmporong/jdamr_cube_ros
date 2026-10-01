@@ -27,6 +27,7 @@ POSITIVE_FIELDS = {
 COMMAND_ZERO_EPSILON = 1e-9
 # Requirement/candidate bounds, not measured calibration constants. A custom
 # contract may tighten them but must not silently weaken the accepted target.
+STAGING_XY_TOLERANCE_M = 0.15
 MAXIMUM_CONTRACT_VALUES = {
     'xy_tolerance_m': 0.05,
     'yaw_tolerance_deg': 3.0,
@@ -151,10 +152,13 @@ def parking_controller_overrides(
     configured['GracefulParking'] = graceful_parking(contract, allow_backward=False)
     # Staging is judged by position; the heading is turned once afterwards.
     configured['goal_checker_plugins'].append('staging_position_checker')
+    # The curved dock reverse takes out a staging offset, so the staging leg
+    # need not chase the last centimetres: within 5 cm the remaining path pointed
+    # sideways and the base turned right, left and right for 14 s (2026-10-01).
     configured['staging_position_checker'] = {
         'plugin': 'nav2_controller::PositionGoalChecker',
         'stateful': True,
-        'xy_goal_tolerance': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
+        'xy_goal_tolerance': STAGING_XY_TOLERANCE_M,
     }
     configured['parking_goal_checker'] = {
         'plugin': 'nav2_controller::SimpleGoalChecker',

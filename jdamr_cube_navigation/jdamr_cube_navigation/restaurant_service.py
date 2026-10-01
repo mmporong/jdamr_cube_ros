@@ -54,6 +54,9 @@ AMCL_QUIET_MAX_YAW_RAD = 0.05
 # AMCL stamps map->odom at every scan plus transform_tolerance, so an older
 # map->base_link TF means AMCL or odometry has gone silent.
 AMCL_QUIET_MAX_TF_AGE_S = 0.5
+# A staging heading left within this goes to the curved dock reverse as is
+# (reverse_curve_waypoints accepts a 15 deg heading with a 10 cm offset).
+STAGING_CORRECTION_MIN_RAD = math.radians(10.0)
 
 
 def load_service_contract(path):
@@ -1333,12 +1336,16 @@ class ServiceRoute(CorridorRoute):
         """
         if not self.execute(final_parking=False, staging=True):
             return None
-        for _turn in range(2):   # the large turn, then one small correction
+        for turn in range(2):   # the large turn, then a correction only if far off
             actual, _ = self.capture_stationary_pose()
             delta_rad = math.atan2(math.sin(stage['yaw'] - actual[2]),
                                    math.cos(stage['yaw'] - actual[2]))
             self.emit('staging_heading_measured', delta_yaw_rad=delta_rad)
-            if abs(delta_rad) <= self.home_contract['yaw_tolerance_rad']:
+            # Spin overshot by about 3 deg each time, so a 3.9 deg correction
+            # swung back 7.1 deg (2026-10-01); the curved reverse absorbs this.
+            limit_rad = (self.home_contract['yaw_tolerance_rad'] if turn == 0
+                         else STAGING_CORRECTION_MIN_RAD)
+            if abs(delta_rad) <= limit_rad:
                 return actual
             if not self._search_rotation_once(
                     delta_rad, limit_rad=math.pi, event='staging_turn',

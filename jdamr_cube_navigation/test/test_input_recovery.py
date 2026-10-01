@@ -2299,3 +2299,18 @@ def test_transit_waypoints_go_as_one_through_poses_goal(monkeypatch, tmp_path):
     assert goal.behavior_tree == '/through.xml'
     accepted = _events(node, 'accepted')[-1]
     assert accepted['through'] == ['exit', 'pre', 'observation']
+
+
+def test_staging_leaves_a_small_residual_to_the_curved_reverse(monkeypatch, tmp_path):
+    """2026-10-01: a 3.9 deg correction Spin overshot back by 7.1 deg."""
+    node, _world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    spins = []
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((stage['x'], stage['y'], stage['yaw'] + math.radians(132.8)), {}),
+        ((stage['x'], stage['y'], stage['yaw'] - math.radians(3.9)), {}),
+        ((stage['x'], stage['y'], stage['yaw'] - math.radians(3.9)), {})])
+    node._search_rotation_once = Mock(side_effect=lambda delta, **kw: spins.append(delta) or True)
+    node._verify_parking_stop = Mock(return_value=True)
+    node._execute_reverse_path = Mock(return_value=True)
+    assert node._go_home_reverse(HOME, True) is True
+    assert spins == [pytest.approx(math.radians(-132.8))]
