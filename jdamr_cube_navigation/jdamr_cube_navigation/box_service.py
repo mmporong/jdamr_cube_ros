@@ -872,32 +872,38 @@ class BoxServiceRoute(ServiceRoute):
         outward = target['outward_normal_map_xy']
         facing = -(math.cos(actual[2]) * outward[0] + math.sin(actual[2]) * outward[1])
         distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
-        travel_m = ((distance_m - front_extent_m - 0.05) / facing
-                    if facing > 0.0 else float('nan'))
-        if (facing < math.cos(self.parking_contract['yaw_tolerance_rad'])
-                or not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6):
+        # Alignment squares the base to the face seen from the observation point;
+        # the closer re-observation can differ by a few degrees (3.5 deg at table_02,
+        # 2026-10-01). Then the path runs along the re-observed normal and Parking
+        # turns onto it instead of failing.
+        aligned = facing >= math.cos(self.parking_contract['yaw_tolerance_rad'])
+        heading = actual[2] if aligned else math.atan2(-outward[1], -outward[0])
+        along = facing if aligned else 1.0
+        travel_m = ((distance_m - front_extent_m - 0.05) / along
+                    if facing > math.cos(math.pi / 6) else float('nan'))
+        if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
             self.emit('failed', phase='final_approach', reason='final_approach_unavailable',
                       face_heading_cos=self._json_scalar(facing),
                       travel_m=self._json_scalar(travel_m))
             return False, None
         steps = int(math.ceil(travel_m / 0.05)) + 1
-        points = [(actual[0] + travel_m * k / steps * math.cos(actual[2]),
-                   actual[1] + travel_m * k / steps * math.sin(actual[2]))
+        points = [(actual[0] + travel_m * k / steps * math.cos(heading),
+                   actual[1] + travel_m * k / steps * math.sin(heading))
                   for k in range(steps + 1)]
         end = {'id': 'final_approach', 'x': points[-1][0], 'y': points[-1][1],
-               'yaw': actual[2]}
+               'yaw': heading}
         saved = (self.config, self.waypoints)
         self.config = {'frame_id': 'map', 'waypoints': [end]}
         self.waypoints = self.config['waypoints']
         try:
             path = RosPath()
-            path.poses = [self._pose(0, {'x': x, 'y': y, 'yaw': actual[2]})
+            path.poses = [self._pose(0, {'x': x, 'y': y, 'yaw': heading})
                           for x, y in points]
             path.header = path.poses[0].header
             odom_path, to_odom = self._frozen_in_odom(path)
             end_x, end_y, end_yaw = to_odom(end['x'], end['y'], end['yaw'])
             self.emit('final_approach_straight', travel_m=travel_m,
-                      face_heading_cos=facing,
+                      face_heading_cos=facing, heading_basis='robot' if aligned else 'face',
                       controller_id=getattr(self, 'final_approach_controller', 'Parking'))
             reached = self._execute_reverse_path(
                 path, send_path=odom_path,

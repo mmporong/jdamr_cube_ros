@@ -2229,3 +2229,30 @@ def test_t35_unconverged_localization_never_moves(monkeypatch, tmp_path, state):
     with pytest.raises(RuntimeError, match='localization or sensor data unavailable'):
         _visit(visit_node)
     assert not visit_world.motions
+
+
+def test_final_approach_follows_the_reobserved_face_when_squared_off():
+    """A 3.5 deg residual runs the path along the face normal instead of failing."""
+    face, outward = (0.0, -1.0), (0.0, 1.0)
+    yaw = -math.pi / 2 - math.radians(3.5)
+    sent = {}
+    fake = SimpleNamespace(
+        capture_stationary_pose=lambda: ((0.0, -0.47, yaw), None),
+        parking_contract={'yaw_tolerance_rad': math.radians(3.0)},
+        emit=lambda name, **fields: sent.setdefault(name, fields),
+        _json_scalar=float, config=None, waypoints=None,
+        _pose=lambda _i, wp: SimpleNamespace(header=None, yaw=wp['yaw'], x=wp['x']),
+        _frozen_in_odom=lambda path: (path, lambda x, y, yaw: (x, y, yaw)))
+
+    def execute(path, **kwargs):
+        sent['path'] = path
+        sent['end'] = kwargs['verify_waypoint']
+        return True
+    fake._execute_reverse_path = execute
+    reached, _ = box_service.BoxServiceRoute._straight_final_approach(
+        fake, {'face_center_map_xy_m': face, 'outward_normal_map_xy': outward}, 0.085)
+    assert reached
+    assert sent['final_approach_straight']['heading_basis'] == 'face'
+    assert sent['end']['yaw'] == pytest.approx(-math.pi / 2)
+    assert sent['final_approach_straight']['travel_m'] == pytest.approx(0.53 - 0.135)
+    assert all(pose.yaw == pytest.approx(-math.pi / 2) for pose in sent['path'].poses)
