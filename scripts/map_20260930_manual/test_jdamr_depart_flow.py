@@ -61,7 +61,7 @@ def env(tmp_path, monkeypatch):
 
 def go_args(**extra):
     base = dict(table_id='table_02', route=None, region=None, via_route=None, skip_via=False,
-                resume_at_observation=False, resume_parked_log=None, dock_only=False, rpp_final=False)
+                resume_at_observation=False, resume_parked_log=None, dock_only=False, graceful_final=False)
     base.update(extra)
     return SimpleNamespace(**base)
 

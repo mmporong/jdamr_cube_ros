@@ -898,10 +898,10 @@ class BoxServiceRoute(ServiceRoute):
             end_x, end_y, end_yaw = to_odom(end['x'], end['y'], end['yaw'])
             self.emit('final_approach_straight', travel_m=travel_m,
                       face_heading_cos=facing,
-                      controller_id=getattr(self, 'final_approach_controller', 'GracefulParking'))
+                      controller_id=getattr(self, 'final_approach_controller', 'Parking'))
             reached = self._execute_reverse_path(
                 path, send_path=odom_path,
-                controller_id=getattr(self, 'final_approach_controller', 'GracefulParking'),
+                controller_id=getattr(self, 'final_approach_controller', 'Parking'),
                 verify_contract={**self.parking_contract, 'reference_frame': 'odom'},
                 verify_waypoint={'x': end_x, 'y': end_y, 'yaw': end_yaw})
         finally:
@@ -1080,9 +1080,9 @@ def parse_args(argv=None):
     parser.add_argument(
         '--via-id', choices=('water_station',),
         help='First stop before the table: approach, hold five seconds and escape')
-    parser.add_argument('--rpp-final', action='store_true',
-                        help='use the RPP Parking controllers for the box approach and '
-                             'dock leg instead of Graceful (switch back)')
+    parser.add_argument('--graceful-final', action='store_true',
+                        help='use the Graceful controllers for the box approach and dock '
+                             'leg instead of RPP (trajectory collision check, see 105)')
     parser.add_argument('--home-only', action='store_true',
                         help='return to the dock only (needs --execute and --return-home)')
     parser.add_argument('--via-route', type=Path)
@@ -1153,9 +1153,9 @@ def main(argv=None):
             node = BoxServiceRoute(registry, contract, stream, home_contract=home_contract)
             for signum in (signal.SIGINT, signal.SIGTERM):
                 handlers[signum] = signal.signal(signum, lambda *_: node.request_stop())
-            if args.rpp_final:
-                node.final_approach_controller = 'Parking'
-                node.dock_leg_controller = 'ParkingReverse'
+            if args.graceful_final:
+                node.final_approach_controller = 'GracefulParking'
+                node.dock_leg_controller = 'GracefulReverse'
             ok = True
             if args.home_only:
                 # Dock return alone, e.g. to re-dock after a crooked stop.

@@ -79,7 +79,8 @@ def test_physical_candidate_is_accepted():
     assert controller['progress_checker']['required_movement_radius'] == 0.05
     assert controller['progress_checker']['required_movement_angle'] == 0.10
     assert controller['progress_checker']['movement_time_allowance'] == 10.0
-    assert controller['FollowPath']['rotate_to_heading_min_angle'] >= 1.57
+    # Large heading changes turn in place: the box escape clearance covers only that.
+    assert controller['FollowPath']['rotate_to_heading_min_angle'] <= 0.785
 
 
 def test_explicit_footprint_margin_is_not_padded_twice():

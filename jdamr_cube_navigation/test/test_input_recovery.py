@@ -2104,7 +2104,7 @@ def test_t32b_refreshed_covariance_allows_final_approach(monkeypatch, tmp_path):
     # The final approach is a straight Parking FollowPath held in odom.
     assert [kind for kind, _goal in world.motions] == ['NavigateToPose', 'FollowPath']
     final = world.motions[1][1]
-    assert final.controller_id == 'GracefulParking' and final.path.header.frame_id == 'odom'
+    assert final.controller_id == 'Parking' and final.path.header.frame_id == 'odom'
 
 
 def test_t32c_observation_capture_follows_stage_bound(monkeypatch, tmp_path):
@@ -2166,12 +2166,11 @@ def test_staging_turns_once_in_odom_when_the_heading_is_far_off(monkeypatch, tmp
     assert options == {'limit_rad': math.pi, 'event': 'staging_turn', 'measure_in_odom': True}
 
 
-def test_final_approach_and_dock_leg_default_to_graceful(monkeypatch, tmp_path):
+def test_final_approach_defaults_to_rpp_and_graceful_is_opt_in(monkeypatch, tmp_path):
     node, world, observations = _latched_box_visit(
         monkeypatch, tmp_path, after_alignment=(0.004, 0.001, 0.001))
     _visit(node)
-    final = world.motions[1][1]
-    assert final.controller_id == 'GracefulParking'
+    assert world.motions[1][1].controller_id == 'Parking'
 
 
 def test_t34b_precision_dock_stays_strict_after_staging(monkeypatch, tmp_path):

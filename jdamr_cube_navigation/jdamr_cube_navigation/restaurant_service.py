@@ -187,10 +187,11 @@ class ServiceRoute(CorridorRoute):
             package / 'behavior_trees/navigate_to_pose_alignment.xml')
         self.staging_behavior_tree = str(
             package / 'behavior_trees/navigate_to_pose_staging.xml')
-        # Graceful by default for the box approach and the dock leg; the
-        # executor's --rpp-final switch restores the RPP controllers.
-        self.final_approach_controller = 'GracefulParking'
-        self.dock_leg_controller = 'GracefulReverse'
+        # RPP for the box approach and the dock leg. Graceful (--graceful-final) checks
+        # its own trajectory against the costmap in Nav2 1.3.12 with no switch, so a
+        # 5 cm stop at a box ended in 105 (2026-10-01).
+        self.final_approach_controller = 'Parking'
+        self.dock_leg_controller = 'ParkingReverse'
         self.service_contract = load_service_contract(
             package / 'config/restaurant_service_contract.yaml')
         self.minimum_battery_v = self.service_contract['minimum_running_battery_v']
@@ -1340,13 +1341,13 @@ class ServiceRoute(CorridorRoute):
             odom_x, odom_y, odom_yaw = to_odom(*target)
             self.emit('dock_leg_frozen_in_odom',
                       odom_target_pose=[odom_x, odom_y, odom_yaw],
-                      controller_id=getattr(self, 'dock_leg_controller', 'GracefulReverse'))
+                      controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'))
             success = self._execute_reverse_path(
                 path, path_contract=home, goal_checker_id=dock_checker,
                 verify_contract={**home, 'reference_frame': 'odom'},
                 send_path=odom_path,
                 verify_waypoint={'x': odom_x, 'y': odom_y, 'yaw': odom_yaw},
-                controller_id=getattr(self, 'dock_leg_controller', 'GracefulReverse'))
+                controller_id=getattr(self, 'dock_leg_controller', 'ParkingReverse'))
         else:
             success = self._execute_reverse_path(path)
         self.emit('home_arrived' if success else 'failed',
