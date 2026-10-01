@@ -1611,6 +1611,14 @@ def test_service_launch_adds_parking_without_changing_costmaps(
         del controller['Parking'], controller['parking_goal_checker']
         del controller['alignment_goal_checker'], controller['GracefulParking']
         del controller['staging_position_checker']
+        # The service session adds the through-poses navigator with our own tree.
+        navigator = output['bt_navigator']['ros__parameters']
+        assert navigator['navigators'][-1] == 'navigate_through_poses'
+        assert navigator.pop('default_nav_through_poses_bt_xml').endswith(
+            'navigate_through_poses_transit.xml')
+        assert navigator.pop('navigate_through_poses')['plugin'] == (
+            'nav2_bt_navigator::NavigateThroughPosesNavigator')
+        navigator['navigators'].pop()
         assert output == original
         assert arguments['map'] == '/maps/new_base_room.yaml'
         assert arguments['asset_registry'].perform(context) == '/registry.yaml'

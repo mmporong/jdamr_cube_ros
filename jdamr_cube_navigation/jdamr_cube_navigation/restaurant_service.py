@@ -28,7 +28,8 @@ from jdamr_cube_navigation.service_destinations import (
     validate_gap_measurement,
     validate_registry, verify_identity,
 )
-from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose, Spin
+from nav2_msgs.action import (
+    ComputePathThroughPoses, FollowPath, NavigateThroughPoses, NavigateToPose, Spin)
 from nav2_msgs.srv import IsPathValid
 from nav_msgs.msg import OccupancyGrid, Path as RosPath
 from rcl_interfaces.srv import GetParameters
@@ -171,6 +172,13 @@ class ServiceRoute(CorridorRoute):
             CancelGoal, 'follow_path/_action/cancel_goal')
         self.query_reverse = self.create_client(
             FollowPath.Impl.GetResultService, 'follow_path/_action/get_result')
+        self.navigate_through = ActionClient(
+            self, NavigateThroughPoses, 'navigate_through_poses')
+        self.cancel_through = self.create_client(
+            CancelGoal, 'navigate_through_poses/_action/cancel_goal')
+        self.query_through = self.create_client(
+            NavigateThroughPoses.Impl.GetResultService,
+            'navigate_through_poses/_action/get_result')
         self.spin_search = ActionClient(self, Spin, 'spin')
         self.cancel_spin = self.create_client(CancelGoal, 'spin/_action/cancel_goal')
         self.query_spin = self.create_client(
@@ -183,6 +191,8 @@ class ServiceRoute(CorridorRoute):
             package / 'behavior_trees/navigate_to_pose_alignment.xml')
         self.staging_behavior_tree = str(
             package / 'behavior_trees/navigate_to_pose_staging.xml')
+        self.through_behavior_tree = str(
+            package / 'behavior_trees/navigate_through_poses_transit.xml')
         # RPP for the box approach and the dock leg. Graceful (--graceful-final) checks
         # its own trajectory against the costmap in Nav2 1.3.12 with no switch, so a
         # 5 cm stop at a box ended in 105 (2026-10-01).
@@ -623,6 +633,8 @@ class ServiceRoute(CorridorRoute):
             cancel_client, query_client = self.cancel_spin, self.query_spin
         elif action_type is FollowPath:
             cancel_client, query_client = self.cancel_reverse, self.query_reverse
+        elif action_type is NavigateThroughPoses:
+            cancel_client, query_client = self.cancel_through, self.query_through
         else:
             cancel_client, query_client = self.cancel_navigation, self.query_navigation
         while time.monotonic() < deadline_s:
@@ -703,6 +715,10 @@ class ServiceRoute(CorridorRoute):
         """Retry only a canceled input gap, never an unresolved action."""
         if not self.navigate.wait_for_server(timeout_sec=2.0):
             return False
+        through = getattr(self, 'navigate_through', None)
+        if (through is not None and not (final_parking or alignment or staging)
+                and len(self.waypoints) - self._resume_waypoint_index >= 2):
+            return self._execute_through_once()
         self.active_action_type = NavigateToPose
         for index, waypoint in enumerate(self.waypoints):
             if index < self._resume_waypoint_index:
@@ -759,6 +775,74 @@ class ServiceRoute(CorridorRoute):
                 if not self.finish_navigation():
                     raise RuntimeError('navigation cancellation unconfirmed')
         return True
+
+    def _execute_through_once(self):
+        """
+        Drive the remaining transit waypoints as one NavigateThroughPoses goal.
+
+        Separate NavigateToPose legs slowed to a stop and turned to every
+        waypoint's yaw before the next leg began (2026-10-01). The waypoints
+        now only shape one path; the last one keeps its yaw. A retry after an
+        input gap resumes from the first waypoint not yet passed.
+        """
+        first, last = self._resume_waypoint_index, len(self.waypoints) - 1
+        if not self.navigate_through.wait_for_server(timeout_sec=2.0):
+            return False
+        if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
+            reason = self._guard_failure(False)
+            if not self.stop_requested and self._input_gap_recoverable(reason):
+                self._retry_guard_reason = reason
+            return False
+        if not self._departure_battery_ready():
+            return False
+        goal = NavigateThroughPoses.Goal()
+        goal.poses = [self._pose(index, self.waypoints[index])
+                      for index in range(first, last + 1)]
+        goal.behavior_tree = self.through_behavior_tree
+
+        def passed(message):
+            left = int(message.feedback.number_of_poses_remaining)
+            self._resume_waypoint_index = max(
+                self._resume_waypoint_index, min(last, last + 1 - left))
+
+        self.active_action_type = NavigateThroughPoses
+        self.navigation_uuid = NavigateThroughPoses.Impl.SendGoalService.Request().goal_id
+        self.navigation_uuid.uuid = list(uuid.uuid4().bytes)
+        self.pending_goal = self.navigate_through.send_goal_async(
+            goal, feedback_callback=passed, goal_uuid=self.navigation_uuid)
+        try:
+            handle = self._wait(self.pending_goal, 5.0)
+            self.pending_goal = None
+            if not handle.accepted:
+                self.emit('failed', reason='navigation_rejected')
+                return False
+            self.active_handle = handle
+            self._route_event('accepted', last, handle, through=[
+                waypoint['id'] for waypoint in self.waypoints[first:]])
+            self.navigation_result = handle.get_result_async()
+            while not self.navigation_result.done():
+                rclpy.spin_once(self, timeout_sec=0.05)
+                if (self.stop_requested
+                        or not self._navigation_ready(require_fresh_amcl=False)):
+                    reason = self._guard_failure(False) or 'operator_or_timeout'
+                    self.emit('interrupted', reason=reason)
+                    if not self.stop_requested and self._input_gap_recoverable(reason):
+                        self._retry_guard_reason = reason
+                    return False
+            wrapped = self.navigation_result.result()
+            self._route_event('result', last, handle,
+                              terminal_status_code=int(wrapped.status),
+                              nav2_error_code=int(wrapped.result.error_code))
+            self.navigation_result = None
+            if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
+                    or wrapped.result.error_code):
+                return False
+            self._resume_waypoint_index = last
+            return True
+        finally:
+            if not self.finish_navigation():
+                raise RuntimeError('navigation cancellation unconfirmed')
+            self.active_action_type = NavigateToPose
 
     def _search_parameters_ready(self):
         """Reject absent/unbounded spin profiles before sending a search action."""

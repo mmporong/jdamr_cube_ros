@@ -45,6 +45,14 @@ def _configure(context):
                     'regulated_linear_scaling_min_speed'):
             transit[key] = min(transit[key], SERVICE_TRANSIT_MAX_MPS)
     document['controller_server']['ros__parameters'] = controller
+    # Transit through several waypoints as one goal (service session only: the
+    # stock through-poses tree needs backup/spin servers, so the default is ours).
+    navigator = document['bt_navigator']['ros__parameters']
+    navigator['navigators'] = [*navigator['navigators'], 'navigate_through_poses']
+    navigator['navigate_through_poses'] = {
+        'plugin': 'nav2_bt_navigator::NavigateThroughPosesNavigator'}
+    navigator['default_nav_through_poses_bt_xml'] = str(
+        package / 'behavior_trees/navigate_through_poses_transit.xml')
     if LaunchConfiguration('precision_parking', default='false').perform(context) == 'true':
         geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))
                          / 'config/new_base_geometry.yaml')

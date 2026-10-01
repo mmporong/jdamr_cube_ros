@@ -21,7 +21,8 @@ from jdamr_cube_navigation.parking import load_parking_contract, parking_control
 from jdamr_cube_navigation.restaurant_service import load_service_contract, ServiceRoute
 from jdamr_cube_navigation.reverse_parking import reverse_controller_overrides
 from jdamr_cube_navigation.service_destinations import route_config, taught_pose
-from nav2_msgs.action import ComputePathThroughPoses, FollowPath, NavigateToPose, Spin
+from nav2_msgs.action import (
+    ComputePathThroughPoses, FollowPath, NavigateThroughPoses, NavigateToPose, Spin)
 from nav2_msgs.srv import IsPathValid
 from nav_msgs.msg import OccupancyGrid, Odometry
 import pytest
@@ -290,7 +291,8 @@ class _Clock:
 class _ActionPeer:
     """Record a Nav2 motion goal, then complete it at the requested pose."""
 
-    ACTIONS = {'NavigateToPose': NavigateToPose, 'FollowPath': FollowPath, 'Spin': Spin}
+    ACTIONS = {'NavigateToPose': NavigateToPose, 'FollowPath': FollowPath, 'Spin': Spin,
+               'NavigateThroughPoses': NavigateThroughPoses}
 
     def __init__(self, world, kind):
         self.world = world
@@ -644,6 +646,8 @@ class _World:
             self.pose = list(_pose_xyyaw(goal.pose.pose))
         elif kind == 'FollowPath':
             self.pose = list(_pose_xyyaw(goal.path.poses[-1].pose))
+        elif kind == 'NavigateThroughPoses':
+            self.pose = list(_pose_xyyaw(goal.poses[-1].pose))
         else:
             self.pose[2] += goal.target_yaw
         self.command_due = True
@@ -2276,3 +2280,22 @@ def test_staging_offset_is_taken_out_by_a_curved_reverse_without_alignment_leg(
     assert (first.x, first.y) == pytest.approx(staged[:2])
     events = [record['event'] for record in _events(node)]
     assert 'dock_curve_unavailable' not in events
+
+
+def test_transit_waypoints_go_as_one_through_poses_goal(monkeypatch, tmp_path):
+    """2026-10-01: each NavigateToPose leg stopped and turned at its waypoint."""
+    node, world = _service_world(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT, home=HOME,
+                                 pose=(0.0, 0.0, 0.0), covariance=E1_COVARIANCE)
+    node.navigate_through = _ActionPeer(world, 'NavigateThroughPoses')
+    node.through_behavior_tree = '/through.xml'
+    waypoints = [{'id': name, 'x': x, 'y': 0.0, 'yaw': 0.0}
+                 for name, x in (('exit', 0.5), ('pre', 1.0), ('observation', 1.5))]
+    node.config, node.waypoints = {'frame_id': 'map', 'waypoints': waypoints}, waypoints
+    node._resume_waypoint_index = 0
+    assert node.execute(final_parking=False) is True
+    assert [kind for kind, _goal in world.motions] == ['NavigateThroughPoses']
+    goal = world.motions[0][1]
+    assert [pose.pose.position.x for pose in goal.poses] == [0.5, 1.0, 1.5]
+    assert goal.behavior_tree == '/through.xml'
+    accepted = _events(node, 'accepted')[-1]
+    assert accepted['through'] == ['exit', 'pre', 'observation']

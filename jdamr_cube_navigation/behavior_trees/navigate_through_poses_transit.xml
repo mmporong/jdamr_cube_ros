@@ -1,0 +1,40 @@
+<!--
+  Transit through several waypoints as one goal (2026-10-01: separate
+  NavigateToPose legs slowed to a stop and turned at every waypoint). Replan
+  only when the path became invalid, is 10 s old, or the goals changed; a
+  passed waypoint (within 0.25 m) is dropped first. The last pose keeps its
+  yaw through the general goal checker.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="1" name="Transit">
+      <PipelineSequence>
+        <RateController hz="1.0">
+          <Fallback>
+            <ReactiveSequence>
+              <Inverter>
+                <PathExpiringTimer seconds="10" path="{path}"/>
+              </Inverter>
+              <Inverter>
+                <GlobalUpdatedGoal/>
+              </Inverter>
+              <IsPathValid path="{path}"/>
+            </ReactiveSequence>
+            <Sequence>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.25"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+            </Sequence>
+          </Fallback>
+        </RateController>
+        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+      </PipelineSequence>
+      <Sequence>
+        <Fallback>
+          <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+          <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+        </Fallback>
+        <Wait wait_duration="1.0"/>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
