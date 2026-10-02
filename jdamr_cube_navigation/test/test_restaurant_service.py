@@ -107,6 +107,7 @@ def route():
     node.confirmation = None
     node.start_index = 0
     node.navigation_profile = 'obstacle_base_candidate'
+    node.through_behavior_tree, node.staging_behavior_tree = 'transit.xml', 'staging.xml'
     node.behavior_tree, node.parking_behavior_tree = 'transit.xml', 'parking.xml'
     node.config = {'waypoints': [
         {'id': 'approach', 'x': 0.5, 'y': 0.0, 'yaw': 0.2},
@@ -2380,3 +2381,58 @@ def test_zero_turn_drive_commands_no_rotation_and_stops_at_the_distance(monkeypa
     assert all(w == 0.0 for _v, w in published)
     assert {v for v, _w in published[:-5]} == {restaurant_service.STRAIGHT_ESCAPE_SPEED_MPS}
     assert published[-5:] == [(0.0, 0.0)] * 5
+
+
+def test_back_off_grows_with_each_hold_at_the_same_block():
+    for wait, distance in ((1, 0.10), (2, 0.20), (3, 0.30)):
+        node = route()
+        node._blocked_ahead = Mock(return_value=True)
+        node._footprint_intrusion = Mock(return_value=None)
+        node._blocked_behind = Mock(return_value=False)
+        node._drive_straight = Mock(return_value=True)
+        assert node._escape_blocked(wait) is True
+        assert node._drive_straight.call_args.args[0] == pytest.approx(-distance)
+        assert node._blocked_behind.call_args.kwargs['band_m'] == pytest.approx(distance + 0.05)
+
+
+def test_controller_block_retries_the_leg_with_mppi_and_restores_the_trees(monkeypatch):
+    _fast_clock(monkeypatch, step_s=1)
+    monkeypatch.setattr(restaurant_service, 'get_package_share_directory',
+                        lambda _: str(PACKAGE))
+    node = route()
+    node.through_behavior_tree, node.staging_behavior_tree = 'rpp_transit', 'rpp_staging'
+    node.final_approach_controller, node.dock_leg_controller = 'Parking', 'ParkingReverse'
+    node.alignment_behavior_tree = 'alignment'
+    node._escape_blocked = Mock(return_value=True)
+    node._front_clear = Mock(return_value=True)
+    trees = []
+    tries, attempt = _blocked_attempts(node, blocked_tries=1, code=105)
+
+    def recording_attempt():
+        trees.append(node.staging_behavior_tree)
+        return attempt()
+
+    assert node._run_with_input_recovery(recording_attempt) is True
+    assert trees[0] == 'rpp_staging' and trees[1].endswith('navigate_to_pose_staging_mppi.xml')
+    assert (node.through_behavior_tree, node.staging_behavior_tree) == (
+        'rpp_transit', 'rpp_staging')
+    assert node._escape_blocked.call_args.args == (1,)
+    assert any(e['event'] == 'recovery_controller' for e in _events(node))
+
+
+def test_planner_block_keeps_the_controller(monkeypatch):
+    """Without a path (208) nothing is wrong with the controller: no MPPI retry."""
+    _fast_clock(monkeypatch, step_s=1)
+    node = route()
+    node._path_open = Mock(return_value=True)
+    node._escape_blocked = Mock()
+    trees = []
+    tries, attempt = _blocked_attempts(node, blocked_tries=1, code=208)
+
+    def recording_attempt():
+        trees.append(node.staging_behavior_tree)
+        return attempt()
+
+    assert node._run_with_input_recovery(recording_attempt) is True
+    assert trees == ['staging.xml', 'staging.xml']
+    node._escape_blocked.assert_not_called()

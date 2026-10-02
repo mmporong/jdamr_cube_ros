@@ -852,12 +852,36 @@ class ServiceRoute(CorridorRoute):
         """Whether the band ahead is empty on a fresh scan (an unreadable scan is not)."""
         return self._blocked_ahead() is False
 
-    def _escape_blocked(self):
+    def _use_recovery_controller(self):
+        """
+        Retry a transit or staging leg the controller could not finish with MPPI.
+
+        RPP follows the planner's path as given; NavFn plans for a point and put
+        the path 1-2 cm into an object beside a 0.64 m gap, so every RPP retry
+        swung the right wheel into the same object (2026-10-02 17:49-17:52). MPPI
+        weighs the footprint cost against the path and can pass off the path.
+        """
+        if getattr(self, '_recovery_saved_trees', None) is None:
+            self._recovery_saved_trees = (self.through_behavior_tree,
+                                          self.staging_behavior_tree)
+            self.use_mppi_transit()
+            self.emit('recovery_controller', controller='MPPI')
+
+    def _restore_controller(self):
+        """Return to the configured transit and staging trees after the leg."""
+        saved = getattr(self, '_recovery_saved_trees', None)
+        if saved is not None:
+            self.through_behavior_tree, self.staging_behavior_tree = saved
+            self._recovery_saved_trees = None
+
+    def _escape_blocked(self, wait=1):
         """
         Move straight away from what blocks the base before the hold.
 
         Something in the band ahead or inside the front half of the footprint: back
-        PATH_BLOCKED_BACKOFF_M out (Nav2's default tree backs up too). Something behind
+        PATH_BLOCKED_BACKOFF_M times the hold count out (0.10, 0.20, 0.30 m; a
+        repeated 0.10 m back-off met the same object four times, 17:49-17:52).
+        Nav2's default tree backs up too. Something behind
         the axle inside the turn circle, including inside the rear half of the
         footprint: drive forward until it is out of the circle, since every turn and
         arc swings the rear into it (2026-10-02 11:09). An object beside the frame
@@ -874,11 +898,12 @@ class ServiceRoute(CorridorRoute):
                       ahead=ahead, intrusion=intrusion)
             return False
         if ahead or intrusion == 'front':
-            if self._blocked_behind(band_m=PATH_BLOCKED_BACKOFF_M + 0.05) is not False:
+            back_m = PATH_BLOCKED_BACKOFF_M * max(1, wait)
+            if self._blocked_behind(band_m=back_m + 0.05) is not False:
                 self.emit('path_blocked_back_off', done=False, reason='band behind not clear',
-                          distance_m=PATH_BLOCKED_BACKOFF_M)
+                          distance_m=back_m)
                 return False
-            return self._drive_straight(-PATH_BLOCKED_BACKOFF_M, 'path_blocked_back_off')
+            return self._drive_straight(-back_m, 'path_blocked_back_off')
         needed_m = self._rear_swing_need()
         if needed_m <= 0.0:
             return False
