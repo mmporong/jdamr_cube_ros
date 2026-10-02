@@ -451,3 +451,16 @@ def test_go_passes_the_mppi_transit_switch_only_when_asked(env, monkeypatch):
         seen.append(json.loads(next(s for s in pi.stdins if s))['argv'])
     assert '--mppi-transit' not in seen[0]
     assert '--mppi-transit' in seen[1]
+
+
+def test_operator_alerts_can_be_switched_off_for_test_runs(env, monkeypatch):
+    sent = []
+    monkeypatch.setattr(d, 'sh', lambda command, **k: sent.append(command) or
+                        SimpleNamespace(returncode=0, stdout=''))
+    event = {'level': 'CRITICAL', 'category': 'path_blocked', 'reason': 'give up'}
+    d.cmd_alerts(SimpleNamespace(mode='off'))
+    d.alert_operator(event)
+    assert sent == []
+    d.cmd_alerts(SimpleNamespace(mode='on'))
+    d.alert_operator(event)
+    assert any(command.startswith('notify-send') for command in sent)

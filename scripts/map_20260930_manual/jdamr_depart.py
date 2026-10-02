@@ -132,6 +132,7 @@ INIT_COVARIANCE = {'covariance_x_m2': 0.0025, 'covariance_y_m2': 0.0025,
 # Three unmapped boxes near the dock lower the inlier share (0.48-0.49 at 15:20 with a
 # consistent global match); the global agreement and the AMCL agreement stay the gates.
 MATCH_MIN_INLIER = 0.45
+MATCH_OVERRIDE_FLOOR = 0.25
 MATCH_CLICK_XY_M = 0.5
 MATCH_CLICK_YAW_RAD = math.radians(30.0)
 AMCL_AGREE_XY_M = 0.05
@@ -553,6 +554,13 @@ def cmd_init(args):
     # --local-only: the operator stated the placement (e.g. pulled straight back and
     # turned to face a box); nearby boxes can outrank it globally. AMCL agreement stays.
     min_inlier = 0.35 if args.local_only else MATCH_MIN_INLIER
+    override = getattr(args, 'min_inlier', None)
+    if override is not None:
+        # Operator override for a cluttered spot full of unmapped objects (2026-10-02
+        # 18:34: 0.349 twice at the same pose); never below MATCH_OVERRIDE_FLOOR.
+        if not args.local_only or override < MATCH_OVERRIDE_FLOOR:
+            fail(f'--min-inlier needs --local-only and >= {MATCH_OVERRIDE_FLOOR}')
+        min_inlier = override
     if refined['inlier_5cm'] < min_inlier or not (refined['global_agrees'] or args.local_only):
         fail('scan does not match the map near the click; check placement or click again')
     initial = {'frame_id': 'map', 'x_m': pose[0], 'y_m': pose[1], 'yaw_rad': pose[2],
@@ -643,6 +651,11 @@ def alert_operator(event):
     (for example a Telegram helper). Nothing is sent outside the PC without it.
     """
     text = f'{event.get("level")} {event.get("category")}: {event.get("reason")}'
+    if load_state().get('operator_alerts', True) is False:
+        # Test runs: the operator is not called (2026-10-02 "호출알림 보내지말라니까");
+        # `alerts on` restores it for demonstrations.
+        log(f'operator call (alerts off, not sent): {text}')
+        return
     log(f'OPERATOR CALL {text}')
     print('\a', end='', flush=True)
     title = shlex.quote('JD-AMR 운영자 호출')
@@ -1031,6 +1044,14 @@ def cmd_estop_reset(_args):
          + (out.strip().splitlines() or ['no answer'])[-1]) + f'; state: {estop_state()}')
 
 
+def cmd_alerts(args):
+    """Switch the operator-call alerts (bell, desktop, extra channel) on or off."""
+    state = load_state()
+    state['operator_alerts'] = args.mode == 'on'
+    save_state(state)
+    log(f'operator alerts: {args.mode}')
+
+
 def cmd_status(_args):
     state = load_state()
     log('session: ' + pi('systemctl is-active jdamr-restaurant-navigation.service',
@@ -1059,6 +1080,9 @@ def main():
                       help='do not re-teach home at this placement')
     init.add_argument('--local-only', action='store_true',
                       help='operator-stated placement: skip the global agreement check')
+    init.add_argument('--min-inlier', type=float,
+                      help='with --local-only: accept a lower scan-match inlier ratio '
+                           '(cluttered spot; floor 0.25)')
     init.add_argument('--seed-from-state', action='store_true',
                       help='robot not moved since the last init: seed with that pose')
     init.add_argument('--click', action='store_true',
@@ -1083,6 +1107,8 @@ def main():
     go.add_argument('--resume-parked-log',
                     help='cycle_events.jsonl of a run that stopped at the first box: hold, escape, continue')
     sub.add_parser('health')
+    alerts = sub.add_parser('alerts', help='operator-call alerts on (demos) or off (tests)')
+    alerts.add_argument('mode', choices=('on', 'off'))
     recover = sub.add_parser('recover')
     recover.add_argument('--seed', nargs=3, type=float, metavar=('X', 'Y', 'YAW_DEG'),
                          help='placement when the robot is not at the last init pose')
@@ -1096,7 +1122,7 @@ def main():
                 'display-stop': cmd_display_stop, 'session-start': cmd_session_start,
                 'session-stop': cmd_session_stop, 'init': cmd_init, 'go': cmd_go,
                 'stop': cmd_stop, 'status': cmd_status, 'health': cmd_health,
-                'estop': cmd_estop, 'estop-reset': cmd_estop_reset,
+                'estop': cmd_estop, 'estop-reset': cmd_estop_reset, 'alerts': cmd_alerts,
                 'recover': cmd_recover,
                 'record-start': lambda _a: record_start(),
                 'record-stop': lambda _a: record_stop(),

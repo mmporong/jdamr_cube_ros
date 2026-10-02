@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from action_msgs.msg import GoalStatus
+import builtin_interfaces.msg
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from jdamr_cube_navigation import corridor_route, restaurant_service
 from jdamr_cube_navigation.corridor_route import CorridorRoute
@@ -2373,18 +2374,70 @@ def test_planner_block_keeps_the_controller(monkeypatch):
     node._escape_blocked.assert_not_called()
 
 
-def test_a_return_inside_the_padded_footprint_holds_instead_of_escaping():
-    """18:02 (run 180130): a straight escape past a return 1 cm off the frame pushed it."""
-    for ahead, intrusion in ((False, 'rear'), (False, 'front'), (True, 'rear'), (False, 'both')):
-        node = route()
-        node._blocked_ahead = Mock(return_value=ahead)
-        node._footprint_intrusion = Mock(return_value=intrusion)
-        node._blocked_behind = Mock(return_value=False)
-        node._rear_swing_need = Mock(return_value=0.2)
-        node._drive_straight = Mock()
-        assert node._escape_blocked() is False
-        node._drive_straight.assert_not_called()
-        assert _events(node)[-1]['reason'] == 'return inside the padded footprint'
+def test_a_touching_object_backs_out_along_the_trail_further_each_hold():
+    """18:41: something touching the body; back out the way the base came in."""
+    for wait, distance in ((1, 0.30), (2, 0.45), (3, 0.60), (4, 0.60)):
+        for ahead, intrusion, behind in ((False, 'rear', False), (True, 'front', False),
+                                         (True, None, True)):
+            node = route()
+            node._blocked_ahead = Mock(return_value=ahead)
+            node._footprint_intrusion = Mock(return_value=intrusion)
+            node._blocked_behind = Mock(return_value=behind)
+            node._drive_straight = Mock()
+            node._retrace = Mock(return_value=True)
+            assert node._escape_blocked(wait) is True
+            node._drive_straight.assert_not_called()
+            assert node._retrace.call_args.args[0] == pytest.approx(distance)
+
+
+def _trail_route():
+    node = route()
+    node.odom_trail = [(1.0 + 0.02 * k, 2.0, 0.0) for k in range(40)]   # drove +x 0.78 m
+    node.parking_tf = SimpleNamespace(lookup_transform=lambda *a, **k: SimpleNamespace(
+        transform=SimpleNamespace(translation=SimpleNamespace(x=0.5, y=0.0),
+                                  rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
+    del node._pose                      # the fixture's stub; use the real one
+    node.waypoints = [{'x': 0.0, 'y': 0.0}]
+    node.config = {'frame_id': 'map'}
+    node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(
+        to_msg=lambda: builtin_interfaces.msg.Time()))
+    return node
+
+
+def test_retrace_reverses_the_last_part_of_the_trail_with_the_monitor_paused():
+    node = _trail_route()
+    switched = []
+    node._set_collision_monitor = Mock(side_effect=lambda on: switched.append(on) or True)
+    node._execute_reverse_once = Mock(return_value=True)
+    node.engage_emergency_stop = Mock()
+    assert node._retrace(0.30) is True
+    path = node._execute_reverse_once.call_args.args[0]
+    xs = [p.pose.position.x for p in path.poses]
+    assert xs[0] == pytest.approx(0.5 + 1.78) and xs[-1] == pytest.approx(0.5 + 1.48)
+    assert xs == sorted(xs, reverse=True)                  # back the way it came
+    assert node._execute_reverse_once.call_args.kwargs['controller_id'] == 'ParkingReverse'
+    assert switched == [False, True]
+    node.engage_emergency_stop.assert_not_called()
+
+
+def test_retrace_latches_the_emergency_stop_when_the_monitor_stays_off():
+    node = _trail_route()
+    node._set_collision_monitor = Mock(side_effect=[True, False, False, False])
+    node._execute_reverse_once = Mock(side_effect=RuntimeError('aborted'))
+    node.engage_emergency_stop = Mock()
+    with pytest.raises(RuntimeError):
+        node._retrace(0.30)
+    node.engage_emergency_stop.assert_called_once()
+
+
+def test_retrace_without_a_trail_does_not_move():
+    node = _trail_route()
+    node.odom_trail = [(0.0, 0.0, 0.0)]
+    node._set_collision_monitor = Mock()
+    node._execute_reverse_once = Mock()
+    assert node._retrace(0.30) is False
+    node._set_collision_monitor.assert_not_called()
+    node._execute_reverse_once.assert_not_called()
 
 
 def test_straight_drive_short_or_wrong_way_is_not_done():
@@ -2392,3 +2445,20 @@ def test_straight_drive_short_or_wrong_way_is_not_done():
         node = route()
         node._drive_zero_turn = Mock(return_value=travelled)
         assert node._drive_straight(0.22, 'path_blocked_escape_forward') is done
+
+
+def test_odom_trail_keeps_a_point_every_2_cm():
+    from collections import deque
+    from nav_msgs.msg import Odometry
+    node = route()
+    node.samples = {}
+    node.odom_last_pose = None
+    node.amcl_motion_distance_m = node.odom_total_distance_m = 0.0
+    node.amcl_motion_rotation_rad = 0.0
+    node.odom_trail = deque(maxlen=corridor_route.ODOM_TRAIL_POINTS)
+    for k in range(11):
+        message = Odometry()
+        message.pose.pose.position.x = 0.005 * k
+        message.pose.pose.orientation.w = 1.0
+        node._odom_callback(message)
+    assert [round(x, 3) for x, _y, _yaw in node.odom_trail] == [0.0, 0.02, 0.04]

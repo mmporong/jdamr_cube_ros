@@ -32,7 +32,7 @@ from jdamr_cube_navigation.service_destinations import (
 )
 from nav2_msgs.action import (
     ComputePathThroughPoses, FollowPath, NavigateThroughPoses, NavigateToPose, Spin)
-from nav2_msgs.srv import IsPathValid
+from nav2_msgs.srv import IsPathValid, Toggle
 from nav_msgs.msg import OccupancyGrid, Path as RosPath
 from rcl_interfaces.srv import GetParameters
 import rclpy
@@ -118,6 +118,11 @@ STRAIGHT_ESCAPE_EXTRA_S = 5.0
 STRAIGHT_ESCAPE_TOLERANCE_M = 0.01
 # The Collision Monitor stops on this many returns inside one polygon.
 COLLISION_MONITOR_MIN_POINTS = 3
+# Backing out along the odom trail when something touches the body: 0.30 m, then
+# 0.15 m more per hold, at most 0.60 m.
+PATH_BLOCKED_RETRACE_M = 0.30
+PATH_BLOCKED_RETRACE_STEP_M = 0.15
+PATH_BLOCKED_RETRACE_MAX_M = 0.60
 
 
 def _ahead(pose, distance_m):
@@ -883,26 +888,23 @@ class ServiceRoute(CorridorRoute):
         Something behind the axle inside the turn circle: drive forward until it is
         out of the circle, since every turn and arc swings the rear into it.
 
-        A return inside the padded footprint (within 2 cm of the body) holds instead:
-        a straight escape past one 1 cm outside the frame pushed the object
-        (2026-10-02 18:02, run 180130; the robot went straight, odom -0.15 deg), so
-        the scan plane leaves no margin there. The Collision Monitor stays fully on.
+        A return inside the footprint (it touches the body) or no straight way back:
+        back out along the odom trail the base drove in (operator 2026-10-02: "if it
+        got in it can get out"; a straight escape beside a touching object pushed
+        it, 18:02). The way in was free, so the way out is too.
         """
         ahead = self._blocked_ahead()
         if ahead is None:
             return False
+        retrace_m = min(PATH_BLOCKED_RETRACE_M + PATH_BLOCKED_RETRACE_STEP_M * (max(1, wait) - 1),
+                        PATH_BLOCKED_RETRACE_MAX_M)
         intrusion = self._footprint_intrusion()
         if intrusion is not None:
-            self.emit('path_blocked_escape', done=False,
-                      reason='return inside the padded footprint',
-                      ahead=ahead, intrusion=intrusion)
-            return False
+            return self._retrace(retrace_m)
         if ahead:
             back_m = PATH_BLOCKED_BACKOFF_M * max(1, wait)
             if self._blocked_behind(band_m=back_m + 0.05) is not False:
-                self.emit('path_blocked_back_off', done=False, reason='band behind not clear',
-                          distance_m=back_m)
-                return False
+                return self._retrace(retrace_m)
             return self._drive_straight(-back_m, 'path_blocked_back_off')
         needed_m = self._rear_swing_need()
         if needed_m <= 0.0:
@@ -914,6 +916,75 @@ class ServiceRoute(CorridorRoute):
                       reason='band ahead not clear', distance_m=distance_m)
             return False
         return self._drive_straight(distance_m, 'path_blocked_escape_forward')
+
+    def _retrace(self, distance_m, event='path_blocked_retrace'):
+        """
+        Reverse along the odom trail of the last distance_m the base drove.
+
+        Something touching the body holds every Collision Monitor polygon, so the
+        monitor is switched off for this move alone and always switched back on;
+        if it cannot be, the emergency stop is latched. The trail is the way the
+        base just came in, followed backwards with the reverse controller.
+        """
+        trail = list(getattr(self, 'odom_trail', None) or ())
+        if len(trail) < 2:
+            self.emit(event, done=False, reason='no odom trail')
+            return False
+        points, length_m = [trail[-1]], 0.0
+        for pose in reversed(trail[:-1]):
+            length_m += math.dist(points[-1][:2], pose[:2])
+            points.append(pose)
+            if length_m >= distance_m:
+                break
+        try:
+            transform = self.parking_tf.lookup_transform(
+                'map', 'odom', rclpy.time.Time()).transform
+        except TransformException as error:
+            self.emit(event, done=False, reason=str(error))
+            return False
+        ox, oy = transform.translation.x, transform.translation.y
+        oyaw = _quaternion_yaw(transform.rotation)
+        path = RosPath()
+        path.poses = [self._pose(index, {
+            'x': ox + math.cos(oyaw) * x - math.sin(oyaw) * y,
+            'y': oy + math.sin(oyaw) * x + math.cos(oyaw) * y,
+            'yaw': yaw + oyaw}) for index, (x, y, yaw) in enumerate(points)]
+        path.header = path.poses[0].header
+        if not self._set_collision_monitor(False):
+            self._set_collision_monitor(True)
+            self.emit(event, done=False, reason='collision monitor not paused')
+            return False
+        done = False
+        try:
+            done = self._execute_reverse_once(
+                path, goal_checker_id='dock_position_checker', final=False,
+                controller_id='ParkingReverse', motion='retrace')
+        finally:
+            restored = any(self._set_collision_monitor(True) for _attempt in range(3))
+            if not restored:
+                self.engage_emergency_stop('Collision Monitor could not be switched back on')
+        self.emit(event, done=bool(done) and restored, distance_m=round(length_m, 3),
+                  monitor_restored=restored)
+        return bool(done) and restored
+
+    def _set_collision_monitor(self, enabled):
+        """Switch the Collision Monitor on or off; True once it confirmed."""
+        client = getattr(self, 'monitor_toggle', None)
+        if client is None:
+            client = self.create_client(Toggle, '/collision_monitor/toggle')
+            self.monitor_toggle = client
+        if not client.wait_for_service(timeout_sec=2.0):
+            return False
+        request = Toggle.Request()
+        request.enable = enabled
+        # Not self._wait: switching back on must not give way to a stop request.
+        future = client.call_async(request)
+        deadline_s = time.monotonic() + 2.0
+        while not future.done() and time.monotonic() < deadline_s:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        if not future.done() or future.exception() is not None:
+            return False
+        return bool(future.result().success)
 
     def _drive_straight(self, distance_m, event):
         """Drive distance_m along the heading with zero turn rate (negative: reverse)."""

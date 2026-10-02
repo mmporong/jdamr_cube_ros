@@ -76,6 +76,9 @@ PATH_BLOCKED_NAV2_CODES = frozenset({104, 105, 106, 205, 206, 208, 305, 306, 308
 PATH_BLOCKED_PLANNER_CODES = frozenset({205, 206, 208, 305, 306, 308})
 PATH_BLOCKED_PROBE_S = 2.0
 PATH_BLOCKED_CLEAR_PROBES = 2
+# Odom trail kept for backing out the way the base came in: a point every 2 cm, 4 m.
+ODOM_TRAIL_STEP_M = 0.02
+ODOM_TRAIL_POINTS = 200
 
 
 def _expanded_path(value, parent=None):
@@ -300,6 +303,8 @@ class CorridorRoute(Node):
         self.amcl_covariance = None
         self.amcl_position = None
         self.odom_last_pose = None
+        # Where the base just drove, for backing out the same way (ServiceRoute._retrace).
+        self.odom_trail = deque(maxlen=ODOM_TRAIL_POINTS)
         self.odom_total_distance_m = 0.0
         self.odom_history = deque(maxlen=3000)
         self.amcl_motion_distance_m = 0.0
@@ -427,6 +432,10 @@ class CorridorRoute(Node):
                 math.sin(yaw - previous_yaw),
                 math.cos(yaw - previous_yaw)))
         self.odom_last_pose = odom_pose
+        trail = getattr(self, 'odom_trail', None)
+        if trail is not None and (not trail or math.hypot(
+                position.x - trail[-1][0], position.y - trail[-1][1]) >= ODOM_TRAIL_STEP_M):
+            trail.append(odom_pose)
         history = getattr(self, 'odom_history', None)
         if history is not None:
             stamp_ns = (_message.header.stamp.sec * 1_000_000_000 +
