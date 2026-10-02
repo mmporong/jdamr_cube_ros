@@ -3,6 +3,9 @@
   paths in 127 s while AMCL jumped). Replan only when the path became invalid,
   is 10 s old, or the goal changed. The goal checker judges position only; the
   executor turns once in odom and aligns afterwards.
+  Lattice plans first; when it finds no path NavFn plans the same goal
+  (2026-10-02 10:39: Lattice failed four times from beside table_02 while NavFn
+  had a path, and the cycle stopped short of the dock).
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -19,7 +22,10 @@
               </Inverter>
               <IsPathValid path="{path}"/>
             </ReactiveSequence>
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="Lattice" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+            <Fallback name="LatticeThenNavFn">
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="Lattice" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+            </Fallback>
           </Fallback>
         </RateController>
         <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="staging_position_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
