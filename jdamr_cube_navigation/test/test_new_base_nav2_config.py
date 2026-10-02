@@ -97,9 +97,9 @@ def test_explicit_footprint_margin_is_not_padded_twice():
         polygon = yaml.safe_load(params['footprint'])
         assert params['footprint_padding'] == 0.0
         assert max(p[0] for p in polygon) - geometry[
-            'front_to_wheel_axis']['value'] == pytest.approx(0.02)
+            'front_to_wheel_axis']['value'] == pytest.approx(0.005)
         assert max(p[1] for p in polygon) - geometry[
-            'wheel_outer_width']['value'] / 2 == pytest.approx(0.02)
+            'wheel_outer_width']['value'] / 2 == pytest.approx(0.005)
 
 
 @pytest.mark.parametrize('tamper', [False, True])
@@ -851,7 +851,7 @@ def test_narrowed_stop_zone_is_rejected(tmp_path):
 def test_stop_zone_below_requested_margin_is_rejected(tmp_path):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     points = \
-        '[[0.125, 0.33], [0.125, -0.33], [-0.335, -0.33], [-0.335, 0.33]]'
+        '[[0.115, 0.33], [0.115, -0.33], [-0.335, -0.33], [-0.335, 0.33]]'
     stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
     stop_zone['stopped']['points'] = points
     narrowed = tmp_path / 'below_margin.yaml'
@@ -1233,7 +1233,7 @@ def test_stop_zones_follow_the_narrow_frame_beside_the_wheels():
         assert not _inside(json.loads(stop_zone[name]['points']), leg, False), name
     footprint = json.loads(
         document['local_costmap']['local_costmap']['ros__parameters']['footprint'])
-    assert _inside(footprint, (0.0, 0.28), True)      # wheel side, 2 cm inside
+    assert _inside(footprint, (0.0, 0.272), True)     # wheel side, inside the 5 mm
     assert not _inside(footprint, (-0.2, 0.26), True)  # beside the 0.45 m frame
 
 
@@ -1241,7 +1241,7 @@ def test_footprint_narrower_than_the_measured_frame_is_rejected(tmp_path):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     for name in ('local_costmap', 'global_costmap'):
         parameters = document[name][name]['ros__parameters']
-        parameters['footprint'] = parameters['footprint'].replace('0.245', '0.22')
+        parameters['footprint'] = parameters['footprint'].replace('0.23', '0.22')
     invalid = tmp_path / 'invalid.yaml'
     invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
     with pytest.raises(RuntimeError, match='does not cover the measured body'):
@@ -1301,10 +1301,10 @@ def _points(zone, name, transform):
                           lambda x, y: [-0.053 if x == 0.0 else x, y]), 'end at the axle'),
     # A shorter leading edge than the general forward polygon.
     (lambda zone: _points(zone, 'translation_forward_straight',
-                          lambda x, y: [0.085 if x == 0.135 else x, y]), 'end at the axle'),
+                          lambda x, y: [0.10 if x == 0.12 else x, y]), 'end at the axle'),
     # Narrower than the wheels: misses part of the footprint half ahead of the axle.
     (lambda zone: _points(zone, 'translation_forward_straight',
-                          lambda x, y: [x, math.copysign(0.27, y) if abs(y) == 0.29 else y]),
+                          lambda x, y: [x, math.copysign(0.26, y) if abs(y) == 0.275 else y]),
      'footprint half'),
     (lambda zone: _points(zone, 'translation_backward_straight',
                           lambda x, y: [0.053 if x == 0.0 else x, y]), 'end at the axle'),

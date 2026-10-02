@@ -179,13 +179,13 @@ controller_server:
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.81
+        cost_weight: 1.5
         near_collision_cost: 253
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 0.5
-        trajectory_point_step: 2
+        trajectory_point_step: 4
       GoalCritic:
         enabled: true
         cost_power: 1
@@ -236,13 +236,15 @@ local_costmap:
       height: 3
       resolution: 0.05
       transform_tolerance: 0.7
-      # Measured body plus 0.02 m (jdamr_cube_description new_base_geometry.yaml): the
+      # Measured body plus 5 mm (jdamr_cube_description new_base_geometry.yaml; 2 cm
+      # until 2026-10-02: a 0.64 m gap left 5 cm for the centre, operator: "lower it,
+      # touching is fine, parking has to reach 1 cm"): the
       # frame is 0.45 m wide (+-0.225) over its 0.34 m length; only the 0.54 m wheels
       # (+-0.27, radius 0.033 m around the axle) are wider. A full-length wheel-width
       # rectangle held a desk leg 6.5 cm beside the frame inside every StopZone
       # direction and the base could not move at all (2026-10-02 10:06).
-      footprint: '[[0.085, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.085, -0.245]]'
-      # The polygon already includes 0.02 m beyond the measured body.
+      footprint: '[[0.07, 0.23], [0.038, 0.23], [0.038, 0.275], [-0.038, 0.275], [-0.038, 0.23], [-0.28, 0.23], [-0.28, -0.23], [-0.038, -0.23], [-0.038, -0.275], [0.038, -0.275], [0.038, -0.23], [0.07, -0.23]]'
+      # The polygon already includes 5 mm beyond the measured body.
       footprint_padding: 0.0
       plugins:
       - obstacle_layer
@@ -257,10 +259,13 @@ local_costmap:
         override_lethal_cost: false
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        # >= the 0.383 m circumscribed radius of the stepped footprint, so MPPI's
-        # footprint cost check can use the inflated costs (RPP and the Collision
-        # Monitor do not read this costmap).
+        # Steep decay: only cells next to an obstacle are expensive. At 3.0 a cell
+        # 18 cm from one still cost ~190 and MPPI crept at 1 deg/s between objects
+        # 18 cm away (2026-10-02 18:22).
+        cost_scaling_factor: 10.0
+        # >= the circumscribed radius of the footprint, so MPPI's footprint cost
+        # check can use the inflated costs (RPP and the Collision Monitor do not
+        # read this costmap).
         inflation_radius: 0.40
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -286,7 +291,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       transform_tolerance: 0.7
-      footprint: '[[0.085, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.085, -0.245]]'
+      footprint: '[[0.07, 0.23], [0.038, 0.23], [0.038, 0.275], [-0.038, 0.275], [-0.038, 0.23], [-0.28, 0.23], [-0.28, -0.23], [-0.038, -0.23], [-0.038, -0.275], [0.038, -0.275], [0.038, -0.23], [0.07, -0.23]]'
       # Match the explicitly padded local footprint; do not pad it twice.
       footprint_padding: 0.0
       resolution: 0.05
@@ -518,7 +523,7 @@ collision_monitor:
         # (2026-10-01 Spin: 1.3 deg after the stop command at 0.2 rad/s). The
         # 0.43 m circle it replaces stopped turns that touched nothing
         # (2026-10-02 13:48, MPPI; operator 2026-10-02: relax it).
-        points: '[[-0.3212, 0.2156], [-0.298, 0.248], [-0.0824, 0.248], [-0.0863, 0.2855], [-0.056, 0.293], [0.0251, 0.2972], [0.056, 0.293], [0.056, 0.2553], [0.088, 0.248], [0.088, 0.0046], [0.1134, -0.2374], [0.0824, -0.248], [0.0863, -0.2855], [0.056, -0.293], [-0.0251, -0.2972], [-0.056, -0.293], [-0.056, -0.2553], [-0.2704, -0.2778], [-0.298, -0.248], [-0.298, -0.0156]]'
+        points: '[[-0.3048, 0.2022], [-0.283, 0.233], [-0.0657, 0.233], [-0.0698, 0.2722], [-0.041, 0.278], [0.0117, 0.2808], [0.041, 0.278], [0.041, 0.2386], [0.073, 0.233], [0.073, 0.0038], [0.097, -0.2241], [0.0657, -0.233], [0.0698, -0.2722], [0.041, -0.278], [-0.0117, -0.2808], [-0.041, -0.278], [-0.041, -0.2386], [-0.2571, -0.2613], [-0.283, -0.233], [-0.283, -0.0148]]'
         linear_min: -0.005
         linear_max: 0.005
         theta_min: 0.005
@@ -528,7 +533,7 @@ collision_monitor:
         # (0, 0) selected the 0.43 m circumscribed circle instead of the
         # stopped rectangle and could latch StopZone after the controller
         # had already stopped. Mirror of the counterclockwise sweep.
-        points: '[[-0.298, 0.0156], [-0.298, 0.248], [-0.2704, 0.2778], [-0.056, 0.2553], [-0.056, 0.293], [-0.0251, 0.2972], [0.056, 0.293], [0.0863, 0.2855], [0.0824, 0.248], [0.1134, 0.2374], [0.088, -0.0046], [0.088, -0.248], [0.056, -0.2553], [0.056, -0.293], [0.0251, -0.2972], [-0.056, -0.293], [-0.0863, -0.2855], [-0.0824, -0.248], [-0.298, -0.248], [-0.3212, -0.2156]]'
+        points: '[[-0.283, 0.0148], [-0.283, 0.233], [-0.2571, 0.2613], [-0.041, 0.2386], [-0.041, 0.278], [-0.0117, 0.2808], [0.041, 0.278], [0.0698, 0.2722], [0.0657, 0.233], [0.097, 0.2241], [0.073, -0.0038], [0.073, -0.233], [0.041, -0.2386], [0.041, -0.278], [0.0117, -0.2808], [-0.041, -0.278], [-0.0698, -0.2722], [-0.0657, -0.233], [-0.283, -0.233], [-0.3048, -0.2022]]'
         linear_min: -0.005
         linear_max: 0.005
         theta_min: -1.0
@@ -538,14 +543,14 @@ collision_monitor:
         # A return inside the padded footprint behind the axle held every other
         # polygon, so the base could not drive away from it (2026-10-02 11:09:
         # a desk leg 1.3-2.0 cm beside the frame at the right rear corner).
-        points: '[[0.135, 0.245], [0.053, 0.245], [0.053, 0.29], [0.0, 0.29], [0.0, -0.29], [0.053, -0.29], [0.053, -0.245], [0.135, -0.245]]'
+        points: '[[0.12, 0.23], [0.038, 0.23], [0.038, 0.275], [0.0, 0.275], [0.0, -0.275], [0.038, -0.275], [0.038, -0.23], [0.12, -0.23]]'
         linear_min: 0.005
         linear_max: 0.2
         theta_min: -0.005
         theta_max: 0.005
       translation_backward_straight:
         # Zero turn rate in reverse: the half behind the axle, rear edge as below.
-        points: '[[0.0, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.0, -0.29]]'
+        points: '[[0.0, 0.275], [-0.038, 0.275], [-0.038, 0.23], [-0.28, 0.23], [-0.28, -0.23], [-0.038, -0.23], [-0.038, -0.275], [0.0, -0.275]]'
         linear_min: -0.2
         linear_max: -0.005
         theta_min: -0.005
@@ -555,14 +560,14 @@ collision_monitor:
         # requested 50 mm at the leading edge, but do not add another lateral
         # band outside the already padded costmap footprint. FootprintApproach
         # still projects the full swept footprint whenever the path turns.
-        points: '[[0.135, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.135, -0.245]]'
+        points: '[[0.12, 0.23], [0.038, 0.23], [0.038, 0.275], [-0.038, 0.275], [-0.038, 0.23], [-0.28, 0.23], [-0.28, -0.23], [-0.038, -0.23], [-0.038, -0.275], [0.038, -0.275], [0.038, -0.23], [0.12, -0.23]]'
         linear_min: 0.005
         linear_max: 0.2
         theta_min: -1.0
         theta_max: 1.0
       translation_backward:
         # The padded costmap footprint (2 cm over the body); no extra rear band.
-        points: '[[0.085, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.085, -0.245]]'
+        points: '[[0.07, 0.23], [0.038, 0.23], [0.038, 0.275], [-0.038, 0.275], [-0.038, 0.23], [-0.28, 0.23], [-0.28, -0.23], [-0.038, -0.23], [-0.038, -0.275], [0.038, -0.275], [0.038, -0.23], [0.07, -0.23]]'
         linear_min: -0.2
         linear_max: -0.005
         theta_min: -1.0
@@ -571,7 +576,7 @@ collision_monitor:
         # Last-entry fallback required by Collision Monitor. Sides and rear are the
         # padded footprint: the 5 cm band held the robot still beside the water box
         # with about 10 cm real clearance (2026-10-01).
-        points: '[[0.135, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.135, -0.245]]'
+        points: '[[0.12, 0.23], [0.038, 0.23], [0.038, 0.275], [-0.038, 0.275], [-0.038, 0.23], [-0.28, 0.23], [-0.28, -0.23], [-0.038, -0.23], [-0.038, -0.275], [0.038, -0.275], [0.038, -0.23], [0.12, -0.23]]'
         linear_min: -1.0
         linear_max: 1.0
         theta_min: -1.0

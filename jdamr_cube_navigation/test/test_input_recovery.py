@@ -1767,8 +1767,8 @@ def test_m1_escape_retry_validates_band_already_reversed(monkeypatch, tmp_path, 
     rear_x = stopped_x + min(x for x, _y in world.footprint)
     cell = world._cell(rear_x - 0.055, 0.0)
     low = world.origin[0] + cell[0] * world.resolution
-    # The cell spans 0.03-0.08 m behind the current rear edge.
-    assert (rear_x - low - world.resolution, rear_x - low) == pytest.approx((0.03, 0.08))
+    # The cell spans 0.045-0.095 m behind the current rear edge (5 mm footprint margin).
+    assert (rear_x - low - world.resolution, rear_x - low) == pytest.approx((0.045, 0.095))
     real_once = node._execute_reverse_once
     attempts = []
 
