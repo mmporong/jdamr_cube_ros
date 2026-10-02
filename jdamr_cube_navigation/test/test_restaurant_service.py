@@ -2295,71 +2295,6 @@ def test_outline_intrusion_names_the_half_the_monitor_holds(points, half):
     assert outline_intrusion(_points_scan(points), (0.0, 0.0, 0.0), OUTLINE, 3) == half
 
 
-def test_front_intrusion_backs_off_and_no_straight_way_out_holds():
-    node = route()
-    node._blocked_ahead = Mock(return_value=False)
-    node._footprint_intrusion = Mock(return_value='front')
-    node._blocked_behind = Mock(return_value=False)
-    node._drive_straight = Mock(return_value=True)
-    assert node._escape_blocked() is True
-    assert node._drive_straight.call_args.args[1] == 'path_blocked_back_off'
-    for ahead, intrusion, behind in ((False, 'both', False), (True, 'rear', False),
-                                     (True, None, True)):
-        node = route()
-        node._blocked_ahead = Mock(return_value=ahead)
-        node._footprint_intrusion = Mock(return_value=intrusion)
-        node._blocked_behind = Mock(return_value=behind)
-        node._drive_straight = Mock()
-        assert node._escape_blocked() is False
-        node._drive_straight.assert_not_called()
-
-
-def test_straight_drive_pauses_the_approach_polygon_and_always_restores_it():
-    node = route()
-    switched = []
-    node._set_footprint_approach = Mock(side_effect=lambda on: switched.append(on) or True)
-    node._drive_zero_turn = Mock(return_value=0.215)
-    node.engage_emergency_stop = Mock()
-    assert node._drive_straight(0.22, 'path_blocked_escape_forward') is True
-    assert switched == [False, True]
-    event = _events(node)[-1]
-    assert event['travelled_m'] == 0.215 and event['approach_restored'] is True
-    # The drive fails: still switched back on.
-    switched.clear()
-    node._drive_zero_turn = Mock(side_effect=RuntimeError('odom lost'))
-    with pytest.raises(RuntimeError):
-        node._drive_straight(0.22, 'path_blocked_escape_forward')
-    assert switched == [False, True]
-    node.engage_emergency_stop.assert_not_called()
-
-
-def test_straight_drive_latches_the_emergency_stop_when_the_approach_stays_off():
-    node = route()
-    node._set_footprint_approach = Mock(side_effect=[True, False, False, False])
-    node._drive_zero_turn = Mock(return_value=-0.10)
-    node.engage_emergency_stop = Mock()
-    assert node._drive_straight(-0.10, 'path_blocked_back_off') is False
-    node.engage_emergency_stop.assert_called_once()
-    assert _events(node)[-1]['approach_restored'] is False
-
-
-def test_straight_drive_does_not_move_when_the_approach_cannot_be_paused():
-    node = route()
-    node._set_footprint_approach = Mock(side_effect=[False, True])
-    node._drive_zero_turn = Mock()
-    assert node._drive_straight(0.22, 'path_blocked_escape_forward') is False
-    node._drive_zero_turn.assert_not_called()
-    assert [c.args for c in node._set_footprint_approach.call_args_list] == [(False,), (True,)]
-
-
-def test_straight_drive_short_or_wrong_way_is_not_done():
-    for travelled in (0.15, -0.22, None):
-        node = route()
-        node._set_footprint_approach = Mock(return_value=True)
-        node._drive_zero_turn = Mock(return_value=travelled)
-        assert node._drive_straight(0.22, 'path_blocked_escape_forward') is False
-
-
 def test_zero_turn_drive_commands_no_rotation_and_stops_at_the_distance(monkeypatch):
     node = route()
     published = []
@@ -2436,3 +2371,24 @@ def test_planner_block_keeps_the_controller(monkeypatch):
     assert node._run_with_input_recovery(recording_attempt) is True
     assert trees == ['staging.xml', 'staging.xml']
     node._escape_blocked.assert_not_called()
+
+
+def test_a_return_inside_the_padded_footprint_holds_instead_of_escaping():
+    """18:02 (run 180130): a straight escape past a return 1 cm off the frame pushed it."""
+    for ahead, intrusion in ((False, 'rear'), (False, 'front'), (True, 'rear'), (False, 'both')):
+        node = route()
+        node._blocked_ahead = Mock(return_value=ahead)
+        node._footprint_intrusion = Mock(return_value=intrusion)
+        node._blocked_behind = Mock(return_value=False)
+        node._rear_swing_need = Mock(return_value=0.2)
+        node._drive_straight = Mock()
+        assert node._escape_blocked() is False
+        node._drive_straight.assert_not_called()
+        assert _events(node)[-1]['reason'] == 'return inside the padded footprint'
+
+
+def test_straight_drive_short_or_wrong_way_is_not_done():
+    for travelled, done in ((0.215, True), (0.15, False), (-0.22, False), (None, False)):
+        node = route()
+        node._drive_zero_turn = Mock(return_value=travelled)
+        assert node._drive_straight(0.22, 'path_blocked_escape_forward') is done

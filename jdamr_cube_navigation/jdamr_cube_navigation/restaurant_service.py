@@ -37,8 +37,7 @@ from nav_msgs.msg import OccupancyGrid, Path as RosPath
 from rcl_interfaces.srv import GetParameters
 import rclpy
 from rclpy.action import ActionClient
-from rclpy.parameter import Parameter, parameter_value_to_python
-from rclpy.parameter_client import AsyncParameterClient
+from rclpy.parameter import parameter_value_to_python
 from rclpy.signals import SignalHandlerOptions
 from rclpy.utilities import remove_ros_args
 from std_msgs.msg import String
@@ -878,26 +877,27 @@ class ServiceRoute(CorridorRoute):
         """
         Move straight away from what blocks the base before the hold.
 
-        Something in the band ahead or inside the front half of the footprint: back
-        PATH_BLOCKED_BACKOFF_M times the hold count out (0.10, 0.20, 0.30 m; a
-        repeated 0.10 m back-off met the same object four times, 17:49-17:52).
-        Nav2's default tree backs up too. Something behind
-        the axle inside the turn circle, including inside the rear half of the
-        footprint: drive forward until it is out of the circle, since every turn and
-        arc swings the rear into it (2026-10-02 11:09). An object beside the frame
-        alone triggers neither: backing out from the desk leg next to the frame
-        (10:06) would have turned the wheels toward it. Returns in both halves, or
-        ahead with the rear held, leave no straight way out: hold.
+        Something in the band ahead: back PATH_BLOCKED_BACKOFF_M times the hold
+        count out (0.10, 0.20, 0.30 m; a repeated 0.10 m back-off met the same
+        object four times, 17:49-17:52). Nav2's default tree backs up too.
+        Something behind the axle inside the turn circle: drive forward until it is
+        out of the circle, since every turn and arc swings the rear into it.
+
+        A return inside the padded footprint (within 2 cm of the body) holds instead:
+        a straight escape past one 1 cm outside the frame pushed the object
+        (2026-10-02 18:02, run 180130; the robot went straight, odom -0.15 deg), so
+        the scan plane leaves no margin there. The Collision Monitor stays fully on.
         """
         ahead = self._blocked_ahead()
         if ahead is None:
             return False
         intrusion = self._footprint_intrusion()
-        if intrusion == 'both' or (ahead and intrusion == 'rear'):
-            self.emit('path_blocked_escape', done=False, reason='no straight way out',
+        if intrusion is not None:
+            self.emit('path_blocked_escape', done=False,
+                      reason='return inside the padded footprint',
                       ahead=ahead, intrusion=intrusion)
             return False
-        if ahead or intrusion == 'front':
+        if ahead:
             back_m = PATH_BLOCKED_BACKOFF_M * max(1, wait)
             if self._blocked_behind(band_m=back_m + 0.05) is not False:
                 self.emit('path_blocked_back_off', done=False, reason='band behind not clear',
@@ -916,53 +916,14 @@ class ServiceRoute(CorridorRoute):
         return self._drive_straight(distance_m, 'path_blocked_escape_forward')
 
     def _drive_straight(self, distance_m, event):
-        """
-        Drive distance_m along the heading with zero turn rate (negative: reverse).
-
-        A return inside the padded footprint holds every StopZone polygon that holds
-        the whole footprint and the FootprintApproach polygon (it reports a collision
-        at t = 0), so nothing moved (2026-10-02 11:09). At zero turn rate the StopZone
-        uses its zero-turn polygons, which hold only the half on the side of travel;
-        the approach polygon is paused for this move alone and always switched back
-        on. If it cannot be switched back on, the emergency stop is latched.
-        """
-        if not self._set_footprint_approach(False):
-            self._set_footprint_approach(True)
-            self.emit(event, done=False, reason='approach polygon not paused',
-                      distance_m=abs(distance_m))
-            return False
-        travelled_m = None
-        try:
-            travelled_m = self._drive_zero_turn(distance_m)
-        finally:
-            restored = any(self._set_footprint_approach(True) for _attempt in range(3))
-            if not restored:
-                self.engage_emergency_stop('FootprintApproach could not be switched back on')
-        done = (restored and travelled_m is not None
+        """Drive distance_m along the heading with zero turn rate (negative: reverse)."""
+        travelled_m = self._drive_zero_turn(distance_m)
+        done = (travelled_m is not None
                 and math.copysign(travelled_m, distance_m) == travelled_m
                 and abs(travelled_m) >= abs(distance_m) - STRAIGHT_ESCAPE_TOLERANCE_M)
         self.emit(event, done=done, distance_m=abs(distance_m),
-                  travelled_m=None if travelled_m is None else round(travelled_m, 3),
-                  approach_restored=restored)
+                  travelled_m=None if travelled_m is None else round(travelled_m, 3))
         return done
-
-    def _set_footprint_approach(self, enabled):
-        """Switch the Collision Monitor's FootprintApproach polygon; True once applied."""
-        client = getattr(self, 'monitor_parameters', None)
-        if client is None:
-            client = AsyncParameterClient(self, 'collision_monitor')
-            self.monitor_parameters = client
-        if not client.wait_for_services(timeout_sec=2.0):
-            return False
-        # Not self._wait: switching back on must not give way to a stop request.
-        future = client.set_parameters([Parameter('FootprintApproach.enabled', value=enabled)])
-        deadline_s = time.monotonic() + 2.0
-        while not future.done() and time.monotonic() < deadline_s:
-            rclpy.spin_once(self, timeout_sec=0.05)
-        if not future.done() or future.exception() is not None:
-            return False
-        results = future.result().results
-        return len(results) == 1 and results[0].successful
 
     def _drive_zero_turn(self, distance_m):
         """
