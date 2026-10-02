@@ -1151,6 +1151,9 @@ def parse_args(argv=None):
     parser.add_argument('--graceful-final', action='store_true',
                         help='use the Graceful controllers for the box approach and dock '
                              'leg instead of RPP (trajectory collision check, see 105)')
+    parser.add_argument('--mppi-transit', action='store_true',
+                        help='follow the transit and dock staging legs with MPPI instead '
+                             'of RPP (A/B; box approach and dock leg unchanged)')
     parser.add_argument('--home-only', action='store_true',
                         help='return to the dock only (needs --execute and --return-home)')
     parser.add_argument('--via-route', type=Path)
@@ -1251,6 +1254,8 @@ def run_attempt(args, active=None):
             if args.graceful_final:
                 node.final_approach_controller = 'GracefulParking'
                 node.dock_leg_controller = 'GracefulReverse'
+            if args.mppi_transit:
+                node.use_mppi_transit()
             node.operator_heartbeat = args.operator_heartbeat
             node.operator_link_timeout_s = args.operator_link_timeout_s
             ok = True

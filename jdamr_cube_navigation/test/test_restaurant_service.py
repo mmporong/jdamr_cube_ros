@@ -2224,3 +2224,18 @@ def test_forward_escape_needs_the_band_ahead_clear_over_its_length():
     assert node._escape_blocked() is False
     node._drive_straight.assert_not_called()
     assert node._blocked_ahead.call_args.kwargs['band_m'] == pytest.approx(0.30 + 0.03 + 0.05)
+
+
+def test_mppi_transit_switches_only_the_transit_and_staging_trees(monkeypatch):
+    monkeypatch.setattr(restaurant_service, 'get_package_share_directory',
+                        lambda _: str(PACKAGE))
+    route = object.__new__(restaurant_service.ServiceRoute)
+    route.through_behavior_tree, route.staging_behavior_tree = 'rpp_transit', 'rpp_staging'
+    route.alignment_behavior_tree = 'alignment'
+    route.final_approach_controller, route.dock_leg_controller = 'Parking', 'ParkingReverse'
+    route.use_mppi_transit()
+    for tree in (route.through_behavior_tree, route.staging_behavior_tree):
+        assert Path(tree).is_file() and 'controller_id="MPPI"' in Path(tree).read_text()
+    assert route.alignment_behavior_tree == 'alignment'
+    assert (route.final_approach_controller, route.dock_leg_controller) == (
+        'Parking', 'ParkingReverse')

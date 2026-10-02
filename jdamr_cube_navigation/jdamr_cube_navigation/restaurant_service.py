@@ -774,6 +774,20 @@ class ServiceRoute(CorridorRoute):
         return (wrapped.status == GoalStatus.STATUS_SUCCEEDED
                 and not wrapped.result.error_code and len(wrapped.result.path.poses) > 0)
 
+    def use_mppi_transit(self):
+        """
+        Follow the transit and dock staging legs with MPPI instead of RPP.
+
+        For the A/B on the same course (2026-10-02): RPP turned in place beside a
+        desk leg without looking at the footprint (11:09), MPPI scores its rollouts
+        with it. Box approach, alignment and the dock leg stay on their controllers.
+        """
+        package = Path(get_package_share_directory('jdamr_cube_navigation'))
+        self.through_behavior_tree = str(
+            package / 'behavior_trees/navigate_through_poses_transit_mppi.xml')
+        self.staging_behavior_tree = str(
+            package / 'behavior_trees/navigate_to_pose_staging_mppi.xml')
+
     def _scan_in_base(self):
         """Return (scan, laser pose in the base frame, outline), or None if unavailable."""
         scan = getattr(self, 'last_scan', None)

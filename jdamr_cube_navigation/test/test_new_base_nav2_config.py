@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import math
 from pathlib import Path
+import re
 import time
 from types import SimpleNamespace
 from xml.etree import ElementTree as ET
@@ -1247,8 +1248,16 @@ def test_mppi_must_keep_the_speed_limit_and_footprint_costs(tmp_path, mutate):
         _load_validator(invalid)(None)
 
 
-def test_mppi_is_loaded_but_no_tree_selects_it_yet():
+def test_only_the_ab_tree_copies_select_mppi_and_differ_only_in_the_controller():
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     assert 'MPPI' in document['controller_server']['ros__parameters']['controller_plugins']
-    trees = (ROOT / 'jdamr_cube_navigation/behavior_trees').glob('*.xml')
-    assert not any('controller_id="MPPI"' in tree.read_text() for tree in trees)
+    trees = ROOT / 'jdamr_cube_navigation/behavior_trees'
+    selecting = sorted(tree.name for tree in trees.glob('*.xml')
+                       if 'controller_id="MPPI"' in tree.read_text())
+    assert selecting == ['navigate_through_poses_transit_mppi.xml',
+                         'navigate_to_pose_staging_mppi.xml']
+    for name in selecting:
+        copy = re.sub(r'<!--\n  MPPI copy of .*?-->\n', '', (trees / name).read_text(),
+                      count=1, flags=re.S)
+        original = (trees / name.replace('_mppi', '')).read_text()
+        assert copy.replace('controller_id="MPPI"', 'controller_id="FollowPath"') == original
