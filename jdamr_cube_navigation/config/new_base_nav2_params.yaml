@@ -76,6 +76,7 @@ controller_server:
     - position_goal_checker
     controller_plugins:
     - FollowPath
+    - MPPI
     use_realtime_priority: false
     progress_checker:
       plugin: nav2_controller::PoseProgressChecker
@@ -129,6 +130,98 @@ controller_server:
       max_angular_accel: 1.5
       max_robot_pose_search_dist: 10.0
       use_interpolation: true
+    # Loaded for evaluation; no BT selects it yet. RPP follows the path and turns in
+    # place by a fixed 45 deg rule without looking at the footprint: beside a leg at
+    # the rear every requested turn hit the rotation StopZone and the base never
+    # tried driving on first (2026-10-02 11:09). MPPI scores sampled (v, w) rollouts
+    # with the real footprint (CostCritic consider_footprint). Pi 4 sizing: 1000
+    # samples, 40 steps of 0.1 s (= the 10 Hz control period).
+    MPPI:
+      plugin: nav2_mppi_controller::MPPIController
+      motion_model: DiffDrive
+      time_steps: 40
+      model_dt: 0.1
+      batch_size: 1000
+      iteration_count: 1
+      vx_std: 0.05
+      vy_std: 0.0
+      wz_std: 0.3
+      vx_max: 0.12
+      vx_min: -0.06
+      vy_max: 0.0
+      wz_max: 0.6
+      ax_max: 0.5
+      ax_min: -0.5
+      ay_max: 0.0
+      az_max: 1.5
+      temperature: 0.3
+      gamma: 0.015
+      prune_distance: 1.2
+      transform_tolerance: 0.5
+      enforce_path_inversion: false
+      visualize: false
+      regenerate_noises: false
+      critics:
+      - ConstraintCritic
+      - CostCritic
+      - GoalCritic
+      - GoalAngleCritic
+      - PathAlignCritic
+      - PathFollowCritic
+      - PathAngleCritic
+      - PreferForwardCritic
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        near_collision_cost: 253
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 0.5
+        trajectory_point_step: 2
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.0
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.0
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -163,7 +256,10 @@ local_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 0.3
+        # >= the 0.383 m circumscribed radius of the stepped footprint, so MPPI's
+        # footprint cost check can use the inflated costs (RPP and the Collision
+        # Monitor do not read this costmap).
+        inflation_radius: 0.40
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true

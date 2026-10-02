@@ -425,6 +425,7 @@ def validate_new_base_params(params, geometry, precision_parking=False):
         'nav2_regulated_pure_pursuit_controller::'
         'RegulatedPurePursuitController')
     graceful_controller = 'nav2_graceful_controller::GracefulController'
+    mppi_controller = 'nav2_mppi_controller::MPPIController'
     for plugin_name in controller_plugins:
         if plugin_name not in controller:
             raise RuntimeError(
@@ -438,6 +439,20 @@ def validate_new_base_params(params, geometry, precision_parking=False):
                     or not 0.0 < top <= NEW_BASE_MAX_FORWARD_MPS):
                 raise RuntimeError(
                     'new-base controller speed exceeds uncalibrated limit')
+            continue
+        if plugin.get('plugin') == mppi_controller:
+            # MPPI must score rollouts with the measured footprint and keep the
+            # uncalibrated speed limit both ways (2026-10-02).
+            top, bottom = plugin.get('vx_max'), plugin.get('vx_min')
+            cost = plugin.get('CostCritic') or {}
+            if (any(type(v) not in (int, float) or not math.isfinite(v) for v in (top, bottom))
+                    or not 0.0 < top <= NEW_BASE_MAX_FORWARD_MPS
+                    or not -NEW_BASE_MAX_FORWARD_MPS <= bottom <= 0.0
+                    or plugin.get('motion_model') != 'DiffDrive'
+                    or 'CostCritic' not in (plugin.get('critics') or [])
+                    or cost.get('enabled') is not True
+                    or cost.get('consider_footprint') is not True):
+                raise RuntimeError('new-base MPPI controller violates the approved profile')
             continue
         if plugin.get('plugin') != supported_controller:
             raise RuntimeError(

@@ -1230,3 +1230,25 @@ def test_footprint_narrower_than_the_measured_frame_is_rejected(tmp_path):
     invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
     with pytest.raises(RuntimeError, match='does not cover the measured body'):
         _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('mutate', [
+    lambda mppi: mppi.update(vx_max=0.2),
+    lambda mppi: mppi.update(vx_min=-0.2),
+    lambda mppi: mppi['CostCritic'].update(consider_footprint=False),
+    lambda mppi: mppi.update(motion_model='Omni'),
+])
+def test_mppi_must_keep_the_speed_limit_and_footprint_costs(tmp_path, mutate):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    mutate(document['controller_server']['ros__parameters']['MPPI'])
+    invalid = tmp_path / 'invalid.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(RuntimeError, match='MPPI controller violates'):
+        _load_validator(invalid)(None)
+
+
+def test_mppi_is_loaded_but_no_tree_selects_it_yet():
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    assert 'MPPI' in document['controller_server']['ros__parameters']['controller_plugins']
+    trees = (ROOT / 'jdamr_cube_navigation/behavior_trees').glob('*.xml')
+    assert not any('controller_id="MPPI"' in tree.read_text() for tree in trees)
