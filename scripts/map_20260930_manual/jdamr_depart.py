@@ -296,7 +296,11 @@ def cmd_display_start(_args):
     }
     for unit in missing:
         command = commands[unit]
-        sh(f'systemd-run --user --unit={unit} --collect {env} '
+        # The relay rides on ssh to the Pi; one timeout at 09:08 on 2026-10-02 ended
+        # it and RViz stayed empty for an hour. It restarts itself now.
+        restart = ('--property=Restart=on-failure --property=RestartSec=5 '
+                   if unit == 'jdamr-p2-relay' else '')
+        sh(f'systemd-run --user --unit={unit} --collect {env} {restart}'
            f'--property=KillSignal=SIGINT --property=TimeoutStopSec=10 '
            f'/bin/bash -c {shlex.quote(command)}')
     time.sleep(4)
@@ -992,11 +996,16 @@ def cmd_stop(_args):
 
 ESTOP_STATE_READ = ('timeout 8 ros2 topic echo --once --qos-durability transient_local '
                     '--qos-reliability reliable /emergency_stop_state std_msgs/msg/Bool')
+# ros2 CLI calls leave a ros2 daemon on domain 12; long-lived participants there have
+# blocked Nav2 lifecycle bringup before (2026-09-03; 2026-10-02 10:50 get_state timeout
+# with a daemon up since 09:01), so each call here stops it again.
+STOP_ROS2_DAEMON = 'ros2 daemon stop >/dev/null 2>&1 || true'
 
 
 def estop_state():
     """'engaged', 'released', or 'unknown' when the base driver did not answer."""
-    out = pi(f'{PI_SOURCE}; {ESTOP_STATE_READ}', timeout=30, check=False).stdout
+    out = pi(f'{PI_SOURCE}; {ESTOP_STATE_READ}; {STOP_ROS2_DAEMON}', timeout=30,
+             check=False).stdout
     return ('engaged' if 'data: true' in out else 'released' if 'data: false' in out
             else 'unknown')
 
@@ -1008,7 +1017,7 @@ def cmd_estop(_args):
     not a safety-rated emergency stop.
     """
     pi(f'{PI_SOURCE}; timeout 10 ros2 topic pub --once -w 1 /emergency_stop '
-       'std_msgs/msg/Bool "{data: true}"', timeout=40, check=False)
+       f'std_msgs/msg/Bool "{{data: true}}"; {STOP_ROS2_DAEMON}', timeout=40, check=False)
     log(f'emergency stop: {estop_state()}')
     cmd_stop(_args)
 
@@ -1016,7 +1025,7 @@ def cmd_estop(_args):
 def cmd_estop_reset(_args):
     """Release the latch; refused while a velocity command is still arriving."""
     out = pi(f'{PI_SOURCE}; timeout 10 ros2 service call /emergency_stop_reset '
-             'std_srvs/srv/Trigger', timeout=40, check=False).stdout
+             f'std_srvs/srv/Trigger; {STOP_ROS2_DAEMON}', timeout=40, check=False).stdout
     log(('released' if 'success=True' in out else 'NOT released: '
          + (out.strip().splitlines() or ['no answer'])[-1]) + f'; state: {estop_state()}')
 

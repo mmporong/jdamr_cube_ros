@@ -2139,6 +2139,7 @@ def test_controller_stop_backs_away_before_each_hold(monkeypatch):
     _fast_clock(monkeypatch)
     node = route()
     node._path_open = Mock(return_value=True)
+    node._front_clear = Mock(return_value=False)
     node._escape_blocked = Mock(return_value=True)
     tries, attempt = _blocked_attempts(node, blocked_tries=2, code=105)
     assert node._run_with_input_recovery(attempt) is True
@@ -2161,3 +2162,16 @@ def _scan(ranges):
 def test_only_an_object_ahead_counts_as_blocked_ahead(ranges, ahead):
     from jdamr_cube_navigation.reverse_parking import obstacle_ahead
     assert obstacle_ahead(_scan(ranges), (-0.01, 0.0, math.pi), 0.085, 0.30, 0.29) is ahead
+
+
+def test_controller_stop_hold_ends_once_the_band_ahead_stays_empty(monkeypatch):
+    """The blocker steps aside: two empty checks in a row end the 105 hold early."""
+    _fast_clock(monkeypatch, step_s=1)
+    node = route()
+    node._escape_blocked = Mock(return_value=False)
+    node._front_clear = Mock(side_effect=[False, True, False, True, True])
+    tries, attempt = _blocked_attempts(node, blocked_tries=1, code=105)
+    assert node._run_with_input_recovery(attempt) is True
+    assert len(tries) == 2 and node._front_clear.call_count == 5
+    cleared = [e for e in _events(node) if e['event'] == 'path_blocked_cleared']
+    assert len(cleared) == 1 and cleared[0]['held_s'] < corridor_route.PATH_BLOCKED_WAIT_S

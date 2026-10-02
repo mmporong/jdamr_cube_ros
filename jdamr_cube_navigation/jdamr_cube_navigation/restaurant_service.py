@@ -767,6 +767,32 @@ class ServiceRoute(CorridorRoute):
         return (wrapped.status == GoalStatus.STATUS_SUCCEEDED
                 and not wrapped.result.error_code and len(wrapped.result.path.poses) > 0)
 
+    def _blocked_ahead(self):
+        """
+        Return whether the latest scan has a return in the band ahead of the front edge.
+
+        None when no scan or transform is available.
+        """
+        scan = getattr(self, 'last_scan', None)
+        if scan is None:
+            return None
+        try:
+            transform = self.parking_tf.lookup_transform(
+                self.parking_contract['robot_base_frame'], scan.header.frame_id,
+                rclpy.time.Time())
+            outline = self._reverse_footprint()
+        except (TransformException, RuntimeError):
+            return None
+        laser = (transform.transform.translation.x, transform.transform.translation.y,
+                 _quaternion_yaw(transform.transform.rotation))
+        front_m = max(point[0] for point in outline)
+        half_width_m = max(abs(point[1]) for point in outline)
+        return obstacle_ahead(scan, laser, front_m, PATH_BLOCKED_AHEAD_BAND_M, half_width_m)
+
+    def _front_clear(self):
+        """Whether the band ahead is empty on a fresh scan (an unreadable scan is not)."""
+        return self._blocked_ahead() is False
+
     def _escape_blocked(self):
         """
         Back PATH_BLOCKED_BACKOFF_M straight out when the blocking object is in front.
@@ -776,22 +802,7 @@ class ServiceRoute(CorridorRoute):
         only an object in the band ahead of the front edge triggers the back-off.
         The reverse path is validated and the Collision Monitor stays in the loop.
         """
-        scan = getattr(self, 'last_scan', None)
-        if scan is None:
-            return False
-        try:
-            transform = self.parking_tf.lookup_transform(
-                self.parking_contract['robot_base_frame'], scan.header.frame_id,
-                rclpy.time.Time())
-            outline = self._reverse_footprint()
-        except (TransformException, RuntimeError) as error:
-            self.emit('path_blocked_back_off', done=False, reason=str(error))
-            return False
-        laser = (transform.transform.translation.x, transform.transform.translation.y,
-                 _quaternion_yaw(transform.transform.rotation))
-        front_m = max(point[0] for point in outline)
-        half_width_m = max(abs(point[1]) for point in outline)
-        if not obstacle_ahead(scan, laser, front_m, PATH_BLOCKED_AHEAD_BAND_M, half_width_m):
+        if not self._blocked_ahead():
             return False
         try:
             actual, _evidence = self.capture_stationary_pose()

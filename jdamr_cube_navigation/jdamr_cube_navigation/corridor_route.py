@@ -70,9 +70,12 @@ PATH_BLOCKED_RETRIES = 3
 # 208/308 no valid path.
 PATH_BLOCKED_NAV2_CODES = frozenset({104, 105, 106, 205, 206, 208, 305, 306, 308})
 # No path at all: the hold re-plans every PATH_BLOCKED_PROBE_S and goes on as soon
-# as one exists. A controller stop (104-106) keeps the full hold.
+# as one exists. A controller stop (104-106) goes on once the band ahead of the
+# chassis is empty on PATH_BLOCKED_CLEAR_PROBES checks in a row (2026-10-02 10:37:
+# the blocker had left but the full 20 s hold still ran).
 PATH_BLOCKED_PLANNER_CODES = frozenset({205, 206, 208, 305, 306, 308})
 PATH_BLOCKED_PROBE_S = 2.0
+PATH_BLOCKED_CLEAR_PROBES = 2
 
 
 def _expanded_path(value, parent=None):
@@ -632,13 +635,16 @@ class CorridorRoute(Node):
         """
         Hold still for PATH_BLOCKED_WAIT_S; stop early on an unrecoverable guard.
 
-        Without any path (PATH_BLOCKED_PLANNER_CODES) a fresh plan is tried every
-        PATH_BLOCKED_PROBE_S and the hold ends once one exists.
+        Every PATH_BLOCKED_PROBE_S the hold checks whether it may end: without
+        any path (PATH_BLOCKED_PLANNER_CODES) once a fresh plan exists, after a
+        controller stop once the band ahead is empty PATH_BLOCKED_CLEAR_PROBES
+        times in a row.
         """
         self._report('path_blocked_wait', reason=reason, wait=wait,
                      wait_s=PATH_BLOCKED_WAIT_S)
         started_s = time.monotonic()
         probed_s = started_s
+        clear_probes = 0
         while time.monotonic() - started_s < PATH_BLOCKED_WAIT_S:
             rclpy.spin_once(self, timeout_sec=0.05)
             if self.stop_requested:
@@ -647,13 +653,18 @@ class CorridorRoute(Node):
             if failure and not self._input_gap_recoverable(failure):
                 self._report('path_blocked_wait_aborted', reason=failure)
                 return False
-            if (code in PATH_BLOCKED_PLANNER_CODES
-                    and time.monotonic() - probed_s >= PATH_BLOCKED_PROBE_S):
-                probed_s = time.monotonic()
-                if self._path_open():
-                    self._report('path_blocked_cleared', wait=wait,
-                                 held_s=round(probed_s - started_s, 1))
-                    return True
+            if time.monotonic() - probed_s < PATH_BLOCKED_PROBE_S:
+                continue
+            probed_s = time.monotonic()
+            if code in PATH_BLOCKED_PLANNER_CODES:
+                cleared = self._path_open()
+            else:
+                clear_probes = clear_probes + 1 if self._front_clear() else 0
+                cleared = clear_probes >= PATH_BLOCKED_CLEAR_PROBES
+            if cleared:
+                self._report('path_blocked_cleared', wait=wait,
+                             held_s=round(probed_s - started_s, 1))
+                return True
         return True
 
     def _path_open(self):
@@ -662,6 +673,10 @@ class CorridorRoute(Node):
 
     def _escape_blocked(self):
         """Move clear of a blocking object before the hold (see ServiceRoute)."""
+        return False
+
+    def _front_clear(self):
+        """Whether the band ahead of the chassis is empty (see ServiceRoute)."""
         return False
 
     def _report(self, event, **fields):
