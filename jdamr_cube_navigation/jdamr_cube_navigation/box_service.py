@@ -1262,7 +1262,9 @@ def run_attempt(args, active=None):
             node.operator_link_timeout_s = args.operator_link_timeout_s
             ok = True
             if args.home_only:
-                # Dock return alone, e.g. to re-dock after a crooked stop.
+                # Dock return alone, e.g. to re-dock after a crooked stop; it may run
+                # down to the running cutoff, since it goes to the charger.
+                node.home_return = True
                 node.verify_live_maps()
                 if not node.wait_until_ready(timeout=10.0):
                     raise RuntimeError('localization or sensor data unavailable')

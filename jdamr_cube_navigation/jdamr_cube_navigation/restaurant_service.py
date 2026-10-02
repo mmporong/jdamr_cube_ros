@@ -1101,9 +1101,17 @@ class ServiceRoute(CorridorRoute):
         return level
 
     def _departure_battery_ready(self):
-        """Require starting reserve once per executor, running cutoff thereafter."""
+        """
+        Require starting reserve once per executor, running cutoff thereafter.
+
+        A dock return needs only the running cutoff: it is the way to the charger
+        (2026-10-02 18:48: 10.52 V refused the return home against the 10.8 V
+        start reserve and left the base standing in the room).
+        """
         voltage_v = self.battery_voltage
-        threshold_v = (self.minimum_battery_v if getattr(self, '_mission_started', False)
+        running = (getattr(self, '_mission_started', False)
+                   or getattr(self, 'home_return', False))
+        threshold_v = (self.minimum_battery_v if running
                        else self.service_contract['minimum_start_battery_v'])
         if (voltage_v is None or not math.isfinite(voltage_v)
                 or voltage_v < threshold_v):

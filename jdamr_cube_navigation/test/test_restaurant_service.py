@@ -2462,3 +2462,14 @@ def test_odom_trail_keeps_a_point_every_2_cm():
         message.pose.pose.orientation.w = 1.0
         node._odom_callback(message)
     assert [round(x, 3) for x, _y, _yaw in node.odom_trail] == [0.0, 0.02, 0.04]
+
+
+def test_dock_return_needs_only_the_running_battery_cutoff():
+    node = route()
+    node.battery_voltage = (node.minimum_battery_v
+                            + node.service_contract['minimum_start_battery_v']) / 2
+    assert node._departure_battery_ready() is False      # a new departure
+    node.home_return = True
+    assert node._departure_battery_ready() is True       # the way to the charger
+    node.battery_voltage = node.minimum_battery_v - 0.01
+    assert node._departure_battery_ready() is False
