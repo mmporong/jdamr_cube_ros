@@ -106,7 +106,8 @@ def apply_docking_stop_profile(nav2_document, geometry):
     """
     Return a copy for the 5 cm precision session.
 
-    Only the forward/stopped StopZone front X moves to the approved clearance,
+    Only the forward (general and zero-turn)/stopped StopZone front X moves to
+    the approved clearance,
     and the SlowdownZone is switched off: its 0.5 m ring always contains the
     target face during the final approach and cut the Parking minimum speed
     below the progress checker (2026-09-30 water station, 105). The StopZone,
@@ -126,7 +127,7 @@ def apply_docking_stop_profile(nav2_document, geometry):
         stop_zone = result['collision_monitor']['ros__parameters']['StopZone']
     except (KeyError, TypeError) as error:
         raise ValueError('collision_monitor StopZone is missing') from error
-    for name in ('translation_forward', 'stopped'):
+    for name in ('translation_forward', 'translation_forward_straight', 'stopped'):
         try:
             original = stop_zone[name]['points']
         except (KeyError, TypeError) as error:

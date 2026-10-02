@@ -41,14 +41,18 @@ def _stop_zone():
     (0.0, 1.0, 'rotation'),
     (0.0, -0.005, 'rotation_clockwise'),
     (0.0, -1.0, 'rotation_clockwise'),
-    (0.005, 0.0, 'translation_forward'),
+    (0.005, 0.0, 'translation_forward_straight'),
+    (0.2, 0.005, 'translation_forward_straight'),
+    (0.2, 0.006, 'translation_forward'),
     (0.2, 1.0, 'translation_forward'),
-    (-0.005, 0.0, 'translation_backward'),
+    (-0.005, 0.0, 'translation_backward_straight'),
+    (-0.2, -0.005, 'translation_backward_straight'),
+    (-0.2, -0.006, 'translation_backward'),
     (-0.2, -1.0, 'translation_backward'),
 ])
 def test_current_velocity_polygon_order_and_inclusive_boundaries(
         linear_x, angular_z, expected):
-    """Select zero, turn, forward, and reverse boundaries in order."""
+    """Select zero, turn, zero-turn, forward, and reverse boundaries in order."""
     assert REPLAY.select_velocity_polygon(
         _stop_zone(), linear_x, angular_z) == expected
 

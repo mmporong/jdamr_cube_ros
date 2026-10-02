@@ -2191,7 +2191,7 @@ def test_rear_swing_clearance_frees_the_turn_circle(ranges, needed):
 
 
 def test_side_rear_obstacle_drives_forward_out_of_the_turn_circle():
-    """11:09: a leg beside the rear blocks every turn; the base drives on first."""
+    """11:09: a leg beside the rear corner holds every turn; the base drives on first."""
     node = route()
     node._blocked_ahead = Mock(side_effect=[False, False])
     node._rear_swing_need = Mock(return_value=0.147)
@@ -2204,10 +2204,13 @@ def test_side_rear_obstacle_drives_forward_out_of_the_turn_circle():
 def test_escape_backs_off_when_blocked_ahead_and_holds_when_nothing_is_near():
     node = route()
     node._blocked_ahead = Mock(return_value=True)
+    node._blocked_behind = Mock(return_value=False)
     node._drive_straight = Mock(return_value=True)
     assert node._escape_blocked() is True
     assert node._drive_straight.call_args.args == (
         -restaurant_service.PATH_BLOCKED_BACKOFF_M, 'path_blocked_back_off')
+    assert node._blocked_behind.call_args.kwargs['band_m'] == pytest.approx(
+        restaurant_service.PATH_BLOCKED_BACKOFF_M + 0.05)
     node = route()
     node._blocked_ahead = Mock(return_value=False)
     node._rear_swing_need = Mock(return_value=0.0)
@@ -2239,3 +2242,130 @@ def test_mppi_transit_switches_only_the_transit_and_staging_trees(monkeypatch):
     assert route.alignment_behavior_tree == 'alignment'
     assert (route.final_approach_controller, route.dock_leg_controller) == (
         'Parking', 'ParkingReverse')
+
+
+@pytest.mark.parametrize('ranges, behind', [
+    # Laser 1 cm behind the axle, turned 180 deg: beam 0 points back, 1 right.
+    ([0.31, math.inf, math.inf, math.inf], True),     # 0.32 m behind the axle: in the band
+    ([0.60, math.inf, math.inf, math.inf], False),    # beyond 0.295 + 0.15 m
+    ([math.inf, 0.29, math.inf, math.inf], False),    # beside the base
+])
+def test_only_an_object_behind_the_rear_edge_counts_as_blocked_behind(ranges, behind):
+    from jdamr_cube_navigation.reverse_parking import obstacle_behind
+    assert obstacle_behind(_scan(ranges), (-0.01, 0.0, math.pi), -0.295, 0.15, 0.29) is behind
+
+
+def _points_scan(points):
+    """Build a 0.5 deg scan in the base frame (laser at the origin) with returns at points."""
+    ranges = [math.inf] * 720
+    for x_m, y_m in points:
+        ranges[int(round((math.atan2(y_m, x_m) + math.pi) / math.radians(0.5))) % 720] = (
+            math.hypot(x_m, y_m))
+    return SimpleNamespace(ranges=ranges, angle_min=-math.pi, angle_increment=math.radians(0.5),
+                           range_min=0.05, range_max=12.0)
+
+
+OUTLINE = [(-0.295, -0.29), (0.085, -0.29), (0.085, 0.29), (-0.295, 0.29)]
+# 11:09 (bag table_02_20261002_110821): returns 0-7 mm inside the right rear corner.
+LEG_1109 = [(-0.273, -0.241), (-0.27, -0.243), (-0.266, -0.244), (-0.262, -0.244),
+            (-0.258, -0.245), (-0.25, -0.26)]
+
+
+@pytest.mark.parametrize('points, half', [
+    (LEG_1109, 'rear'),
+    ([(0.06, -0.27), (0.065, -0.272), (0.07, -0.274)], 'front'),
+    (LEG_1109 + [(0.06, -0.27), (0.065, -0.272), (0.07, -0.274)], 'both'),
+    (LEG_1109[:2], None),                                  # below the monitor's 3 points
+    ([(-0.27, -0.40), (-0.26, -0.41), (-0.25, -0.42)], None),   # beside, outside
+])
+def test_outline_intrusion_names_the_half_the_monitor_holds(points, half):
+    from jdamr_cube_navigation.reverse_parking import outline_intrusion
+    assert outline_intrusion(_points_scan(points), (0.0, 0.0, 0.0), OUTLINE, 3) == half
+
+
+def test_front_intrusion_backs_off_and_no_straight_way_out_holds():
+    node = route()
+    node._blocked_ahead = Mock(return_value=False)
+    node._footprint_intrusion = Mock(return_value='front')
+    node._blocked_behind = Mock(return_value=False)
+    node._drive_straight = Mock(return_value=True)
+    assert node._escape_blocked() is True
+    assert node._drive_straight.call_args.args[1] == 'path_blocked_back_off'
+    for ahead, intrusion, behind in ((False, 'both', False), (True, 'rear', False),
+                                     (True, None, True)):
+        node = route()
+        node._blocked_ahead = Mock(return_value=ahead)
+        node._footprint_intrusion = Mock(return_value=intrusion)
+        node._blocked_behind = Mock(return_value=behind)
+        node._drive_straight = Mock()
+        assert node._escape_blocked() is False
+        node._drive_straight.assert_not_called()
+
+
+def test_straight_drive_pauses_the_approach_polygon_and_always_restores_it():
+    node = route()
+    switched = []
+    node._set_footprint_approach = Mock(side_effect=lambda on: switched.append(on) or True)
+    node._drive_zero_turn = Mock(return_value=0.215)
+    node.engage_emergency_stop = Mock()
+    assert node._drive_straight(0.22, 'path_blocked_escape_forward') is True
+    assert switched == [False, True]
+    event = _events(node)[-1]
+    assert event['travelled_m'] == 0.215 and event['approach_restored'] is True
+    # The drive fails: still switched back on.
+    switched.clear()
+    node._drive_zero_turn = Mock(side_effect=RuntimeError('odom lost'))
+    with pytest.raises(RuntimeError):
+        node._drive_straight(0.22, 'path_blocked_escape_forward')
+    assert switched == [False, True]
+    node.engage_emergency_stop.assert_not_called()
+
+
+def test_straight_drive_latches_the_emergency_stop_when_the_approach_stays_off():
+    node = route()
+    node._set_footprint_approach = Mock(side_effect=[True, False, False, False])
+    node._drive_zero_turn = Mock(return_value=-0.10)
+    node.engage_emergency_stop = Mock()
+    assert node._drive_straight(-0.10, 'path_blocked_back_off') is False
+    node.engage_emergency_stop.assert_called_once()
+    assert _events(node)[-1]['approach_restored'] is False
+
+
+def test_straight_drive_does_not_move_when_the_approach_cannot_be_paused():
+    node = route()
+    node._set_footprint_approach = Mock(side_effect=[False, True])
+    node._drive_zero_turn = Mock()
+    assert node._drive_straight(0.22, 'path_blocked_escape_forward') is False
+    node._drive_zero_turn.assert_not_called()
+    assert [c.args for c in node._set_footprint_approach.call_args_list] == [(False,), (True,)]
+
+
+def test_straight_drive_short_or_wrong_way_is_not_done():
+    for travelled in (0.15, -0.22, None):
+        node = route()
+        node._set_footprint_approach = Mock(return_value=True)
+        node._drive_zero_turn = Mock(return_value=travelled)
+        assert node._drive_straight(0.22, 'path_blocked_escape_forward') is False
+
+
+def test_zero_turn_drive_commands_no_rotation_and_stops_at_the_distance(monkeypatch):
+    node = route()
+    published = []
+    node.escape_velocity = SimpleNamespace(publish=lambda m: published.append(
+        (m.linear.x, m.angular.z)))
+    poses = iter([(1.0 + 0.02 * k * math.cos(0.5), 2.0 + 0.02 * k * math.sin(0.5))
+                  for k in range(100)])
+
+    def lookup(*_args, **_kwargs):
+        x_m, y_m = next(poses)
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x_m, y=y_m),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=math.sin(0.25), w=math.cos(0.25))))
+
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    travelled = node._drive_zero_turn(0.10)
+    assert 0.10 - 1e-9 <= travelled <= 0.12 + 1e-9    # stops on the first odom step past it
+    assert all(w == 0.0 for _v, w in published)
+    assert {v for v, _w in published[:-5]} == {restaurant_service.STRAIGHT_ESCAPE_SPEED_MPS}
+    assert published[-5:] == [(0.0, 0.0)] * 5

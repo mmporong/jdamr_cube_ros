@@ -52,12 +52,15 @@ def test_only_stopzone_front_and_slowdown_switch_change_and_input_is_untouched()
         ('collision_monitor', 'ros__parameters', 'StopZone',
          'translation_forward', 'points'),
         ('collision_monitor', 'ros__parameters', 'StopZone',
+         'translation_forward_straight', 'points'),
+        ('collision_monitor', 'ros__parameters', 'StopZone',
          'stopped', 'points'),
         ('collision_monitor', 'ros__parameters', 'SlowdownZone', 'enabled'),
     }
 
 
-@pytest.mark.parametrize('name', ['translation_forward', 'stopped'])
+@pytest.mark.parametrize('name', [
+    'translation_forward', 'translation_forward_straight', 'stopped'])
 def test_only_front_x_coordinates_change_inside_target_polygons(name):
     nav2, geometry = documents()
     output = apply_docking_stop_profile(nav2, geometry)
@@ -159,7 +162,7 @@ def test_t37_standard_session_still_requires_the_slowdown_ring():
 def test_precision_contract_still_rejects_smaller_than_requested_clearance():
     nav2, geometry = documents()
     profile = apply_docking_stop_profile(nav2, geometry)
-    for name in ('translation_forward', 'stopped'):
+    for name in ('translation_forward', 'translation_forward_straight', 'stopped'):
         polygon = points(profile['collision_monitor']['ros__parameters'][
             'StopZone'][name]['points'])
         front = max(point[0] for point in polygon)

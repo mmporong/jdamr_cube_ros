@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import json
 import math
 from pathlib import Path
 import re
@@ -158,7 +159,8 @@ def test_stop_zone_has_requested_geometric_margin():
     assert margins == pytest.approx((0.05, 0.0, 0.0))
     assert stop_zone['type'] == 'velocity_polygon'
     assert stop_zone['velocity_polygons'] == [
-        'rotation', 'rotation_clockwise', 'translation_forward',
+        'rotation', 'rotation_clockwise', 'translation_forward_straight',
+        'translation_backward_straight', 'translation_forward',
         'translation_backward', 'stopped']
     rotation = yaml.safe_load(stop_zone['rotation']['points'])
     clockwise = yaml.safe_load(stop_zone['rotation_clockwise']['points'])
@@ -1261,3 +1263,39 @@ def test_only_the_ab_tree_copies_select_mppi_and_differ_only_in_the_controller()
                       count=1, flags=re.S)
         original = (trees / name.replace('_mppi', '')).read_text()
         assert copy.replace('controller_id="MPPI"', 'controller_id="FollowPath"') == original
+
+
+def _straight_zone_rejected(tmp_path, mutate, match):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    mutate(document['collision_monitor']['ros__parameters']['StopZone'])
+    invalid = tmp_path / 'invalid.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(RuntimeError, match=match):
+        _load_validator(invalid)(None)
+
+
+def _points(zone, name, transform):
+    polygon = [transform(x, y) for x, y in yaml.safe_load(zone[name]['points'])]
+    zone[name]['points'] = json.dumps(polygon)
+
+
+@pytest.mark.parametrize('mutate, match', [
+    # A zero-turn range wider than the rotation guards' dead band.
+    (lambda zone: zone['translation_forward_straight'].update(theta_max=0.05),
+     'velocity range violates'),
+    # Cut behind the axle: it would hold returns beside the rear half again.
+    (lambda zone: _points(zone, 'translation_forward_straight',
+                          lambda x, y: [-0.053 if x == 0.0 else x, y]), 'end at the axle'),
+    # A shorter leading edge than the general forward polygon.
+    (lambda zone: _points(zone, 'translation_forward_straight',
+                          lambda x, y: [0.085 if x == 0.135 else x, y]), 'end at the axle'),
+    # Narrower than the wheels: misses part of the footprint half ahead of the axle.
+    (lambda zone: _points(zone, 'translation_forward_straight',
+                          lambda x, y: [x, math.copysign(0.27, y) if abs(y) == 0.29 else y]),
+     'footprint half'),
+    (lambda zone: _points(zone, 'translation_backward_straight',
+                          lambda x, y: [0.053 if x == 0.0 else x, y]), 'end at the axle'),
+    (lambda zone: zone['velocity_polygons'].reverse(), 'order'),
+])
+def test_zero_turn_stop_zones_hold_the_half_on_the_side_of_travel(tmp_path, mutate, match):
+    _straight_zone_rejected(tmp_path, mutate, match)

@@ -130,12 +130,12 @@ controller_server:
       max_angular_accel: 1.5
       max_robot_pose_search_dist: 10.0
       use_interpolation: true
-    # Loaded for evaluation; no BT selects it yet. RPP follows the path and turns in
-    # place by a fixed 45 deg rule without looking at the footprint: beside a leg at
-    # the rear every requested turn hit the rotation StopZone and the base never
-    # tried driving on first (2026-10-02 11:09). MPPI scores sampled (v, w) rollouts
-    # with the real footprint (CostCritic consider_footprint). Pi 4 sizing: 1000
-    # samples, 40 steps of 0.1 s (= the 10 Hz control period).
+    # A/B against RPP (--mppi-transit selects the *_mppi trees). RPP does not look at
+    # the footprint on a curve (collision detection off, operator 2026-10-01): its
+    # left arc swung the right rear corner into a desk leg (2026-10-02 11:09). MPPI
+    # scores sampled (v, w) rollouts with the footprint (CostCritic
+    # consider_footprint). Pi 4 sizing: 1000 samples, 40 steps of 0.1 s (= the 10 Hz
+    # control period); 18.9 % of one core at 10.3 Hz on the Pi (2026-10-02 bench).
     MPPI:
       plugin: nav2_mppi_controller::MPPIController
       motion_model: DiffDrive
@@ -498,9 +498,13 @@ collision_monitor:
       polygon_pub_topic: stop_zone
       enabled: true
       holonomic: false
+      # First match wins (checked with a local monitor, 2026-10-02): the
+      # zero-turn polygons come before the general translation ones.
       velocity_polygons:
       - rotation
       - rotation_clockwise
+      - translation_forward_straight
+      - translation_backward_straight
       - translation_forward
       - translation_backward
       - stopped
@@ -523,6 +527,23 @@ collision_monitor:
         linear_max: 0.005
         theta_min: -1.0
         theta_max: -0.005
+      translation_forward_straight:
+        # Zero turn rate: only the half ahead of the axle can meet anything new.
+        # A return inside the padded footprint behind the axle held every other
+        # polygon, so the base could not drive away from it (2026-10-02 11:09:
+        # a desk leg 1.3-2.0 cm beside the frame at the right rear corner).
+        points: '[[0.135, 0.245], [0.053, 0.245], [0.053, 0.29], [0.0, 0.29], [0.0, -0.29], [0.053, -0.29], [0.053, -0.245], [0.135, -0.245]]'
+        linear_min: 0.005
+        linear_max: 0.2
+        theta_min: -0.005
+        theta_max: 0.005
+      translation_backward_straight:
+        # Zero turn rate in reverse: the half behind the axle, rear edge as below.
+        points: '[[0.0, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.0, -0.29]]'
+        linear_min: -0.2
+        linear_max: -0.005
+        theta_min: -0.005
+        theta_max: 0.005
       translation_forward:
         # Straight forward motion does not close lateral clearance. Keep the
         # requested 50 mm at the leading edge, but do not add another lateral

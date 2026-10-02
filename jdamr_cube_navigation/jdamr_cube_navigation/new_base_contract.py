@@ -9,6 +9,8 @@ import math
 VELOCITY_POLICY_RANGES = {
     'rotation': (-0.005, 0.005, 0.005, 1.0),
     'rotation_clockwise': (-0.005, 0.005, -1.0, -0.005),
+    'translation_forward_straight': (0.005, 0.2, -0.005, 0.005),
+    'translation_backward_straight': (-0.2, -0.005, -0.005, 0.005),
     'translation_forward': (0.005, 0.2, -1.0, 1.0),
     'translation_backward': (-0.2, -0.005, -1.0, 1.0),
     'stopped': (-1.0, 1.0, -1.0, 1.0),
@@ -101,6 +103,17 @@ def validate_new_base_params(params, geometry, precision_parking=False):
         outer_polygon = polygon_points(outer)
         if not all(_inside(outer_polygon, point, strict) for point in inner_points):
             raise RuntimeError(label)
+
+    def perimeter(points, step_m=0.005):
+        """Points every step_m along the polygon edges, corners included."""
+        polygon = polygon_points(points)
+        samples = []
+        for start, end in zip(polygon, polygon[1:] + polygon[:1]):
+            count = max(1, math.ceil(math.dist(start, end) / step_m))
+            samples.extend((start[0] + (end[0] - start[0]) * index / count,
+                            start[1] + (end[1] - start[1]) * index / count)
+                           for index in range(count))
+        return samples
 
     costmaps = [params[key][key]['ros__parameters']
                 for key in ('local_costmap', 'global_costmap')]
@@ -225,7 +238,8 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             or stop_zone.get('holonomic') is not False):
         raise RuntimeError('new-base StopZone is not active')
     expected_velocity_polygons = [
-        'rotation', 'rotation_clockwise', 'translation_forward',
+        'rotation', 'rotation_clockwise', 'translation_forward_straight',
+        'translation_backward_straight', 'translation_forward',
         'translation_backward', 'stopped']
     if stop_zone.get('velocity_polygons') != expected_velocity_polygons:
         raise RuntimeError(
@@ -351,6 +365,21 @@ def validate_new_base_params(params, geometry, precision_parking=False):
     for name in ('stopped', 'translation_forward', 'translation_backward'):
         contains(stop_zone[name]['points'], footprint_points, False,
                  f'new-base {name} StopZone does not contain footprint')
+    # Zero-turn polygons hold the footprint half on the side of travel, cut at the
+    # axle, with the same leading edge as the general polygon (2026-10-02 11:09).
+    footprint_edge = perimeter(costmaps[0]['footprint'])
+    for name, general, half in (
+            ('translation_forward_straight', forward_stop,
+             [point for point in footprint_edge if point[0] >= 0.0]),
+            ('translation_backward_straight', backward_stop,
+             [point for point in footprint_edge if point[0] <= 0.0])):
+        straight = bounds(stop_zone[name]['points'])
+        forward = name == 'translation_forward_straight'
+        if not ((straight[0] == general[0] and straight[1] == 0.0) if forward
+                else (straight[0] == 0.0 and straight[1] == general[1])):
+            raise RuntimeError(f'new-base {name} StopZone must end at the axle')
+        contains(stop_zone[name]['points'], half, False,
+                 f'new-base {name} StopZone does not contain its footprint half')
     front_reference = front if precision_parking else footprint[0]
     # Only the leading edge keeps 0.05 m; sides and rear stop at the padded
     # footprint (operator request 2026-10-01).

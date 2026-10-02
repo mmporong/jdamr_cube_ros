@@ -14,7 +14,7 @@ import uuid
 from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from jdamr_cube_navigation.corridor_route import (
     _quaternion_yaw, AMCL_QOS, CorridorRoute, PATH_BLOCKED_NAV2_CODES)
 from jdamr_cube_navigation.parking import (
@@ -22,8 +22,8 @@ from jdamr_cube_navigation.parking import (
     pose_errors,
 )
 from jdamr_cube_navigation.reverse_parking import (
-    obstacle_ahead, rear_swing_clearance, reverse_curve_waypoints, reverse_waypoints,
-    SERVICE_TRANSIT_MAX_MPS, static_corridor_clear)
+    obstacle_ahead, obstacle_behind, outline_intrusion, rear_swing_clearance,
+    reverse_curve_waypoints, reverse_waypoints, SERVICE_TRANSIT_MAX_MPS, static_corridor_clear)
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
     map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
@@ -37,7 +37,8 @@ from nav_msgs.msg import OccupancyGrid, Path as RosPath
 from rcl_interfaces.srv import GetParameters
 import rclpy
 from rclpy.action import ActionClient
-from rclpy.parameter import parameter_value_to_python
+from rclpy.parameter import Parameter, parameter_value_to_python
+from rclpy.parameter_client import AsyncParameterClient
 from rclpy.signals import SignalHandlerOptions
 from rclpy.utilities import remove_ros_args
 from std_msgs.msg import String
@@ -105,12 +106,19 @@ PATH_BLOCKED_BACKOFF_M = 0.10
 # The band in front of the chassis front edge that counts as "blocked ahead".
 PATH_BLOCKED_AHEAD_BAND_M = 0.30
 # An in-place turn sweeps the rear about the axle near the front. Something beside
-# the rear inside the 0.43 m rotation StopZone (+2 cm) blocks every turn that RPP
-# requests, so the base first drives straight until it is out of that circle
-# (2026-10-02 11:09: left side clear to 0.48 m, a leg 0.26 m right of the rear).
+# the rear inside the 0.43 m rotation StopZone (+2 cm) blocks every turn, and an
+# arc swings the rear toward it (2026-10-02 11:09: a left arc put a desk leg inside
+# the right rear corner), so the base first drives straight out of that circle.
 PATH_BLOCKED_TURN_RADIUS_M = 0.45
 PATH_BLOCKED_FORWARD_MIN_M = 0.10
 PATH_BLOCKED_FORWARD_MAX_M = 0.35
+# Escapes drive with zero turn rate so the Collision Monitor uses its zero-turn
+# StopZones; slow so its padded StopZone (2 cm) still stops within one 10 Hz cycle.
+STRAIGHT_ESCAPE_SPEED_MPS = 0.05
+STRAIGHT_ESCAPE_EXTRA_S = 5.0
+STRAIGHT_ESCAPE_TOLERANCE_M = 0.01
+# The Collision Monitor stops on this many returns inside one polygon.
+COLLISION_MONITOR_MIN_POINTS = 3
 
 
 def _ahead(pose, distance_m):
@@ -818,6 +826,24 @@ class ServiceRoute(CorridorRoute):
         half_width_m = max(abs(point[1]) for point in outline)
         return obstacle_ahead(scan, laser, front_m, band_m, half_width_m)
 
+    def _blocked_behind(self, band_m):
+        """Return whether the latest scan has a return in the band behind the rear edge."""
+        found = self._scan_in_base()
+        if found is None:
+            return None
+        scan, laser, outline = found
+        rear_m = min(point[0] for point in outline)
+        half_width_m = max(abs(point[1]) for point in outline)
+        return obstacle_behind(scan, laser, rear_m, band_m, half_width_m)
+
+    def _footprint_intrusion(self):
+        """Which half of the footprint holds returns: 'front', 'rear', 'both' or None."""
+        found = self._scan_in_base()
+        if found is None:
+            return None
+        scan, laser, outline = found
+        return outline_intrusion(scan, laser, outline, COLLISION_MONITOR_MIN_POINTS)
+
     def _rear_swing_need(self):
         """Forward travel that frees the turn circle behind the axle (0.0 when free)."""
         found = self._scan_in_base()
@@ -834,17 +860,28 @@ class ServiceRoute(CorridorRoute):
         """
         Move straight away from what blocks the base before the hold.
 
-        Something in the band ahead: back PATH_BLOCKED_BACKOFF_M out (Nav2's default
-        tree backs up too). Something beside the rear inside the turn circle: drive
-        forward until it is out of the circle, since every turn swings the rear into
-        it (2026-10-02 11:09). An object beside the frame alone triggers neither:
-        backing out from the desk leg next to the frame (10:06) would have turned the
-        wheels toward it. Paths are validated and the Collision Monitor stays in the loop.
+        Something in the band ahead or inside the front half of the footprint: back
+        PATH_BLOCKED_BACKOFF_M out (Nav2's default tree backs up too). Something behind
+        the axle inside the turn circle, including inside the rear half of the
+        footprint: drive forward until it is out of the circle, since every turn and
+        arc swings the rear into it (2026-10-02 11:09). An object beside the frame
+        alone triggers neither: backing out from the desk leg next to the frame
+        (10:06) would have turned the wheels toward it. Returns in both halves, or
+        ahead with the rear held, leave no straight way out: hold.
         """
         ahead = self._blocked_ahead()
         if ahead is None:
             return False
-        if ahead:
+        intrusion = self._footprint_intrusion()
+        if intrusion == 'both' or (ahead and intrusion == 'rear'):
+            self.emit('path_blocked_escape', done=False, reason='no straight way out',
+                      ahead=ahead, intrusion=intrusion)
+            return False
+        if ahead or intrusion == 'front':
+            if self._blocked_behind(band_m=PATH_BLOCKED_BACKOFF_M + 0.05) is not False:
+                self.emit('path_blocked_back_off', done=False, reason='band behind not clear',
+                          distance_m=PATH_BLOCKED_BACKOFF_M)
+                return False
             return self._drive_straight(-PATH_BLOCKED_BACKOFF_M, 'path_blocked_back_off')
         needed_m = self._rear_swing_need()
         if needed_m <= 0.0:
@@ -858,33 +895,101 @@ class ServiceRoute(CorridorRoute):
         return self._drive_straight(distance_m, 'path_blocked_escape_forward')
 
     def _drive_straight(self, distance_m, event):
-        """Drive distance_m straight along the heading (negative: reverse), validated."""
+        """
+        Drive distance_m along the heading with zero turn rate (negative: reverse).
+
+        A return inside the padded footprint holds every StopZone polygon that holds
+        the whole footprint and the FootprintApproach polygon (it reports a collision
+        at t = 0), so nothing moved (2026-10-02 11:09). At zero turn rate the StopZone
+        uses its zero-turn polygons, which hold only the half on the side of travel;
+        the approach polygon is paused for this move alone and always switched back
+        on. If it cannot be switched back on, the emergency stop is latched.
+        """
+        if not self._set_footprint_approach(False):
+            self._set_footprint_approach(True)
+            self.emit(event, done=False, reason='approach polygon not paused',
+                      distance_m=abs(distance_m))
+            return False
+        travelled_m = None
         try:
-            actual, _evidence = self.capture_stationary_pose()
-            target = (actual[0] + distance_m * math.cos(actual[2]),
-                      actual[1] + distance_m * math.sin(actual[2]), actual[2])
-            if distance_m < 0.0:
-                path = self._make_reverse_path(actual, target)
-            else:
-                count = max(2, math.ceil(distance_m / 0.025))
-                path = RosPath()
-                path.poses = [self._pose(index, {
-                    'x': actual[0] + (target[0] - actual[0]) * index / count,
-                    'y': actual[1] + (target[1] - actual[1]) * index / count,
-                    'yaw': actual[2]}) for index in range(count + 1)]
-                path.header = path.poses[0].header
-        except (RuntimeError, ValueError) as error:
-            self.emit(event, done=False, reason=str(error))
-            return False
-        if not self._reverse_path_valid(path):
-            self.emit(event, done=False, reason='path not clear')
-            return False
-        done = self._execute_reverse_once(
-            path, goal_checker_id='dock_position_checker', final=False,
-            controller_id='ParkingReverse' if distance_m < 0.0 else 'Parking',
-            motion='back_off' if distance_m < 0.0 else 'escape_forward')
-        self.emit(event, done=done, distance_m=abs(distance_m))
+            travelled_m = self._drive_zero_turn(distance_m)
+        finally:
+            restored = any(self._set_footprint_approach(True) for _attempt in range(3))
+            if not restored:
+                self.engage_emergency_stop('FootprintApproach could not be switched back on')
+        done = (restored and travelled_m is not None
+                and math.copysign(travelled_m, distance_m) == travelled_m
+                and abs(travelled_m) >= abs(distance_m) - STRAIGHT_ESCAPE_TOLERANCE_M)
+        self.emit(event, done=done, distance_m=abs(distance_m),
+                  travelled_m=None if travelled_m is None else round(travelled_m, 3),
+                  approach_restored=restored)
         return done
+
+    def _set_footprint_approach(self, enabled):
+        """Switch the Collision Monitor's FootprintApproach polygon; True once applied."""
+        client = getattr(self, 'monitor_parameters', None)
+        if client is None:
+            client = AsyncParameterClient(self, 'collision_monitor')
+            self.monitor_parameters = client
+        if not client.wait_for_services(timeout_sec=2.0):
+            return False
+        # Not self._wait: switching back on must not give way to a stop request.
+        future = client.set_parameters([Parameter('FootprintApproach.enabled', value=enabled)])
+        deadline_s = time.monotonic() + 2.0
+        while not future.done() and time.monotonic() < deadline_s:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        if not future.done() or future.exception() is not None:
+            return False
+        results = future.result().results
+        return len(results) == 1 and results[0].successful
+
+    def _drive_zero_turn(self, distance_m):
+        """
+        Command (+-STRAIGHT_ESCAPE_SPEED_MPS, 0) until odom shows distance_m.
+
+        The command goes in ahead of the velocity smoother and the Collision Monitor,
+        like the controller's; it runs only between goals. Returns the signed travel
+        along the start heading, or None without odom.
+        """
+        publisher = getattr(self, 'escape_velocity', None)
+        if publisher is None:
+            publisher = self.create_publisher(Twist, 'cmd_vel_nav', 10)
+            self.escape_velocity = publisher
+        base_frame = self.parking_contract['robot_base_frame']
+
+        def odom_pose():
+            transform = self.parking_tf.lookup_transform(
+                'odom', base_frame, rclpy.time.Time()).transform
+            return (transform.translation.x, transform.translation.y,
+                    _quaternion_yaw(transform.rotation))
+
+        try:
+            start = odom_pose()
+        except TransformException:
+            return None
+        command = Twist()
+        command.linear.x = math.copysign(STRAIGHT_ESCAPE_SPEED_MPS, distance_m)
+        deadline_s = (time.monotonic() + abs(distance_m) / STRAIGHT_ESCAPE_SPEED_MPS
+                      + STRAIGHT_ESCAPE_EXTRA_S)
+        travelled_m, published_s = 0.0, 0.0
+        try:
+            while (abs(travelled_m) < abs(distance_m) and not self.stop_requested
+                   and time.monotonic() < deadline_s):
+                if time.monotonic() - published_s >= 0.05:
+                    publisher.publish(command)
+                    published_s = time.monotonic()
+                rclpy.spin_once(self, timeout_sec=0.02)
+                try:
+                    x_m, y_m, _yaw = odom_pose()
+                except TransformException:
+                    continue
+                travelled_m = ((x_m - start[0]) * math.cos(start[2])
+                               + (y_m - start[1]) * math.sin(start[2]))
+        finally:
+            for _repeat in range(5):
+                publisher.publish(Twist())
+                rclpy.spin_once(self, timeout_sec=0.02)
+        return travelled_m
 
     def _departure_ready(self):
         """Check, before every goal, the battery reserve and the operator link."""

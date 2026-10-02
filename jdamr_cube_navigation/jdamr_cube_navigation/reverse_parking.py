@@ -13,7 +13,7 @@ from copy import deepcopy  # noqa: I100
 from pathlib import Path
 from typing import Any, Sequence
 
-from jdamr_cube_navigation.keepout_mask import _map_metadata
+from jdamr_cube_navigation.keepout_mask import _map_metadata, _point_in_polygon
 
 
 ALREADY_AT_GOAL_DISTANCE_M = 0.05
@@ -134,6 +134,16 @@ def reverse_waypoints(
     return waypoints
 
 
+def _base_points(scan, laser_pose):
+    """Yield the valid scan returns as (x, y) in the base frame."""
+    lx, ly, lyaw = laser_pose
+    for index, distance in enumerate(scan.ranges):
+        if not (math.isfinite(distance) and scan.range_min <= distance <= scan.range_max):
+            continue
+        angle = lyaw + scan.angle_min + index * scan.angle_increment
+        yield lx + distance * math.cos(angle), ly + distance * math.sin(angle)
+
+
 def obstacle_ahead(scan, laser_pose, front_m, band_m, half_width_m):
     """
     Whether a scan return lies in the band just ahead of the chassis front edge.
@@ -141,16 +151,30 @@ def obstacle_ahead(scan, laser_pose, front_m, band_m, half_width_m):
     laser_pose is the scan frame in the base frame as (x, y, yaw); the band spans
     front_m < x <= front_m + band_m and |y| <= half_width_m in the base frame.
     """
-    lx, ly, lyaw = laser_pose
-    for index, distance in enumerate(scan.ranges):
-        if not (math.isfinite(distance) and scan.range_min <= distance <= scan.range_max):
-            continue
-        angle = lyaw + scan.angle_min + index * scan.angle_increment
-        x_m = lx + distance * math.cos(angle)
-        y_m = ly + distance * math.sin(angle)
-        if front_m < x_m <= front_m + band_m and abs(y_m) <= half_width_m:
-            return True
-    return False
+    return any(front_m < x_m <= front_m + band_m and abs(y_m) <= half_width_m
+               for x_m, y_m in _base_points(scan, laser_pose))
+
+
+def obstacle_behind(scan, laser_pose, rear_m, band_m, half_width_m):
+    """Whether a scan return lies in the band just behind the rear edge (rear_m < 0)."""
+    return any(rear_m - band_m <= x_m < rear_m and abs(y_m) <= half_width_m
+               for x_m, y_m in _base_points(scan, laser_pose))
+
+
+def outline_intrusion(scan, laser_pose, outline, min_points):
+    """
+    Return which half of the outline holds at least min_points returns.
+
+    'front' (ahead of the axle), 'rear', 'both' or None. The Collision Monitor
+    stops on min_points returns inside a polygon, and a return inside the padded
+    footprint holds every polygon that contains it (2026-10-02 11:09).
+    """
+    counts = {'front': 0, 'rear': 0}
+    for x_m, y_m in _base_points(scan, laser_pose):
+        if _point_in_polygon(x_m, y_m, outline):
+            counts['front' if x_m >= 0.0 else 'rear'] += 1
+    held = [half for half in ('front', 'rear') if counts[half] >= min_points]
+    return 'both' if len(held) == 2 else (held[0] if held else None)
 
 
 def rear_swing_clearance(scan, laser_pose, radius_m):
@@ -161,14 +185,8 @@ def rear_swing_clearance(scan, laser_pose, radius_m):
     at (x < 0, y) inside that circle leaves it after sqrt(radius_m^2 - y^2) + x of
     forward travel. Returns 0.0 when nothing behind the axle is inside the circle.
     """
-    lx, ly, lyaw = laser_pose
     needed_m = 0.0
-    for index, distance in enumerate(scan.ranges):
-        if not (math.isfinite(distance) and scan.range_min <= distance <= scan.range_max):
-            continue
-        angle = lyaw + scan.angle_min + index * scan.angle_increment
-        x_m = lx + distance * math.cos(angle)
-        y_m = ly + distance * math.sin(angle)
+    for x_m, y_m in _base_points(scan, laser_pose):
         if x_m < 0.0 and math.hypot(x_m, y_m) < radius_m:
             needed_m = max(needed_m, math.sqrt(radius_m ** 2 - y_m ** 2) + x_m)
     return needed_m

@@ -357,6 +357,8 @@ class BoxServiceRoute(ServiceRoute):
             'StopZone.velocity_polygons',
             'StopZone.translation_forward.points', 'StopZone.stopped.points',
             'StopZone.translation_backward.points',
+            'StopZone.translation_forward_straight.points',
+            'StopZone.translation_backward_straight.points',
             'StopZone.rotation.points', 'StopZone.rotation_clockwise.points',
             'SlowdownZone.enabled',
             'scan.enabled', 'scan.type', 'scan.topic',
