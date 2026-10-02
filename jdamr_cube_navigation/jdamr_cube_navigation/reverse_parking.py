@@ -153,6 +153,27 @@ def obstacle_ahead(scan, laser_pose, front_m, band_m, half_width_m):
     return False
 
 
+def rear_swing_clearance(scan, laser_pose, radius_m):
+    """
+    Return the forward travel that takes every return behind the axle out of the turn circle.
+
+    The base turns about its axle near the front, so its rear sweeps radius_m. A return
+    at (x < 0, y) inside that circle leaves it after sqrt(radius_m^2 - y^2) + x of
+    forward travel. Returns 0.0 when nothing behind the axle is inside the circle.
+    """
+    lx, ly, lyaw = laser_pose
+    needed_m = 0.0
+    for index, distance in enumerate(scan.ranges):
+        if not (math.isfinite(distance) and scan.range_min <= distance <= scan.range_max):
+            continue
+        angle = lyaw + scan.angle_min + index * scan.angle_increment
+        x_m = lx + distance * math.cos(angle)
+        y_m = ly + distance * math.sin(angle)
+        if x_m < 0.0 and math.hypot(x_m, y_m) < radius_m:
+            needed_m = max(needed_m, math.sqrt(radius_m ** 2 - y_m ** 2) + x_m)
+    return needed_m
+
+
 def reverse_curve_waypoints(
         start_pose: Sequence[float], target_pose: Sequence[float],
         min_radius_m: float = REVERSE_CURVE_MIN_RADIUS_M,

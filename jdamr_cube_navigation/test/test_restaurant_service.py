@@ -2175,3 +2175,52 @@ def test_controller_stop_hold_ends_once_the_band_ahead_stays_empty(monkeypatch):
     assert len(tries) == 2 and node._front_clear.call_count == 5
     cleared = [e for e in _events(node) if e['event'] == 'path_blocked_cleared']
     assert len(cleared) == 1 and cleared[0]['held_s'] < corridor_route.PATH_BLOCKED_WAIT_S
+
+
+@pytest.mark.parametrize('ranges, needed', [
+    # Laser 1 cm behind the axle, turned 180 deg: beam 0 points back, 1 right, 2 ahead.
+    ([math.inf, 0.29, math.inf, math.inf], math.sqrt(0.45 ** 2 - 0.29 ** 2) - 0.01),
+    ([0.30, math.inf, math.inf, math.inf], 0.45 - 0.31),   # 0.31 m behind the axle
+    ([math.inf, math.inf, 0.30, math.inf], 0.0),           # ahead of the axle
+    ([math.inf, math.inf, math.inf, math.inf], 0.0),
+])
+def test_rear_swing_clearance_frees_the_turn_circle(ranges, needed):
+    from jdamr_cube_navigation.reverse_parking import rear_swing_clearance
+    assert rear_swing_clearance(_scan(ranges), (-0.01, 0.0, math.pi), 0.45) == pytest.approx(
+        needed)
+
+
+def test_side_rear_obstacle_drives_forward_out_of_the_turn_circle():
+    """11:09: a leg beside the rear blocks every turn; the base drives on first."""
+    node = route()
+    node._blocked_ahead = Mock(side_effect=[False, False])
+    node._rear_swing_need = Mock(return_value=0.147)
+    node._drive_straight = Mock(return_value=True)
+    assert node._escape_blocked() is True
+    distance, event = node._drive_straight.call_args.args
+    assert distance == pytest.approx(0.177) and event == 'path_blocked_escape_forward'
+
+
+def test_escape_backs_off_when_blocked_ahead_and_holds_when_nothing_is_near():
+    node = route()
+    node._blocked_ahead = Mock(return_value=True)
+    node._drive_straight = Mock(return_value=True)
+    assert node._escape_blocked() is True
+    assert node._drive_straight.call_args.args == (
+        -restaurant_service.PATH_BLOCKED_BACKOFF_M, 'path_blocked_back_off')
+    node = route()
+    node._blocked_ahead = Mock(return_value=False)
+    node._rear_swing_need = Mock(return_value=0.0)
+    node._drive_straight = Mock()
+    assert node._escape_blocked() is False
+    node._drive_straight.assert_not_called()
+
+
+def test_forward_escape_needs_the_band_ahead_clear_over_its_length():
+    node = route()
+    node._blocked_ahead = Mock(side_effect=[False, True])
+    node._rear_swing_need = Mock(return_value=0.30)
+    node._drive_straight = Mock()
+    assert node._escape_blocked() is False
+    node._drive_straight.assert_not_called()
+    assert node._blocked_ahead.call_args.kwargs['band_m'] == pytest.approx(0.30 + 0.03 + 0.05)

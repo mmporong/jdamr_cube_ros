@@ -22,8 +22,8 @@ from jdamr_cube_navigation.parking import (
     pose_errors,
 )
 from jdamr_cube_navigation.reverse_parking import (
-    obstacle_ahead, reverse_curve_waypoints, reverse_waypoints, SERVICE_TRANSIT_MAX_MPS,
-    static_corridor_clear)
+    obstacle_ahead, rear_swing_clearance, reverse_curve_waypoints, reverse_waypoints,
+    SERVICE_TRANSIT_MAX_MPS, static_corridor_clear)
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
     map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
@@ -104,6 +104,13 @@ OPERATOR_LINK_TIMEOUT_S = 30.0
 PATH_BLOCKED_BACKOFF_M = 0.10
 # The band in front of the chassis front edge that counts as "blocked ahead".
 PATH_BLOCKED_AHEAD_BAND_M = 0.30
+# An in-place turn sweeps the rear about the axle near the front. Something beside
+# the rear inside the 0.43 m rotation StopZone (+2 cm) blocks every turn that RPP
+# requests, so the base first drives straight until it is out of that circle
+# (2026-10-02 11:09: left side clear to 0.48 m, a leg 0.26 m right of the rear).
+PATH_BLOCKED_TURN_RADIUS_M = 0.45
+PATH_BLOCKED_FORWARD_MIN_M = 0.10
+PATH_BLOCKED_FORWARD_MAX_M = 0.35
 
 
 def _ahead(pose, distance_m):
@@ -767,12 +774,8 @@ class ServiceRoute(CorridorRoute):
         return (wrapped.status == GoalStatus.STATUS_SUCCEEDED
                 and not wrapped.result.error_code and len(wrapped.result.path.poses) > 0)
 
-    def _blocked_ahead(self):
-        """
-        Return whether the latest scan has a return in the band ahead of the front edge.
-
-        None when no scan or transform is available.
-        """
+    def _scan_in_base(self):
+        """Return (scan, laser pose in the base frame, outline), or None if unavailable."""
         scan = getattr(self, 'last_scan', None)
         if scan is None:
             return None
@@ -785,9 +788,29 @@ class ServiceRoute(CorridorRoute):
             return None
         laser = (transform.transform.translation.x, transform.transform.translation.y,
                  _quaternion_yaw(transform.transform.rotation))
+        return scan, laser, outline
+
+    def _blocked_ahead(self, band_m=PATH_BLOCKED_AHEAD_BAND_M):
+        """
+        Return whether the latest scan has a return in the band ahead of the front edge.
+
+        None when no scan or transform is available.
+        """
+        found = self._scan_in_base()
+        if found is None:
+            return None
+        scan, laser, outline = found
         front_m = max(point[0] for point in outline)
         half_width_m = max(abs(point[1]) for point in outline)
-        return obstacle_ahead(scan, laser, front_m, PATH_BLOCKED_AHEAD_BAND_M, half_width_m)
+        return obstacle_ahead(scan, laser, front_m, band_m, half_width_m)
+
+    def _rear_swing_need(self):
+        """Forward travel that frees the turn circle behind the axle (0.0 when free)."""
+        found = self._scan_in_base()
+        if found is None:
+            return 0.0
+        scan, laser, _outline = found
+        return rear_swing_clearance(scan, laser, PATH_BLOCKED_TURN_RADIUS_M)
 
     def _front_clear(self):
         """Whether the band ahead is empty on a fresh scan (an unreadable scan is not)."""
@@ -795,29 +818,58 @@ class ServiceRoute(CorridorRoute):
 
     def _escape_blocked(self):
         """
-        Back PATH_BLOCKED_BACKOFF_M straight out when the blocking object is in front.
+        Move straight away from what blocks the base before the hold.
 
-        An object beside the base stays beside it: backing out from the desk leg next
-        to the frame (2026-10-02 10:06) would have turned the wheels toward it, so
-        only an object in the band ahead of the front edge triggers the back-off.
-        The reverse path is validated and the Collision Monitor stays in the loop.
+        Something in the band ahead: back PATH_BLOCKED_BACKOFF_M out (Nav2's default
+        tree backs up too). Something beside the rear inside the turn circle: drive
+        forward until it is out of the circle, since every turn swings the rear into
+        it (2026-10-02 11:09). An object beside the frame alone triggers neither:
+        backing out from the desk leg next to the frame (10:06) would have turned the
+        wheels toward it. Paths are validated and the Collision Monitor stays in the loop.
         """
-        if not self._blocked_ahead():
+        ahead = self._blocked_ahead()
+        if ahead is None:
             return False
+        if ahead:
+            return self._drive_straight(-PATH_BLOCKED_BACKOFF_M, 'path_blocked_back_off')
+        needed_m = self._rear_swing_need()
+        if needed_m <= 0.0:
+            return False
+        distance_m = min(max(needed_m + 0.03, PATH_BLOCKED_FORWARD_MIN_M),
+                         PATH_BLOCKED_FORWARD_MAX_M)
+        if self._blocked_ahead(band_m=distance_m + 0.05) is not False:
+            self.emit('path_blocked_escape_forward', done=False,
+                      reason='band ahead not clear', distance_m=distance_m)
+            return False
+        return self._drive_straight(distance_m, 'path_blocked_escape_forward')
+
+    def _drive_straight(self, distance_m, event):
+        """Drive distance_m straight along the heading (negative: reverse), validated."""
         try:
             actual, _evidence = self.capture_stationary_pose()
-            path = self._make_reverse_path(actual, (
-                actual[0] - PATH_BLOCKED_BACKOFF_M * math.cos(actual[2]),
-                actual[1] - PATH_BLOCKED_BACKOFF_M * math.sin(actual[2]), actual[2]))
+            target = (actual[0] + distance_m * math.cos(actual[2]),
+                      actual[1] + distance_m * math.sin(actual[2]), actual[2])
+            if distance_m < 0.0:
+                path = self._make_reverse_path(actual, target)
+            else:
+                count = max(2, math.ceil(distance_m / 0.025))
+                path = RosPath()
+                path.poses = [self._pose(index, {
+                    'x': actual[0] + (target[0] - actual[0]) * index / count,
+                    'y': actual[1] + (target[1] - actual[1]) * index / count,
+                    'yaw': actual[2]}) for index in range(count + 1)]
+                path.header = path.poses[0].header
         except (RuntimeError, ValueError) as error:
-            self.emit('path_blocked_back_off', done=False, reason=str(error))
+            self.emit(event, done=False, reason=str(error))
             return False
         if not self._reverse_path_valid(path):
-            self.emit('path_blocked_back_off', done=False, reason='reverse path not clear')
+            self.emit(event, done=False, reason='path not clear')
             return False
         done = self._execute_reverse_once(
-            path, goal_checker_id='dock_position_checker', final=False, motion='back_off')
-        self.emit('path_blocked_back_off', done=done, distance_m=PATH_BLOCKED_BACKOFF_M)
+            path, goal_checker_id='dock_position_checker', final=False,
+            controller_id='ParkingReverse' if distance_m < 0.0 else 'Parking',
+            motion='back_off' if distance_m < 0.0 else 'escape_forward')
+        self.emit(event, done=done, distance_m=abs(distance_m))
         return done
 
     def _departure_ready(self):
