@@ -134,6 +134,25 @@ def reverse_waypoints(
     return waypoints
 
 
+def obstacle_ahead(scan, laser_pose, front_m, band_m, half_width_m):
+    """
+    Whether a scan return lies in the band just ahead of the chassis front edge.
+
+    laser_pose is the scan frame in the base frame as (x, y, yaw); the band spans
+    front_m < x <= front_m + band_m and |y| <= half_width_m in the base frame.
+    """
+    lx, ly, lyaw = laser_pose
+    for index, distance in enumerate(scan.ranges):
+        if not (math.isfinite(distance) and scan.range_min <= distance <= scan.range_max):
+            continue
+        angle = lyaw + scan.angle_min + index * scan.angle_increment
+        x_m = lx + distance * math.cos(angle)
+        y_m = ly + distance * math.sin(angle)
+        if front_m < x_m <= front_m + band_m and abs(y_m) <= half_width_m:
+            return True
+    return False
+
+
 def reverse_curve_waypoints(
         start_pose: Sequence[float], target_pose: Sequence[float],
         min_radius_m: float = REVERSE_CURVE_MIN_RADIUS_M,

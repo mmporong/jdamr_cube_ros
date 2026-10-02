@@ -1103,10 +1103,10 @@ def test_registered_controller_velocity_is_finite_positive_and_bounded(
      'scan timeout override must be exactly 1.0s'),
     (lambda monitor: monitor['StopZone']['stopped'].update(points=(
         '[[0.35, 0.35], [0.35, 0.30], [-0.38, 0.30], [-0.38, 0.35]]')),
-     'polygon must cover both sides'),
+     'mirrored about the base axis'),
     (lambda monitor: monitor['StopZone']['stopped'].update(points=(
         '[[0.35, 0.35], [-0.38, -0.35], [0.35, -0.35], [-0.38, 0.35]]')),
-     'corners must follow the perimeter'),
+     'edges must be axis-aligned'),
 ])
 def test_disabled_or_one_sided_monitor_is_rejected(tmp_path, mutate, expected):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
@@ -1202,3 +1202,31 @@ def test_t30_observer_timing_matches_provenance():
         ROOT / 'jdamr_cube_navigation/config/depth_box_parking.yaml'
     ).read_text(encoding='utf-8'))['jdamr_depth_box_parking']['ros__parameters']
     assert isinstance(observer['stable_frames'], int) and observer['stable_frames'] >= 1
+
+
+def test_stop_zones_follow_the_narrow_frame_beside_the_wheels():
+    """A desk leg 6.5 cm beside the frame stopped every direction (2026-10-02 10:06)."""
+    import json
+    from jdamr_cube_navigation.new_base_contract import _inside
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    leg = (-0.13, -0.29)   # base frame, from the onboard bag at the stop
+    rectangle = [[0.135, 0.29], [0.135, -0.29], [-0.295, -0.29], [-0.295, 0.29]]
+    assert _inside(rectangle, leg, False)
+    for name in ('translation_forward', 'translation_backward', 'stopped'):
+        assert not _inside(json.loads(stop_zone[name]['points']), leg, False), name
+    footprint = json.loads(
+        document['local_costmap']['local_costmap']['ros__parameters']['footprint'])
+    assert _inside(footprint, (0.0, 0.28), True)      # wheel side, 2 cm inside
+    assert not _inside(footprint, (-0.2, 0.26), True)  # beside the 0.45 m frame
+
+
+def test_footprint_narrower_than_the_measured_frame_is_rejected(tmp_path):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    for name in ('local_costmap', 'global_costmap'):
+        parameters = document[name][name]['ros__parameters']
+        parameters['footprint'] = parameters['footprint'].replace('0.245', '0.22')
+    invalid = tmp_path / 'invalid.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(RuntimeError, match='does not cover the measured body'):
+        _load_validator(invalid)(None)

@@ -2020,13 +2020,14 @@ def _events(node):
     return [json.loads(line) for line in node.result_stream.getvalue().splitlines()]
 
 
-def _blocked_attempts(node, blocked_tries):
+def _blocked_attempts(node, blocked_tries, code=105):
     tries = []
 
     def attempt():
         tries.append(node._resume_waypoint_index)
         if len(tries) <= blocked_tries:
-            node._retry_blocked_reason = 'path blocked: nav2 error 105'
+            node._retry_blocked_reason = f'path blocked: nav2 error {code}'
+            node._retry_blocked_code = code
             return False
         return True
     return tries, attempt
@@ -2118,3 +2119,45 @@ def test_battery_return_between_stops(voltage_v, due):
     node.battery_voltage = voltage_v
     assert node.battery_return_due() is due
     assert any(e['event'] == 'battery_return' for e in _events(node)) is due
+
+
+def test_no_path_hold_ends_as_soon_as_a_plan_exists(monkeypatch):
+    """A person who steps aside after 10 s: the 308 hold re-plans and goes on."""
+    _fast_clock(monkeypatch, step_s=1)
+    node = route()
+    node._path_open = Mock(side_effect=[False, True])
+    node._escape_blocked = Mock()
+    tries, attempt = _blocked_attempts(node, blocked_tries=1, code=308)
+    assert node._run_with_input_recovery(attempt) is True
+    assert len(tries) == 2
+    node._escape_blocked.assert_not_called()      # no path: nothing to back away from
+    cleared = [e for e in _events(node) if e['event'] == 'path_blocked_cleared']
+    assert len(cleared) == 1 and cleared[0]['held_s'] < corridor_route.PATH_BLOCKED_WAIT_S
+
+
+def test_controller_stop_backs_away_before_each_hold(monkeypatch):
+    _fast_clock(monkeypatch)
+    node = route()
+    node._path_open = Mock(return_value=True)
+    node._escape_blocked = Mock(return_value=True)
+    tries, attempt = _blocked_attempts(node, blocked_tries=2, code=105)
+    assert node._run_with_input_recovery(attempt) is True
+    assert node._escape_blocked.call_count == 2
+    node._path_open.assert_not_called()           # a 105 hold runs its full time
+
+
+def _scan(ranges):
+    return SimpleNamespace(ranges=ranges, angle_min=0.0, angle_increment=math.pi / 2,
+                           range_min=0.28, range_max=12.0)
+
+
+@pytest.mark.parametrize('ranges, ahead', [
+    # Laser 1 cm behind the axle, turned 180 deg; beam 2 points ahead of the base.
+    ([math.inf, math.inf, 0.31, math.inf], True),      # 0.30 m ahead: in the band
+    ([math.inf, math.inf, 0.50, math.inf], False),     # beyond 0.085 + 0.30 m
+    ([math.inf, 0.29, math.inf, math.inf], False),     # beside the base (desk leg)
+    ([math.inf, math.inf, 0.2, math.inf], False),      # inside the LiDAR blind range
+])
+def test_only_an_object_ahead_counts_as_blocked_ahead(ranges, ahead):
+    from jdamr_cube_navigation.reverse_parking import obstacle_ahead
+    assert obstacle_ahead(_scan(ranges), (-0.01, 0.0, math.pi), 0.085, 0.30, 0.29) is ahead

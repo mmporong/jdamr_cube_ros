@@ -14,6 +14,41 @@ VELOCITY_POLICY_RANGES = {
     'stopped': (-1.0, 1.0, -1.0, 1.0),
 }
 
+
+def _inside(polygon, point, strict):
+    """Whether point lies in polygon; on an edge counts only when not strict."""
+    x_m, y_m = point
+    inside = False
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        cross = ((end[0] - start[0]) * (y_m - start[1])
+                 - (end[1] - start[1]) * (x_m - start[0]))
+        if (abs(cross) <= 1e-9
+                and min(start[0], end[0]) - 1e-9 <= x_m <= max(start[0], end[0]) + 1e-9
+                and min(start[1], end[1]) - 1e-9 <= y_m <= max(start[1], end[1]) + 1e-9):
+            return not strict
+        if (start[1] > y_m) != (end[1] > y_m):
+            crossing_x = start[0] + (y_m - start[1]) * (end[0] - start[0]) / (end[1] - start[1])
+            if crossing_x > x_m:
+                inside = not inside
+    return inside
+
+
+def _crossing(a, b, c, d):
+    """Whether segments ab and cd intersect at more than a shared endpoint."""
+    def side(p, q, r):
+        value = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return 0 if abs(value) <= 1e-12 else (1 if value > 0 else -1)
+    if len({tuple(a), tuple(b)} & {tuple(c), tuple(d)}):
+        return False
+    sides = (side(a, b, c), side(a, b, d), side(c, d, a), side(c, d, b))
+    if not any(sides):
+        # Collinear: only overlapping spans cross (the stepped sides share lines).
+        return all(max(min(a[k], b[k]), min(c[k], d[k]))
+                   <= min(max(a[k], b[k]), max(c[k], d[k])) for k in (0, 1))
+    return sides[0] * sides[1] <= 0 and sides[2] * sides[3] <= 0
+
+
 # Operator request 2026-09-30: transit +50 % and less slowdown.
 NEW_BASE_MAX_FORWARD_MPS = 0.12
 NEW_BASE_SLOWDOWN_RATIO = 0.8
@@ -39,24 +74,33 @@ def validate_new_base_params(params, geometry, precision_parking=False):
         return polygon
 
     def bounds(points):
+        """
+        Return (front, rear, half width) of a rectilinear polygon mirrored about X.
+
+        The footprint and StopZones follow the measured body: the 0.45 m frame is
+        narrower than the 0.54 m wheels, so they are stepped polygons (2026-10-02);
+        a rectangle is the four-corner case.
+        """
         polygon = polygon_points(points)
-        if len(polygon) != 4:
-            raise RuntimeError('new-base polygon must have four corners')
-        xs = sorted({point[0] for point in polygon})
-        ys = sorted({point[1] for point in polygon})
-        if (len(xs) != 2 or len(ys) != 2 or ys[0] != -ys[1]
-                or {tuple(point) for point in polygon} !=
-                {(x, y) for x in xs for y in ys}):
-            raise RuntimeError(
-                'new-base polygon must cover both sides as a rectangle')
-        ordered_corners = [
-            (xs[1], ys[1]), (xs[1], ys[0]),
-            (xs[0], ys[0]), (xs[0], ys[1]),
-        ]
-        if [tuple(point) for point in polygon] != ordered_corners:
-            raise RuntimeError(
-                'new-base polygon corners must follow the perimeter')
-        return (xs[1], xs[0], ys[1])
+        corners = {tuple(point) for point in polygon}
+        if (len(polygon) < 4 or len(corners) != len(polygon)
+                or any((x, -y) not in corners for x, y in corners)):
+            raise RuntimeError('new-base polygon must be mirrored about the base axis')
+        edges = [(polygon[index], polygon[(index + 1) % len(polygon)])
+                 for index in range(len(polygon))]
+        if any(start[0] != end[0] and start[1] != end[1] for start, end in edges):
+            raise RuntimeError('new-base polygon edges must be axis-aligned')
+        if any(_crossing(*edges[i], *edges[j])
+               for i in range(len(edges)) for j in range(i + 2, len(edges))
+               if not (i == 0 and j == len(edges) - 1)):
+            raise RuntimeError('new-base polygon corners must follow the perimeter')
+        return (max(x for x, _y in corners), min(x for x, _y in corners),
+                max(abs(y) for _x, y in corners))
+
+    def contains(outer, inner_points, strict, label):
+        outer_polygon = polygon_points(outer)
+        if not all(_inside(outer_polygon, point, strict) for point in inner_points):
+            raise RuntimeError(label)
 
     costmaps = [params[key][key]['ros__parameters']
                 for key in ('local_costmap', 'global_costmap')]
@@ -67,6 +111,17 @@ def validate_new_base_params(params, geometry, precision_parking=False):
     if not (footprint[0] > front and footprint[1] < rear
             and footprint[2] > half_width):
         raise RuntimeError('new-base footprint is smaller than measured base')
+    # Every measured corner (frame, and wheels around the axle) lies strictly
+    # inside the padded footprint.
+    try:
+        frame_half_width = geometry['frame_width']['value'] / 2.0
+        wheel_radius = geometry['wheel_radius_initial']['value']
+    except (KeyError, TypeError) as error:
+        raise RuntimeError('new-base geometry lacks frame width or wheel radius') from error
+    body = [(x, y) for x in (front, rear) for y in (-frame_half_width, frame_half_width)]
+    body += [(x, y) for x in (-wheel_radius, wheel_radius) for y in (-half_width, half_width)]
+    contains(costmaps[0]['footprint'], body, True,
+             'new-base footprint does not cover the measured body')
     if any(costmap['robot_base_frame'] != 'base_footprint'
            for costmap in costmaps):
         raise RuntimeError('new-base costmaps need base_footprint')
@@ -292,6 +347,10 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             and stopped_stop[1] <= footprint[1] + 1e-6
             and stopped_stop[2] >= footprint[2] - 1e-6):
         raise RuntimeError('new-base StopZone does not contain footprint')
+    footprint_points = polygon_points(costmaps[0]['footprint'])
+    for name in ('stopped', 'translation_forward', 'translation_backward'):
+        contains(stop_zone[name]['points'], footprint_points, False,
+                 f'new-base {name} StopZone does not contain footprint')
     front_reference = front if precision_parking else footprint[0]
     # Only the leading edge keeps 0.05 m; sides and rear stop at the padded
     # footprint (operator request 2026-10-01).

@@ -22,7 +22,7 @@ from jdamr_cube_navigation.parking import (
     pose_errors,
 )
 from jdamr_cube_navigation.reverse_parking import (
-    reverse_curve_waypoints, reverse_waypoints, SERVICE_TRANSIT_MAX_MPS,
+    obstacle_ahead, reverse_curve_waypoints, reverse_waypoints, SERVICE_TRANSIT_MAX_MPS,
     static_corridor_clear)
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
@@ -99,6 +99,11 @@ OPERATOR_CALL_RULES = (
 OPERATOR_CALL_SEVERITY = {'URGENT': 1, 'CRITICAL': 2, 'FATAL': 3}
 # The PC refreshes the heartbeat on every 10 s poll; a missed poll stays inside this.
 OPERATOR_LINK_TIMEOUT_S = 30.0
+# A blocked base with an object right in front backs this far straight out before
+# the hold, as Nav2's default tree backs up before it retries.
+PATH_BLOCKED_BACKOFF_M = 0.10
+# The band in front of the chassis front edge that counts as "blocked ahead".
+PATH_BLOCKED_AHEAD_BAND_M = 0.30
 
 
 def _ahead(pose, distance_m):
@@ -740,6 +745,69 @@ class ServiceRoute(CorridorRoute):
         """Mark a leg that could not move on for the hold-and-retry in the recovery loop."""
         if not self.stop_requested and not final and error_code in PATH_BLOCKED_NAV2_CODES:
             self._retry_blocked_reason = f'path blocked: nav2 error {error_code}'
+            self._retry_blocked_code = error_code
+
+    def _path_open(self):
+        """Plan once from the current pose to the waypoints not yet reached."""
+        remaining = self.waypoints[getattr(self, '_resume_waypoint_index', 0):]
+        if not remaining or not self.compute.wait_for_server(timeout_sec=1.0):
+            return False
+        goal = ComputePathThroughPoses.Goal()
+        first = len(self.waypoints) - len(remaining)
+        goal.goals = [self._pose(first + index, item) for index, item in enumerate(remaining)]
+        goal.planner_id = 'GridBased'
+        goal.use_start = False
+        try:
+            handle = self._wait(self.compute.send_goal_async(goal), 3.0)
+            if not handle.accepted:
+                return False
+            wrapped = self._wait(handle.get_result_async(), 5.0)
+        except RuntimeError:
+            return False
+        return (wrapped.status == GoalStatus.STATUS_SUCCEEDED
+                and not wrapped.result.error_code and len(wrapped.result.path.poses) > 0)
+
+    def _escape_blocked(self):
+        """
+        Back PATH_BLOCKED_BACKOFF_M straight out when the blocking object is in front.
+
+        An object beside the base stays beside it: backing out from the desk leg next
+        to the frame (2026-10-02 10:06) would have turned the wheels toward it, so
+        only an object in the band ahead of the front edge triggers the back-off.
+        The reverse path is validated and the Collision Monitor stays in the loop.
+        """
+        scan = getattr(self, 'last_scan', None)
+        if scan is None:
+            return False
+        try:
+            transform = self.parking_tf.lookup_transform(
+                self.parking_contract['robot_base_frame'], scan.header.frame_id,
+                rclpy.time.Time())
+            outline = self._reverse_footprint()
+        except (TransformException, RuntimeError) as error:
+            self.emit('path_blocked_back_off', done=False, reason=str(error))
+            return False
+        laser = (transform.transform.translation.x, transform.transform.translation.y,
+                 _quaternion_yaw(transform.transform.rotation))
+        front_m = max(point[0] for point in outline)
+        half_width_m = max(abs(point[1]) for point in outline)
+        if not obstacle_ahead(scan, laser, front_m, PATH_BLOCKED_AHEAD_BAND_M, half_width_m):
+            return False
+        try:
+            actual, _evidence = self.capture_stationary_pose()
+            path = self._make_reverse_path(actual, (
+                actual[0] - PATH_BLOCKED_BACKOFF_M * math.cos(actual[2]),
+                actual[1] - PATH_BLOCKED_BACKOFF_M * math.sin(actual[2]), actual[2]))
+        except (RuntimeError, ValueError) as error:
+            self.emit('path_blocked_back_off', done=False, reason=str(error))
+            return False
+        if not self._reverse_path_valid(path):
+            self.emit('path_blocked_back_off', done=False, reason='reverse path not clear')
+            return False
+        done = self._execute_reverse_once(
+            path, goal_checker_id='dock_position_checker', final=False, motion='back_off')
+        self.emit('path_blocked_back_off', done=done, distance_m=PATH_BLOCKED_BACKOFF_M)
+        return done
 
     def _departure_ready(self):
         """Check, before every goal, the battery reserve and the operator link."""
@@ -1781,7 +1849,8 @@ class ServiceRoute(CorridorRoute):
 
     def _turn_to_dock_heading(self, dock, limit_rad, goal_checker_id,
                               event='dock_heading_measured'):
-        """Turn in place to the dock heading where the robot stands, if over limit_rad.
+        """
+        Turn in place to the dock heading where the robot stands, if over limit_rad.
 
         The forward Parking controller turns to the goal heading in place (as in the
         box face alignment) and its goal checker ends the turn inside the tolerance.

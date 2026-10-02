@@ -404,7 +404,8 @@ class BoxServiceRoute(ServiceRoute):
         return True
 
     def _set_depth_window(self, region_radius_m):
-        """Limit the observer's depth range to the table region and its radius.
+        """
+        Limit the observer's depth range to the table region and its radius.
 
         The detector keeps the largest plane in view. At table_01 a 1 m wide
         surface 1.33 m away won over the box 0.64 m away for all 12 search
@@ -1210,7 +1211,8 @@ def parse_args(argv=None):
 
 
 def _attempt_code(node, ok):
-    """Exit code of one attempt; an attempt that stopped short calls the operator.
+    """
+    Return the exit code of one attempt; one that stopped short calls the operator.
 
     A stop the operator sent (SIGINT from `jdamr_depart.py stop`) needs no call.
     """

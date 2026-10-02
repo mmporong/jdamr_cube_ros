@@ -141,7 +141,12 @@ local_costmap:
       height: 3
       resolution: 0.05
       transform_tolerance: 0.7
-      footprint: '[[0.085, 0.29], [0.085, -0.29], [-0.295, -0.29], [-0.295, 0.29]]'
+      # Measured body plus 0.02 m (jdamr_cube_description new_base_geometry.yaml): the
+      # frame is 0.45 m wide (+-0.225) over its 0.34 m length; only the 0.54 m wheels
+      # (+-0.27, radius 0.033 m around the axle) are wider. A full-length wheel-width
+      # rectangle held a desk leg 6.5 cm beside the frame inside every StopZone
+      # direction and the base could not move at all (2026-10-02 10:06).
+      footprint: '[[0.085, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.085, -0.245]]'
       # The polygon already includes 0.02 m beyond the measured body.
       footprint_padding: 0.0
       plugins:
@@ -183,7 +188,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       transform_tolerance: 0.7
-      footprint: '[[0.085, 0.29], [0.085, -0.29], [-0.295, -0.29], [-0.295, 0.29]]'
+      footprint: '[[0.085, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.085, -0.245]]'
       # Match the explicitly padded local footprint; do not pad it twice.
       footprint_padding: 0.0
       resolution: 0.05
@@ -427,14 +432,14 @@ collision_monitor:
         # requested 50 mm at the leading edge, but do not add another lateral
         # band outside the already padded costmap footprint. FootprintApproach
         # still projects the full swept footprint whenever the path turns.
-        points: '[[0.135, 0.29], [0.135, -0.29], [-0.295, -0.29], [-0.295, 0.29]]'
+        points: '[[0.135, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.135, -0.245]]'
         linear_min: 0.005
         linear_max: 0.2
         theta_min: -1.0
         theta_max: 1.0
       translation_backward:
         # The padded costmap footprint (2 cm over the body); no extra rear band.
-        points: '[[0.085, 0.29], [0.085, -0.29], [-0.295, -0.29], [-0.295, 0.29]]'
+        points: '[[0.085, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.085, -0.245]]'
         linear_min: -0.2
         linear_max: -0.005
         theta_min: -1.0
@@ -443,7 +448,7 @@ collision_monitor:
         # Last-entry fallback required by Collision Monitor. Sides and rear are the
         # padded footprint: the 5 cm band held the robot still beside the water box
         # with about 10 cm real clearance (2026-10-01).
-        points: '[[0.135, 0.29], [0.135, -0.29], [-0.295, -0.29], [-0.295, 0.29]]'
+        points: '[[0.135, 0.245], [0.053, 0.245], [0.053, 0.29], [-0.053, 0.29], [-0.053, 0.245], [-0.295, 0.245], [-0.295, -0.245], [-0.053, -0.245], [-0.053, -0.29], [0.053, -0.29], [0.053, -0.245], [0.135, -0.245]]'
         linear_min: -1.0
         linear_max: 1.0
         theta_min: -1.0

@@ -69,6 +69,10 @@ PATH_BLOCKED_RETRIES = 3
 # ComputePathThroughPoses 205/305 start occupied, 206/306 goal occupied,
 # 208/308 no valid path.
 PATH_BLOCKED_NAV2_CODES = frozenset({104, 105, 106, 205, 206, 208, 305, 306, 308})
+# No path at all: the hold re-plans every PATH_BLOCKED_PROBE_S and goes on as soon
+# as one exists. A controller stop (104-106) keeps the full hold.
+PATH_BLOCKED_PLANNER_CODES = frozenset({205, 206, 208, 305, 306, 308})
+PATH_BLOCKED_PROBE_S = 2.0
 
 
 def _expanded_path(value, parent=None):
@@ -603,6 +607,7 @@ class CorridorRoute(Node):
         while True:
             self._retry_guard_reason = None
             self._retry_blocked_reason = None
+            self._retry_blocked_code = None
             if attempt():
                 return True
             if self.stop_requested:
@@ -613,18 +618,27 @@ class CorridorRoute(Node):
                     self._report('path_blocked_give_up', reason=blocked, waits=blocked_waits)
                     return False
                 blocked_waits += 1
-                if not self._wait_for_path_clear(blocked, blocked_waits):
+                code = self._retry_blocked_code
+                if code not in PATH_BLOCKED_PLANNER_CODES:
+                    self._escape_blocked()
+                if not self._wait_for_path_clear(blocked, blocked_waits, code):
                     return False
                 continue
             if input_retried or not self._wait_for_input_recovery(self._retry_guard_reason):
                 return False
             input_retried = True
 
-    def _wait_for_path_clear(self, reason, wait):
-        """Hold still for PATH_BLOCKED_WAIT_S; stop early on an unrecoverable guard."""
+    def _wait_for_path_clear(self, reason, wait, code=None):
+        """
+        Hold still for PATH_BLOCKED_WAIT_S; stop early on an unrecoverable guard.
+
+        Without any path (PATH_BLOCKED_PLANNER_CODES) a fresh plan is tried every
+        PATH_BLOCKED_PROBE_S and the hold ends once one exists.
+        """
         self._report('path_blocked_wait', reason=reason, wait=wait,
                      wait_s=PATH_BLOCKED_WAIT_S)
         started_s = time.monotonic()
+        probed_s = started_s
         while time.monotonic() - started_s < PATH_BLOCKED_WAIT_S:
             rclpy.spin_once(self, timeout_sec=0.05)
             if self.stop_requested:
@@ -633,7 +647,22 @@ class CorridorRoute(Node):
             if failure and not self._input_gap_recoverable(failure):
                 self._report('path_blocked_wait_aborted', reason=failure)
                 return False
+            if (code in PATH_BLOCKED_PLANNER_CODES
+                    and time.monotonic() - probed_s >= PATH_BLOCKED_PROBE_S):
+                probed_s = time.monotonic()
+                if self._path_open():
+                    self._report('path_blocked_cleared', wait=wait,
+                                 held_s=round(probed_s - started_s, 1))
+                    return True
         return True
+
+    def _path_open(self):
+        """Whether a fresh plan to the remaining goal exists (see ServiceRoute)."""
+        return False
+
+    def _escape_blocked(self):
+        """Move clear of a blocking object before the hold (see ServiceRoute)."""
+        return False
 
     def _report(self, event, **fields):
         """Record an event in the run log when the node keeps one, else in the ROS log."""

@@ -162,8 +162,9 @@ def test_precision_contract_still_rejects_smaller_than_requested_clearance():
     for name in ('translation_forward', 'stopped'):
         polygon = points(profile['collision_monitor']['ros__parameters'][
             'StopZone'][name]['points'])
+        front = max(point[0] for point in polygon)
         for point in polygon:
-            if point[0] > 0:
+            if point[0] == front:
                 point[0] = 0.105
         profile['collision_monitor']['ros__parameters'][
             'StopZone'][name]['points'] = json.dumps(polygon)
