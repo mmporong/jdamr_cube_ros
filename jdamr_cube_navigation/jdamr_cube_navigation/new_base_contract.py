@@ -53,6 +53,10 @@ def _crossing(a, b, c, d):
 
 # Operator request 2026-09-30: transit +50 % and less slowdown.
 NEW_BASE_MAX_FORWARD_MPS = 0.12
+# In-place turns stop on the footprint swept this far in the turn direction; it
+# covers the stop from the smoother's turn-rate cap (operator 2026-10-02).
+ROTATION_SWEEP_DEG = 6.0
+ROTATION_SWEEP_MAX_RADPS = 0.3
 NEW_BASE_SLOWDOWN_RATIO = 0.8
 
 
@@ -317,46 +321,32 @@ def validate_new_base_params(params, geometry, precision_parking=False):
     counterclockwise = stop_zone['rotation']
     clockwise = stop_zone['rotation_clockwise']
     if (counterclockwise['theta_min'] <= 0.0
-            or clockwise['theta_max'] >= 0.0
-            or clockwise_points != rotation_points):
+            or clockwise['theta_max'] >= 0.0):
         raise RuntimeError(
             'new-base rotation StopZone must exclude zero velocity')
+    if sorted(map(tuple, clockwise_points)) != sorted(
+            (x, -y) for x, y in rotation_points):
+        raise RuntimeError('new-base rotation StopZones must mirror each other')
+    footprint_edge_points = perimeter(costmaps[0]['footprint'])
+    for name, sign in (('rotation', 1.0), ('rotation_clockwise', -1.0)):
+        points = polygon_points(stop_zone[name]['points'])
+        edges = list(zip(points, points[1:] + points[:1]))
+        if any(_crossing(*edges[i], *edges[j])
+               for i in range(len(edges)) for j in range(i + 2, len(edges))
+               if not (i == 0 and j == len(edges) - 1)):
+            raise RuntimeError(f'new-base {name} StopZone edges must not cross')
+        swept = []
+        for step in range(int(ROTATION_SWEEP_DEG * 2) + 1):
+            angle = math.radians(sign * step / 2.0)
+            swept.extend((math.cos(angle) * x - math.sin(angle) * y,
+                          math.sin(angle) * x + math.cos(angle) * y)
+                         for x, y in footprint_edge_points)
+        contains(stop_zone[name]['points'], swept, False,
+                 f'new-base {name} StopZone misses the swept footprint')
     forward_stop = bounds(stop_zone['translation_forward']['points'])
     backward_stop = bounds(stop_zone['translation_backward']['points'])
     stopped_stop = bounds(stop_zone['stopped']['points'])
     slow = bounds(slow_zone['points'])
-    if len(rotation_points) < 12:
-        raise RuntimeError('new-base rotation StopZone is too coarse')
-    signed_area_twice = sum(
-        start[0] * end[1] - start[1] * end[0]
-        for start, end in zip(
-            rotation_points, rotation_points[1:] + rotation_points[:1]))
-    if abs(signed_area_twice) <= 1e-9:
-        raise RuntimeError('new-base rotation StopZone has zero area')
-    orientation = 1.0 if signed_area_twice > 0.0 else -1.0
-    origin_edge_distances = []
-    for index, start in enumerate(rotation_points):
-        end = rotation_points[(index + 1) % len(rotation_points)]
-        edge_x = end[0] - start[0]
-        edge_y = end[1] - start[1]
-        edge_length = math.hypot(edge_x, edge_y)
-        if edge_length <= 0.0:
-            raise RuntimeError(
-                'new-base rotation StopZone has duplicate points')
-        if any(orientation * (
-                edge_x * (point[1] - start[1])
-                - edge_y * (point[0] - start[0])) < -1e-9
-               for point in rotation_points):
-            raise RuntimeError('new-base rotation StopZone must be convex')
-        origin_edge_distances.append(orientation * (
-            edge_y * start[0] - edge_x * start[1]) / edge_length)
-    footprint_radius = max(
-        math.hypot(x, y)
-        for x in (footprint[0], footprint[1])
-        for y in (-footprint[2], footprint[2]))
-    if min(origin_edge_distances) < footprint_radius - 1e-6:
-        raise RuntimeError(
-            'new-base rotation StopZone misses the swept corner radius')
     if not (stopped_stop[0] > footprint[0]
             and stopped_stop[1] <= footprint[1] + 1e-6
             and stopped_stop[2] >= footprint[2] - 1e-6):
@@ -422,6 +412,9 @@ def validate_new_base_params(params, geometry, precision_parking=False):
     smoother = params['velocity_smoother']['ros__parameters']
     if smoother['max_velocity'][0] > NEW_BASE_MAX_FORWARD_MPS:
         raise RuntimeError('new-base forward speed exceeds uncalibrated limit')
+    if not (abs(smoother['max_velocity'][2]) <= ROTATION_SWEEP_MAX_RADPS
+            and abs(smoother['min_velocity'][2]) <= ROTATION_SWEEP_MAX_RADPS):
+        raise RuntimeError('new-base turn rate exceeds the rotation StopZone sweep')
     controller = params['controller_server']['ros__parameters']
     reverse = controller.get('ParkingReverse')
     minimum_velocity = smoother['min_velocity'][0]
@@ -478,6 +471,8 @@ def validate_new_base_params(params, geometry, precision_parking=False):
                     or not 0.0 < top <= NEW_BASE_MAX_FORWARD_MPS
                     or not -NEW_BASE_MAX_FORWARD_MPS <= bottom <= 0.0
                     or plugin.get('motion_model') != 'DiffDrive'
+                    or type(plugin.get('wz_max')) not in (int, float)
+                    or not 0.0 < plugin['wz_max'] <= ROTATION_SWEEP_MAX_RADPS
                     or 'CostCritic' not in (plugin.get('critics') or [])
                     or cost.get('enabled') is not True
                     or cost.get('consider_footprint') is not True):

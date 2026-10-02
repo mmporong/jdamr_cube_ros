@@ -144,21 +144,27 @@ def _base_points(scan, laser_pose):
         yield lx + distance * math.cos(angle), ly + distance * math.sin(angle)
 
 
-def obstacle_ahead(scan, laser_pose, front_m, band_m, half_width_m):
+def straight_sweep_hit(scan, laser_pose, outline, distance_m, step_m=0.01):
     """
-    Whether a scan return lies in the band just ahead of the chassis front edge.
+    Whether a straight move of distance_m (negative: reverse) would meet a scan return.
 
-    laser_pose is the scan frame in the base frame as (x, y, yaw); the band spans
-    front_m < x <= front_m + band_m and |y| <= half_width_m in the base frame.
+    laser_pose is the scan frame in the base frame as (x, y, yaw). A return is met
+    when the outline shifted along the heading covers it. One already inside the
+    outline counts only on the half facing the move: a straight move cannot close
+    on a return beside the trailing half (2026-10-02 13:48: a bounding rectangle
+    held a return 5 mm beside the rear corner as "behind" and refused the back-off).
     """
-    return any(front_m < x_m <= front_m + band_m and abs(y_m) <= half_width_m
-               for x_m, y_m in _base_points(scan, laser_pose))
-
-
-def obstacle_behind(scan, laser_pose, rear_m, band_m, half_width_m):
-    """Whether a scan return lies in the band just behind the rear edge (rear_m < 0)."""
-    return any(rear_m - band_m <= x_m < rear_m and abs(y_m) <= half_width_m
-               for x_m, y_m in _base_points(scan, laser_pose))
+    count = max(1, math.ceil(abs(distance_m) / step_m))
+    shifts = [math.copysign(abs(distance_m) * index / count, distance_m)
+              for index in range(1, count + 1)]
+    for x_m, y_m in _base_points(scan, laser_pose):
+        if _point_in_polygon(x_m, y_m, outline):
+            if (x_m >= 0.0) == (distance_m > 0.0):
+                return True
+            continue
+        if any(_point_in_polygon(x_m - shift, y_m, outline) for shift in shifts):
+            return True
+    return False
 
 
 def outline_intrusion(scan, laser_pose, outline, min_points):

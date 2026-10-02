@@ -17,6 +17,7 @@ from jdamr_cube_navigation.corridor_route import (
     odom_distance_since_stamp, revisit_goal_witness,
     revisit_map_correction_ok, revisit_plan_length_ok,
 )
+from jdamr_cube_navigation.new_base_contract import _inside
 from launch import LaunchContext
 from launch.utilities import perform_substitutions
 from launch_ros.actions import ComposableNodeContainer, Node
@@ -164,19 +165,21 @@ def test_stop_zone_has_requested_geometric_margin():
         'translation_backward', 'stopped']
     rotation = yaml.safe_load(stop_zone['rotation']['points'])
     clockwise = yaml.safe_load(stop_zone['rotation_clockwise']['points'])
-    assert clockwise == rotation
+    assert sorted(map(tuple, clockwise)) == sorted((x, -y) for x, y in rotation)
     assert stop_zone['rotation']['theta_min'] > 0.0
     assert stop_zone['rotation_clockwise']['theta_max'] < 0.0
     assert stop_zone['stopped']['theta_min'] <= 0.0
     assert stop_zone['stopped']['theta_max'] >= 0.0
-    footprint_radius = max(math.hypot(*point) for point in footprint)
-    edge_distances = []
-    for start, end in zip(rotation, rotation[1:] + rotation[:1]):
-        edge_distances.append(abs(
-            start[0] * end[1] - start[1] * end[0]) / math.hypot(
-                end[0] - start[0], end[1] - start[1]))
-    assert len(rotation) >= 12
-    assert min(edge_distances) >= footprint_radius
+    # In-place turns stop on the footprint swept 6 deg ahead, not on the 0.43 m
+    # circle (operator 2026-10-02); every footprint corner turned up to 6 deg is in.
+    for degrees in (0.0, 3.0, 6.0):
+        angle = math.radians(degrees)
+        for x, y in footprint:
+            turned = (math.cos(angle) * x - math.sin(angle) * y,
+                      math.sin(angle) * x + math.cos(angle) * y)
+            assert _inside(rotation, turned, False)
+    assert not _inside(rotation, (0.23, 0.18), False)    # 13:48: touched by no turn
+    assert _inside(rotation, (-0.27, -0.243), False)     # 11:09 leg in the padding
     forward = yaml.safe_load(stop_zone['translation_forward']['points'])
     assert max(point[0] for point in forward) == pytest.approx(
         max(point[0] for point in footprint) + 0.05)
@@ -859,27 +862,37 @@ def test_stop_zone_below_requested_margin_is_rejected(tmp_path):
 
 def test_rotation_stop_zone_below_swept_radius_is_rejected(tmp_path):
     """The launch gate rejects a polygon that misses rotating corners."""
-    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
-    points = [
-        [round(0.40 * math.cos(index * math.pi / 6.0), 6),
-         round(0.40 * math.sin(index * math.pi / 6.0), 6)]
-        for index in range(12)
-    ]
-    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
-    stop_zone['rotation']['points'] = points
-    stop_zone['rotation_clockwise']['points'] = points
-    narrowed = tmp_path / 'narrowed_rotation.yaml'
-    narrowed.write_text(yaml.safe_dump(document), encoding='utf-8')
+    source = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    points = yaml.safe_load(source['collision_monitor']['ros__parameters'][
+        'StopZone']['rotation']['points'])
+    narrowed = _write_rotation_polygon(
+        tmp_path, [[0.97 * x, 0.97 * y] for x, y in points], 'narrowed_rotation.yaml')
 
-    with pytest.raises(RuntimeError, match='swept corner radius'):
+    with pytest.raises(RuntimeError, match='misses the swept footprint'):
         _load_validator(narrowed)(None)
+
+
+def test_turn_rate_above_the_sweep_cap_is_rejected(tmp_path):
+    """The 6 deg sweep holds only for the smoother's 0.3 rad/s cap."""
+    for section, key, value in (('velocity_smoother', 'max_velocity', [0.12, 0.0, 0.5]),
+                                ('controller_server', 'MPPI', None)):
+        document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+        parameters = document[section]['ros__parameters']
+        if value is None:
+            parameters[key]['wz_max'] = 0.6
+        else:
+            parameters[key] = value
+        invalid = tmp_path / 'fast_turn.yaml'
+        invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+        with pytest.raises(RuntimeError, match='turn rate exceeds|MPPI controller violates'):
+            _load_validator(invalid)(None)
 
 
 def _write_rotation_polygon(tmp_path, points, name):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
     stop_zone['rotation']['points'] = points
-    stop_zone['rotation_clockwise']['points'] = points
+    stop_zone['rotation_clockwise']['points'] = [[x, -y] for x, y in reversed(points)]
     path = tmp_path / name
     path.write_text(yaml.safe_dump(document), encoding='utf-8')
     return path
@@ -891,7 +904,7 @@ def test_collinear_rotation_polygon_is_rejected(tmp_path):
     invalid = _write_rotation_polygon(
         tmp_path, points, 'collinear_rotation.yaml')
 
-    with pytest.raises(RuntimeError, match='zero area'):
+    with pytest.raises(RuntimeError, match='must not cross|misses the swept footprint'):
         _load_validator(invalid)(None)
 
 
@@ -903,7 +916,7 @@ def test_rotation_polygon_shifted_away_from_origin_is_rejected(tmp_path):
     invalid = _write_rotation_polygon(
         tmp_path, shifted, 'shifted_rotation.yaml')
 
-    with pytest.raises(RuntimeError, match='swept corner radius'):
+    with pytest.raises(RuntimeError, match='misses the swept footprint'):
         _load_validator(invalid)(None)
 
 
@@ -916,7 +929,7 @@ def test_self_intersecting_rotation_polygon_is_rejected(tmp_path):
     invalid = _write_rotation_polygon(
         tmp_path, points, 'star_rotation.yaml')
 
-    with pytest.raises(RuntimeError, match='must be convex'):
+    with pytest.raises(RuntimeError, match='must not cross'):
         _load_validator(invalid)(None)
 
 

@@ -22,8 +22,8 @@ from jdamr_cube_navigation.parking import (
     pose_errors,
 )
 from jdamr_cube_navigation.reverse_parking import (
-    obstacle_ahead, obstacle_behind, outline_intrusion, rear_swing_clearance,
-    reverse_curve_waypoints, reverse_waypoints, SERVICE_TRANSIT_MAX_MPS, static_corridor_clear)
+    outline_intrusion, rear_swing_clearance, reverse_curve_waypoints, reverse_waypoints,
+    SERVICE_TRANSIT_MAX_MPS, static_corridor_clear, straight_sweep_hit)
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
     map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
@@ -805,7 +805,7 @@ class ServiceRoute(CorridorRoute):
             transform = self.parking_tf.lookup_transform(
                 self.parking_contract['robot_base_frame'], scan.header.frame_id,
                 rclpy.time.Time())
-            outline = self._reverse_footprint()
+            outline = self._footprint_outline()
         except (TransformException, RuntimeError):
             return None
         laser = (transform.transform.translation.x, transform.transform.translation.y,
@@ -814,7 +814,7 @@ class ServiceRoute(CorridorRoute):
 
     def _blocked_ahead(self, band_m=PATH_BLOCKED_AHEAD_BAND_M):
         """
-        Return whether the latest scan has a return in the band ahead of the front edge.
+        Return whether driving band_m straight ahead would meet a scan return.
 
         None when no scan or transform is available.
         """
@@ -822,19 +822,15 @@ class ServiceRoute(CorridorRoute):
         if found is None:
             return None
         scan, laser, outline = found
-        front_m = max(point[0] for point in outline)
-        half_width_m = max(abs(point[1]) for point in outline)
-        return obstacle_ahead(scan, laser, front_m, band_m, half_width_m)
+        return straight_sweep_hit(scan, laser, outline, band_m)
 
     def _blocked_behind(self, band_m):
-        """Return whether the latest scan has a return in the band behind the rear edge."""
+        """Return whether reversing band_m straight would meet a scan return."""
         found = self._scan_in_base()
         if found is None:
             return None
         scan, laser, outline = found
-        rear_m = min(point[0] for point in outline)
-        half_width_m = max(abs(point[1]) for point in outline)
-        return obstacle_behind(scan, laser, rear_m, band_m, half_width_m)
+        return straight_sweep_hit(scan, laser, outline, -band_m)
 
     def _footprint_intrusion(self):
         """Which half of the footprint holds returns: 'front', 'rear', 'both' or None."""
@@ -1653,8 +1649,21 @@ class ServiceRoute(CorridorRoute):
                   **excluded)
         return result.is_valid and not result.invalid_pose_indices
 
-    def _reverse_footprint(self):
-        """Use matching runtime footprints, including their configured padding."""
+    def _footprint_outline(self):
+        """
+        Return the runtime footprint polygon itself when it carries no padding.
+
+        The escape checks follow the stepped body (wheels wider than the frame
+        only near the axle) like the Collision Monitor; with padding the
+        conservative bounding rectangle is used instead.
+        """
+        polygon, padding = self._runtime_footprint()
+        if padding == 0.0:
+            return [(float(x), float(y)) for x, y in polygon]
+        return self._reverse_footprint()
+
+    def _runtime_footprint(self):
+        """Return the matching global/local footprint polygon and padding."""
         footprints = []
         for name in ('global_costmap/global_costmap', 'local_costmap/local_costmap'):
             response = self._read_parameters(
@@ -1677,7 +1686,11 @@ class ServiceRoute(CorridorRoute):
             footprints.append((polygon, padding))
         if footprints[0] != footprints[1]:
             raise RuntimeError('global and local footprints disagree')
-        polygon, padding = footprints[0]
+        return footprints[0]
+
+    def _reverse_footprint(self):
+        """Use matching runtime footprints, including their configured padding."""
+        polygon, padding = self._runtime_footprint()
         # A bounding rectangle is conservative for the configured base polygon.
         xmin = min(p[0] for p in polygon) - padding
         xmax = max(p[0] for p in polygon) + padding

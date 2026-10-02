@@ -2152,16 +2152,21 @@ def _scan(ranges):
                            range_min=0.28, range_max=12.0)
 
 
+STEPPED = [(0.085, 0.245), (0.053, 0.245), (0.053, 0.29), (-0.053, 0.29), (-0.053, 0.245),
+           (-0.295, 0.245), (-0.295, -0.245), (-0.053, -0.245), (-0.053, -0.29),
+           (0.053, -0.29), (0.053, -0.245), (0.085, -0.245)]
+
+
 @pytest.mark.parametrize('ranges, ahead', [
     # Laser 1 cm behind the axle, turned 180 deg; beam 2 points ahead of the base.
-    ([math.inf, math.inf, 0.31, math.inf], True),      # 0.30 m ahead: in the band
+    ([math.inf, math.inf, 0.31, math.inf], True),      # 0.30 m ahead: in the sweep
     ([math.inf, math.inf, 0.50, math.inf], False),     # beyond 0.085 + 0.30 m
     ([math.inf, 0.29, math.inf, math.inf], False),     # beside the base (desk leg)
     ([math.inf, math.inf, 0.2, math.inf], False),      # inside the LiDAR blind range
 ])
 def test_only_an_object_ahead_counts_as_blocked_ahead(ranges, ahead):
-    from jdamr_cube_navigation.reverse_parking import obstacle_ahead
-    assert obstacle_ahead(_scan(ranges), (-0.01, 0.0, math.pi), 0.085, 0.30, 0.29) is ahead
+    from jdamr_cube_navigation.reverse_parking import straight_sweep_hit
+    assert straight_sweep_hit(_scan(ranges), (-0.01, 0.0, math.pi), STEPPED, 0.30) is ahead
 
 
 def test_controller_stop_hold_ends_once_the_band_ahead_stays_empty(monkeypatch):
@@ -2244,15 +2249,21 @@ def test_mppi_transit_switches_only_the_transit_and_staging_trees(monkeypatch):
         'Parking', 'ParkingReverse')
 
 
-@pytest.mark.parametrize('ranges, behind', [
-    # Laser 1 cm behind the axle, turned 180 deg: beam 0 points back, 1 right.
-    ([0.31, math.inf, math.inf, math.inf], True),     # 0.32 m behind the axle: in the band
-    ([0.60, math.inf, math.inf, math.inf], False),    # beyond 0.295 + 0.15 m
-    ([math.inf, 0.29, math.inf, math.inf], False),    # beside the base
+@pytest.mark.parametrize('points, distance, hit', [
+    # 13:48 (run 134626): a return 5 mm beside the rear corner, outside the frame.
+    ([(-0.37, -0.25)] * 3, -0.15, False),
+    ([(-0.37, -0.20)], -0.15, True),                     # behind the frame
+    ([(-0.39, 0.0)], -0.10, True),                       # 0.095 m behind the rear edge
+    ([(-0.40, 0.0)], -0.10, False),                      # 0.105 m behind
+    ([(-0.27, -0.243)], 0.22, False),                    # 11:09 leg in the rear padding
+    ([(0.07, 0.0)], 0.10, True),                         # inside the front padding
+    ([(0.07, 0.0)], -0.10, False),
+    ([(0.10, 0.27)], 0.10, True),                        # ahead of the left wheel
+    ([(0.10, 0.27)], -0.10, False),
 ])
-def test_only_an_object_behind_the_rear_edge_counts_as_blocked_behind(ranges, behind):
-    from jdamr_cube_navigation.reverse_parking import obstacle_behind
-    assert obstacle_behind(_scan(ranges), (-0.01, 0.0, math.pi), -0.295, 0.15, 0.29) is behind
+def test_straight_sweep_follows_the_stepped_footprint(points, distance, hit):
+    from jdamr_cube_navigation.reverse_parking import straight_sweep_hit
+    assert straight_sweep_hit(_points_scan(points), (0.0, 0.0, 0.0), STEPPED, distance) is hit
 
 
 def _points_scan(points):
