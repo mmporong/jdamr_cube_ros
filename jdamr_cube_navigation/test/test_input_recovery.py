@@ -1608,9 +1608,11 @@ def _in_place_turns(world):
     return turns
 
 
-@pytest.mark.parametrize('offset_deg, entries', [(2.0, 1), (4.4, 2)])
-def test_t27_dock_heading_is_set_outside_the_dock(monkeypatch, tmp_path, offset_deg, entries):
-    """Pull out and set a 4.4 deg dock heading before entering again, never inside the dock."""
+@pytest.mark.parametrize('offset_deg, entries, end_turns', [
+    (2.0, 1, 0), (4.4, 1, 1), (7.0, 2, 0)])
+def test_t27_dock_heading_is_set_outside_the_dock(
+        monkeypatch, tmp_path, offset_deg, entries, end_turns):
+    """Up to 5 deg over, turn where the robot stands; beyond that, pull out and enter again."""
     node, world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
     _dock_entries(node, world, offset_deg)
     assert node._go_home_reverse(HOME, True) is True
@@ -1618,12 +1620,17 @@ def test_t27_dock_heading_is_set_outside_the_dock(monkeypatch, tmp_path, offset_
     reverses = [goal for goal in goals if goal.controller_id == 'ParkingReverse']
     assert len(reverses) == entries
     assert all(goal.goal_checker_id == 'dock_position_checker' for goal in reverses)
+    dock_xy = _pose_xyyaw(reverses[0].path.poses[-1].pose)[:2]
     turns = _in_place_turns(world)
-    assert len(turns) == entries - 1
-    for goal in turns:
-        # The heading is set at the straight entry (staging here), not at the dock.
-        assert _pose_xyyaw(goal.path.poses[0].pose)[:2] == pytest.approx((stage['x'], stage['y']))
-        assert goal.goal_checker_id == 'alignment_goal_checker'
+    assert all(goal.goal_checker_id == 'entry_heading_checker' for goal in turns)
+    at_dock = [goal for goal in turns
+               if _pose_xyyaw(goal.path.poses[0].pose)[:2] == pytest.approx(dock_xy)]
+    outside = [goal for goal in turns if goal not in at_dock]
+    assert len(at_dock) == end_turns
+    # A pull-out sets the heading again at the straight entry (staging here).
+    assert len(outside) == entries - 1
+    assert all(_pose_xyyaw(goal.path.poses[0].pose)[:2]
+               == pytest.approx((stage['x'], stage['y'])) for goal in outside)
     if entries > 1:
         pull_out = goals[1]
         assert pull_out.controller_id == 'Parking'
@@ -1638,10 +1645,10 @@ def test_t27_dock_heading_is_set_outside_the_dock(monkeypatch, tmp_path, offset_
     assert verified.kwargs['contract'] == {**home, 'reference_frame': 'odom'}
 
 
-def test_t27b_dock_heading_still_off_after_the_second_entry_fails(monkeypatch, tmp_path):
-    """Stop after one re-entry instead of turning inside the dock."""
+def test_t27b_dock_heading_still_far_off_after_the_second_entry_fails(monkeypatch, tmp_path):
+    """Stop after one re-entry instead of a large turn inside the dock."""
     node, world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
-    _dock_entries(node, world, 4.4, every_entry=True)
+    _dock_entries(node, world, 7.0, every_entry=True)
     assert node._go_home_reverse(HOME, True) is False
     reverses = [goal for kind, goal in world.motions
                 if kind == 'FollowPath' and goal.controller_id == 'ParkingReverse']
@@ -1972,7 +1979,8 @@ def test_l2_dock_checker_mismatch_fails_before_escape(monkeypatch, tmp_path):
     kinds = [kind for kind, _goal in world.motions]
     assert kinds == [], f'REVIEW[L2]: {kinds} dispatched before the dock checker check'
     assert isinstance(result, RuntimeError)
-    assert str(result) == 'live alignment goal checker does not match the home contract'
+    assert str(result) == ('live alignment or entry heading goal checker does not match '
+                           'the home contract')
 
 
 @pytest.mark.parametrize('case', ['window_end', 'input_unavailable'])
@@ -2437,3 +2445,15 @@ def test_staging_leaves_a_small_residual_to_the_curved_reverse(monkeypatch, tmp_
     node._execute_reverse_path = Mock(return_value=True)
     assert node._go_home_reverse(HOME, True) is True
     assert spins == [pytest.approx(math.radians(-132.8))]
+
+
+def test_l2b_missing_entry_heading_checker_fails_before_escape(monkeypatch, tmp_path):
+    """A session without the 1.5 deg entry checker is rejected before the box escape."""
+    node, world = _parked_world(monkeypatch, tmp_path)
+    del world.parameters['controller_server']['entry_heading_checker.yaw_goal_tolerance']
+    try:
+        result = node.go_home(execute=True, timeout_s=500.0)
+    except RuntimeError as error:
+        result = error
+    assert [kind for kind, _goal in world.motions] == []
+    assert isinstance(result, RuntimeError) and 'entry heading' in str(result)

@@ -32,6 +32,11 @@ STAGING_XY_TOLERANCE_M = 0.15
 DOCK_POSITION_TOLERANCE_M = 0.02
 # Box face alignment only squares the base before the straight final approach.
 FACE_ALIGNMENT_XY_TOLERANCE_M = 0.10
+# The heading turned in front of the dock before the straight entry. The 3 deg
+# alignment checker stopped just inside 3 deg and the 0.25 m reverse added about
+# 1 deg: 3.97 deg at the dock (2026-10-02 08:50). One 10 Hz step at 0.2 rad/s is
+# 1.15 deg, so a 1.5 deg band is reached without hunting.
+ENTRY_HEADING_TOLERANCE_DEG = 1.5
 MAXIMUM_CONTRACT_VALUES = {
     'xy_tolerance_m': 0.05,
     'yaw_tolerance_deg': 3.0,
@@ -183,6 +188,13 @@ def parking_controller_overrides(
         'plugin': 'nav2_controller::PositionGoalChecker',
         'stateful': True,
         'xy_goal_tolerance': DOCK_POSITION_TOLERANCE_M,
+    }
+    configured['goal_checker_plugins'].append('entry_heading_checker')
+    configured['entry_heading_checker'] = {
+        'plugin': 'nav2_controller::SimpleGoalChecker',
+        'stateful': True,
+        'xy_goal_tolerance': MAXIMUM_CONTRACT_VALUES['xy_tolerance_m'],
+        'yaw_goal_tolerance': math.radians(ENTRY_HEADING_TOLERANCE_DEG),
     }
     configured['parking_goal_checker'] = {
         'plugin': 'nav2_controller::SimpleGoalChecker',

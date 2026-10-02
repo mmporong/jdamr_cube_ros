@@ -18,7 +18,8 @@ from geometry_msgs.msg import PoseStamped
 from jdamr_cube_navigation.corridor_route import (
     _quaternion_yaw, AMCL_QOS, CorridorRoute, PATH_BLOCKED_NAV2_CODES)
 from jdamr_cube_navigation.parking import (
-    load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold, pose_errors,
+    ENTRY_HEADING_TOLERANCE_DEG, load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold,
+    pose_errors,
 )
 from jdamr_cube_navigation.reverse_parking import (
     reverse_curve_waypoints, reverse_waypoints, SERVICE_TRANSIT_MAX_MPS,
@@ -68,6 +69,12 @@ PRE_DOCK_DISTANCE_M = 0.25
 STRAIGHT_DOCK_LATERAL_M = 0.01
 # The straight entry, then one pull-out, heading set and entry again.
 DOCK_ENTRY_ATTEMPTS = 2
+# A dock heading only a little over the contract is turned where the robot stands
+# (operator, 2026-10-02: the pull-out and re-entry shuttled back and forth). At
+# 5 deg the rear corners (0.414 m from the turn centre) sweep about 3.6 cm.
+DOCK_END_TURN_MAX_RAD = math.radians(5.0)
+ENTRY_HEADING_CHECKER = 'entry_heading_checker'
+ENTRY_HEADING_TOLERANCE_RAD = math.radians(ENTRY_HEADING_TOLERANCE_DEG)
 # Events whose reason may explain why a cycle stopped short (operator_call).
 FAILURE_EVENTS = frozenset({
     'failed', 'interrupted', 'reverse_interrupted', 'departure_blocked',
@@ -1440,17 +1447,20 @@ class ServiceRoute(CorridorRoute):
         if not all(math.isclose(value, wanted, rel_tol=0.0, abs_tol=1e-9)
                    for value, wanted in zip(tolerance, alignment)):
             raise RuntimeError('home contract matches no loaded goal checker')
-        # Read the live checker instead of trusting the generated parameters.
+        # Read the live checkers instead of trusting the generated parameters; the
+        # dock entry turns with entry_heading_checker (_dock_straight).
         response = self._read_parameters('controller_server', [
             'alignment_goal_checker.xy_goal_tolerance',
-            'alignment_goal_checker.yaw_goal_tolerance'])
+            'alignment_goal_checker.yaw_goal_tolerance',
+            f'{ENTRY_HEADING_CHECKER}.yaw_goal_tolerance'])
         values = ([parameter_value_to_python(value) for value in response.values]
                   if response is not None else [])
-        if (len(values) != 2 or any(
+        if (len(values) != 3 or any(
                 isinstance(value, bool) or not isinstance(value, (int, float))
                 or not math.isclose(value, wanted, rel_tol=0.0, abs_tol=1e-9)
-                for value, wanted in zip(values, alignment))):
-            raise RuntimeError('live alignment goal checker does not match the home contract')
+                for value, wanted in zip(values, (*alignment, ENTRY_HEADING_TOLERANCE_RAD)))):
+            raise RuntimeError('live alignment or entry heading goal checker does not match '
+                               'the home contract')
         return 'alignment_goal_checker'
 
     def _reach_staging(self, stage):
@@ -1506,7 +1516,8 @@ class ServiceRoute(CorridorRoute):
         path_kwargs = {'path_contract': home} if precision_home else {}
         # go_home() already checked this before the parked-pose exit; a direct
         # call still fails here, before staging.
-        dock_checker = self._home_goal_checker() if precision_home else None
+        if precision_home:
+            self._home_goal_checker()
         actual = None
         if (execute and getattr(self, 'parking_command', None) is not None
                 and getattr(self, 'parking_odom', None) is not None):
@@ -1585,7 +1596,7 @@ class ServiceRoute(CorridorRoute):
         self.verify_live_maps()
         actual, _evidence = self.capture_stationary_pose()
         if precision_home:
-            success = self._dock_straight(actual, target, pre_dock, home, dock_checker)
+            success = self._dock_straight(actual, target, pre_dock, home)
         else:
             try:
                 path = self._make_reverse_path(actual, target, **path_kwargs)
@@ -1668,18 +1679,18 @@ class ServiceRoute(CorridorRoute):
 
         return self._run_with_input_recovery(attempt)
 
-    def _dock_straight(self, actual, target, pre_dock, home, dock_checker):
+    def _dock_straight(self, actual, target, pre_dock, home):
         """
         Reverse into the dock along its axis with the heading set beforehand.
 
         A curve ending at the dock left its heading lag inside the dock and the
         robot turned in place there (2026-10-01, see PRE_DOCK_DISTANCE_M). A
-        staging offset is now taken out by a curved reverse to pre_dock, the
-        heading is set where the straight part starts, and nothing turns inside
-        the dock: a heading still off there pulls straight out to that start,
-        sets the heading and enters once more. Staging was confirmed on the map;
-        every leg runs and is confirmed in odom as frozen here, so AMCL jumps
-        cannot bend it.
+        staging offset is now taken out by a curved reverse to pre_dock, and the
+        heading is set to 1.5 deg where the straight part starts. A dock heading
+        a little over the contract (up to DOCK_END_TURN_MAX_RAD) is turned in
+        place there; a larger one pulls straight out to that start, sets the
+        heading and enters once more. Staging was confirmed on the map; every leg
+        runs and is confirmed in odom as frozen here, so AMCL jumps cannot bend it.
         """
         controller = getattr(self, 'dock_leg_controller', 'ParkingReverse')
         # The straight part starts on the dock axis, heading set first.
@@ -1710,7 +1721,8 @@ class ServiceRoute(CorridorRoute):
             if attempt and not self._pull_out_to(entry_odom, dock['yaw']):
                 return False
             if not self._turn_to_dock_heading(
-                    dock, home, dock_checker, event='dock_entry_heading_measured'):
+                    dock, ENTRY_HEADING_TOLERANCE_RAD, ENTRY_HEADING_CHECKER,
+                    event='dock_entry_heading_measured'):
                 return False
             start = self._odom_pose()
             try:
@@ -1730,7 +1742,12 @@ class ServiceRoute(CorridorRoute):
             _x, _y, yaw = self._odom_pose()
             error = math.atan2(math.sin(dock['yaw'] - yaw), math.cos(dock['yaw'] - yaw))
             self.emit('dock_heading_measured', delta_yaw_rad=error, attempt=attempt + 1)
-            if abs(error) <= home['yaw_tolerance_rad']:
+            if abs(error) <= DOCK_END_TURN_MAX_RAD:
+                if (abs(error) > home['yaw_tolerance_rad']
+                        and not self._turn_to_dock_heading(
+                            dock, ENTRY_HEADING_TOLERANCE_RAD, ENTRY_HEADING_CHECKER,
+                            event='dock_end_turn_measured')):
+                    return False
                 return self._verify_parking_stop(
                     len(self.waypoints) - 1, dock, None,
                     contract={**home, 'reference_frame': 'odom'})
@@ -1762,9 +1779,9 @@ class ServiceRoute(CorridorRoute):
             self._odom_path(points), goal_checker_id='dock_position_checker', final=False,
             controller_id='Parking', motion='pull_out')
 
-    def _turn_to_dock_heading(self, dock, contract, goal_checker_id,
+    def _turn_to_dock_heading(self, dock, limit_rad, goal_checker_id,
                               event='dock_heading_measured'):
-        """Turn in place to the dock heading where the robot stands.
+        """Turn in place to the dock heading where the robot stands, if over limit_rad.
 
         The forward Parking controller turns to the goal heading in place (as in the
         box face alignment) and its goal checker ends the turn inside the tolerance.
@@ -1772,7 +1789,7 @@ class ServiceRoute(CorridorRoute):
         x, y, yaw = self._odom_pose()
         error = math.atan2(math.sin(dock['yaw'] - yaw), math.cos(dock['yaw'] - yaw))
         self.emit(event, delta_yaw_rad=error)
-        if abs(error) <= contract['yaw_tolerance_rad']:
+        if abs(error) <= limit_rad:
             return True
         return self._execute_reverse_once(
             self._odom_path([(x, y, yaw), (x, y, dock['yaw'])]),

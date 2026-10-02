@@ -52,12 +52,13 @@ def test_generated_params_only_add_opt_in_controller_content(tmp_path):
     modified['goal_checker_plugins'].remove('staging_position_checker')
     modified['goal_checker_plugins'].remove('dock_position_checker')
     modified['goal_checker_plugins'].remove('face_alignment_checker')
+    modified['goal_checker_plugins'].remove('entry_heading_checker')
     modified['controller_plugins'].remove('Parking')
     modified['controller_plugins'].remove('GracefulParking')
     del modified['Parking'], modified['parking_goal_checker']
     del modified['alignment_goal_checker'], modified['GracefulParking']
     del modified['staging_position_checker'], modified['dock_position_checker']
-    del modified['face_alignment_checker']
+    del modified['face_alignment_checker'], modified['entry_heading_checker']
     assert actual == original
     assert source.read_bytes() == before
     assert evidence['physical_accuracy'] == 'NOT_MEASURED'
