@@ -419,7 +419,7 @@ def test_poll_pi_tells_a_failed_link_from_a_finished_cycle(monkeypatch):
     assert d.poll_pi('test -e result || echo running').stdout.strip() == ''
 
 
-def test_operator_call_event_alerts_the_pc(monkeypatch):
+def test_operator_call_event_alerts_the_pc(env, monkeypatch):
     """An operator_call rings, notifies the desktop, and uses the optional extra channel."""
     sent = []
     monkeypatch.setattr(d, 'sh', lambda command, **kwargs: sent.append(command)
@@ -464,3 +464,16 @@ def test_operator_alerts_can_be_switched_off_for_test_runs(env, monkeypatch):
     d.cmd_alerts(SimpleNamespace(mode='on'))
     d.alert_operator(event)
     assert any(command.startswith('notify-send') for command in sent)
+
+
+def test_go_passes_the_zero_turn_final_switch_only_when_asked(env, monkeypatch):
+    seen = []
+    for second, extra in enumerate(({}, {'zero_turn_final': True})):
+        monkeypatch.setattr(d.time, 'strftime', lambda _fmt, s=second: f'20261005_10000{s}')
+        pi = ExecutorPi()
+        monkeypatch.setattr(d, 'pi', pi)
+        monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+        d.run_cycle(go_args(**extra), d.load_state(), 'table_02')
+        seen.append(json.loads(next(s for s in pi.stdins if s))['argv'])
+    assert '--zero-turn-final' not in seen[0]
+    assert '--zero-turn-final' in seen[1]

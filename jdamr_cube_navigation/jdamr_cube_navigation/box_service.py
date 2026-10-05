@@ -41,6 +41,12 @@ DEPTH_WINDOW_CEILING_M = 2.0
 # goal 0.135 m from a LiDAR-marked face can sit one cell inside its inflation, and
 # the plan then ends 0.05 m short (table_01, 2026-10-01 15:50): one cell + 1 cm.
 FINAL_PLAN_END_TOLERANCE_M = 0.06
+# Zero-turn final approach (--zero-turn-final): trim residuals from 0.3 deg up to
+# 30 deg, accept the trim within 0.3 deg, and the straight within 5 mm.
+FINAL_TRIM_MIN_RAD = math.radians(0.3)
+FINAL_TRIM_MAX_RAD = math.radians(30.0)
+FINAL_TRIM_TOLERANCE_RAD = math.radians(0.3)
+FINAL_STRAIGHT_TOLERANCE_M = 0.005
 SEARCH_MAX_STEPS = 12
 SEARCH_MAX_CUMULATIVE_RAD = math.tau
 # A region bearing smaller than this is treated as centred: the failure is not a
@@ -923,6 +929,67 @@ class BoxServiceRoute(ServiceRoute):
         return gap_confirmed
 
     def _straight_final_approach(self, target, front_extent_m):
+        """Run the configured final approach: Parking along a held path, or zero turn."""
+        if getattr(self, 'zero_turn_final', False):
+            return self._zero_turn_final_approach(target, front_extent_m)
+        return self._parking_final_approach(target, front_extent_m)
+
+    def _zero_turn_final_approach(self, target, front_extent_m):
+        """
+        Turn out the residual to the re-observed face in place, then close the gap straight.
+
+        Face alignment stops anywhere inside the 3 deg contract (38 parks 09-30 to
+        10-02: mean 1.02 deg, max 2.69 deg; front corners up to 1.27 cm apart) and
+        the Parking controller steers on the way in. Toward 1 cm (2026-10-05) the
+        residual is measured against the face normal and turned out by odom, and the
+        straight runs at zero turn rate, so the heading stays where the trim left it.
+        """
+        actual, _ = self.capture_stationary_pose()
+        face = target['face_center_map_xy_m']
+        outward = target['outward_normal_map_xy']
+        face_heading = math.atan2(-outward[1], -outward[0])
+        residual = math.atan2(math.sin(face_heading - actual[2]),
+                              math.cos(face_heading - actual[2]))
+        if abs(residual) > FINAL_TRIM_MAX_RAD:
+            self.emit('failed', phase='final_approach', reason='final_trim_out_of_range',
+                      residual_deg=round(math.degrees(residual), 2))
+            return False, None
+        turned = 0.0
+        if abs(residual) >= FINAL_TRIM_MIN_RAD:
+            turned = self._rotate_in_place(residual)
+            if turned is None or abs(turned - residual) > FINAL_TRIM_TOLERANCE_RAD:
+                self.emit('failed', phase='final_approach', reason='final_trim_missed',
+                          residual_deg=round(math.degrees(residual), 2),
+                          turned_deg=None if turned is None else round(math.degrees(turned), 2))
+                return False, None
+            actual, _ = self.capture_stationary_pose()
+        self.emit('final_yaw_trim', residual_deg=round(math.degrees(residual), 3),
+                  turned_deg=round(math.degrees(turned), 3))
+        distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
+        travel_m = distance_m - front_extent_m - 0.05
+        if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
+            self.emit('failed', phase='final_approach', reason='final_approach_unavailable',
+                      travel_m=self._json_scalar(travel_m))
+            return False, None
+        steps = int(math.ceil(travel_m / 0.05)) + 1
+        heading = actual[2]
+        path = RosPath()
+        path.poses = [self._pose(0, {'x': actual[0] + travel_m * k / steps * math.cos(heading),
+                                     'y': actual[1] + travel_m * k / steps * math.sin(heading),
+                                     'yaw': heading}) for k in range(steps + 1)]
+        path.header = path.poses[0].header
+        _odom_path, to_odom = self._frozen_in_odom(path)
+        self.emit('final_approach_straight', travel_m=travel_m, heading_basis='trimmed',
+                  controller_id='zero_turn')
+        travelled_m = self._drive_zero_turn(travel_m)
+        reached = (travelled_m is not None
+                   and travelled_m >= travel_m - FINAL_STRAIGHT_TOLERANCE_M)
+        if not reached:
+            self.emit('final_approach_short', travel_m=travel_m,
+                      travelled_m=None if travelled_m is None else round(travelled_m, 4))
+        return reached, to_odom
+
+    def _parking_final_approach(self, target, front_extent_m):
         """
         Close the last gap straight along the aligned heading, held in odom.
 
@@ -1153,6 +1220,9 @@ def parse_args(argv=None):
     parser.add_argument('--graceful-final', action='store_true',
                         help='use the Graceful controllers for the box approach and dock '
                              'leg instead of RPP (trajectory collision check, see 105)')
+    parser.add_argument('--zero-turn-final', action='store_true',
+                        help='final box approach: turn the residual to the face out in '
+                             'place, then close the gap at zero turn rate (precision trial)')
     parser.add_argument('--mppi-transit', action='store_true',
                         help='follow the transit and dock staging legs with MPPI instead '
                              'of RPP (A/B; box approach and dock leg unchanged)')
@@ -1258,6 +1328,7 @@ def run_attempt(args, active=None):
                 node.dock_leg_controller = 'GracefulReverse'
             if args.mppi_transit:
                 node.use_mppi_transit()
+            node.zero_turn_final = args.zero_turn_final
             node.operator_heartbeat = args.operator_heartbeat
             node.operator_link_timeout_s = args.operator_link_timeout_s
             ok = True

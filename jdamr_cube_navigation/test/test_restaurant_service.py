@@ -2473,3 +2473,25 @@ def test_dock_return_needs_only_the_running_battery_cutoff():
     assert node._departure_battery_ready() is True       # the way to the charger
     node.battery_voltage = node.minimum_battery_v - 0.01
     assert node._departure_battery_ready() is False
+
+
+def test_in_place_trim_commands_no_translation_and_stops_early_by_the_overshoot(monkeypatch):
+    node = route()
+    published = []
+    node.escape_velocity = SimpleNamespace(publish=lambda m: published.append(
+        (m.linear.x, m.angular.z)))
+    yaws = iter([0.001 * k for k in range(400)])
+
+    def lookup(*_args, **_kwargs):
+        yaw = next(yaws)
+        return SimpleNamespace(transform=SimpleNamespace(rotation=SimpleNamespace(
+            x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))))
+
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    turned = node._rotate_in_place(math.radians(2.0))
+    early = restaurant_service.TRIM_ANGULAR_RADPS ** 2 / (2 * restaurant_service.TRIM_DECEL_RADPS2)
+    assert turned >= math.radians(2.0) - early - 0.002
+    assert all(v == 0.0 for v, _w in published)
+    assert {w for _v, w in published[:-5]} == {restaurant_service.TRIM_ANGULAR_RADPS}
+    assert published[-5:] == [(0.0, 0.0)] * 5

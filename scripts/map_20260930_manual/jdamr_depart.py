@@ -703,6 +703,7 @@ def run_cycle(args, state, table_id):
                    + (' --home-only ' if args.dock_only else '')
                    + (' --graceful-final ' if args.graceful_final else '')
                    + (' --mppi-transit ' if args.mppi_transit else '')
+                   + (' --zero-turn-final ' if getattr(args, 'zero_turn_final', False) else '')
                    + (' --resume-at-observation ' if args.resume_at_observation else '')
                    + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
                       if args.resume_parked_log else '')
@@ -1099,6 +1100,8 @@ def main():
     go.add_argument('--dock-only', action='store_true', help='return to the dock only (re-dock)')
     go.add_argument('--graceful-final', action='store_true',
                     help='Graceful box approach and dock leg instead of RPP (default)')
+    go.add_argument('--zero-turn-final', action='store_true',
+                    help='final box approach: trim the residual in place, then zero-turn straight')
     go.add_argument('--mppi-transit', action='store_true',
                     help='MPPI for the transit and dock staging legs instead of RPP (A/B)')
     go.add_argument('--resume-at-observation', action='store_true',

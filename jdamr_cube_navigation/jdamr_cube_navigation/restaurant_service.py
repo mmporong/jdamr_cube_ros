@@ -116,6 +116,11 @@ PATH_BLOCKED_FORWARD_MAX_M = 0.35
 STRAIGHT_ESCAPE_SPEED_MPS = 0.05
 STRAIGHT_ESCAPE_EXTRA_S = 5.0
 STRAIGHT_ESCAPE_TOLERANCE_M = 0.01
+# In-place trims (zero-turn final approach): slow enough that the smoother's
+# 1.5 rad/s^2 stop adds only w^2 / 2a = 0.12 deg, which the stop anticipates.
+TRIM_ANGULAR_RADPS = 0.08
+TRIM_DECEL_RADPS2 = 1.5
+TRIM_EXTRA_S = 4.0
 # The Collision Monitor stops on this many returns inside one polygon.
 COLLISION_MONITOR_MIN_POINTS = 3
 # Backing out along the odom trail when something touches the body: 0.30 m, then
@@ -995,6 +1000,56 @@ class ServiceRoute(CorridorRoute):
         self.emit(event, done=done, distance_m=abs(distance_m),
                   travelled_m=None if travelled_m is None else round(travelled_m, 3))
         return done
+
+    def _rotate_in_place(self, delta_rad):
+        """
+        Command (0, +-TRIM_ANGULAR_RADPS) until odom shows delta_rad turned.
+
+        Same path as the controller (smoother, Collision Monitor); the stop is
+        sent early by the smoother's deceleration overshoot. Returns the signed
+        turn measured in odom, or None without odom.
+        """
+        publisher = getattr(self, 'escape_velocity', None)
+        if publisher is None:
+            publisher = self.create_publisher(Twist, 'cmd_vel_nav', 10)
+            self.escape_velocity = publisher
+        base_frame = self.parking_contract['robot_base_frame']
+
+        def odom_yaw():
+            return _quaternion_yaw(self.parking_tf.lookup_transform(
+                'odom', base_frame, rclpy.time.Time()).transform.rotation)
+
+        try:
+            start = odom_yaw()
+        except TransformException:
+            return None
+        command = Twist()
+        command.angular.z = math.copysign(TRIM_ANGULAR_RADPS, delta_rad)
+        early_rad = TRIM_ANGULAR_RADPS ** 2 / (2.0 * TRIM_DECEL_RADPS2)
+        deadline_s = time.monotonic() + abs(delta_rad) / TRIM_ANGULAR_RADPS + TRIM_EXTRA_S
+        turned, published_s = 0.0, 0.0
+        try:
+            while (abs(turned) < abs(delta_rad) - early_rad and not self.stop_requested
+                   and time.monotonic() < deadline_s):
+                if time.monotonic() - published_s >= 0.05:
+                    publisher.publish(command)
+                    published_s = time.monotonic()
+                rclpy.spin_once(self, timeout_sec=0.02)
+                try:
+                    yaw = odom_yaw()
+                except TransformException:
+                    continue
+                turned = math.atan2(math.sin(yaw - start), math.cos(yaw - start))
+        finally:
+            for _repeat in range(5):
+                publisher.publish(Twist())
+                rclpy.spin_once(self, timeout_sec=0.02)
+        try:
+            yaw = odom_yaw()
+            turned = math.atan2(math.sin(yaw - start), math.cos(yaw - start))
+        except TransformException:
+            pass
+        return turned
 
     def _drive_zero_turn(self, distance_m):
         """

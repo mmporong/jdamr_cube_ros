@@ -2385,7 +2385,7 @@ def test_final_approach_follows_the_reobserved_face_when_squared_off():
         sent['end'] = kwargs['verify_waypoint']
         return True
     fake._execute_reverse_path = execute
-    reached, _ = box_service.BoxServiceRoute._straight_final_approach(
+    reached, _ = box_service.BoxServiceRoute._parking_final_approach(
         fake, {'face_center_map_xy_m': face, 'outward_normal_map_xy': outward}, 0.085)
     assert reached
     assert sent['final_approach_straight']['heading_basis'] == 'face'
@@ -2457,3 +2457,61 @@ def test_l2b_missing_entry_heading_checker_fails_before_escape(monkeypatch, tmp_
         result = error
     assert [kind for kind, _goal in world.motions] == []
     assert isinstance(result, RuntimeError) and 'entry heading' in str(result)
+
+
+def _zero_turn_fake(yaw, poses_after=None):
+    """Face at y=-1.0 facing +y, robot 0.47 m behind it looking -y off by `yaw`."""
+    sent, calls = {}, []
+    captures = iter([((0.0, -0.47, yaw), None)] + (poses_after or []))
+    fake = SimpleNamespace(
+        capture_stationary_pose=lambda: next(captures),
+        emit=lambda name, **fields: sent.setdefault(name, fields),
+        _json_scalar=float,
+        _pose=lambda _i, wp: SimpleNamespace(header=None, yaw=wp['yaw'], x=wp['x'], y=wp['y']),
+        _frozen_in_odom=lambda path: (path, lambda x, y, yaw: (x, y, yaw)))
+    fake._rotate_in_place = lambda delta: calls.append(('turn', delta)) or delta
+    fake._drive_zero_turn = lambda distance: calls.append(('drive', distance)) or distance
+    return fake, sent, calls
+
+
+TARGET = {'face_center_map_xy_m': (0.0, -1.0), 'outward_normal_map_xy': (0.0, 1.0)}
+
+
+def test_zero_turn_final_trims_the_residual_then_drives_straight():
+    """2026-10-05: 38 parks ended up to 2.69 deg off the face; turn it out, then go."""
+    off = math.radians(2.0)
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2 - off,
+                                        poses_after=[((0.0, -0.47, -math.pi / 2), None)])
+    reached, to_odom = box_service.BoxServiceRoute._zero_turn_final_approach(
+        fake, TARGET, 0.085)
+    assert reached and to_odom is not None
+    assert calls[0][0] == 'turn' and calls[0][1] == pytest.approx(off)
+    assert calls[1] == ('drive', pytest.approx(0.53 - 0.085 - 0.05))
+    assert sent['final_yaw_trim']['turned_deg'] == pytest.approx(2.0, abs=1e-3)
+    assert sent['final_approach_straight']['controller_id'] == 'zero_turn'
+
+
+def test_zero_turn_final_skips_a_tiny_trim_and_fails_a_missed_one():
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2 - math.radians(0.2))
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert reached and [kind for kind, _ in calls] == ['drive']
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2 - math.radians(2.0))
+    fake._rotate_in_place = lambda delta: delta / 2          # stopped half way
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert not reached and sent['failed']['reason'] == 'final_trim_missed'
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2)
+    fake._drive_zero_turn = lambda distance: distance - 0.02   # 2 cm short
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert not reached and 'final_approach_short' in sent
+
+
+def test_final_approach_dispatch_follows_the_zero_turn_switch():
+    fake = SimpleNamespace(zero_turn_final=True,
+                           _zero_turn_final_approach=Mock(return_value=(True, None)),
+                           _parking_final_approach=Mock(return_value=(True, None)))
+    box_service.BoxServiceRoute._straight_final_approach(fake, TARGET, 0.085)
+    fake._zero_turn_final_approach.assert_called_once()
+    fake._parking_final_approach.assert_not_called()
+    fake.zero_turn_final = False
+    box_service.BoxServiceRoute._straight_final_approach(fake, TARGET, 0.085)
+    fake._parking_final_approach.assert_called_once()
