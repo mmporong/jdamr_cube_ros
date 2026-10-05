@@ -51,6 +51,56 @@ def _crossing(a, b, c, d):
     return sides[0] * sides[1] <= 0 and sides[2] * sides[3] <= 0
 
 
+def _proper_crossing(a, b, c, d):
+    """Whether segments ab and cd cross at a point interior to both."""
+    def side(p, q, r):
+        value = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return 0 if abs(value) <= 1e-12 else (1 if value > 0 else -1)
+    return (side(a, b, c) * side(a, b, d) < 0
+            and side(c, d, a) * side(c, d, b) < 0)
+
+
+def polygon_contains(outer, inner):
+    """
+    Whether the polygon outer covers the polygon inner, boundaries may touch.
+
+    Exact for simple polygons, unlike sampling the inner perimeter (review
+    2026-10-06: a 1 mm groove between 5 mm samples passed): every inner vertex
+    and edge midpoint lies in or on outer, no outer vertex or edge midpoint lies
+    strictly inside inner, and no two edges cross in their interiors.
+    """
+    outer_edges = list(zip(outer, list(outer[1:]) + list(outer[:1])))
+    inner_edges = list(zip(inner, list(inner[1:]) + list(inner[:1])))
+
+    def middle(edge):
+        return ((edge[0][0] + edge[1][0]) / 2.0, (edge[0][1] + edge[1][1]) / 2.0)
+
+    return (all(_inside(outer, point, False) for point in inner)
+            and all(_inside(outer, middle(edge), False) for edge in inner_edges)
+            and not any(_inside(inner, point, True) for point in outer)
+            and not any(_inside(inner, middle(edge), True) for edge in outer_edges)
+            and not any(_proper_crossing(*a, *b)
+                        for a in outer_edges for b in inner_edges))
+
+
+def _clip_half_plane(polygon, keep):
+    """Clip polygon to the half plane x >= 0 (keep 'front') or x <= 0 ('rear')."""
+    sign = 1.0 if keep == 'front' else -1.0
+    clipped = []
+    for start, end in zip(polygon, list(polygon[1:]) + list(polygon[:1])):
+        start_in, end_in = sign * start[0] >= 0.0, sign * end[0] >= 0.0
+        if start_in:
+            clipped.append(tuple(start))
+        if start_in != end_in:
+            fraction = start[0] / (start[0] - end[0])
+            clipped.append((0.0, start[1] + (end[1] - start[1]) * fraction))
+    unique = []
+    for point in clipped:
+        if not unique or point != unique[-1]:
+            unique.append(point)
+    return unique
+
+
 # Operator request 2026-09-30: transit +50 % and less slowdown.
 NEW_BASE_MAX_FORWARD_MPS = 0.12
 # In-place turns stop on the footprint swept this far in the turn direction; it
@@ -107,17 +157,6 @@ def validate_new_base_params(params, geometry, precision_parking=False):
         outer_polygon = polygon_points(outer)
         if not all(_inside(outer_polygon, point, strict) for point in inner_points):
             raise RuntimeError(label)
-
-    def perimeter(points, step_m=0.005):
-        """Points every step_m along the polygon edges, corners included."""
-        polygon = polygon_points(points)
-        samples = []
-        for start, end in zip(polygon, polygon[1:] + polygon[:1]):
-            count = max(1, math.ceil(math.dist(start, end) / step_m))
-            samples.extend((start[0] + (end[0] - start[0]) * index / count,
-                            start[1] + (end[1] - start[1]) * index / count)
-                           for index in range(count))
-        return samples
 
     costmaps = [params[key][key]['ros__parameters']
                 for key in ('local_costmap', 'global_costmap')]
@@ -327,7 +366,7 @@ def validate_new_base_params(params, geometry, precision_parking=False):
     if sorted(map(tuple, clockwise_points)) != sorted(
             (x, -y) for x, y in rotation_points):
         raise RuntimeError('new-base rotation StopZones must mirror each other')
-    footprint_edge_points = perimeter(costmaps[0]['footprint'])
+    footprint_polygon = [tuple(point) for point in polygon_points(costmaps[0]['footprint'])]
     for name, sign in (('rotation', 1.0), ('rotation_clockwise', -1.0)):
         points = polygon_points(stop_zone[name]['points'])
         edges = list(zip(points, points[1:] + points[:1]))
@@ -335,14 +374,15 @@ def validate_new_base_params(params, geometry, precision_parking=False):
                for i in range(len(edges)) for j in range(i + 2, len(edges))
                if not (i == 0 and j == len(edges) - 1)):
             raise RuntimeError(f'new-base {name} StopZone edges must not cross')
-        swept = []
+        # The footprint turned every 0.5 deg; between steps the corners move on
+        # arcs whose sag (3.4 um at 0.36 m) the 3 mm buffer covers.
         for step in range(int(ROTATION_SWEEP_DEG * 2) + 1):
             angle = math.radians(sign * step / 2.0)
-            swept.extend((math.cos(angle) * x - math.sin(angle) * y,
-                          math.sin(angle) * x + math.cos(angle) * y)
-                         for x, y in footprint_edge_points)
-        contains(stop_zone[name]['points'], swept, False,
-                 f'new-base {name} StopZone misses the swept footprint')
+            turned = [(math.cos(angle) * x - math.sin(angle) * y,
+                       math.sin(angle) * x + math.cos(angle) * y)
+                      for x, y in footprint_polygon]
+            if not polygon_contains(points, turned):
+                raise RuntimeError(f'new-base {name} StopZone misses the swept footprint')
     forward_stop = bounds(stop_zone['translation_forward']['points'])
     backward_stop = bounds(stop_zone['translation_backward']['points'])
     stopped_stop = bounds(stop_zone['stopped']['points'])
@@ -351,25 +391,23 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             and stopped_stop[1] <= footprint[1] + 1e-6
             and stopped_stop[2] >= footprint[2] - 1e-6):
         raise RuntimeError('new-base StopZone does not contain footprint')
-    footprint_points = polygon_points(costmaps[0]['footprint'])
     for name in ('stopped', 'translation_forward', 'translation_backward'):
-        contains(stop_zone[name]['points'], footprint_points, False,
-                 f'new-base {name} StopZone does not contain footprint')
+        if not polygon_contains(polygon_points(stop_zone[name]['points']), footprint_polygon):
+            raise RuntimeError(f'new-base {name} StopZone does not contain footprint')
     # Zero-turn polygons hold the footprint half on the side of travel, cut at the
     # axle, with the same leading edge as the general polygon (2026-10-02 11:09).
-    footprint_edge = perimeter(costmaps[0]['footprint'])
-    for name, general, half in (
-            ('translation_forward_straight', forward_stop,
-             [point for point in footprint_edge if point[0] >= 0.0]),
-            ('translation_backward_straight', backward_stop,
-             [point for point in footprint_edge if point[0] <= 0.0])):
+    for name, general, keep in (
+            ('translation_forward_straight', forward_stop, 'front'),
+            ('translation_backward_straight', backward_stop, 'rear')):
         straight = bounds(stop_zone[name]['points'])
         forward = name == 'translation_forward_straight'
         if not ((straight[0] == general[0] and straight[1] == 0.0) if forward
                 else (straight[0] == 0.0 and straight[1] == general[1])):
             raise RuntimeError(f'new-base {name} StopZone must end at the axle')
-        contains(stop_zone[name]['points'], half, False,
-                 f'new-base {name} StopZone does not contain its footprint half')
+        if not polygon_contains(polygon_points(stop_zone[name]['points']),
+                                _clip_half_plane(footprint_polygon, keep)):
+            raise RuntimeError(
+                f'new-base {name} StopZone does not contain its footprint half')
     front_reference = front if precision_parking else footprint[0]
     # Only the leading edge keeps 0.05 m; sides and rear stop at the padded
     # footprint (operator request 2026-10-01).
@@ -384,6 +422,15 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             or not math.isclose(stopped_stop[0], front + 0.05, abs_tol=1e-6)
             or forward_stop[0] - footprint[0] < 0.02 - 1e-6):
         raise RuntimeError('precision parking requires physical front clearance and padding')
+    # The 0.05 m leading band spans the whole front edge of the footprint, in every
+    # polygon that can stop forward motion (review 2026-10-06: a band narrowed to
+    # |y| <= 0.05 passed the front-X check).
+    front_half_width = max(abs(y) for x, y in footprint_polygon if x == footprint[0])
+    band = [(footprint[0], -front_half_width), (front_reference + 0.05, -front_half_width),
+            (front_reference + 0.05, front_half_width), (footprint[0], front_half_width)]
+    for name in ('stopped', 'translation_forward', 'translation_forward_straight'):
+        if not polygon_contains(polygon_points(stop_zone[name]['points']), band):
+            raise RuntimeError(f'new-base {name} StopZone misses the 0.05m front band')
     if not (footprint[1] - backward_stop[1] >= -1e-6
             and backward_stop[0] >= footprint[0]
             and abs(backward_stop[2] - footprint[2]) <= 1e-6):
@@ -443,6 +490,10 @@ def validate_new_base_params(params, geometry, precision_parking=False):
             or 'FollowPath' not in controller_plugins):
         raise RuntimeError(
             'new-base controller plugins must include FollowPath')
+    # The default transit and staging trees follow with controller_id MPPI
+    # (since 2026-10-05); without it every leg fails with INVALID_CONTROLLER.
+    if 'MPPI' not in controller_plugins:
+        raise RuntimeError('new-base controller plugins must include MPPI')
     supported_controller = (
         'nav2_regulated_pure_pursuit_controller::'
         'RegulatedPurePursuitController')
@@ -463,13 +514,13 @@ def validate_new_base_params(params, geometry, precision_parking=False):
                     'new-base controller speed exceeds uncalibrated limit')
             continue
         if plugin.get('plugin') == mppi_controller:
-            # MPPI must score rollouts with the measured footprint and keep the
-            # uncalibrated speed limit both ways (2026-10-02).
+            # MPPI must score rollouts with the measured footprint, keep the
+            # uncalibrated speed limit and never reverse in transit (2026-10-02).
             top, bottom = plugin.get('vx_max'), plugin.get('vx_min')
             cost = plugin.get('CostCritic') or {}
             if (any(type(v) not in (int, float) or not math.isfinite(v) for v in (top, bottom))
                     or not 0.0 < top <= NEW_BASE_MAX_FORWARD_MPS
-                    or not -NEW_BASE_MAX_FORWARD_MPS <= bottom <= 0.0
+                    or bottom != 0.0
                     or plugin.get('motion_model') != 'DiffDrive'
                     or type(plugin.get('wz_max')) not in (int, float)
                     or not 0.0 < plugin['wz_max'] <= ROTATION_SWEEP_MAX_RADPS

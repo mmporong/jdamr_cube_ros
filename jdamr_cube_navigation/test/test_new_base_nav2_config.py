@@ -1324,3 +1324,73 @@ def _points(zone, name, transform):
 ])
 def test_zero_turn_stop_zones_hold_the_half_on_the_side_of_travel(tmp_path, mutate, match):
     _straight_zone_rejected(tmp_path, mutate, match)
+
+
+def _write_stop_zones(tmp_path, polygons, name):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    stop_zone = document['collision_monitor']['ros__parameters']['StopZone']
+    for key, points in polygons.items():
+        stop_zone[key]['points'] = json.dumps(points)
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(document), encoding='utf-8')
+    return path
+
+
+def test_a_groove_between_perimeter_samples_is_rejected(tmp_path):
+    """Review 2026-10-06: a 1 mm groove to x=-0.27 passed the 5 mm perimeter samples."""
+    groove = [[0.12, 0.23], [0.038, 0.23], [0.038, 0.275], [-0.038, 0.275], [-0.038, 0.23],
+              [-0.28, 0.23], [-0.28, 0.1022], [-0.27, 0.1022], [-0.27, 0.1012],
+              [-0.28, 0.1012], [-0.28, -0.1012], [-0.27, -0.1012], [-0.27, -0.1022],
+              [-0.28, -0.1022], [-0.28, -0.23], [-0.038, -0.23], [-0.038, -0.275],
+              [0.038, -0.275], [0.038, -0.23], [0.12, -0.23]]
+    with pytest.raises(RuntimeError, match='stopped StopZone does not contain footprint'):
+        _load_validator(_write_stop_zones(tmp_path, {'stopped': groove}, 'groove.yaml'))(None)
+
+
+def test_a_narrowed_front_band_is_rejected(tmp_path):
+    """Review 2026-10-06: the band x 0.07-0.12 cut to |y| <= 0.05 passed the front-X check."""
+    general = [[0.12, 0.05], [0.07, 0.05], [0.07, 0.23], [0.038, 0.23], [0.038, 0.275],
+               [-0.038, 0.275], [-0.038, 0.23], [-0.28, 0.23], [-0.28, -0.23],
+               [-0.038, -0.23], [-0.038, -0.275], [0.038, -0.275], [0.038, -0.23],
+               [0.07, -0.23], [0.07, -0.05], [0.12, -0.05]]
+    straight = [[0.12, 0.05], [0.07, 0.05], [0.07, 0.23], [0.038, 0.23], [0.038, 0.275],
+                [0.0, 0.275], [0.0, -0.275], [0.038, -0.275], [0.038, -0.23],
+                [0.07, -0.23], [0.07, -0.05], [0.12, -0.05]]
+    path = _write_stop_zones(tmp_path, {
+        'stopped': general, 'translation_forward': general,
+        'translation_forward_straight': straight}, 'narrow_band.yaml')
+    with pytest.raises(RuntimeError, match='misses the 0.05m front band'):
+        _load_validator(path)(None)
+
+
+@pytest.mark.parametrize('mutate, expected', [
+    (lambda c: c['controller_plugins'].remove('MPPI'), 'must include MPPI'),
+    (lambda c: c['MPPI'].update(vx_min=-0.05), 'MPPI controller violates'),
+])
+def test_transit_controller_must_be_registered_and_forward_only(tmp_path, mutate, expected):
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    mutate(document['controller_server']['ros__parameters'])
+    invalid = tmp_path / 'mppi.yaml'
+    invalid.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(RuntimeError, match=expected):
+        _load_validator(invalid)(None)
+
+
+@pytest.mark.parametrize('inner, inside', [
+    ([(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)], True),
+    ([(0.0, 0.0), (1.0, 0.0), (1.0, 0.5), (0.0, 0.5)], True),        # shares edges
+    ([(0.5, 0.5), (1.5, 0.5), (1.5, 0.6), (0.5, 0.6)], False),       # sticks out
+])
+def test_polygon_containment_is_exact(inner, inside):
+    from jdamr_cube_navigation.new_base_contract import polygon_contains
+    square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    assert polygon_contains(square, inner) is inside
+    notched = [(0.0, 0.0), (0.5, 0.0), (0.5, 0.8), (0.501, 0.8), (0.501, 0.0), (1.0, 0.0),
+               (1.0, 1.0), (0.0, 1.0)]
+    assert polygon_contains(notched, [(0.1, 0.1), (0.9, 0.1), (0.9, 0.2), (0.1, 0.2)]) is False
+
+
+def test_behavior_trees_are_well_formed_xml():
+    """BT.CPP tolerates '--' in comments; strict XML tools (Groot, ElementTree) do not."""
+    for tree in sorted((ROOT / 'jdamr_cube_navigation/behavior_trees').glob('*.xml')):
+        ET.parse(tree)

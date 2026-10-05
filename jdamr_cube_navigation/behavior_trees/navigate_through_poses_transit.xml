@@ -3,7 +3,7 @@
   and MPPI follows on the live costmap. On the real map with the executor's waypoint
   headings Lattice ran 1.00-1.02x the waypoint chain (PC probe, 2026-10-05); the
   10-01 loops came with live obstacles in the global costmap. RPP on NavFn paths
-  stays as navigate_through_poses_transit_rpp.xml (--rpp-transit).
+  stays as navigate_through_poses_transit_rpp.xml (box_service rpp-transit switch).
   Transit through several waypoints as one goal (2026-10-01: separate
   NavigateToPose legs slowed to a stop and turned at every waypoint). Replan
   only when the path became invalid, is 10 s old, or the goals changed; a

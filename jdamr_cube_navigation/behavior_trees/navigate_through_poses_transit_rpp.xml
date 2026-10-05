@@ -6,7 +6,7 @@
   yaw through the general goal checker.
 -->
 <!--
-  RPP copy of navigate_through_poses_transit.xml as it ran until 2026-10-05 (--rpp-transit, A/B and fallback).
+  RPP copy of navigate_through_poses_transit.xml as it ran until 2026-10-05 (box_service rpp-transit switch, A/B and fallback).
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">

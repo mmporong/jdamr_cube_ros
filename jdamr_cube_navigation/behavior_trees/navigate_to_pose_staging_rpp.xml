@@ -8,7 +8,7 @@
   had a path, and the cycle stopped short of the dock).
 -->
 <!--
-  RPP copy of navigate_to_pose_staging.xml as it ran until 2026-10-05 (--rpp-transit, A/B and fallback).
+  RPP copy of navigate_to_pose_staging.xml as it ran until 2026-10-05 (box_service rpp-transit switch, A/B and fallback).
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">

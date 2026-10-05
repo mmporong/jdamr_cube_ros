@@ -264,9 +264,9 @@ local_costmap:
         # 18 cm from one still cost ~190 and MPPI crept at 1 deg/s between objects
         # 18 cm away (2026-10-02 18:22).
         cost_scaling_factor: 10.0
-        # >= the circumscribed radius of the footprint, so MPPI's footprint cost
-        # check can use the inflated costs (RPP and the Collision Monitor do not
-        # read this costmap).
+        # >= the circumscribed radius of the footprint (0.362 m), so MPPI's
+        # footprint cost check can use the inflated costs (RPP and the Collision
+        # Monitor do not read this costmap).
         inflation_radius: 0.40
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -330,8 +330,9 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        # >= circumscribed 0.414 m so Lattice checks the footprint cheaply; NavFn paths
-        # were identical at 0.45 on this map (2026-09-30 bench).
+        # >= the circumscribed radius (0.362 m to the rear corners since the 5 mm
+        # footprint; 0.414 m before) so Lattice checks the footprint cheaply; NavFn
+        # paths were identical at 0.45 on this map (2026-09-30 bench).
         inflation_radius: 0.45
       always_send_full_costmap: false
 map_server:
@@ -525,7 +526,8 @@ collision_monitor:
         # The padded footprint swept 6 deg in the turn direction
         # (evaluation/rotation_sweep_polygon.py): a leg beside the body that a
         # turn would sweep into still stops it. 6 deg covers the stop from the
-        # smoother's 0.3 rad/s cap: 0.1 s scan + 1.5 rad/s^2 deceleration ~ 5.2 deg
+        # smoother's 0.3 rad/s cap: 0.1 s scan (1.7 deg) + 1.5 rad/s^2 deceleration
+        # (1.7 deg) ~ 3.4 deg; the base's own stop at 0.3 rad/s is not measured
         # (2026-10-01 Spin: 1.3 deg after the stop command at 0.2 rad/s). The
         # 0.43 m circle it replaces stopped turns that touched nothing
         # (2026-10-02 13:48, MPPI; operator 2026-10-02: relax it).
