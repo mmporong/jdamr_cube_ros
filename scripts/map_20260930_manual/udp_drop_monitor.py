@@ -14,16 +14,41 @@ import sys
 import time
 
 
+INTERPRETERS = ('python3', 'python', 'bash', 'sh')
+
+
+def name_from_cmdline(raw):
+    """Short process name from a /proc cmdline string ('' when there is none)."""
+    args = [a for a in raw.split('\0') if a]
+    cmd = ' '.join(args)
+    for key in ('__node:=', 'lib/'):
+        if key in cmd:
+            words = cmd[cmd.index(key) + len(key):][:40].split()
+            if words:
+                return words[0]
+    if not args:
+        return ''
+    base = os.path.basename(args[0])
+    if base.startswith('python') or base in INTERPRETERS:
+        rest = args[1:]
+        if rest and rest[0] == '-m' and len(rest) > 1:
+            return rest[1]
+        rest = [a for a in rest if not a.startswith('-')]
+        if not rest:
+            return base
+        base, args = os.path.basename(rest[0]), rest
+    if base == 'ros2' and len(args) > 1:
+        sub = [a for a in args[1:] if not a.startswith('-')]
+        return ' '.join(['ros2', *sub[:3 if sub[:1] == ['run'] else 1]])
+    return base or cmd[:40]
+
+
 def process_name(pid):
     try:
-        cmd = open(f'/proc/{pid}/cmdline').read().replace('\0', ' ')
+        raw = open(f'/proc/{pid}/cmdline').read()
     except OSError:
         return f'pid{pid}'
-    for key in ('__node:=', '-m jdamr_cube_navigation.', 'lib/'):
-        if key in cmd:
-            start = cmd.index(key) + len(key)
-            return cmd[start:start + 40].split()[0]
-    return cmd[:40]
+    return name_from_cmdline(raw) or f'pid{pid}'
 
 
 def sample():

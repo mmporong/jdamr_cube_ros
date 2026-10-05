@@ -488,3 +488,96 @@ def test_go_profiles_the_pi_load_and_stops_the_profiler_at_the_end(env, monkeypa
     assert 'RuntimeMaxSec=' in start and 'MemoryMax=' in start and 'load_profile.jsonl' in start
     unit = start.split('--unit=')[1].split()[0]
     assert any(c.startswith('sudo -n systemctl stop ') and unit in c for c in pi.calls)
+
+
+def test_monitor_units_are_stopped_when_the_run_is_interrupted(env, monkeypatch):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+
+    def interrupted(_path):
+        assert d.load_state()['monitor_units'].startswith('jdamr-udp-drops-')
+        raise KeyboardInterrupt
+    monkeypatch.setattr(d, 'read_events', interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        d.run_cycle(go_args(), d.load_state(), 'table_02')
+    stop = next(c for c in pi.calls if c.startswith('sudo -n systemctl stop jdamr-udp-drops-'))
+    assert 'jdamr-load-profile-' in stop
+    assert 'monitor_units' not in d.load_state()
+
+
+def test_stop_closes_monitor_units_left_by_a_dead_go(env, monkeypatch):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    state = d.load_state()
+    state['monitor_units'] = 'jdamr-udp-drops-x jdamr-load-profile-x'
+    d.save_state(state)
+    d.cmd_stop(SimpleNamespace())
+    assert 'sudo -n systemctl stop jdamr-udp-drops-x jdamr-load-profile-x' in pi.calls
+    assert 'monitor_units' not in d.load_state()
+
+
+def test_stop_reaches_the_robot_before_closing_the_bag_and_monitors(env, monkeypatch):
+    """Review 2026-10-06: a slow bag reindex held the stop back for up to 120 s."""
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    state = d.load_state()
+    state.update(last_unit='executor:table_02', onboard_bag_unit='jdamr-onboard-bag-x',
+                 onboard_bag_run=str(d.P2 / 'run'),
+                 monitor_units='jdamr-udp-drops-x jdamr-load-profile-x')
+    d.save_state(state)
+    d.cmd_stop(SimpleNamespace())
+    stop = next(i for i, c in enumerate(pi.calls) if 'kill --signal=SIGINT' in c)
+    bag = next(i for i, c in enumerate(pi.calls) if 'jdamr-onboard-bag-x' in c)
+    monitors = next(i for i, c in enumerate(pi.calls) if 'jdamr-udp-drops-x' in c)
+    assert stop < bag and stop < monitors
+
+
+def test_a_failing_monitor_start_does_not_end_run_tracking(env, monkeypatch):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+
+    def broken(_run_dir, _run):
+        raise OSError('script missing')
+    monkeypatch.setattr(d, 'start_drop_monitor', broken)
+    events = d.run_cycle(go_args(), d.load_state(), 'table_02')
+    assert events == [{'event': 'home_arrived'}]
+    assert any(c.startswith('sudo -n systemctl stop jdamr-udp-drops-') for c in pi.calls)
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), 0.2, 1.5])
+def test_init_min_inlier_is_validated_before_any_ssh(env, monkeypatch, value):
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', pi)
+    with pytest.raises(SystemExit):
+        d.cmd_init(SimpleNamespace(seed_from_state=True, local_only=True, keep_home=True,
+                                   min_inlier=value))
+    assert pi.calls == [] and d.load_state()['localized'] is True
+
+
+def test_init_records_the_inlier_threshold_actually_used(env, monkeypatch):
+    monkeypatch.setattr(d, 'pi', Pi())
+    monkeypatch.setattr(d, 'capture_scan', lambda _path: None)
+    refined = {'pose': [0.0, 0.0, 0.0], 'inlier_5cm': 0.2, 'global_agrees': False,
+               'click_offset_m': 0.0, 'click_offset_deg': 0.0, 'click': {}}
+    monkeypatch.setattr(d, 'refine_pose', lambda _scan, _click: dict(refined))
+    args = SimpleNamespace(seed_from_state=True, local_only=True, keep_home=True,
+                           min_inlier=0.3)
+    with pytest.raises(SystemExit):                       # 0.2 < 0.3: refused, but recorded
+        d.cmd_init(args)
+    written = json.loads(next(env.glob('runs/init_*/refine.json')).read_text())
+    assert written['min_inlier_used'] == 0.3
+
+
+def test_status_and_departure_show_the_operator_alerts_state(env, monkeypatch):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    messages = []
+    monkeypatch.setattr(d, 'log', messages.append)
+    monkeypatch.setattr(d, 'estop_state', lambda: 'released')
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    d.cmd_alerts(SimpleNamespace(mode='off'))
+    d.cmd_status(SimpleNamespace())
+    d.run_cycle(go_args(), d.load_state(), 'table_02')
+    assert 'operator alerts: off' in messages
+    assert any(m.startswith('DEPARTED') and m.endswith('operator alerts off') for m in messages)

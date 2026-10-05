@@ -508,6 +508,11 @@ def read_events(pi_path):
 
 
 def cmd_init(args):
+    override = getattr(args, 'min_inlier', None)
+    # argparse accepts 'nan' and 'inf'; fail before any ssh or state change.
+    if override is not None and not (math.isfinite(override)
+                                     and MATCH_OVERRIDE_FLOOR <= override <= 1.0):
+        fail(f'--min-inlier must be between {MATCH_OVERRIDE_FLOOR} and 1.0, got {override}')
     state = load_state()
     # Until this init completes, go must not depart on an earlier localization.
     state['localized'] = False
@@ -546,7 +551,6 @@ def cmd_init(args):
         f'{math.degrees(click["yaw_rad"]):.1f} deg), age {age:.0f} s')
     capture_scan(run_dir / 'scan.json')
     refined = refine_pose(run_dir / 'scan.json', click)
-    (run_dir / 'refine.json').write_text(json.dumps(refined, indent=1))
     pose = refined['pose']
     log(f'scan match ({pose[0]:.3f}, {pose[1]:.3f}, {math.degrees(pose[2]):.1f} deg) '
         f'inlier {refined["inlier_5cm"]:.2f}, click offset {refined["click_offset_m"]:.2f} m / '
@@ -554,13 +558,14 @@ def cmd_init(args):
     # --local-only: the operator stated the placement (e.g. pulled straight back and
     # turned to face a box); nearby boxes can outrank it globally. AMCL agreement stays.
     min_inlier = 0.35 if args.local_only else MATCH_MIN_INLIER
-    override = getattr(args, 'min_inlier', None)
     if override is not None:
         # Operator override for a cluttered spot full of unmapped objects (2026-10-02
         # 18:34: 0.349 twice at the same pose); never below MATCH_OVERRIDE_FLOOR.
         if not args.local_only or override < MATCH_OVERRIDE_FLOOR:
             fail(f'--min-inlier needs --local-only and >= {MATCH_OVERRIDE_FLOOR}')
         min_inlier = override
+    refined['min_inlier_used'] = min_inlier
+    (run_dir / 'refine.json').write_text(json.dumps(refined, indent=1))
     if refined['inlier_5cm'] < min_inlier or not (refined['global_agrees'] or args.local_only):
         fail('scan does not match the map near the click; check placement or click again')
     initial = {'frame_id': 'map', 'x_m': pose[0], 'y_m': pose[1], 'yaw_rad': pose[2],
@@ -684,7 +689,9 @@ def run_cycle(args, state, table_id):
     # stretch for the gyro bias and no departure time is spent waiting on it.
     bag_unit = start_onboard_bag(run_dir, run)
     early = load_state()
-    early.update({'onboard_bag_unit': bag_unit, 'onboard_bag_run': str(run_dir)})
+    monitors = monitor_units(run)
+    early.update({'onboard_bag_unit': bag_unit, 'onboard_bag_run': str(run_dir),
+                  'monitor_units': monitors})
     save_state(early)
     try:
         unit = f'jdamr-table-cycle-{run.replace("_", "-")}'
@@ -740,10 +747,15 @@ def run_cycle(args, state, table_id):
         fresh = load_state()
         fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
         save_state(fresh)
-        monitor = start_drop_monitor(run_dir, run)
+        try:
+            start_drop_monitor(run_dir, run)
+        except Exception as error:  # diagnostics must not end run tracking mid-drive
+            log(f'monitor start failed ({error}); the run continues without it')
         stops = ('dock only' if args.dock_only else
                  f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
-        log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl')
+        alerts = 'on' if load_state().get('operator_alerts', True) is not False else 'off'
+        log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl, '
+            f'operator alerts {alerts}')
         seen, bag_checked, departed_s, lost_since = 0, False, time.monotonic(), None
         while True:
             time.sleep(10)
@@ -775,12 +787,15 @@ def run_cycle(args, state, table_id):
                 final = read_events(str(run_dir / 'cycle_events.jsonl'))
                 for event in final[seen:]:
                     show_event(event)
-                pi(f'sudo -n systemctl stop {monitor}', check=False)
+                stop_monitors(monitors)
                 finish_onboard_bag(bag_unit, run_dir)
                 return final
     except BaseException:
         # Ctrl-C, ssh or request failures: close and copy what was recorded.
-        finish_onboard_bag(bag_unit, run_dir)
+        try:
+            stop_monitors(monitors)
+        finally:
+            finish_onboard_bag(bag_unit, run_dir)
         raise
 
 
@@ -825,9 +840,24 @@ def finish_onboard_bag(unit, run_dir):
         save_state(state)
 
 
+def monitor_units(run):
+    """Names of the per-run monitor units (UDP drops, load profile), space separated."""
+    tag = run.replace('_', '-')
+    return f'jdamr-udp-drops-{tag} jdamr-load-profile-{tag}'
+
+
+def stop_monitors(units):
+    """Stop the per-run monitor units and forget them in the state."""
+    pi(f'sudo -n systemctl stop {units}', check=False)
+    state = load_state()
+    if state.get('monitor_units') == units:
+        state.pop('monitor_units')
+        save_state(state)
+
+
 def start_drop_monitor(run_dir, run):
     """Sample per-process UDP drops on the Pi for this run (read-only, bounded)."""
-    unit = f'jdamr-udp-drops-{run.replace("_", "-")}'
+    unit, profile = monitor_units(run).split()
     script = shlex.quote(f'{PI_TOOLS}/udp_drop_monitor.py')
     pi(f'mkdir -p {PI_TOOLS} && cat > {script}', stdin=(TOOLS / 'udp_drop_monitor.py').read_text(),
        check=False)
@@ -835,13 +865,11 @@ def start_drop_monitor(run_dir, run):
        f'--property=RuntimeMaxSec=3600 /usr/bin/python3 {script} '
        f'{shlex.quote(str(run_dir / "udp_drops.jsonl"))} 5', check=False)
     # Per-process CPU, memory and temperature beside it: does the Pi 4 keep up (10-05)?
-    profile = f'jdamr-load-profile-{run.replace("_", "-")}'
     profiler = shlex.quote(f'{PI_TOOLS}/pi_load_profile.py')
     pi(f'cat > {profiler}', stdin=(TOOLS / 'pi_load_profile.py').read_text(), check=False)
     pi(f'sudo -n systemd-run --unit={profile} --collect --property=User=lim '
        f'--property=RuntimeMaxSec=3600 --property=MemoryMax=100M /usr/bin/python3 {profiler} '
        f'{shlex.quote(str(run_dir / "load_profile.jsonl"))} 2', check=False)
-    return f'{unit} {profile}'
 
 
 def stop_requested_since(started):
@@ -1003,9 +1031,8 @@ def cmd_stop(_args):
     state = load_state()
     state['stop_unix'] = time.time()
     save_state(state)
-    if state.get('onboard_bag_unit'):
-        # go closes and copies it; this covers a go that is no longer running.
-        finish_onboard_bag(state['onboard_bag_unit'], Path(state['onboard_bag_run']))
+    # The robot first: closing the bag (reindex up to 120 s) or the monitors on a
+    # slow Pi must not hold back the stop (review 2026-10-06).
     unit = state.get('last_unit')
     if unit and unit.startswith('executor:'):
         # SIGINT stops the running attempt; the executor stays for the next go.
@@ -1014,6 +1041,11 @@ def cmd_stop(_args):
     elif unit:
         pi(f'sudo -n systemctl stop {unit}', check=False)
         log(f'{unit}: ' + pi(f'systemctl is-active {unit}', check=False).stdout.strip())
+    if state.get('onboard_bag_unit'):
+        # go closes and copies it; this covers a go that is no longer running.
+        finish_onboard_bag(state['onboard_bag_unit'], Path(state['onboard_bag_run']))
+    if state.get('monitor_units'):
+        stop_monitors(state['monitor_units'])
 
 
 ESTOP_STATE_READ = ('timeout 8 ros2 topic echo --once --qos-durability transient_local '
@@ -1074,6 +1106,8 @@ def cmd_status(_args):
     log(f'emergency stop: {estop_state()}')
     log('state: ' + json.dumps({k: state[k] for k in ('pose', 'home', 'last_run', 'bag')
                                 if k in state}))
+    log('operator alerts: ' + ('on' if state.get('operator_alerts', True) is not False
+                               else 'off'))
 
 
 def main():
