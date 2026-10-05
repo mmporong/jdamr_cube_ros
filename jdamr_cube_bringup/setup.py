@@ -34,6 +34,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         # 1. 런치 파일 설치 설정 [cite: 93]
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('lib', package_name), glob('scripts/*')),
     ] + collect_systemd_files(),
     install_requires=['setuptools'],
@@ -47,6 +48,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'scan_self_filter = jdamr_cube_bringup.scan_self_filter:main',
         ],
     },
 )

@@ -1,0 +1,15 @@
+# Self boxes for scan_self_filter on the bimanual (HOLD THE FLOW) build.
+# MODEL VALUES, NOT MEASURED: four 20x20 mm frame columns at base_link (+-0.15, +-0.205)
+# from $HOME/bimanual-robot src/hold_flow_description/urdf/hold_flow.urdf (main 3b03532,
+# mechanical_calibration.yaml status pre_measurement). That model puts the front columns
+# 0.15 m ahead of the wheel axis while the JD-AMR frame front is at 0.065 m, so measure
+# the assembled columns (centre and size, base_footprint frame) and replace these
+# before use. Use: ros2 launch jdamr_cube_bringup real_bringup.launch.py
+#   scan_self_filter_config:=<this file>
+status: model_not_measured
+margin_m: 0.01
+self_boxes:
+- {name: front_left_column, center_xy_m: [0.15, 0.205], size_xy_m: [0.02, 0.02]}
+- {name: front_right_column, center_xy_m: [0.15, -0.205], size_xy_m: [0.02, 0.02]}
+- {name: rear_left_column, center_xy_m: [-0.15, 0.205], size_xy_m: [0.02, 0.02]}
+- {name: rear_right_column, center_xy_m: [-0.15, -0.205], size_xy_m: [0.02, 0.02]}

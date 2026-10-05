@@ -17,13 +17,15 @@ laser_joint 가 서로 다른 값으로 이중 발행되던 것(조사기록 E7)
   전제: cmdline.txt 에서 console=serial0 제거 + serial-getty mask +
   udev 규칙(ttyS0 → dialout). USB(ttyUSB0)는 라이다 전용이 된다.
 """
+import json
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+import yaml
 
 
 def generate_launch_description():
@@ -104,19 +106,45 @@ def generate_launch_description():
             }],
         ),
 
-        # G4 — 시간 순서를 보존한 음수 angle_increment 드라이버.
-        # frame_id 는 URDF 링크로 맞추고 정적 TF 는 여기서 만들지 않는다 (E7).
-        Node(
-            package='ydlidar_g4_ros2',
-            executable='ydlidar_g4_node',
-            name='ydlidar_g4_node',
+        DeclareLaunchArgument(
+            'scan_self_filter_config', default_value='',
+            description='self-box YAML: the driver publishes scan_raw and scan_self_filter '
+                        'republishes scan without returns from the robot itself (bimanual '
+                        'columns); empty keeps the driver on scan'),
+        OpaqueFunction(function=_lidar_nodes, args=[lidar_port]),
+    ])
+
+
+def _lidar_nodes(context, lidar_port):
+    # G4 — 시간 순서를 보존한 음수 angle_increment 드라이버.
+    # frame_id 는 URDF 링크로 맞추고 정적 TF 는 여기서 만들지 않는다 (E7).
+    config = LaunchConfiguration('scan_self_filter_config').perform(context)
+    nodes = [Node(
+        package='ydlidar_g4_ros2',
+        executable='ydlidar_g4_node',
+        name='ydlidar_g4_node',
+        output='screen',
+        parameters=[{
+            'port': lidar_port,
+            'frame_id': 'laser_link',
+            'scan_topic': 'scan_raw' if config else 'scan',
+            'frequency': 10.0,
+            'sample_rate': 9.0,
+        }],
+    )]
+    if config:
+        with open(config, encoding='utf-8') as stream:
+            document = yaml.safe_load(stream)
+        nodes.append(Node(
+            package='jdamr_cube_bringup',
+            executable='scan_self_filter',
+            name='scan_self_filter',
             output='screen',
             parameters=[{
-                'port': lidar_port,
-                'frame_id': 'laser_link',
-                'scan_topic': 'scan',
-                'frequency': 10.0,
-                'sample_rate': 9.0,
+                'input_topic': 'scan_raw',
+                'output_topic': 'scan',
+                'self_boxes_json': json.dumps(document['self_boxes']),
+                'margin_m': float(document.get('margin_m', 0.01)),
             }],
-        ),
-    ])
+        ))
+    return nodes
