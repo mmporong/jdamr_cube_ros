@@ -834,7 +834,14 @@ def start_drop_monitor(run_dir, run):
     pi(f'sudo -n systemd-run --unit={unit} --collect --property=User=lim '
        f'--property=RuntimeMaxSec=3600 /usr/bin/python3 {script} '
        f'{shlex.quote(str(run_dir / "udp_drops.jsonl"))} 5', check=False)
-    return unit
+    # Per-process CPU, memory and temperature beside it: does the Pi 4 keep up (10-05)?
+    profile = f'jdamr-load-profile-{run.replace("_", "-")}'
+    profiler = shlex.quote(f'{PI_TOOLS}/pi_load_profile.py')
+    pi(f'cat > {profiler}', stdin=(TOOLS / 'pi_load_profile.py').read_text(), check=False)
+    pi(f'sudo -n systemd-run --unit={profile} --collect --property=User=lim '
+       f'--property=RuntimeMaxSec=3600 --property=MemoryMax=100M /usr/bin/python3 {profiler} '
+       f'{shlex.quote(str(run_dir / "load_profile.jsonl"))} 2', check=False)
+    return f'{unit} {profile}'
 
 
 def stop_requested_since(started):

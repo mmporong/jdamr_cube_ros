@@ -13,6 +13,7 @@ columns stay unseen; they are reported at start so the blind angles are known.
 import json
 import math
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -32,24 +33,28 @@ def load_boxes(text):
     return boxes
 
 
-def _inside(boxes, margin_m, x_m, y_m):
-    return any(abs(x_m - cx) <= sx / 2 + margin_m and abs(y_m - cy) <= sy / 2 + margin_m
-               for _name, cx, cy, sx, sy in boxes)
-
-
 def filter_ranges(ranges, angle_min, angle_increment, laser_pose, boxes, margin_m):
-    """Return (ranges with self returns set to +inf, count dropped)."""
+    """
+    Return (ranges with self returns set to +inf, count dropped).
+
+    Vectorised: the filter sits in front of every scan consumer, the Collision
+    Monitor included (pure Python took 0.53 ms per 1000 beams on a Ryzen 7 260,
+    several times that on a Pi 4).
+    """
     lx, ly, lyaw = laser_pose
-    out, dropped = list(ranges), 0
-    for index, distance in enumerate(ranges):
-        if not math.isfinite(distance):
-            continue
-        angle = lyaw + angle_min + index * angle_increment
-        if _inside(boxes, margin_m, lx + distance * math.cos(angle),
-                   ly + distance * math.sin(angle)):
-            out[index] = math.inf
-            dropped += 1
-    return out, dropped
+    distances = np.asarray(ranges, dtype=float)
+    angles = lyaw + angle_min + np.arange(distances.size) * angle_increment
+    finite = np.isfinite(distances)
+    safe = np.where(finite, distances, 0.0)
+    x_m, y_m = lx + safe * np.cos(angles), ly + safe * np.sin(angles)
+    hit = np.zeros(distances.size, dtype=bool)
+    for _name, cx, cy, sx, sy in boxes:
+        hit |= ((np.abs(x_m - cx) <= sx / 2 + margin_m)
+                & (np.abs(y_m - cy) <= sy / 2 + margin_m))
+    hit &= finite
+    out = distances.copy()
+    out[hit] = np.inf
+    return out.tolist(), int(hit.sum())
 
 
 def blind_sectors(laser_pose, boxes, margin_m):

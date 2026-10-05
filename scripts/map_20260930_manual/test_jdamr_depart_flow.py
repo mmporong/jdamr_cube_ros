@@ -477,3 +477,14 @@ def test_go_passes_the_zero_turn_final_switch_only_when_asked(env, monkeypatch):
         seen.append(json.loads(next(s for s in pi.stdins if s))['argv'])
     assert '--zero-turn-final' not in seen[0]
     assert '--zero-turn-final' in seen[1]
+
+
+def test_go_profiles_the_pi_load_and_stops_the_profiler_at_the_end(env, monkeypatch):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    d.run_cycle(go_args(), d.load_state(), 'table_02')
+    start = next(c for c in pi.calls if 'systemd-run --unit=jdamr-load-profile-' in c)
+    assert 'RuntimeMaxSec=' in start and 'MemoryMax=' in start and 'load_profile.jsonl' in start
+    unit = start.split('--unit=')[1].split()[0]
+    assert any(c.startswith('sudo -n systemctl stop ') and unit in c for c in pi.calls)

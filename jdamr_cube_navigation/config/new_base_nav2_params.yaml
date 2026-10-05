@@ -367,7 +367,10 @@ planner_server:
       tolerance: 0.10
       max_iterations: 1000000
       max_on_approach_iterations: 1000
-      max_planning_time: 2.0
+      # Successful plans took at most 0.543 s on the Pi (2026-10-01); a failed search
+      # (no way through between obstacles) runs to this limit before NavFn gets the
+      # goal, every replan, so it is capped at 1 s (2026-10-05, was 2 s).
+      max_planning_time: 1.0
       analytic_expansion_ratio: 3.5
       analytic_expansion_max_length: 3.0
       analytic_expansion_max_cost: 200.0
