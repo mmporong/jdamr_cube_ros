@@ -1263,19 +1263,31 @@ def test_mppi_must_keep_the_speed_limit_and_footprint_costs(tmp_path, mutate):
         _load_validator(invalid)(None)
 
 
-def test_only_the_ab_tree_copies_select_mppi_and_differ_only_in_the_controller():
+def test_transit_and_staging_default_to_lattice_and_mppi_with_rpp_copies():
+    """2026-10-05: Lattice (NavFn when it finds nothing) + MPPI; RPP kept as _rpp copies."""
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     assert 'MPPI' in document['controller_server']['ros__parameters']['controller_plugins']
     trees = ROOT / 'jdamr_cube_navigation/behavior_trees'
     selecting = sorted(tree.name for tree in trees.glob('*.xml')
                        if 'controller_id="MPPI"' in tree.read_text())
-    assert selecting == ['navigate_through_poses_transit_mppi.xml',
-                         'navigate_to_pose_staging_mppi.xml']
-    for name in selecting:
-        copy = re.sub(r'<!--\n  MPPI copy of .*?-->\n', '', (trees / name).read_text(),
-                      count=1, flags=re.S)
-        original = (trees / name.replace('_mppi', '')).read_text()
-        assert copy.replace('controller_id="MPPI"', 'controller_id="FollowPath"') == original
+    assert selecting == ['navigate_through_poses_transit.xml', 'navigate_to_pose_staging.xml']
+
+    def planners(name):
+        return re.findall(r'planner_id="(\w+)"', (trees / name).read_text())
+
+    assert planners('navigate_through_poses_transit.xml') == ['Lattice', 'GridBased']
+    assert planners('navigate_to_pose_staging.xml') == ['Lattice', 'GridBased']
+    assert planners('navigate_through_poses_transit_rpp.xml') == ['GridBased']
+    for name in ('navigate_through_poses_transit_rpp.xml', 'navigate_to_pose_staging_rpp.xml'):
+        assert 'controller_id="FollowPath"' in (trees / name).read_text()
+    # The staging copy differs only in the controller and the header comments.
+
+    def body(name):
+        return re.sub(r'<!--.*?-->\n', '', (trees / name).read_text(), flags=re.S)
+
+    rpp = body('navigate_to_pose_staging_rpp.xml')
+    assert rpp.replace('controller_id="FollowPath"', 'controller_id="MPPI"') == body(
+        'navigate_to_pose_staging.xml')
 
 
 def _straight_zone_rejected(tmp_path, mutate, match):

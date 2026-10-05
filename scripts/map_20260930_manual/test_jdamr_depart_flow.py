@@ -62,7 +62,7 @@ def env(tmp_path, monkeypatch):
 def go_args(**extra):
     base = dict(table_id='table_02', route=None, region=None, via_route=None, skip_via=False,
                 resume_at_observation=False, resume_parked_log=None, dock_only=False, graceful_final=False,
-                mppi_transit=False)
+                rpp_transit=False)
     base.update(extra)
     return SimpleNamespace(**base)
 
@@ -439,9 +439,9 @@ def test_operator_call_event_alerts_the_pc(env, monkeypatch):
     assert any(isinstance(item, str) and item.startswith('echo ') for item in sent)
 
 
-def test_go_passes_the_mppi_transit_switch_only_when_asked(env, monkeypatch):
+def test_go_passes_the_rpp_transit_switch_only_when_asked(env, monkeypatch):
     seen = []
-    for second, extra in enumerate(({}, {'mppi_transit': True})):
+    for second, extra in enumerate(({}, {'rpp_transit': True})):
         # One run directory per second; keep the two runs apart.
         monkeypatch.setattr(d.time, 'strftime', lambda _fmt, s=second: f'20261002_11000{s}')
         pi = ExecutorPi()
@@ -449,8 +449,8 @@ def test_go_passes_the_mppi_transit_switch_only_when_asked(env, monkeypatch):
         monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
         d.run_cycle(go_args(**extra), d.load_state(), 'table_02')
         seen.append(json.loads(next(s for s in pi.stdins if s))['argv'])
-    assert '--mppi-transit' not in seen[0]
-    assert '--mppi-transit' in seen[1]
+    assert '--rpp-transit' not in seen[0]
+    assert '--rpp-transit' in seen[1]
 
 
 def test_operator_alerts_can_be_switched_off_for_test_runs(env, monkeypatch):

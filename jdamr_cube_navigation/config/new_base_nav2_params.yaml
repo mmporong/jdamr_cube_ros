@@ -130,7 +130,8 @@ controller_server:
       max_angular_accel: 1.5
       max_robot_pose_search_dist: 10.0
       use_interpolation: true
-    # A/B against RPP (--mppi-transit selects the *_mppi trees). RPP does not look at
+    # Transit and dock staging controller since 2026-10-05 (navigate_through_poses_transit,
+    # navigate_to_pose_staging; --rpp-transit keeps RPP for the A/B). RPP does not look at
     # the footprint on a curve (collision detection off, operator 2026-10-01): its
     # left arc swung the right rear corner into a desk leg (2026-10-02 11:09). MPPI
     # scores sampled (v, w) rollouts with the footprint (CostCritic
@@ -354,10 +355,12 @@ planner_server:
       tolerance: 0.5
       use_astar: false
       allow_unknown: false
-    # Trial (feat/lattice-planner-trial): the dock staging leg only. Live plans on the
-    # Pi (2026-10-01 18:35-18:40): escape -> staging 1.01-1.04x in ~0.2 s, arriving
-    # with the dock heading; through-pose transits looped 2-5x at any rotation penalty
-    # (Lattice also meets every intermediate heading), so they keep NavFn.
+    # Transit and dock staging since 2026-10-05, NavFn when it finds nothing. Live
+    # plans on the Pi (2026-10-01) looped 2-5x on through-pose transits with live
+    # obstacles in the costmap; on the map alone with the executor's waypoint headings
+    # (each faces the next waypoint) the same legs ran 1.00-1.02x (PC probe 2026-10-05,
+    # $HOME/jdamr_data/analysis_20261005/lattice_probe). Headings facing the arrival
+    # direction or a single final goal still loop (1.77-2.40x).
     Lattice:
       plugin: nav2_smac_planner::SmacPlannerLattice
       allow_unknown: false

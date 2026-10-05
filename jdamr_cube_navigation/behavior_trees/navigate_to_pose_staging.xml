@@ -1,4 +1,5 @@
 <!--
+  Since 2026-10-05 followed with MPPI; RPP stays as navigate_to_pose_staging_rpp.xml.
   Dock staging position leg (2026-09-30: replanning every second gave 113 new
   paths in 127 s while AMCL jumped). Replan only when the path became invalid,
   is 10 s old, or the goal changed. The goal checker judges position only; the
@@ -28,7 +29,7 @@
             </Fallback>
           </Fallback>
         </RateController>
-        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="staging_position_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+        <FollowPath path="{path}" controller_id="MPPI" goal_checker_id="staging_position_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
       </PipelineSequence>
       <Sequence>
         <Fallback>

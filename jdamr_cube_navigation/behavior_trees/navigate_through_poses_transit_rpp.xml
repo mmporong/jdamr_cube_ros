@@ -6,8 +6,7 @@
   yaw through the general goal checker.
 -->
 <!--
-  MPPI copy of navigate_through_poses_transit.xml for the RPP/MPPI A/B (2026-10-02, --mppi-transit).
-  Identical except for controller_id (test_new_base_nav2_config.py).
+  RPP copy of navigate_through_poses_transit.xml as it ran until 2026-10-05 (--rpp-transit, A/B and fallback).
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -30,7 +29,7 @@
             </Sequence>
           </Fallback>
         </RateController>
-        <FollowPath path="{path}" controller_id="MPPI" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
       </PipelineSequence>
       <Sequence>
         <Fallback>

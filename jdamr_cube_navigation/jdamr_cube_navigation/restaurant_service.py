@@ -791,19 +791,22 @@ class ServiceRoute(CorridorRoute):
         return (wrapped.status == GoalStatus.STATUS_SUCCEEDED
                 and not wrapped.result.error_code and len(wrapped.result.path.poses) > 0)
 
-    def use_mppi_transit(self):
+    def use_rpp_transit(self):
         """
-        Follow the transit and dock staging legs with MPPI instead of RPP.
+        Follow the transit and dock staging legs with RPP on NavFn paths, as until 10-05.
 
-        For the A/B on the same course (2026-10-02): RPP turned in place beside a
-        desk leg without looking at the footprint (11:09), MPPI scores its rollouts
-        with it. Box approach, alignment and the dock leg stay on their controllers.
+        Since 2026-10-05 those legs plan with Lattice (NavFn when it finds nothing)
+        and follow with MPPI on the live costmap; the RPP trees stay for the A/B and
+        as a fallback. Box approach, alignment and the dock leg keep their controllers.
         """
+        self._set_transit_trees('_rpp')
+
+    def _set_transit_trees(self, suffix):
         package = Path(get_package_share_directory('jdamr_cube_navigation'))
         self.through_behavior_tree = str(
-            package / 'behavior_trees/navigate_through_poses_transit_mppi.xml')
+            package / f'behavior_trees/navigate_through_poses_transit{suffix}.xml')
         self.staging_behavior_tree = str(
-            package / 'behavior_trees/navigate_to_pose_staging_mppi.xml')
+            package / f'behavior_trees/navigate_to_pose_staging{suffix}.xml')
 
     def _scan_in_base(self):
         """Return (scan, laser pose in the base frame, outline), or None if unavailable."""
@@ -863,17 +866,19 @@ class ServiceRoute(CorridorRoute):
 
     def _use_recovery_controller(self):
         """
-        Retry a transit or staging leg the controller could not finish with MPPI.
+        On the RPP trees (--rpp-transit), retry a leg the controller could not finish with MPPI.
 
         RPP follows the planner's path as given; NavFn plans for a point and put
         the path 1-2 cm into an object beside a 0.64 m gap, so every RPP retry
         swung the right wheel into the same object (2026-10-02 17:49-17:52). MPPI
-        weighs the footprint cost against the path and can pass off the path.
+        weighs the footprint cost against the path and can pass off the path. The
+        default trees already use MPPI.
         """
-        if getattr(self, '_recovery_saved_trees', None) is None:
+        if (getattr(self, '_recovery_saved_trees', None) is None
+                and self.through_behavior_tree.endswith('_rpp.xml')):
             self._recovery_saved_trees = (self.through_behavior_tree,
                                           self.staging_behavior_tree)
-            self.use_mppi_transit()
+            self._set_transit_trees('')
             self.emit('recovery_controller', controller='MPPI')
 
     def _restore_controller(self):

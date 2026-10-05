@@ -2236,16 +2236,16 @@ def test_forward_escape_needs_the_band_ahead_clear_over_its_length():
     assert node._blocked_ahead.call_args.kwargs['band_m'] == pytest.approx(0.30 + 0.03 + 0.05)
 
 
-def test_mppi_transit_switches_only_the_transit_and_staging_trees(monkeypatch):
+def test_rpp_transit_switches_only_the_transit_and_staging_trees(monkeypatch):
     monkeypatch.setattr(restaurant_service, 'get_package_share_directory',
                         lambda _: str(PACKAGE))
     route = object.__new__(restaurant_service.ServiceRoute)
     route.through_behavior_tree, route.staging_behavior_tree = 'rpp_transit', 'rpp_staging'
     route.alignment_behavior_tree = 'alignment'
     route.final_approach_controller, route.dock_leg_controller = 'Parking', 'ParkingReverse'
-    route.use_mppi_transit()
+    route.use_rpp_transit()
     for tree in (route.through_behavior_tree, route.staging_behavior_tree):
-        assert Path(tree).is_file() and 'controller_id="MPPI"' in Path(tree).read_text()
+        assert Path(tree).is_file() and 'controller_id="FollowPath"' in Path(tree).read_text()
     assert route.alignment_behavior_tree == 'alignment'
     assert (route.final_approach_controller, route.dock_leg_controller) == (
         'Parking', 'ParkingReverse')
@@ -2336,7 +2336,7 @@ def test_controller_block_retries_the_leg_with_mppi_and_restores_the_trees(monke
     monkeypatch.setattr(restaurant_service, 'get_package_share_directory',
                         lambda _: str(PACKAGE))
     node = route()
-    node.through_behavior_tree, node.staging_behavior_tree = 'rpp_transit', 'rpp_staging'
+    node.through_behavior_tree, node.staging_behavior_tree = 'transit_rpp.xml', 'staging_rpp.xml'
     node.final_approach_controller, node.dock_leg_controller = 'Parking', 'ParkingReverse'
     node.alignment_behavior_tree = 'alignment'
     node._escape_blocked = Mock(return_value=True)
@@ -2349,9 +2349,9 @@ def test_controller_block_retries_the_leg_with_mppi_and_restores_the_trees(monke
         return attempt()
 
     assert node._run_with_input_recovery(recording_attempt) is True
-    assert trees[0] == 'rpp_staging' and trees[1].endswith('navigate_to_pose_staging_mppi.xml')
+    assert trees[0] == 'staging_rpp.xml' and trees[1].endswith('navigate_to_pose_staging.xml')
     assert (node.through_behavior_tree, node.staging_behavior_tree) == (
-        'rpp_transit', 'rpp_staging')
+        'transit_rpp.xml', 'staging_rpp.xml')
     assert node._escape_blocked.call_args.args == (1,)
     assert any(e['event'] == 'recovery_controller' for e in _events(node))
 
@@ -2495,3 +2495,10 @@ def test_in_place_trim_commands_no_translation_and_stops_early_by_the_overshoot(
     assert all(v == 0.0 for v, _w in published)
     assert {w for _v, w in published[:-5]} == {restaurant_service.TRIM_ANGULAR_RADPS}
     assert published[-5:] == [(0.0, 0.0)] * 5
+
+
+def test_default_mppi_trees_need_no_recovery_switch():
+    node = route()
+    node._use_recovery_controller()
+    assert node.staging_behavior_tree == 'staging.xml'
+    assert not any(e['event'] == 'recovery_controller' for e in _events(node))

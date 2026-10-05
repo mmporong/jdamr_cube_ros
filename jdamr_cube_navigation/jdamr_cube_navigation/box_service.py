@@ -1223,9 +1223,9 @@ def parse_args(argv=None):
     parser.add_argument('--zero-turn-final', action='store_true',
                         help='final box approach: turn the residual to the face out in '
                              'place, then close the gap at zero turn rate (precision trial)')
-    parser.add_argument('--mppi-transit', action='store_true',
-                        help='follow the transit and dock staging legs with MPPI instead '
-                             'of RPP (A/B; box approach and dock leg unchanged)')
+    parser.add_argument('--rpp-transit', action='store_true',
+                        help='follow the transit and dock staging legs with RPP on NavFn '
+                             'paths as until 2026-10-05 instead of Lattice + MPPI (A/B)')
     parser.add_argument('--home-only', action='store_true',
                         help='return to the dock only (needs --execute and --return-home)')
     parser.add_argument('--via-route', type=Path)
@@ -1326,8 +1326,8 @@ def run_attempt(args, active=None):
             if args.graceful_final:
                 node.final_approach_controller = 'GracefulParking'
                 node.dock_leg_controller = 'GracefulReverse'
-            if args.mppi_transit:
-                node.use_mppi_transit()
+            if args.rpp_transit:
+                node.use_rpp_transit()
             node.zero_turn_final = args.zero_turn_final
             node.operator_heartbeat = args.operator_heartbeat
             node.operator_link_timeout_s = args.operator_link_timeout_s

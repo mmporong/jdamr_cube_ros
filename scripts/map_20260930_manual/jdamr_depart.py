@@ -702,7 +702,7 @@ def run_cycle(args, state, table_id):
                    f'--operator-heartbeat {heartbeat} '
                    + (' --home-only ' if args.dock_only else '')
                    + (' --graceful-final ' if args.graceful_final else '')
-                   + (' --mppi-transit ' if args.mppi_transit else '')
+                   + (' --rpp-transit ' if getattr(args, 'rpp_transit', False) else '')
                    + (' --zero-turn-final ' if getattr(args, 'zero_turn_final', False) else '')
                    + (' --resume-at-observation ' if args.resume_at_observation else '')
                    + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
@@ -1102,8 +1102,8 @@ def main():
                     help='Graceful box approach and dock leg instead of RPP (default)')
     go.add_argument('--zero-turn-final', action='store_true',
                     help='final box approach: trim the residual in place, then zero-turn straight')
-    go.add_argument('--mppi-transit', action='store_true',
-                    help='MPPI for the transit and dock staging legs instead of RPP (A/B)')
+    go.add_argument('--rpp-transit', action='store_true',
+                    help='RPP on NavFn paths for the transit and staging legs (until 10-05; A/B)')
     go.add_argument('--resume-at-observation', action='store_true',
                     help='robot already at an observation point: the table one skips the '
                          'water stop, the water one resumes there (--skip-via forces the table)')

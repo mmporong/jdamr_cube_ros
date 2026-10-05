@@ -1281,7 +1281,7 @@ def test_operator_sent_stop_is_not_called_back_to_the_operator():
     node.call_operator.assert_not_called()
 
 
-def test_mppi_transit_flag_selects_mppi_before_the_cycle(monkeypatch, tmp_path):
+def test_rpp_transit_flag_selects_rpp_before_the_cycle(monkeypatch, tmp_path):
     for name in ('registry', 'mount', 'geometry', 'route'):
         (tmp_path / f'{name}.yaml').write_text('{}\n')
     argv = ['--registry', str(tmp_path / 'registry.yaml'),
@@ -1298,7 +1298,7 @@ def test_mppi_transit_flag_selects_mppi_before_the_cycle(monkeypatch, tmp_path):
     class Route:
         def __init__(self, *args, **kwargs):
             calls = []
-            self.use_mppi_transit = Mock(side_effect=lambda: calls.append('mppi'))
+            self.use_rpp_transit = Mock(side_effect=lambda: calls.append('rpp'))
             self.visit_observed_box = Mock(side_effect=lambda *a, **k: calls.append('visit'))
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
@@ -1309,7 +1309,7 @@ def test_mppi_transit_flag_selects_mppi_before_the_cycle(monkeypatch, tmp_path):
 
     monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
     box_service.main([*argv, '--log', str(tmp_path / 'rpp.jsonl')])
-    box_service.main([*argv, '--mppi-transit', '--log', str(tmp_path / 'mppi.jsonl')])
-    rpp, mppi = created
-    assert rpp.calls == ['visit']
-    assert mppi.calls == ['mppi', 'visit']
+    box_service.main([*argv, '--rpp-transit', '--log', str(tmp_path / 'mppi.jsonl')])
+    default, rpp = created
+    assert default.calls == ['visit']
+    assert rpp.calls == ['rpp', 'visit']

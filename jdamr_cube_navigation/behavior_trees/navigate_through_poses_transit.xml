@@ -1,4 +1,9 @@
 <!--
+  Since 2026-10-05: Lattice plans for the footprint (NavFn when it finds nothing)
+  and MPPI follows on the live costmap. On the real map with the executor's waypoint
+  headings Lattice ran 1.00-1.02x the waypoint chain (PC probe, 2026-10-05); the
+  10-01 loops came with live obstacles in the global costmap. RPP on NavFn paths
+  stays as navigate_through_poses_transit_rpp.xml (--rpp-transit).
   Transit through several waypoints as one goal (2026-10-01: separate
   NavigateToPose legs slowed to a stop and turned at every waypoint). Replan
   only when the path became invalid, is 10 s old, or the goals changed; a
@@ -22,11 +27,14 @@
             </ReactiveSequence>
             <Sequence>
               <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.25"/>
-              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+              <Fallback name="LatticeThenNavFn">
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="Lattice" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+              </Fallback>
             </Sequence>
           </Fallback>
         </RateController>
-        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+        <FollowPath path="{path}" controller_id="MPPI" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
       </PipelineSequence>
       <Sequence>
         <Fallback>
