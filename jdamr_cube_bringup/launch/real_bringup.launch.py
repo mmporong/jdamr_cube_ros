@@ -21,8 +21,10 @@ import json
 import os
 
 from ament_index_python.packages import get_package_share_directory
+from jdamr_cube_bringup.scan_self_filter import load_boxes
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
+import launch.logging
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import yaml
@@ -115,6 +117,24 @@ def generate_launch_description():
     ])
 
 
+def _load_self_filter_config(config):
+    """Read and validate the self-box YAML; a bare file name is looked up in share/config."""
+    if not os.path.dirname(config):
+        config = os.path.join(get_package_share_directory('jdamr_cube_bringup'), 'config', config)
+    with open(config, encoding='utf-8') as stream:
+        document = yaml.safe_load(stream)
+    try:
+        load_boxes(json.dumps(document['self_boxes']))
+        float(document.get('margin_m', 0.01))
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(f'invalid scan_self_filter_config {config}: {error!r}') from error
+    if document.get('status') == 'model_not_measured':
+        launch.logging.get_logger('real_bringup').warning(
+            f'{config} is status model_not_measured: its self boxes come from the CAD '
+            'model, not from a measurement')
+    return document
+
+
 def _lidar_nodes(context, lidar_port):
     # G4 — 시간 순서를 보존한 음수 angle_increment 드라이버.
     # frame_id 는 URDF 링크로 맞추고 정적 TF 는 여기서 만들지 않는다 (E7).
@@ -133,8 +153,7 @@ def _lidar_nodes(context, lidar_port):
         }],
     )]
     if config:
-        with open(config, encoding='utf-8') as stream:
-            document = yaml.safe_load(stream)
+        document = _load_self_filter_config(config)
         nodes.append(Node(
             package='jdamr_cube_bringup',
             executable='scan_self_filter',

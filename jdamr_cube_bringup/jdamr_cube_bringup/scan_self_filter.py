@@ -16,7 +16,8 @@ import math
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (qos_profile_sensor_data, QoSHistoryPolicy, QoSProfile,
+                       QoSReliabilityPolicy)
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -74,6 +75,11 @@ def blind_sectors(laser_pose, boxes, margin_m):
     return sectors
 
 
+# Same as the YDLIDAR driver publisher and the onboard bag's offered profile for /scan.
+SCAN_OUT_QOS = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=10,
+                          reliability=QoSReliabilityPolicy.RELIABLE)
+
+
 def _yaw(q):
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
@@ -95,7 +101,7 @@ class ScanSelfFilter(Node):
         self.tf_listener = TransformListener(self.tf, self)
         self.laser_pose = None
         self.publisher = self.create_publisher(
-            LaserScan, self.get_parameter('output_topic').value, qos_profile_sensor_data)
+            LaserScan, self.get_parameter('output_topic').value, SCAN_OUT_QOS)
         self.create_subscription(LaserScan, self.get_parameter('input_topic').value,
                                  self._scan, qos_profile_sensor_data)
 
@@ -105,9 +111,17 @@ class ScanSelfFilter(Node):
                 transform = self.tf.lookup_transform(
                     self.base_frame, scan.header.frame_id, rclpy.time.Time()).transform
             except TransformException:
-                return   # nothing goes out unfiltered
+                # Fail closed: nothing goes out unfiltered, but say why scans are missing.
+                self.get_logger().warning(
+                    f'no transform {self.base_frame} <- {scan.header.frame_id}: '
+                    'scans are dropped until it is available', throttle_duration_sec=5.0)
+                return
             self.laser_pose = (transform.translation.x, transform.translation.y,
                                _yaw(transform.rotation))
+            # The laser joint is fixed: stop receiving /tf (100 Hz costs CPU and delays scans).
+            unregister = getattr(self.tf_listener, 'unregister', None)
+            if unregister is not None:
+                unregister()
             for name, start, end, near in blind_sectors(self.laser_pose, self.boxes,
                                                         self.margin_m):
                 self.get_logger().info(

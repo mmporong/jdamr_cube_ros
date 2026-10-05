@@ -5,10 +5,15 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from jdamr_cube_bringup.scan_self_filter import blind_sectors, filter_ranges, load_boxes
+from ament_index_python.packages import get_package_share_directory
+from jdamr_cube_bringup.scan_self_filter import (
+    blind_sectors, filter_ranges, load_boxes, ScanSelfFilter)
 from launch import LaunchContext
 from launch.actions import OpaqueFunction
+import launch.logging
 import pytest
+import rclpy
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy
 import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -91,3 +96,101 @@ def test_launch_inserts_the_filter_between_scan_raw_and_scan():
     filtered = nodes[1].parameters[0]
     assert (filtered['input_topic'], filtered['output_topic']) == ('scan_raw', 'scan')
     assert len(load_boxes(filtered['self_boxes_json'])) == 4
+
+
+def test_launch_refuses_bad_boxes_with_a_clear_message(tmp_path):
+    bad = tmp_path / 'bad.yaml'
+    bad.write_text('self_boxes:\n- {name: a, center_xy_m: [0, 0], size_xy_m: [0.0, 0.02]}\n')
+    with pytest.raises(RuntimeError, match='invalid scan_self_filter_config'):
+        _lidar_nodes(str(bad))
+    missing = tmp_path / 'no_boxes.yaml'
+    missing.write_text('margin_m: 0.01\n')
+    with pytest.raises(RuntimeError, match='self_boxes'):
+        _lidar_nodes(str(missing))
+
+
+def test_launch_resolves_a_bare_file_name_in_the_installed_config(tmp_path, monkeypatch):
+    share = tmp_path / 'share'
+    (share / 'config').mkdir(parents=True)
+    (share / 'config/mine.yaml').write_text(MODEL.read_text())
+    real = get_package_share_directory
+    monkeypatch.setattr('ament_index_python.packages.get_package_share_directory',
+                        lambda name: str(share) if name == 'jdamr_cube_bringup' else real(name))
+    nodes = _lidar_nodes('mine.yaml')
+    assert nodes[1].executable == 'scan_self_filter'
+
+
+def test_launch_warns_about_an_unmeasured_model(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(launch.logging, 'get_logger',
+                        lambda _name: SimpleNamespace(warning=warnings.append))
+    _lidar_nodes(str(MODEL))
+    assert any('model_not_measured' in message for message in warnings)
+
+
+class _StubTf:
+    def __init__(self, available):
+        self.available, self.lookups = available, 0
+
+    def lookup_transform(self, _target, _source, _time):
+        from tf2_ros import LookupException
+        self.lookups += 1
+        if not self.available:
+            raise LookupException('no laser_link')
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=0.1, y=0.0),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+
+
+class _Listener:
+    unregistered = 0
+
+    def unregister(self):
+        self.unregistered += 1
+
+
+@pytest.fixture
+def node():
+    rclpy.init()
+    instance = ScanSelfFilter()
+    yield instance
+    instance.destroy_node()
+    rclpy.shutdown()
+
+
+def _scan():
+    from sensor_msgs.msg import LaserScan
+    scan = LaserScan()
+    scan.header.frame_id = 'laser_link'
+    scan.angle_min, scan.angle_increment = -math.pi, math.radians(1.0)
+    scan.ranges = [5.0] * 360
+    return scan
+
+
+def test_filtered_scan_is_reliable_keep_last_10_like_the_driver(node):
+    qos = node.publisher.qos_profile
+    assert qos.reliability == QoSReliabilityPolicy.RELIABLE
+    assert qos.history == QoSHistoryPolicy.KEEP_LAST and qos.depth == 10
+
+
+def test_tf_subscription_is_dropped_once_the_laser_pose_is_cached(node):
+    node.tf, node.tf_listener = _StubTf(True), _Listener()
+    sent = []
+    node.publisher = SimpleNamespace(publish=sent.append)
+    node._scan(_scan())
+    node._scan(_scan())
+    assert node.tf_listener.unregistered == 1 and len(sent) == 2
+    assert node.tf.lookups == 1
+
+
+def test_missing_laser_tf_drops_scans_and_warns_with_the_frames(node, monkeypatch):
+    node.tf, node.tf_listener = _StubTf(False), _Listener()
+    sent, warnings = [], []
+    node.publisher = SimpleNamespace(publish=sent.append)
+    monkeypatch.setattr(type(node.get_logger()), 'warning',
+                        lambda _self, message, **kwargs: warnings.append((message, kwargs)))
+    node._scan(_scan())
+    assert sent == [] and node.tf_listener.unregistered == 0
+    message, kwargs = warnings[0]
+    assert 'laser_link' in message and node.base_frame in message
+    assert kwargs['throttle_duration_sec'] == 5.0
