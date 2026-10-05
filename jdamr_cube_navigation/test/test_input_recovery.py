@@ -2471,6 +2471,8 @@ def _zero_turn_fake(yaw, poses_after=None):
         _frozen_in_odom=lambda path: (path, lambda x, y, yaw: (x, y, yaw)))
     fake._rotate_in_place = lambda delta: calls.append(('turn', delta)) or delta
     fake._drive_zero_turn = lambda distance: calls.append(('drive', distance)) or distance
+    fake._fail_final = lambda reason, **fields: box_service.BoxServiceRoute._fail_final(
+        fake, reason, **fields)
     return fake, sent, calls
 
 
@@ -2503,6 +2505,38 @@ def test_zero_turn_final_skips_a_tiny_trim_and_fails_a_missed_one():
     fake._drive_zero_turn = lambda distance: distance - 0.02   # 2 cm short
     reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
     assert not reached and 'final_approach_short' in sent
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2)
+    fake._drive_zero_turn = lambda distance: distance - 0.008  # a StopZone stop 8 mm early
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert reached                                            # the gap judgement decides
+
+
+def test_zero_turn_final_turns_either_way_and_rejects_what_it_cannot_do():
+    off = math.radians(2.0)
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2 + off,       # clockwise residual
+                                        poses_after=[((0.0, -0.47, -math.pi / 2), None)])
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert reached and calls[0] == ('turn', pytest.approx(-off))
+    assert sent['final_yaw_trim']['residual_after_deg'] == pytest.approx(0.0, abs=1e-6)
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2 + math.radians(31.0))
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert not reached and calls == []
+    assert sent['failed']['reason'] == 'final_trim_out_of_range'
+    assert fake._final_failure_reported is True
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2 - math.radians(2.0))
+    fake._rotate_in_place = lambda delta: None                    # no odom
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert not reached and sent['failed']['reason'] == 'final_trim_missed'
+    for y_m in (-0.87, 0.2):                                      # travel <= 0 or > 0.6 m
+        fake, sent, calls = _zero_turn_fake(-math.pi / 2)
+        fake.capture_stationary_pose = lambda y=y_m: ((0.0, y, -math.pi / 2), None)
+        reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+        assert not reached and sent['failed']['reason'] == 'final_approach_unavailable'
+        assert [kind for kind, _ in calls] == []
+    fake, sent, calls = _zero_turn_fake(-math.pi / 2)
+    fake._drive_zero_turn = lambda distance: None                 # no odom
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert not reached and sent['final_approach_short']['travelled_m'] is None
 
 
 def test_final_approach_dispatch_follows_the_zero_turn_switch():

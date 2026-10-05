@@ -79,6 +79,10 @@ PATH_BLOCKED_CLEAR_PROBES = 2
 # Odom trail kept for backing out the way the base came in: a point every 2 cm, 4 m.
 ODOM_TRAIL_STEP_M = 0.02
 ODOM_TRAIL_POINTS = 200
+# A step from the trail end longer than this is not motion (0.12 m/s): odom reset.
+ODOM_TRAIL_RESET_M = 0.25
+# Measured reverse speed above which the trail unwinds instead of growing.
+ODOM_TRAIL_REVERSE_MPS = 0.01
 
 
 def _expanded_path(value, parent=None):
@@ -413,6 +417,29 @@ class CorridorRoute(Node):
         self.battery_voltage = float(message.voltage)
         self.samples['battery'] = time.monotonic()
 
+    @staticmethod
+    def _extend_odom_trail(trail, pose, linear_mps):
+        """
+        Keep the trail as the way the base drove forward up to where it stands.
+
+        Driving forward appends a pose every ODOM_TRAIL_STEP_M. Reversing appends
+        nothing and drops the poses now ahead of the base, so backing out unwinds
+        the trail and a later retrace continues further back instead of driving
+        forward over a stretch it reversed. A pose far from the trail end (an odom
+        reset, or the end of a long reverse such as a dock entry) starts a new trail.
+        """
+        x_m, y_m, yaw = pose
+        if trail and math.hypot(x_m - trail[-1][0], y_m - trail[-1][1]) > ODOM_TRAIL_RESET_M:
+            trail.clear()
+        if linear_mps < -ODOM_TRAIL_REVERSE_MPS:
+            cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+            while trail and ((trail[-1][0] - x_m) * cos_yaw
+                             + (trail[-1][1] - y_m) * sin_yaw) > 0.0:
+                trail.pop()
+        elif not trail or math.hypot(
+                x_m - trail[-1][0], y_m - trail[-1][1]) >= ODOM_TRAIL_STEP_M:
+            trail.append(pose)
+
     def _odom_callback(self, _message):
         self.samples['odom'] = time.monotonic()
         self.latest_motion = (
@@ -433,9 +460,8 @@ class CorridorRoute(Node):
                 math.cos(yaw - previous_yaw)))
         self.odom_last_pose = odom_pose
         trail = getattr(self, 'odom_trail', None)
-        if trail is not None and (not trail or math.hypot(
-                position.x - trail[-1][0], position.y - trail[-1][1]) >= ODOM_TRAIL_STEP_M):
-            trail.append(odom_pose)
+        if trail is not None:
+            self._extend_odom_trail(trail, odom_pose, float(_message.twist.twist.linear.x))
         history = getattr(self, 'odom_history', None)
         if history is not None:
             stamp_ns = (_message.header.stamp.sec * 1_000_000_000 +

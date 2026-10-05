@@ -20,7 +20,8 @@ from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profil
 from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, pose_errors,
 )
-from jdamr_cube_navigation.restaurant_service import OPERATOR_LINK_TIMEOUT_S, ServiceRoute
+from jdamr_cube_navigation.restaurant_service import (
+    OPERATOR_LINK_TIMEOUT_S, SCAN_MEMORY_KEYFRAMES, ServiceRoute)
 from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
 from nav2_msgs.action import Spin
 from nav_msgs.msg import Path as RosPath
@@ -46,7 +47,9 @@ FINAL_PLAN_END_TOLERANCE_M = 0.06
 FINAL_TRIM_MIN_RAD = math.radians(0.3)
 FINAL_TRIM_MAX_RAD = math.radians(30.0)
 FINAL_TRIM_TOLERANCE_RAD = math.radians(0.3)
-FINAL_STRAIGHT_TOLERANCE_M = 0.005
+# The zero-turn straight may end this much short: the gap judgement (5 +-1 cm)
+# decides, and a StopZone stop a few mm early is not a failed approach.
+FINAL_STRAIGHT_TOLERANCE_M = 0.01
 SEARCH_MAX_STEPS = 12
 SEARCH_MAX_CUMULATIVE_RAD = math.tau
 # A region bearing smaller than this is treated as centred: the failure is not a
@@ -159,6 +162,7 @@ class BoxServiceRoute(ServiceRoute):
 
     def __init__(self, *args, **kwargs):
         self.last_scan = None
+        self.scan_memory = deque(maxlen=SCAN_MEMORY_KEYFRAMES)
         self.box_status_history = deque(maxlen=16)
         self.last_box_face = None
         self.depth_camera_info = None
@@ -183,6 +187,7 @@ class BoxServiceRoute(ServiceRoute):
     def _scan_callback(self, message):
         super()._scan_callback(message)
         self.last_scan = message
+        self._remember_scan(message)
 
     def _box_callback(self, message):
         super()._box_callback(message)
@@ -867,10 +872,13 @@ class BoxServiceRoute(ServiceRoute):
                     self.emit('failed', phase=phase, planning=planned)
                     return False
                 if phase == 'final_approach':
+                    self._final_failure_reported = False
                     approached, straight_to_odom = self._straight_final_approach(
                         target, front_extent_m)
                     if not approached:
-                        self.emit('failed', phase=phase, reason='nav2_or_stop_confirmation')
+                        if not self._final_failure_reported:
+                            self.emit('failed', phase=phase,
+                                      reason='nav2_or_stop_confirmation')
                         return False
                     continue
                 # Live map callbacks keep checking the verified identity throughout
@@ -928,6 +936,11 @@ class BoxServiceRoute(ServiceRoute):
                   final_depth_measurement=False)
         return gap_confirmed
 
+    def _fail_final(self, reason, **fields):
+        """Report the final approach failure once, with its own reason."""
+        self._final_failure_reported = True
+        self.emit('failed', phase='final_approach', reason=reason, **fields)
+
     def _straight_final_approach(self, target, front_extent_m):
         """Run the configured final approach: Parking along a held path, or zero turn."""
         if getattr(self, 'zero_turn_final', False):
@@ -951,25 +964,29 @@ class BoxServiceRoute(ServiceRoute):
         residual = math.atan2(math.sin(face_heading - actual[2]),
                               math.cos(face_heading - actual[2]))
         if abs(residual) > FINAL_TRIM_MAX_RAD:
-            self.emit('failed', phase='final_approach', reason='final_trim_out_of_range',
-                      residual_deg=round(math.degrees(residual), 2))
+            self._fail_final('final_trim_out_of_range',
+                             residual_deg=round(math.degrees(residual), 2))
             return False, None
         turned = 0.0
         if abs(residual) >= FINAL_TRIM_MIN_RAD:
             turned = self._rotate_in_place(residual)
             if turned is None or abs(turned - residual) > FINAL_TRIM_TOLERANCE_RAD:
-                self.emit('failed', phase='final_approach', reason='final_trim_missed',
-                          residual_deg=round(math.degrees(residual), 2),
-                          turned_deg=None if turned is None else round(math.degrees(turned), 2))
+                self._fail_final('final_trim_missed',
+                                 residual_deg=round(math.degrees(residual), 2),
+                                 turned_deg=None if turned is None
+                                 else round(math.degrees(turned), 2))
                 return False, None
             actual, _ = self.capture_stationary_pose()
+        # Logged against the face in map; the trim itself was judged in odom.
+        after = math.atan2(math.sin(face_heading - actual[2]),
+                           math.cos(face_heading - actual[2]))
         self.emit('final_yaw_trim', residual_deg=round(math.degrees(residual), 3),
-                  turned_deg=round(math.degrees(turned), 3))
+                  turned_deg=round(math.degrees(turned), 3),
+                  residual_after_deg=round(math.degrees(after), 3))
         distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
         travel_m = distance_m - front_extent_m - 0.05
         if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
-            self.emit('failed', phase='final_approach', reason='final_approach_unavailable',
-                      travel_m=self._json_scalar(travel_m))
+            self._fail_final('final_approach_unavailable', travel_m=self._json_scalar(travel_m))
             return False, None
         steps = int(math.ceil(travel_m / 0.05)) + 1
         heading = actual[2]
@@ -1013,9 +1030,9 @@ class BoxServiceRoute(ServiceRoute):
         travel_m = ((distance_m - front_extent_m - 0.05) / along
                     if facing > math.cos(math.pi / 6) else float('nan'))
         if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
-            self.emit('failed', phase='final_approach', reason='final_approach_unavailable',
-                      face_heading_cos=self._json_scalar(facing),
-                      travel_m=self._json_scalar(travel_m))
+            self._fail_final('final_approach_unavailable',
+                             face_heading_cos=self._json_scalar(facing),
+                             travel_m=self._json_scalar(travel_m))
             return False, None
         steps = int(math.ceil(travel_m / 0.05)) + 1
         points = [(actual[0] + travel_m * k / steps * math.cos(heading),

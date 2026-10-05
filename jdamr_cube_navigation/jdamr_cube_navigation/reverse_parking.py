@@ -144,20 +144,25 @@ def _base_points(scan, laser_pose):
         yield lx + distance * math.cos(angle), ly + distance * math.sin(angle)
 
 
-def straight_sweep_hit(scan, laser_pose, outline, distance_m, step_m=0.01):
-    """
-    Whether a straight move of distance_m (negative: reverse) would meet a scan return.
+def scan_points(scan, laser_pose):
+    """Return the valid scan returns as a list of (x, y) in the base frame."""
+    return list(_base_points(scan, laser_pose))
 
-    laser_pose is the scan frame in the base frame as (x, y, yaw). A return is met
-    when the outline shifted along the heading covers it. One already inside the
-    outline counts only on the half facing the move: a straight move cannot close
-    on a return beside the trailing half (2026-10-02 13:48: a bounding rectangle
-    held a return 5 mm beside the rear corner as "behind" and refused the back-off).
+
+def points_sweep_hit(points, outline, distance_m, step_m=0.01):
+    """
+    Whether a straight move of distance_m (negative: reverse) would meet a point.
+
+    points are (x, y) in the base frame. A point is met when the outline shifted
+    along the heading covers it. One already inside the outline counts only on the
+    half facing the move: a straight move cannot close on a point beside the
+    trailing half (2026-10-02 13:48: a bounding rectangle held a return 5 mm beside
+    the rear corner as "behind" and refused the back-off).
     """
     count = max(1, math.ceil(abs(distance_m) / step_m))
     shifts = [math.copysign(abs(distance_m) * index / count, distance_m)
               for index in range(1, count + 1)]
-    for x_m, y_m in _base_points(scan, laser_pose):
+    for x_m, y_m in points:
         if _point_in_polygon(x_m, y_m, outline):
             if (x_m >= 0.0) == (distance_m > 0.0):
                 return True
@@ -167,23 +172,152 @@ def straight_sweep_hit(scan, laser_pose, outline, distance_m, step_m=0.01):
     return False
 
 
-def outline_intrusion(scan, laser_pose, outline, min_points):
+def straight_sweep_hit(scan, laser_pose, outline, distance_m, step_m=0.01, extra_points=()):
+    """
+    Whether a straight move of distance_m (negative: reverse) would meet a scan return.
+
+    laser_pose is the scan frame in the base frame as (x, y, yaw); extra_points are
+    further (x, y) in the base frame, such as remembered returns the LiDAR can no
+    longer see. See points_sweep_hit.
+    """
+    return points_sweep_hit(
+        [*_base_points(scan, laser_pose), *extra_points], outline, distance_m, step_m)
+
+
+def _edge_distance(x_m, y_m, outline):
+    """Distance from (x, y) to the nearest outline edge."""
+    best = math.inf
+    for (ax, ay), (bx, by) in zip(outline, list(outline[1:]) + list(outline[:1])):
+        dx, dy = bx - ax, by - ay
+        length2 = dx * dx + dy * dy
+        fraction = 0.0 if length2 == 0.0 else max(
+            0.0, min(1.0, ((x_m - ax) * dx + (y_m - ay) * dy) / length2))
+        best = min(best, math.hypot(x_m - ax - fraction * dx, y_m - ay - fraction * dy))
+    return best
+
+
+def path_sweep_hit(points, outline, poses, step_m=0.01, step_rad=math.radians(1.0),
+                   push_tolerance_m=0.005):
+    """
+    Whether moving along poses would bring the outline over a point, or push into one.
+
+    poses are (x, y, yaw) in the current base frame, starting at the base, and are
+    densified to step_m and step_rad. A point outside the outline is met when the
+    outline covers it at any pose. A point already inside (it touches the body) is
+    met when it gets more than push_tolerance_m deeper than it started: backing off
+    it or sliding along it is the escape, driving into it is not (review 2026-10-06:
+    a return inside the rear half was left out, and the way back pushed it).
+    """
+    dense = [tuple(poses[0])]
+    for start, end in zip(poses, poses[1:]):
+        turn = _shortest_angle(end[2] - start[2])
+        count = max(1, math.ceil(max(math.dist(start[:2], end[:2]) / step_m,
+                                     abs(turn) / step_rad)))
+        for index in range(1, count + 1):
+            fraction = index / count
+            dense.append((start[0] + (end[0] - start[0]) * fraction,
+                          start[1] + (end[1] - start[1]) * fraction,
+                          start[2] + turn * fraction))
+    reach_m = max(math.hypot(x_m, y_m) for x_m, y_m in outline)
+    for x_m, y_m in points:
+        touching = _point_in_polygon(x_m, y_m, outline)
+        allowed_m = _edge_distance(x_m, y_m, outline) + push_tolerance_m if touching else None
+        for x, y, yaw in dense[1:]:
+            dx, dy = x_m - x, y_m - y
+            if math.hypot(dx, dy) > reach_m:
+                continue
+            cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+            local = (cos_yaw * dx + sin_yaw * dy, -sin_yaw * dx + cos_yaw * dy)
+            if not _point_in_polygon(*local, outline):
+                continue
+            if allowed_m is None or _edge_distance(*local, outline) > allowed_m:
+                return True
+    return False
+
+
+def to_base_frame(base_pose, pose):
+    """Express pose (x, y, yaw), given in the frame of base_pose, in the base frame."""
+    dx, dy = pose[0] - base_pose[0], pose[1] - base_pose[1]
+    cos_yaw, sin_yaw = math.cos(base_pose[2]), math.sin(base_pose[2])
+    return (cos_yaw * dx + sin_yaw * dy, -sin_yaw * dx + cos_yaw * dy,
+            _shortest_angle(pose[2] - base_pose[2]))
+
+
+def trail_retrace_points(current, trail, distance_m, max_gap_m, max_turn_rad,
+                         settle_m=0.01):
+    """
+    Walk the trail back from current: the way the base came, as (x, y, yaw).
+
+    trail holds the poses the base drove forward through, oldest first, in the frame
+    of current. Every step back must lead backwards from the previous pose (within
+    60 deg of its rear direction), be at most max_gap_m long and turn at most
+    max_turn_rad; the walk ends at the first step that is not (an odom jump, a stretch
+    driven in reverse, a turn on the spot) or once distance_m is covered. Trail
+    poses within settle_m of the walk are skipped. Returns (points, length_m).
+    """
+    points, length_m = [tuple(current)], 0.0
+    for pose in reversed(list(trail)):
+        previous = points[-1]
+        gap_m = math.dist(previous[:2], pose[:2])
+        if gap_m < settle_m:
+            continue
+        along_m = ((pose[0] - previous[0]) * math.cos(previous[2])
+                   + (pose[1] - previous[1]) * math.sin(previous[2]))
+        if (gap_m > max_gap_m or along_m > -0.5 * gap_m
+                or abs(_shortest_angle(pose[2] - previous[2])) > max_turn_rad):
+            break
+        points.append(tuple(pose))
+        length_m += gap_m
+        if length_m >= distance_m:
+            break
+    return points, length_m
+
+
+def remembered_blind_points(keyframes, current_pose, laser_pose, blind_radius_m):
+    """
+    Return remembered returns that now lie inside the LiDAR blind range, base frame.
+
+    keyframes are (base pose in odom, scan) pairs, current_pose the base pose in odom
+    and laser_pose the scan frame in the base frame. Inside blind_radius_m of the
+    laser the G4 reports nothing (range_min), so an object the base drove up to
+    vanishes from the live scan; outside it the live scan decides.
+    """
+    lx, ly, _lyaw = laser_pose
+    found = []
+    for pose, scan in keyframes:
+        moved_m = math.dist(pose[:2], current_pose[:2])
+        relative = to_base_frame(current_pose, pose)
+        cos_yaw, sin_yaw = math.cos(relative[2]), math.sin(relative[2])
+        # The laser itself moved at most moved_m plus its offset swung about the axle.
+        limit_m = blind_radius_m + moved_m + 2.0 * math.hypot(lx, ly)
+        for x_m, y_m in _base_points(scan, laser_pose):
+            if math.hypot(x_m - lx, y_m - ly) > limit_m:
+                continue
+            bx = relative[0] + cos_yaw * x_m - sin_yaw * y_m
+            by = relative[1] + sin_yaw * x_m + cos_yaw * y_m
+            if math.hypot(bx - lx, by - ly) < blind_radius_m:
+                found.append((bx, by))
+    return found
+
+
+def outline_intrusion(scan, laser_pose, outline, min_points, extra_points=()):
     """
     Return which half of the outline holds at least min_points returns.
 
     'front' (ahead of the axle), 'rear', 'both' or None. The Collision Monitor
     stops on min_points returns inside a polygon, and a return inside the padded
-    footprint holds every polygon that contains it (2026-10-02 11:09).
+    footprint holds every polygon that contains it (2026-10-02 11:09). extra_points
+    are further (x, y) in the base frame (remembered returns in the blind range).
     """
     counts = {'front': 0, 'rear': 0}
-    for x_m, y_m in _base_points(scan, laser_pose):
+    for x_m, y_m in [*_base_points(scan, laser_pose), *extra_points]:
         if _point_in_polygon(x_m, y_m, outline):
             counts['front' if x_m >= 0.0 else 'rear'] += 1
     held = [half for half in ('front', 'rear') if counts[half] >= min_points]
     return 'both' if len(held) == 2 else (held[0] if held else None)
 
 
-def rear_swing_clearance(scan, laser_pose, radius_m):
+def rear_swing_clearance(scan, laser_pose, radius_m, extra_points=()):
     """
     Return the forward travel that takes every return behind the axle out of the turn circle.
 
@@ -192,7 +326,7 @@ def rear_swing_clearance(scan, laser_pose, radius_m):
     forward travel. Returns 0.0 when nothing behind the axle is inside the circle.
     """
     needed_m = 0.0
-    for x_m, y_m in _base_points(scan, laser_pose):
+    for x_m, y_m in [*_base_points(scan, laser_pose), *extra_points]:
         if x_m < 0.0 and math.hypot(x_m, y_m) < radius_m:
             needed_m = max(needed_m, math.sqrt(radius_m ** 2 - y_m ** 2) + x_m)
     return needed_m

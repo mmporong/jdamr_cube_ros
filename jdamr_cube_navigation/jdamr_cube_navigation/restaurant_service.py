@@ -16,14 +16,15 @@ from action_msgs.srv import CancelGoal
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped, Twist
 from jdamr_cube_navigation.corridor_route import (
-    _quaternion_yaw, AMCL_QOS, CorridorRoute, PATH_BLOCKED_NAV2_CODES)
+    _quaternion_yaw, AMCL_QOS, CorridorRoute, ODOM_TRAIL_STEP_M, PATH_BLOCKED_NAV2_CODES)
 from jdamr_cube_navigation.parking import (
     ENTRY_HEADING_TOLERANCE_DEG, load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold,
     pose_errors,
 )
 from jdamr_cube_navigation.reverse_parking import (
-    outline_intrusion, rear_swing_clearance, reverse_curve_waypoints, reverse_waypoints,
-    SERVICE_TRANSIT_MAX_MPS, static_corridor_clear, straight_sweep_hit)
+    outline_intrusion, path_sweep_hit, rear_swing_clearance, remembered_blind_points,
+    reverse_curve_waypoints, reverse_waypoints, scan_points, SERVICE_TRANSIT_MAX_MPS,
+    static_corridor_clear, straight_sweep_hit, to_base_frame, trail_retrace_points)
 from jdamr_cube_navigation.service_destinations import (
     add_pose, candidates, front_gap_evidence, grid_signature, home_pose, load_registry,
     map_grid_signature, new_registry, route_config, save_registry, set_home_pose, taught_pose,
@@ -112,15 +113,26 @@ PATH_BLOCKED_TURN_RADIUS_M = 0.45
 PATH_BLOCKED_FORWARD_MIN_M = 0.10
 PATH_BLOCKED_FORWARD_MAX_M = 0.35
 # Escapes drive with zero turn rate so the Collision Monitor uses its zero-turn
-# StopZones; slow so its padded StopZone (2 cm) still stops within one 10 Hz cycle.
+# StopZones; slow so its StopZone (5 mm beyond the body) still stops within one
+# 10 Hz cycle.
 STRAIGHT_ESCAPE_SPEED_MPS = 0.05
 STRAIGHT_ESCAPE_EXTRA_S = 5.0
 STRAIGHT_ESCAPE_TOLERANCE_M = 0.01
+# The velocity smoother's linear deceleration (max_decel) that ends a direct move.
+STRAIGHT_DECEL_MPS2 = 0.5
 # In-place trims (zero-turn final approach): slow enough that the smoother's
 # 1.5 rad/s^2 stop adds only w^2 / 2a = 0.12 deg, which the stop anticipates.
 TRIM_ANGULAR_RADPS = 0.08
 TRIM_DECEL_RADPS2 = 1.5
 TRIM_EXTRA_S = 4.0
+# A direct move's stop is sent this much early on top of the deceleration: one
+# 20 Hz smoother cycle plus odometry delay (reviewed 2026-10-06; not measured).
+DIRECT_STOP_LATENCY_S = 0.05
+# After the stop, wait at most this long for odometry to show the base at rest.
+DIRECT_SETTLE_S = 0.5
+# Direct moves re-check the fail-closed inputs (fresh scan and odom, no latched
+# emergency stop) at this period and stop on the first failure.
+DIRECT_GUARD_PERIOD_S = 0.1
 # The Collision Monitor stops on this many returns inside one polygon.
 COLLISION_MONITOR_MIN_POINTS = 3
 # Backing out along the odom trail when something touches the body: 0.30 m, then
@@ -128,6 +140,25 @@ COLLISION_MONITOR_MIN_POINTS = 3
 PATH_BLOCKED_RETRACE_M = 0.30
 PATH_BLOCKED_RETRACE_STEP_M = 0.15
 PATH_BLOCKED_RETRACE_MAX_M = 0.60
+# The retrace follows the trail back only while each step leads backwards, is at
+# most three trail steps long (an odom jump) and turns at most 20 deg (a turn on
+# the spot that a reverse controller cannot undo).
+RETRACE_MAX_GAP_M = 3.0 * ODOM_TRAIL_STEP_M
+RETRACE_MAX_TURN_RAD = math.radians(20.0)
+# Escape decisions use one scan no older than this (the G4 publishes at 7-10 Hz).
+ESCAPE_SCAN_MAX_AGE_S = 0.5
+# Scans kept, one per 5 cm or 10 deg of motion, for what the LiDAR cannot see within
+# its range_min (0.28 m from the laser, up to 0.20 m ahead of the front edge):
+# something the base drove up to vanishes from the live scan but not from these.
+SCAN_MEMORY_KEYFRAMES = 20
+SCAN_MEMORY_STEP_M = 0.05
+SCAN_MEMORY_STEP_RAD = math.radians(10.0)
+SCAN_MEMORY_MAX_AGE_S = 120.0
+# Keyframes are 5 cm apart; a jump this large is an odom reset, not motion.
+SCAN_MEMORY_RESET_M = 0.5
+# While the Collision Monitor is paused for a straight escape, this band in the
+# travel direction must stay clear on every fresh scan (0.05 m/s: 5 mm per check).
+ESCAPE_WATCH_BAND_M = 0.10
 
 
 def _ahead(pose, distance_m):
@@ -581,6 +612,8 @@ class ServiceRoute(CorridorRoute):
             failure = self._startup_protection_ready(require_command_path=require_command_path)
             if failure:
                 raise RuntimeError(failure)
+            if require_command_path:
+                self._confirm_collision_monitor_on()
             return
         validate_registry(self.registry)
         self.expected_grids = {
@@ -614,6 +647,8 @@ class ServiceRoute(CorridorRoute):
             require_command_path=require_command_path)
         if protection_error:
             raise RuntimeError(protection_error)
+        if require_command_path:
+            self._confirm_collision_monitor_on()
         # Cache the verified assets for this executor, not sensor freshness or
         # permission to drive. Map callbacks still stop on changed grid content.
         self._verified_map_identity = registry_identity
@@ -793,11 +828,12 @@ class ServiceRoute(CorridorRoute):
 
     def use_rpp_transit(self):
         """
-        Follow the transit and dock staging legs with RPP on NavFn paths, as until 10-05.
+        Follow the transit and dock staging legs with RPP, as until 10-05.
 
         Since 2026-10-05 those legs plan with Lattice (NavFn when it finds nothing)
         and follow with MPPI on the live costmap; the RPP trees stay for the A/B and
-        as a fallback. Box approach, alignment and the dock leg keep their controllers.
+        as a fallback (transit plans with NavFn, staging with Lattice then NavFn).
+        Box approach, alignment and the dock leg keep their controllers.
         """
         self._set_transit_trees('_rpp')
 
@@ -809,56 +845,98 @@ class ServiceRoute(CorridorRoute):
             package / f'behavior_trees/navigate_to_pose_staging{suffix}.xml')
 
     def _scan_in_base(self):
-        """Return (scan, laser pose in the base frame, outline), or None if unavailable."""
+        """
+        Return one snapshot for an escape decision, or None if any part is unavailable.
+
+        (scan, laser pose in the base frame, outline, remembered returns inside the
+        LiDAR blind range in the base frame). The scan must be fresh; every check of
+        one decision uses the same snapshot.
+        """
         scan = getattr(self, 'last_scan', None)
-        if scan is None:
+        received_s = (getattr(self, 'samples', None) or {}).get('scan')
+        if (scan is None or received_s is None
+                or time.monotonic() - received_s > ESCAPE_SCAN_MAX_AGE_S):
             return None
         try:
             transform = self.parking_tf.lookup_transform(
                 self.parking_contract['robot_base_frame'], scan.header.frame_id,
                 rclpy.time.Time())
             outline = self._footprint_outline()
-        except (TransformException, RuntimeError):
+            laser = (transform.transform.translation.x, transform.transform.translation.y,
+                     _quaternion_yaw(transform.transform.rotation))
+            memory = self._remembered_blind_points(laser, scan)
+        except (TransformException, RuntimeError, ValueError, SyntaxError):
             return None
-        laser = (transform.transform.translation.x, transform.transform.translation.y,
-                 _quaternion_yaw(transform.transform.rotation))
-        return scan, laser, outline
+        return scan, laser, outline, memory
 
-    def _blocked_ahead(self, band_m=PATH_BLOCKED_AHEAD_BAND_M):
+    def _remembered_blind_points(self, laser, scan):
+        """Remembered returns now inside the LiDAR range_min, in the base frame."""
+        now_s = time.monotonic()
+        keyframes = [(pose, frame) for stamp_s, pose, frame
+                     in getattr(self, 'scan_memory', None) or ()
+                     if now_s - stamp_s <= SCAN_MEMORY_MAX_AGE_S]
+        if not keyframes:
+            return []
+        return remembered_blind_points(keyframes, self._odom_pose(), laser, scan.range_min)
+
+    def _remember_scan(self, scan):
+        """Keep a scan whenever the base moved SCAN_MEMORY_STEP_M or turned STEP_RAD."""
+        memory = getattr(self, 'scan_memory', None)
+        pose = getattr(self, 'odom_last_pose', None)
+        if memory is None or pose is None:
+            return
+        if memory and math.dist(pose[:2], memory[-1][1][:2]) > SCAN_MEMORY_RESET_M:
+            memory.clear()
+        if memory:
+            _stamp_s, last, _scan = memory[-1]
+            turned = abs(math.atan2(math.sin(pose[2] - last[2]), math.cos(pose[2] - last[2])))
+            if (math.dist(pose[:2], last[:2]) < SCAN_MEMORY_STEP_M
+                    and turned < SCAN_MEMORY_STEP_RAD):
+                return
+        memory.append((time.monotonic(), pose, scan))
+
+    def _blocked_ahead(self, band_m=PATH_BLOCKED_AHEAD_BAND_M, found=None):
         """
-        Return whether driving band_m straight ahead would meet a scan return.
+        Return whether driving band_m straight ahead would meet a return.
 
-        None when no scan or transform is available.
+        None when no snapshot is available. found is a snapshot from _scan_in_base.
         """
-        found = self._scan_in_base()
+        found = found or self._scan_in_base()
         if found is None:
             return None
-        scan, laser, outline = found
-        return straight_sweep_hit(scan, laser, outline, band_m)
+        scan, laser, outline, memory = found
+        return straight_sweep_hit(scan, laser, outline, band_m, extra_points=memory)
 
-    def _blocked_behind(self, band_m):
-        """Return whether reversing band_m straight would meet a scan return."""
-        found = self._scan_in_base()
+    def _blocked_behind(self, band_m, found=None):
+        """Return whether reversing band_m straight would meet a return."""
+        found = found or self._scan_in_base()
         if found is None:
             return None
-        scan, laser, outline = found
-        return straight_sweep_hit(scan, laser, outline, -band_m)
+        scan, laser, outline, memory = found
+        return straight_sweep_hit(scan, laser, outline, -band_m, extra_points=memory)
 
-    def _footprint_intrusion(self):
-        """Which half of the footprint holds returns: 'front', 'rear', 'both' or None."""
-        found = self._scan_in_base()
+    def _footprint_intrusion(self, found=None):
+        """
+        Which half of the footprint holds live returns: 'front', 'rear', 'both' or None.
+
+        Live returns only: this decides whether the Collision Monitor is held and must
+        be paused, and the monitor sees the same scan. Remembered returns inside the
+        blind range cannot hold it (review 2026-10-06: a stale one could pause it).
+        """
+        found = found or self._scan_in_base()
         if found is None:
             return None
-        scan, laser, outline = found
+        scan, laser, outline, _memory = found
         return outline_intrusion(scan, laser, outline, COLLISION_MONITOR_MIN_POINTS)
 
-    def _rear_swing_need(self):
+    def _rear_swing_need(self, found=None):
         """Forward travel that frees the turn circle behind the axle (0.0 when free)."""
-        found = self._scan_in_base()
+        found = found or self._scan_in_base()
         if found is None:
             return 0.0
-        scan, laser, _outline = found
-        return rear_swing_clearance(scan, laser, PATH_BLOCKED_TURN_RADIUS_M)
+        scan, laser, _outline, memory = found
+        return rear_swing_clearance(scan, laser, PATH_BLOCKED_TURN_RADIUS_M,
+                                    extra_points=memory)
 
     def _front_clear(self):
         """Whether the band ahead is empty on a fresh scan (an unreadable scan is not)."""
@@ -866,20 +944,21 @@ class ServiceRoute(CorridorRoute):
 
     def _use_recovery_controller(self):
         """
-        On the RPP trees (--rpp-transit), retry a leg the controller could not finish with MPPI.
+        On the RPP trees (--rpp-transit), retry a leg the controller could not finish.
 
-        RPP follows the planner's path as given; NavFn plans for a point and put
-        the path 1-2 cm into an object beside a 0.64 m gap, so every RPP retry
-        swung the right wheel into the same object (2026-10-02 17:49-17:52). MPPI
-        weighs the footprint cost against the path and can pass off the path. The
-        default trees already use MPPI.
+        The retry runs on the default trees. RPP follows the planner's path as
+        given; NavFn plans for a point and put the path 1-2 cm into an object beside
+        a 0.64 m gap, so every RPP retry swung the right wheel into the same object
+        (2026-10-02 17:49-17:52). The default trees plan with Lattice
+        (footprint-aware, NavFn when it finds nothing) and follow with MPPI, which
+        weighs the footprint cost against the path and can pass off it.
         """
         if (getattr(self, '_recovery_saved_trees', None) is None
                 and self.through_behavior_tree.endswith('_rpp.xml')):
             self._recovery_saved_trees = (self.through_behavior_tree,
                                           self.staging_behavior_tree)
             self._set_transit_trees('')
-            self.emit('recovery_controller', controller='MPPI')
+            self.emit('recovery_controller', controller='MPPI', planner='Lattice')
 
     def _restore_controller(self):
         """Return to the configured transit and staging trees after the leg."""
@@ -890,92 +969,147 @@ class ServiceRoute(CorridorRoute):
 
     def _escape_blocked(self, wait=1):
         """
-        Move straight away from what blocks the base before the hold.
+        Move away from what blocks the base before the hold.
+
+        Every check of one decision uses one scan snapshot, which includes the
+        remembered returns inside the LiDAR blind range.
+
+        A live return inside the footprint (it touches the body and holds every
+        Collision Monitor polygon): back out along the odom trail the base drove in
+        with the monitor paused (operator 2026-10-02: "if it got in it can get out";
+        a straight escape beside a touching object pushed it, 18:02). When that way
+        back would push what touches the rear, or there is none, drive the rear off
+        it straight ahead instead if the band ahead is clear (2026-10-02 11:09).
 
         Something in the band ahead: back PATH_BLOCKED_BACKOFF_M times the hold
-        count out (0.10, 0.20, 0.30 m; a repeated 0.10 m back-off met the same
-        object four times, 17:49-17:52). Nav2's default tree backs up too.
-        Something behind the axle inside the turn circle: drive forward until it is
-        out of the circle, since every turn and arc swings the rear into it.
-
-        A return inside the footprint (it touches the body) or no straight way back:
-        back out along the odom trail the base drove in (operator 2026-10-02: "if it
-        got in it can get out"; a straight escape beside a touching object pushed
-        it, 18:02). The way in was free, so the way out is too.
+        count straight out (0.10, 0.20, 0.30 m; a repeated 0.10 m back-off met the
+        same object four times, 17:49-17:52), or back out along the trail when the
+        straight way back is not clear; the monitor stays on for both, since nothing
+        touches the body. Something behind the axle inside the turn circle: drive
+        forward until it is out of the circle, since every turn swings the rear into it.
         """
-        ahead = self._blocked_ahead()
-        if ahead is None:
+        found = self._scan_in_base()
+        if found is None:
             return False
+        ahead = self._blocked_ahead(found=found)
         retrace_m = min(PATH_BLOCKED_RETRACE_M + PATH_BLOCKED_RETRACE_STEP_M * (max(1, wait) - 1),
                         PATH_BLOCKED_RETRACE_MAX_M)
-        intrusion = self._footprint_intrusion()
+        intrusion = self._footprint_intrusion(found=found)
         if intrusion is not None:
-            return self._retrace(retrace_m)
+            done = self._retrace(retrace_m, pause_monitor=True, found=found)
+            if done is None and intrusion == 'rear' and not ahead:
+                return self._escape_forward(found, pause_monitor=True)
+            return bool(done)
         if ahead:
             back_m = PATH_BLOCKED_BACKOFF_M * max(1, wait)
-            if self._blocked_behind(band_m=back_m + 0.05) is not False:
-                return self._retrace(retrace_m)
+            if self._blocked_behind(band_m=back_m + 0.05, found=found) is not False:
+                return bool(self._retrace(retrace_m, pause_monitor=False, found=found))
             return self._drive_straight(-back_m, 'path_blocked_back_off')
-        needed_m = self._rear_swing_need()
+        return self._escape_forward(found)
+
+    def _escape_forward(self, found, pause_monitor=False):
+        """Drive straight forward until nothing behind the axle is in the turn circle."""
+        needed_m = self._rear_swing_need(found=found)
         if needed_m <= 0.0:
             return False
         distance_m = min(max(needed_m + 0.03, PATH_BLOCKED_FORWARD_MIN_M),
                          PATH_BLOCKED_FORWARD_MAX_M)
-        if self._blocked_ahead(band_m=distance_m + 0.05) is not False:
+        if self._blocked_ahead(band_m=distance_m + 0.05, found=found) is not False:
             self.emit('path_blocked_escape_forward', done=False,
                       reason='band ahead not clear', distance_m=distance_m)
             return False
-        return self._drive_straight(distance_m, 'path_blocked_escape_forward')
+        return self._drive_straight(distance_m, 'path_blocked_escape_forward',
+                                    pause_monitor=pause_monitor, found=found)
 
-    def _retrace(self, distance_m, event='path_blocked_retrace'):
+    def _retrace(self, distance_m, event='path_blocked_retrace', pause_monitor=True,
+                 found=None):
         """
-        Reverse along the odom trail of the last distance_m the base drove.
+        Reverse along the odom trail of the last distance_m the base drove forward.
 
-        Something touching the body holds every Collision Monitor polygon, so the
-        monitor is switched off for this move alone and always switched back on;
-        if it cannot be, the emergency stop is latched. The trail is the way the
-        base just came in, followed backwards with the reverse controller.
+        The trail is the way the base came in, walked back only while every step
+        leads backwards (trail_retrace_points), and the whole way back must be clear
+        of the snapshot's returns and must not push one already inside the body
+        (path_sweep_hit). With pause_monitor (something touches the body and holds
+        every Collision Monitor polygon) the monitor is switched off for this move
+        alone and always switched back on; if it cannot be, the emergency stop is
+        latched and the run stops.
+
+        Returns None when it refused before moving, else whether the move finished.
         """
-        trail = list(getattr(self, 'odom_trail', None) or ())
-        if len(trail) < 2:
-            self.emit(event, done=False, reason='no odom trail')
-            return False
-        points, length_m = [trail[-1]], 0.0
-        for pose in reversed(trail[:-1]):
-            length_m += math.dist(points[-1][:2], pose[:2])
-            points.append(pose)
-            if length_m >= distance_m:
-                break
         try:
-            transform = self.parking_tf.lookup_transform(
-                'map', 'odom', rclpy.time.Time()).transform
-        except TransformException as error:
+            current = self._odom_pose()
+        except RuntimeError as error:
             self.emit(event, done=False, reason=str(error))
-            return False
-        ox, oy = transform.translation.x, transform.translation.y
-        oyaw = _quaternion_yaw(transform.rotation)
-        path = RosPath()
-        path.poses = [self._pose(index, {
-            'x': ox + math.cos(oyaw) * x - math.sin(oyaw) * y,
-            'y': oy + math.sin(oyaw) * x + math.cos(oyaw) * y,
-            'yaw': yaw + oyaw}) for index, (x, y, yaw) in enumerate(points)]
-        path.header = path.poses[0].header
-        if not self._set_collision_monitor(False):
-            self._set_collision_monitor(True)
-            self.emit(event, done=False, reason='collision monitor not paused')
-            return False
-        done = False
+            return None
+        points, length_m = trail_retrace_points(
+            current, getattr(self, 'odom_trail', None) or (), distance_m,
+            RETRACE_MAX_GAP_M, RETRACE_MAX_TURN_RAD)
+        if len(points) < 2:
+            self.emit(event, done=False, reason='no odom trail')
+            return None
+        found = found or self._scan_in_base()
+        if found is None:
+            self.emit(event, done=False, reason='no fresh scan')
+            return None
+        scan, laser, outline, memory = found
+        if path_sweep_hit([*scan_points(scan, laser), *memory], outline,
+                          [to_base_frame(current, point) for point in points]):
+            self.emit(event, done=False, reason='trail not clear',
+                      distance_m=round(length_m, 3))
+            return None
+        path = self._odom_path(points)
+        if pause_monitor and not self._pause_collision_monitor(event):
+            return None
+        done, restored = False, True
         try:
             done = self._execute_reverse_once(
                 path, goal_checker_id='dock_position_checker', final=False,
                 controller_id='ParkingReverse', motion='retrace')
         finally:
-            restored = any(self._set_collision_monitor(True) for _attempt in range(3))
-            if not restored:
-                self.engage_emergency_stop('Collision Monitor could not be switched back on')
+            if pause_monitor:
+                restored = self._resume_collision_monitor()
         self.emit(event, done=bool(done) and restored, distance_m=round(length_m, 3),
-                  monitor_restored=restored)
+                  monitor_paused=pause_monitor, monitor_restored=restored)
         return bool(done) and restored
+
+    def _pause_collision_monitor(self, event):
+        """Switch the Collision Monitor off for one escape; on failure switch it back on."""
+        self._monitor_confirmed_on = False
+        if self._set_collision_monitor(False):
+            return True
+        # A timed-out request may still land late.
+        restored = self._resume_collision_monitor()
+        self.emit(event, done=False, reason='collision monitor not paused',
+                  monitor_restored=restored)
+        return False
+
+    def _resume_collision_monitor(self):
+        """
+        Switch the Collision Monitor back on; latch the emergency stop if it stays off.
+
+        A monitor that stays off would leave every later goal unprotected, so the
+        run is stopped as well; the next run confirms the monitor on first.
+        """
+        restored = any(self._set_collision_monitor(True) for _attempt in range(3))
+        if restored:
+            self._monitor_confirmed_on = True
+        else:
+            self.engage_emergency_stop('Collision Monitor could not be switched back on')
+            self.request_stop()
+        return restored
+
+    def _confirm_collision_monitor_on(self):
+        """
+        Switch the Collision Monitor on once per executor before its first motion.
+
+        A process that died while the monitor was paused for a retrace would
+        otherwise leave every later run without it.
+        """
+        if getattr(self, '_monitor_confirmed_on', False):
+            return
+        if not self._set_collision_monitor(True):
+            raise RuntimeError('Collision Monitor could not be confirmed on')
+        self._monitor_confirmed_on = True
 
     def _set_collision_monitor(self, enabled):
         """Switch the Collision Monitor on or off; True once it confirmed."""
@@ -992,32 +1126,122 @@ class ServiceRoute(CorridorRoute):
         deadline_s = time.monotonic() + 2.0
         while not future.done() and time.monotonic() < deadline_s:
             rclpy.spin_once(self, timeout_sec=0.05)
-        if not future.done() or future.exception() is not None:
+        if not future.done():
+            client.remove_pending_request(future)
+            return False
+        if future.exception() is not None:
             return False
         return bool(future.result().success)
 
-    def _drive_straight(self, distance_m, event):
-        """Drive distance_m along the heading with zero turn rate (negative: reverse)."""
-        travelled_m = self._drive_zero_turn(distance_m)
-        done = (travelled_m is not None
+    def _drive_straight(self, distance_m, event, pause_monitor=False, found=None):
+        """
+        Drive distance_m along the heading with zero turn rate (negative: reverse).
+
+        With pause_monitor the Collision Monitor is off for this move alone, as in
+        _retrace; the caller has checked the way on the snapshot found, and every
+        fresh scan during the move must keep ESCAPE_WATCH_BAND_M in the travel
+        direction clear in its place (review 2026-10-06: someone stepping in front
+        during the paused move went unseen).
+        """
+        watch = None
+        if pause_monitor:
+            if found is None:
+                self.emit(event, done=False, reason='no snapshot to watch the way')
+                return False
+            watch = self._band_watch(found, distance_m)
+            if not self._pause_collision_monitor(event):
+                return False
+        travelled_m, restored = None, True
+        try:
+            travelled_m = self._drive_zero_turn(distance_m, watch=watch)
+        finally:
+            if pause_monitor:
+                restored = self._resume_collision_monitor()
+        done = (travelled_m is not None and restored
                 and math.copysign(travelled_m, distance_m) == travelled_m
                 and abs(travelled_m) >= abs(distance_m) - STRAIGHT_ESCAPE_TOLERANCE_M)
+        fields = {'monitor_paused': True, 'monitor_restored': restored} if pause_monitor else {}
         self.emit(event, done=done, distance_m=abs(distance_m),
-                  travelled_m=None if travelled_m is None else round(travelled_m, 3))
+                  travelled_m=None if travelled_m is None else round(travelled_m, 3), **fields)
         return done
+
+    def _band_watch(self, found, distance_m):
+        """
+        Return a check of the latest scan: a reason to stop, or None while the way is clear.
+
+        The laser pose and outline come from the snapshot (no parameter reads inside
+        the loop); the scan must stay fresh.
+        """
+        _scan, laser, outline, _memory = found
+
+        def watch():
+            scan = getattr(self, 'last_scan', None)
+            received_s = (getattr(self, 'samples', None) or {}).get('scan')
+            if (scan is None or received_s is None
+                    or time.monotonic() - received_s > ESCAPE_SCAN_MAX_AGE_S):
+                return 'no fresh scan while the monitor is paused'
+            if straight_sweep_hit(scan, laser, outline,
+                                  math.copysign(ESCAPE_WATCH_BAND_M, distance_m)):
+                return 'way not clear while the monitor is paused'
+            return None
+        return watch
+
+    def _escape_publisher(self):
+        publisher = getattr(self, 'escape_velocity', None)
+        if publisher is None:
+            publisher = self.create_publisher(Twist, 'cmd_vel_nav', 10)
+            self.escape_velocity = publisher
+        return publisher
+
+    def _direct_motion(self, command, done, measure, deadline_s, event, watch=None):
+        """
+        Publish command until done(measure()) or a stop, then stop and let the base settle.
+
+        The command goes in ahead of the velocity smoother and the Collision Monitor,
+        like the controller's. It ends on a stop request, the deadline, a failed
+        fail-closed input (stale scan or odom, latched emergency stop) or a reason
+        from watch, both checked every DIRECT_GUARD_PERIOD_S. Returns the last
+        measurement once the base is at rest (odom speed under 0.01) or
+        DIRECT_SETTLE_S has passed.
+        """
+        publisher = self._escape_publisher()
+        value = measure()
+        published_s = guarded_s = 0.0
+        try:
+            while not done(value) and not self.stop_requested and time.monotonic() < deadline_s:
+                now_s = time.monotonic()
+                if now_s - guarded_s >= DIRECT_GUARD_PERIOD_S:
+                    guarded_s = now_s
+                    failure = self._guard_failure(False) or (watch() if watch else None)
+                    if failure:
+                        self.emit(event, reason=failure)
+                        break
+                if now_s - published_s >= 0.05:
+                    publisher.publish(command)
+                    published_s = time.monotonic()
+                rclpy.spin_once(self, timeout_sec=0.02)
+                value = measure()
+        finally:
+            for _repeat in range(5):
+                publisher.publish(Twist())
+                rclpy.spin_once(self, timeout_sec=0.02)
+        stopped_s = time.monotonic()
+        while time.monotonic() - stopped_s < DIRECT_SETTLE_S:
+            motion = getattr(self, 'latest_motion', None)
+            if (motion is not None and motion[0] > stopped_s
+                    and abs(motion[1]) < 0.01 and abs(motion[2]) < 0.01):
+                break
+            rclpy.spin_once(self, timeout_sec=0.02)
+        return measure()
 
     def _rotate_in_place(self, delta_rad):
         """
         Command (0, +-TRIM_ANGULAR_RADPS) until odom shows delta_rad turned.
 
         Same path as the controller (smoother, Collision Monitor); the stop is
-        sent early by the smoother's deceleration overshoot. Returns the signed
-        turn measured in odom, or None without odom.
+        sent early by the smoother's deceleration and the stop latency. Returns the
+        signed turn measured in odom once the base is at rest, or None without odom.
         """
-        publisher = getattr(self, 'escape_velocity', None)
-        if publisher is None:
-            publisher = self.create_publisher(Twist, 'cmd_vel_nav', 10)
-            self.escape_velocity = publisher
         base_frame = self.parking_contract['robot_base_frame']
 
         def odom_yaw():
@@ -1028,46 +1252,37 @@ class ServiceRoute(CorridorRoute):
             start = odom_yaw()
         except TransformException:
             return None
+        # Unwrapped, so a turn of any size is counted.
+        state = {'last': start, 'turned': 0.0}
+
+        def measure():
+            try:
+                yaw = odom_yaw()
+            except TransformException:
+                return state['turned']
+            state['turned'] += math.atan2(math.sin(yaw - state['last']),
+                                          math.cos(yaw - state['last']))
+            state['last'] = yaw
+            return state['turned']
+
         command = Twist()
         command.angular.z = math.copysign(TRIM_ANGULAR_RADPS, delta_rad)
-        early_rad = TRIM_ANGULAR_RADPS ** 2 / (2.0 * TRIM_DECEL_RADPS2)
+        # At most half the turn: a trim just over the minimum must still turn.
+        early_rad = min(TRIM_ANGULAR_RADPS ** 2 / (2.0 * TRIM_DECEL_RADPS2)
+                        + TRIM_ANGULAR_RADPS * DIRECT_STOP_LATENCY_S, abs(delta_rad) / 2.0)
         deadline_s = time.monotonic() + abs(delta_rad) / TRIM_ANGULAR_RADPS + TRIM_EXTRA_S
-        turned, published_s = 0.0, 0.0
-        try:
-            while (abs(turned) < abs(delta_rad) - early_rad and not self.stop_requested
-                   and time.monotonic() < deadline_s):
-                if time.monotonic() - published_s >= 0.05:
-                    publisher.publish(command)
-                    published_s = time.monotonic()
-                rclpy.spin_once(self, timeout_sec=0.02)
-                try:
-                    yaw = odom_yaw()
-                except TransformException:
-                    continue
-                turned = math.atan2(math.sin(yaw - start), math.cos(yaw - start))
-        finally:
-            for _repeat in range(5):
-                publisher.publish(Twist())
-                rclpy.spin_once(self, timeout_sec=0.02)
-        try:
-            yaw = odom_yaw()
-            turned = math.atan2(math.sin(yaw - start), math.cos(yaw - start))
-        except TransformException:
-            pass
-        return turned
+        return self._direct_motion(
+            command, lambda turned: abs(turned) >= abs(delta_rad) - early_rad, measure,
+            deadline_s, 'trim_rotation_stopped')
 
-    def _drive_zero_turn(self, distance_m):
+    def _drive_zero_turn(self, distance_m, watch=None):
         """
         Command (+-STRAIGHT_ESCAPE_SPEED_MPS, 0) until odom shows distance_m.
 
-        The command goes in ahead of the velocity smoother and the Collision Monitor,
-        like the controller's; it runs only between goals. Returns the signed travel
-        along the start heading, or None without odom.
+        The stop is sent early by the smoother's deceleration and the stop latency.
+        It runs only between goals. Returns the signed travel along the start heading
+        once the base is at rest, or None without odom.
         """
-        publisher = getattr(self, 'escape_velocity', None)
-        if publisher is None:
-            publisher = self.create_publisher(Twist, 'cmd_vel_nav', 10)
-            self.escape_velocity = publisher
         base_frame = self.parking_contract['robot_base_frame']
 
         def odom_pose():
@@ -1080,29 +1295,26 @@ class ServiceRoute(CorridorRoute):
             start = odom_pose()
         except TransformException:
             return None
+        state = {'travelled': 0.0}
+
+        def measure():
+            try:
+                x_m, y_m, _yaw = odom_pose()
+            except TransformException:
+                return state['travelled']
+            state['travelled'] = ((x_m - start[0]) * math.cos(start[2])
+                                  + (y_m - start[1]) * math.sin(start[2]))
+            return state['travelled']
+
         command = Twist()
         command.linear.x = math.copysign(STRAIGHT_ESCAPE_SPEED_MPS, distance_m)
+        early_m = min(STRAIGHT_ESCAPE_SPEED_MPS ** 2 / (2.0 * STRAIGHT_DECEL_MPS2)
+                      + STRAIGHT_ESCAPE_SPEED_MPS * DIRECT_STOP_LATENCY_S, abs(distance_m) / 2.0)
         deadline_s = (time.monotonic() + abs(distance_m) / STRAIGHT_ESCAPE_SPEED_MPS
                       + STRAIGHT_ESCAPE_EXTRA_S)
-        travelled_m, published_s = 0.0, 0.0
-        try:
-            while (abs(travelled_m) < abs(distance_m) and not self.stop_requested
-                   and time.monotonic() < deadline_s):
-                if time.monotonic() - published_s >= 0.05:
-                    publisher.publish(command)
-                    published_s = time.monotonic()
-                rclpy.spin_once(self, timeout_sec=0.02)
-                try:
-                    x_m, y_m, _yaw = odom_pose()
-                except TransformException:
-                    continue
-                travelled_m = ((x_m - start[0]) * math.cos(start[2])
-                               + (y_m - start[1]) * math.sin(start[2]))
-        finally:
-            for _repeat in range(5):
-                publisher.publish(Twist())
-                rclpy.spin_once(self, timeout_sec=0.02)
-        return travelled_m
+        return self._direct_motion(
+            command, lambda travelled: abs(travelled) >= abs(distance_m) - early_m, measure,
+            deadline_s, 'straight_drive_stopped', watch=watch)
 
     def _departure_ready(self):
         """Check, before every goal, the battery reserve and the operator link."""

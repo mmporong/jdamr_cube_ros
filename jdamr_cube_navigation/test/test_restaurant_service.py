@@ -1027,10 +1027,12 @@ def test_verified_maps_reuse_asset_audit_but_keep_live_identity_and_command_chec
     node._verified_map_identity = json.dumps(node.registry, sort_keys=True)
     node.live_grids = node.expected_grids = {'map': 'a', 'keepout': 'b'}
     node._startup_protection_ready = Mock(return_value=None)
+    node._set_collision_monitor = Mock(return_value=True)
     node._read_parameters = Mock()
     node.verify_live_maps()
     node._read_parameters.assert_not_called()
     node._startup_protection_ready.assert_called_once_with(require_command_path=True)
+    node._set_collision_monitor.assert_called_once_with(True)
     node.live_grids = {'map': 'changed', 'keepout': 'b'}
     with pytest.raises(RuntimeError, match='changed'):
         node.verify_live_maps()
@@ -1049,8 +1051,11 @@ def test_map_audit_cache_is_created_by_first_call_not_seeded_by_test(monkeypatch
         Parameter('yaml_filename', value='map' if name == 'map_server' else 'mask')
         .get_parameter_value()]))
     node._startup_protection_ready = Mock(return_value=None)
+    node._set_collision_monitor = Mock(return_value=True)
     node.verify_live_maps(require_command_path=False)
+    node._set_collision_monitor.assert_not_called()
     node.verify_live_maps()
+    node._set_collision_monitor.assert_called_once_with(True)
     assert node._read_parameters.call_count == 2
     validate.assert_called_once()
     assert [call.kwargs for call in node._startup_protection_ready.call_args_list] == [
@@ -2197,9 +2202,14 @@ def test_rear_swing_clearance_frees_the_turn_circle(ranges, needed):
         needed)
 
 
+SNAPSHOT = ('scan', (-0.01, 0.0, math.pi), 'outline', [])
+
+
 def test_side_rear_obstacle_drives_forward_out_of_the_turn_circle():
     """11:09: a leg beside the rear corner holds every turn; the base drives on first."""
     node = route()
+    node._scan_in_base = Mock(return_value=SNAPSHOT)
+    node._footprint_intrusion = Mock(return_value=None)
     node._blocked_ahead = Mock(side_effect=[False, False])
     node._rear_swing_need = Mock(return_value=0.147)
     node._drive_straight = Mock(return_value=True)
@@ -2210,6 +2220,8 @@ def test_side_rear_obstacle_drives_forward_out_of_the_turn_circle():
 
 def test_escape_backs_off_when_blocked_ahead_and_holds_when_nothing_is_near():
     node = route()
+    node._scan_in_base = Mock(return_value=SNAPSHOT)
+    node._footprint_intrusion = Mock(return_value=None)
     node._blocked_ahead = Mock(return_value=True)
     node._blocked_behind = Mock(return_value=False)
     node._drive_straight = Mock(return_value=True)
@@ -2219,15 +2231,26 @@ def test_escape_backs_off_when_blocked_ahead_and_holds_when_nothing_is_near():
     assert node._blocked_behind.call_args.kwargs['band_m'] == pytest.approx(
         restaurant_service.PATH_BLOCKED_BACKOFF_M + 0.05)
     node = route()
+    node._scan_in_base = Mock(return_value=SNAPSHOT)
+    node._footprint_intrusion = Mock(return_value=None)
     node._blocked_ahead = Mock(return_value=False)
     node._rear_swing_need = Mock(return_value=0.0)
     node._drive_straight = Mock()
     assert node._escape_blocked() is False
     node._drive_straight.assert_not_called()
+    node = route()
+    node._scan_in_base = Mock(return_value=None)          # no fresh scan: no move
+    node._drive_straight = Mock()
+    node._retrace = Mock()
+    assert node._escape_blocked() is False
+    node._drive_straight.assert_not_called()
+    node._retrace.assert_not_called()
 
 
 def test_forward_escape_needs_the_band_ahead_clear_over_its_length():
     node = route()
+    node._scan_in_base = Mock(return_value=SNAPSHOT)
+    node._footprint_intrusion = Mock(return_value=None)
     node._blocked_ahead = Mock(side_effect=[False, True])
     node._rear_swing_need = Mock(return_value=0.30)
     node._drive_straight = Mock()
@@ -2322,6 +2345,7 @@ def test_zero_turn_drive_commands_no_rotation_and_stops_at_the_distance(monkeypa
 def test_back_off_grows_with_each_hold_at_the_same_block():
     for wait, distance in ((1, 0.10), (2, 0.20), (3, 0.30)):
         node = route()
+        node._scan_in_base = Mock(return_value=SNAPSHOT)
         node._blocked_ahead = Mock(return_value=True)
         node._footprint_intrusion = Mock(return_value=None)
         node._blocked_behind = Mock(return_value=False)
@@ -2378,8 +2402,9 @@ def test_a_touching_object_backs_out_along_the_trail_further_each_hold():
     """18:41: something touching the body; back out the way the base came in."""
     for wait, distance in ((1, 0.30), (2, 0.45), (3, 0.60), (4, 0.60)):
         for ahead, intrusion, behind in ((False, 'rear', False), (True, 'front', False),
-                                         (True, None, True)):
+                                         (True, None, True), (True, None, None)):
             node = route()
+            node._scan_in_base = Mock(return_value=SNAPSHOT)
             node._blocked_ahead = Mock(return_value=ahead)
             node._footprint_intrusion = Mock(return_value=intrusion)
             node._blocked_behind = Mock(return_value=behind)
@@ -2388,19 +2413,26 @@ def test_a_touching_object_backs_out_along_the_trail_further_each_hold():
             assert node._escape_blocked(wait) is True
             node._drive_straight.assert_not_called()
             assert node._retrace.call_args.args[0] == pytest.approx(distance)
+            # Only something touching the body justifies pausing the monitor.
+            assert node._retrace.call_args.kwargs['pause_monitor'] is (intrusion is not None)
+            assert node._retrace.call_args.kwargs['found'] is SNAPSHOT
 
 
-def _trail_route():
+def _empty_scan():
+    return SimpleNamespace(ranges=[math.inf] * 4, angle_min=0.0, angle_increment=math.pi / 2,
+                           range_min=0.28, range_max=12.0)
+
+
+def _trail_route(points=(), memory=()):
+    """Drove +x 0.78 m along y=2 in odom and stands at the trail end."""
     node = route()
-    node.odom_trail = [(1.0 + 0.02 * k, 2.0, 0.0) for k in range(40)]   # drove +x 0.78 m
-    node.parking_tf = SimpleNamespace(lookup_transform=lambda *a, **k: SimpleNamespace(
-        transform=SimpleNamespace(translation=SimpleNamespace(x=0.5, y=0.0),
-                                  rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
-    del node._pose                      # the fixture's stub; use the real one
-    node.waypoints = [{'x': 0.0, 'y': 0.0}]
-    node.config = {'frame_id': 'map'}
+    node.odom_trail = [(1.0 + 0.02 * k, 2.0, 0.0) for k in range(40)]
+    node._odom_pose = Mock(return_value=(1.78, 2.0, 0.0))
+    node._scan_in_base = Mock(return_value=(
+        _points_scan(points), (0.0, 0.0, 0.0), STEPPED, list(memory)))
     node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(
         to_msg=lambda: builtin_interfaces.msg.Time()))
+    node.engage_emergency_stop = Mock()
     return node
 
 
@@ -2409,25 +2441,56 @@ def test_retrace_reverses_the_last_part_of_the_trail_with_the_monitor_paused():
     switched = []
     node._set_collision_monitor = Mock(side_effect=lambda on: switched.append(on) or True)
     node._execute_reverse_once = Mock(return_value=True)
-    node.engage_emergency_stop = Mock()
     assert node._retrace(0.30) is True
     path = node._execute_reverse_once.call_args.args[0]
+    assert path.header.frame_id == 'odom'               # no map jump moves the trail
     xs = [p.pose.position.x for p in path.poses]
-    assert xs[0] == pytest.approx(0.5 + 1.78) and xs[-1] == pytest.approx(0.5 + 1.48)
+    assert xs[0] == pytest.approx(1.78) and xs[-1] == pytest.approx(1.48)
     assert xs == sorted(xs, reverse=True)                  # back the way it came
     assert node._execute_reverse_once.call_args.kwargs['controller_id'] == 'ParkingReverse'
     assert switched == [False, True]
     node.engage_emergency_stop.assert_not_called()
+    assert node._monitor_confirmed_on is True
+
+
+def test_retrace_without_a_pause_keeps_the_monitor_on():
+    node = _trail_route()
+    node._set_collision_monitor = Mock(return_value=True)
+    node._execute_reverse_once = Mock(return_value=True)
+    assert node._retrace(0.30, pause_monitor=False) is True
+    node._set_collision_monitor.assert_not_called()
 
 
 def test_retrace_latches_the_emergency_stop_when_the_monitor_stays_off():
     node = _trail_route()
     node._set_collision_monitor = Mock(side_effect=[True, False, False, False])
     node._execute_reverse_once = Mock(side_effect=RuntimeError('aborted'))
-    node.engage_emergency_stop = Mock()
     with pytest.raises(RuntimeError):
         node._retrace(0.30)
     node.engage_emergency_stop.assert_called_once()
+    assert node.stop_requested is True                     # no later goal runs unprotected
+
+
+def test_retrace_that_cannot_restore_the_monitor_stops_the_run():
+    node = _trail_route()
+    node._set_collision_monitor = Mock(side_effect=[True, False, False, False])
+    node._execute_reverse_once = Mock(return_value=True)
+    assert node._retrace(0.30) is False
+    node.engage_emergency_stop.assert_called_once()
+    assert node.stop_requested is True
+    assert node._monitor_confirmed_on is False
+
+
+def test_retrace_whose_pause_failed_switches_the_monitor_back_on():
+    """A timed-out pause may still land late; switch it back on before giving up."""
+    node = _trail_route()
+    node._set_collision_monitor = Mock(side_effect=[False, True])
+    node._execute_reverse_once = Mock()
+    assert node._retrace(0.30) is None                     # refused before moving
+    assert [call.args for call in node._set_collision_monitor.call_args_list] == [
+        (False,), (True,)]
+    node._execute_reverse_once.assert_not_called()
+    node.engage_emergency_stop.assert_not_called()
 
 
 def test_retrace_without_a_trail_does_not_move():
@@ -2435,9 +2498,90 @@ def test_retrace_without_a_trail_does_not_move():
     node.odom_trail = [(0.0, 0.0, 0.0)]
     node._set_collision_monitor = Mock()
     node._execute_reverse_once = Mock()
-    assert node._retrace(0.30) is False
+    assert node._retrace(0.30) is None
     node._set_collision_monitor.assert_not_called()
     node._execute_reverse_once.assert_not_called()
+
+
+@pytest.mark.parametrize('points, memory', [
+    ([(-0.45, 0.0)], ()),          # behind the rear edge on the way back
+    ((), [(-0.40, 0.10)]),         # remembered inside the blind range
+    ([(-0.25, 0.0)] * 3, ()),      # touches the rear: the way back pushes it
+])
+def test_retrace_refuses_a_way_back_that_is_not_clear(points, memory):
+    node = _trail_route(points, memory)
+    node._set_collision_monitor = Mock()
+    node._execute_reverse_once = Mock()
+    assert node._retrace(0.30) is None
+    node._set_collision_monitor.assert_not_called()
+    node._execute_reverse_once.assert_not_called()
+    refused = [e for e in _events(node) if e['event'] == 'path_blocked_retrace']
+    assert refused[-1]['reason'] == 'trail not clear'
+
+
+def test_retrace_slides_off_what_touches_the_body_but_never_into_it():
+    """18:41: the touching object is what the base backs away from or slides along."""
+    # In front of the body and beside the front frame, ahead of the wheels.
+    node = _trail_route([(0.07, 0.0)] * 3 + [(0.075, -0.243)] * 3)
+    node._set_collision_monitor = Mock(return_value=True)
+    node._execute_reverse_once = Mock(return_value=True)
+    assert node._retrace(0.30) is True
+
+
+def test_retrace_after_a_back_off_continues_backwards_not_over_the_back_off():
+    """Review 2026-10-06: a trail with the back-off in it drove 0.30 m forward to the touch."""
+    from collections import deque
+    node = _trail_route()
+    trail = deque(maxlen=corridor_route.ODOM_TRAIL_POINTS)
+    for k in range(81):                                    # forward 0.80 m in 1 cm steps
+        corridor_route.CorridorRoute._extend_odom_trail(trail, (0.01 * k, 0.0, 0.0), 0.12)
+    for k in range(1, 11):                                 # straight back-off 0.10 m
+        corridor_route.CorridorRoute._extend_odom_trail(
+            trail, (0.80 - 0.01 * k, 0.0, 0.0), -0.05)
+    assert trail[-1][0] <= 0.70 + 1e-9                     # unwound past the back-off
+    node.odom_trail = trail
+    node._odom_pose = Mock(return_value=(0.70, 0.0, 0.0))
+    node._set_collision_monitor = Mock(return_value=True)
+    node._execute_reverse_once = Mock(return_value=True)
+    assert node._retrace(0.30) is True
+    xs = [p.pose.position.x for p in node._execute_reverse_once.call_args.args[0].poses]
+    assert xs[0] == pytest.approx(0.70) and max(xs) == pytest.approx(0.70)
+    assert xs == sorted(xs, reverse=True)
+    assert 0.37 <= xs[-1] <= 0.40 + 1e-9                   # 0.30 m back, to a trail step
+
+
+@pytest.mark.parametrize('current, trail, end', [
+    # A raw trail with a stretch driven in reverse: walked back it leads forward.
+    ((0.04, 0.0, 0.0), [(0.0, 0.0, 0.0), (0.02, 0.0, 0.0), (0.04, 0.0, 0.0),
+                        (0.06, 0.0, 0.0), (0.04, 0.0, 0.0)], (0.04, 0.0)),
+    # An odom jump.
+    ((0.06, 0.0, 0.0), [(5.0, 3.0, 0.0), (0.02, 0.0, 0.0), (0.04, 0.0, 0.0)], (0.02, 0.0)),
+    # A turn on the spot between two trail poses.
+    ((0.06, 0.0, 0.0), [(-0.02, 0.0, math.pi / 2), (0.0, 0.0, math.pi / 2),
+                        (0.02, 0.0, 0.0), (0.04, 0.0, 0.0)], (0.02, 0.0)),
+    # Sideways off the heading (the base turned since): not the way in.
+    ((0.0, 0.0, math.pi / 2), [(0.0, -0.04, 0.0), (0.0, -0.02, 0.0)], (0.0, 0.0)),
+])
+def test_trail_walk_stops_where_the_way_back_is_not_the_way_in(current, trail, end):
+    from jdamr_cube_navigation.reverse_parking import trail_retrace_points
+    points, _length = trail_retrace_points(
+        current, trail, 1.0, restaurant_service.RETRACE_MAX_GAP_M,
+        restaurant_service.RETRACE_MAX_TURN_RAD)
+    assert points[-1][:2] == pytest.approx(end)
+
+
+def test_odom_trail_unwinds_while_reversing_and_restarts_after_a_jump():
+    from collections import deque
+    trail = deque(maxlen=corridor_route.ODOM_TRAIL_POINTS)
+    extend = corridor_route.CorridorRoute._extend_odom_trail
+    for k in range(6):
+        extend(trail, (0.02 * k, 0.0, 0.0), 0.1)
+    extend(trail, (0.05, 0.0, 0.0), -0.05)                 # reversed 5 cm
+    assert [round(x, 2) for x, _y, _yaw in trail] == [0.0, 0.02, 0.04]
+    extend(trail, (0.05, 0.0, math.pi), 0.0)                # turned on the spot: kept
+    assert len(trail) == 3
+    extend(trail, (3.0, 0.0, 0.0), 0.1)                     # odom reset
+    assert list(trail) == [(3.0, 0.0, 0.0)]
 
 
 def test_straight_drive_short_or_wrong_way_is_not_done():
@@ -2490,8 +2634,10 @@ def test_in_place_trim_commands_no_translation_and_stops_early_by_the_overshoot(
     node.parking_tf = SimpleNamespace(lookup_transform=lookup)
     monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
     turned = node._rotate_in_place(math.radians(2.0))
-    early = restaurant_service.TRIM_ANGULAR_RADPS ** 2 / (2 * restaurant_service.TRIM_DECEL_RADPS2)
-    assert turned >= math.radians(2.0) - early - 0.002
+    early = (restaurant_service.TRIM_ANGULAR_RADPS ** 2
+             / (2 * restaurant_service.TRIM_DECEL_RADPS2)
+             + restaurant_service.TRIM_ANGULAR_RADPS * restaurant_service.DIRECT_STOP_LATENCY_S)
+    assert math.radians(2.0) - early <= turned <= math.radians(2.0) - early + 0.003
     assert all(v == 0.0 for v, _w in published)
     assert {w for _v, w in published[:-5]} == {restaurant_service.TRIM_ANGULAR_RADPS}
     assert published[-5:] == [(0.0, 0.0)] * 5
@@ -2502,3 +2648,242 @@ def test_default_mppi_trees_need_no_recovery_switch():
     node._use_recovery_controller()
     assert node.staging_behavior_tree == 'staging.xml'
     assert not any(e['event'] == 'recovery_controller' for e in _events(node))
+
+
+@pytest.mark.parametrize('points, poses, hit', [
+    ([(-0.40, 0.0)], [(0.0, 0.0, 0.0), (-0.20, 0.0, 0.0)], True),     # behind on the way back
+    ([(-0.40, 0.0)], [(0.0, 0.0, 0.0), (-0.05, 0.0, 0.0)], False),    # short of it
+    ([(-0.27, -0.243)], [(0.0, 0.0, 0.0), (-0.20, 0.0, 0.0)], False),  # already inside
+    ([(-0.30, 0.40)], [(0.0, 0.0, 0.0), (-0.20, 0.0, 0.0)], False),    # beside the way
+    # A reverse arc to the left swings the rear right (base turns +0.4 rad).
+    ([(-0.30, -0.27)], [(0.0, 0.0, 0.0), (-0.10, 0.0, 0.2), (-0.18, -0.02, 0.4)], True),
+])
+def test_path_sweep_follows_the_body_along_the_way_back(points, poses, hit):
+    from jdamr_cube_navigation.reverse_parking import path_sweep_hit
+    assert path_sweep_hit(points, STEPPED, poses) is hit
+
+
+def test_returns_the_base_drove_into_the_blind_range_are_remembered():
+    """An object 0.40 m ahead of the laser is 0.20 m away after 0.20 m forward: G4 blind."""
+    from jdamr_cube_navigation.reverse_parking import remembered_blind_points
+    laser = (-0.01, 0.0, math.pi)
+    # Beam 2 looks ahead (laser turned 180 deg); beam 1 to the right, far.
+    scan = SimpleNamespace(ranges=[math.inf, 1.0, 0.40, math.inf], angle_min=0.0,
+                           angle_increment=math.pi / 2, range_min=0.28, range_max=12.0)
+    found = remembered_blind_points([((0.0, 0.0, 0.0), scan)], (0.20, 0.0, 0.0), laser, 0.28)
+    assert len(found) == 1 and found[0] == pytest.approx((0.19, 0.0))
+    # Still visible from where the keyframe was taken: the live scan decides.
+    assert remembered_blind_points([((0.0, 0.0, 0.0), scan)], (0.0, 0.0, 0.0), laser, 0.28) == []
+
+
+def test_escape_snapshot_needs_a_fresh_scan_and_carries_the_blind_memory(monkeypatch):
+    node = route()
+    node.parking_tf = SimpleNamespace(lookup_transform=lambda *a, **k: SimpleNamespace(
+        transform=SimpleNamespace(translation=SimpleNamespace(x=-0.01, y=0.0),
+                                  rotation=SimpleNamespace(x=0.0, y=0.0, z=1.0, w=0.0))))
+    node._footprint_outline = Mock(return_value=STEPPED)
+    node.last_scan = SimpleNamespace(header=SimpleNamespace(frame_id='laser_link'),
+                                     range_min=0.28)
+    node.samples = {'scan': time.monotonic() - 2.0}
+    assert node._scan_in_base() is None                     # stale scan: no decision
+    node.samples = {'scan': time.monotonic()}
+    node._remembered_blind_points = Mock(return_value=[(0.15, 0.0)])
+    scan, laser, outline, memory = node._scan_in_base()
+    assert laser == pytest.approx((-0.01, 0.0, math.pi)) and memory == [(0.15, 0.0)]
+    node._footprint_outline = Mock(side_effect=ValueError('malformed footprint'))
+    assert node._scan_in_base() is None
+
+
+def test_scan_memory_keeps_one_scan_per_5_cm_or_10_deg():
+    from collections import deque
+    node = route()
+    node.scan_memory = deque(maxlen=restaurant_service.SCAN_MEMORY_KEYFRAMES)
+    for pose in ((0.0, 0.0, 0.0), (0.03, 0.0, 0.0), (0.05, 0.0, 0.0), (0.05, 0.0, 0.1),
+                 (0.05, 0.0, 0.2)):
+        node.odom_last_pose = pose
+        node._remember_scan('scan')
+    assert [frame[1] for frame in node.scan_memory] == [
+        (0.0, 0.0, 0.0), (0.05, 0.0, 0.0), (0.05, 0.0, 0.2)]
+
+
+def test_something_in_the_front_blind_range_backs_off_instead_of_driving_forward():
+    """Review 2026-10-06: the forward escape could not see 0.08-0.20 m ahead of the front."""
+    node = route()
+    rear_leg = [(-0.20, -0.32)]                              # holds the turn circle
+    node._scan_in_base = Mock(return_value=(
+        _points_scan(rear_leg), (0.0, 0.0, 0.0), STEPPED, [(0.15, 0.0)]))
+    node._drive_straight = Mock(return_value=True)
+    assert node._escape_blocked() is True
+    assert node._drive_straight.call_args.args == (
+        -restaurant_service.PATH_BLOCKED_BACKOFF_M, 'path_blocked_back_off')
+    node._scan_in_base = Mock(return_value=(
+        _points_scan(rear_leg), (0.0, 0.0, 0.0), STEPPED, []))
+    node._drive_straight = Mock(return_value=True)
+    assert node._escape_blocked() is True
+    assert node._drive_straight.call_args.args[1] == 'path_blocked_escape_forward'
+
+
+def test_direct_motion_stops_on_a_failed_input(monkeypatch):
+    node = route()
+    published = []
+    node.escape_velocity = SimpleNamespace(publish=lambda m: published.append(
+        (m.linear.x, m.angular.z)))
+    poses = iter([(0.001 * k, 0.0) for k in range(1000)])
+
+    def lookup(*_args, **_kwargs):
+        x_m, y_m = next(poses)
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x_m, y=y_m),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    node._guard_failure = lambda *_: 'scan stale: age=1.000s limit=0.500s'
+    travelled = node._drive_zero_turn(0.10)
+    assert travelled < 0.01
+    assert published[-5:] == [(0.0, 0.0)] * 5
+    stopped = [e for e in _events(node) if e['event'] == 'straight_drive_stopped']
+    assert stopped and stopped[0]['reason'].startswith('scan stale')
+
+
+def test_in_place_trim_counts_a_turn_across_pi(monkeypatch):
+    node = route()
+    node.escape_velocity = SimpleNamespace(publish=lambda m: None)
+    yaws = iter([math.pi - 0.05 + 0.002 * k for k in range(400)])
+
+    def lookup(*_args, **_kwargs):
+        yaw = next(yaws)
+        return SimpleNamespace(transform=SimpleNamespace(rotation=SimpleNamespace(
+            x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))))
+
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    turned = node._rotate_in_place(0.20)
+    assert 0.18 <= turned <= 0.21
+
+
+def test_collision_monitor_is_confirmed_on_once_per_executor():
+    node = route()
+    node._set_collision_monitor = Mock(return_value=False)
+    with pytest.raises(RuntimeError, match='Collision Monitor'):
+        node._confirm_collision_monitor_on()
+    node._set_collision_monitor = Mock(return_value=True)
+    node._confirm_collision_monitor_on()
+    node._confirm_collision_monitor_on()
+    node._set_collision_monitor.assert_called_once_with(True)
+
+
+def test_collision_monitor_toggle_drops_a_request_that_timed_out(monkeypatch):
+    node = route()
+    future = SimpleNamespace(done=lambda: False)
+    client = Mock()
+    client.wait_for_service.return_value = True
+    client.call_async.return_value = future
+    node.monitor_toggle = client
+    clock = iter(range(0, 100))
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    assert node._set_collision_monitor(True) is False
+    client.remove_pending_request.assert_called_once_with(future)
+
+
+def test_a_touching_rear_drives_off_it_forward_when_the_way_back_pushes_it():
+    """11:09 and review 2026-10-06: the rear corner on a desk leg; reversing pushes it."""
+    node = route()
+    node._scan_in_base = Mock(return_value=SNAPSHOT)
+    node._blocked_ahead = Mock(return_value=False)
+    node._footprint_intrusion = Mock(return_value='rear')
+    node._retrace = Mock(return_value=None)                 # refused before moving
+    node._rear_swing_need = Mock(return_value=0.15)
+    node._drive_straight = Mock(return_value=True)
+    assert node._escape_blocked() is True
+    assert node._drive_straight.call_args.args == (
+        pytest.approx(0.18), 'path_blocked_escape_forward')
+    assert node._drive_straight.call_args.kwargs['pause_monitor'] is True
+    for intrusion, ahead, retraced in (('rear', True, None), ('front', False, None),
+                                       ('rear', False, False)):
+        node = route()
+        node._scan_in_base = Mock(return_value=SNAPSHOT)
+        node._blocked_ahead = Mock(return_value=ahead)
+        node._footprint_intrusion = Mock(return_value=intrusion)
+        node._retrace = Mock(return_value=retraced)
+        node._drive_straight = Mock()
+        assert node._escape_blocked() is False
+        node._drive_straight.assert_not_called()
+
+
+def test_remembered_returns_never_pause_the_monitor():
+    """The monitor sees the live scan only; a stale remembered return cannot hold it."""
+    node = route()
+    found = (_points_scan([]), (0.0, 0.0, 0.0), STEPPED, [(-0.25, 0.0)] * 3)
+    assert node._footprint_intrusion(found=found) is None
+    assert node._blocked_behind(0.10, found=found) is True  # but it still blocks motion
+
+
+def test_paused_straight_drive_switches_the_monitor_back_on():
+    node = route()
+    switched = []
+    node._set_collision_monitor = Mock(side_effect=lambda on: switched.append(on) or True)
+    node._drive_zero_turn = Mock(return_value=0.18)
+    node.engage_emergency_stop = Mock()
+    found = (_points_scan([]), (0.0, 0.0, 0.0), STEPPED, [])
+    assert node._drive_straight(0.18, 'path_blocked_escape_forward', pause_monitor=True,
+                                found=found)
+    assert switched == [False, True]
+    assert callable(node._drive_zero_turn.call_args.kwargs['watch'])
+    node._set_collision_monitor = Mock(side_effect=[True, False, False, False])
+    assert not node._drive_straight(0.18, 'path_blocked_escape_forward', pause_monitor=True,
+                                    found=found)
+    node.engage_emergency_stop.assert_called_once()
+    assert node.stop_requested is True
+    node = route()
+    node._set_collision_monitor = Mock()
+    assert not node._drive_straight(0.18, 'path_blocked_escape_forward', pause_monitor=True)
+    node._set_collision_monitor.assert_not_called()          # nothing to watch the way with
+
+
+def test_paused_straight_drive_stops_when_someone_steps_in_front(monkeypatch):
+    """Review 2026-10-06: with the monitor paused, every fresh scan watches the way."""
+    node = route()
+    node.escape_velocity = SimpleNamespace(publish=lambda m: None)
+    poses = iter([(0.001 * k, 0.0) for k in range(1000)])
+
+    def lookup(*_args, **_kwargs):
+        x_m, y_m = next(poses)
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x_m, y=y_m),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    found = (_points_scan([]), (0.0, 0.0, 0.0), STEPPED, [])
+    watch = node._band_watch(found, 0.18)
+    node.samples = {'scan': time.monotonic()}
+    node.last_scan = _points_scan([])
+    assert watch() is None
+    node.last_scan = _points_scan([(0.15, 0.0)])            # a leg 6.5 cm ahead of the front
+    travelled = node._drive_zero_turn(0.18, watch=watch)
+    assert travelled < 0.01
+    stopped = [e for e in _events(node) if e['event'] == 'straight_drive_stopped']
+    assert stopped[-1]['reason'] == 'way not clear while the monitor is paused'
+    node.samples = {'scan': time.monotonic() - 1.0}
+    assert watch() == 'no fresh scan while the monitor is paused'
+
+
+def test_a_trim_just_over_the_minimum_still_turns(monkeypatch):
+    """Review 2026-10-06: an early stop larger than a 0.32 deg trim skipped it."""
+    node = route()
+    published = []
+    node.escape_velocity = SimpleNamespace(publish=lambda m: published.append(m.angular.z))
+    yaws = iter([0.0002 * k for k in range(400)])
+
+    def lookup(*_args, **_kwargs):
+        yaw = next(yaws)
+        return SimpleNamespace(transform=SimpleNamespace(rotation=SimpleNamespace(
+            x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))))
+
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    turned = node._rotate_in_place(math.radians(0.32))
+    assert restaurant_service.TRIM_ANGULAR_RADPS in published
+    assert turned >= math.radians(0.16)
