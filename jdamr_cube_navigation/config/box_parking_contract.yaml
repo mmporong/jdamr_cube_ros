@@ -21,7 +21,9 @@ rotate_angular_radps: 0.2
 # Front gap of the final box approach (operator, 2026-10-06: 1-2 cm, "relax the
 # safety distance"; 5 cm until then). The LiDAR cannot see within 0.205 m of the
 # front, so no Collision Monitor zone sees the face in the last part; the gap rests on
-# the face observed before the approach and odom. Not externally measured.
-target_front_gap_m: 0.015
+# the face observed before the approach and odom. Operator tape at the water station
+# centre: 2.0 cm at a 1.5 cm target (estimate 1.85 cm), 1.5 cm at a 1.0 cm target
+# (estimate 1.33 cm); a part of the front protrudes a little, so 2 cm (operator).
+target_front_gap_m: 0.02
 target_basis: USER_ACCEPTED_TARGET
 physical_validation: NOT_PHYSICALLY_VALIDATED

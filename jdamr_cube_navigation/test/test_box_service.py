@@ -1402,14 +1402,15 @@ def _final_judged(mission, final_pose, frame_width_m=0.45):
     return mission.emit.call_args
 
 
-def test_box_contract_judges_the_nearest_front_corner_at_1_5_cm(mission):
-    """Face at x 1.0 facing -x; the 1.5 cm target is met at the nearest frame corner."""
+def test_box_contract_judges_the_nearest_front_corner_at_its_target(mission):
+    """Face at x 1.0 facing -x; the contract target is met at the nearest frame corner."""
     from jdamr_cube_navigation.parking import load_parking_contract
     mission.parking_contract = load_parking_contract(BOX_CONTRACT)
-    finished = _final_judged(mission, (1.0 - 0.065 - 0.015, 0.0, 0.0))
+    gap = mission.parking_contract['target_front_gap_m']
+    finished = _final_judged(mission, (1.0 - 0.065 - gap, 0.0, 0.0))
     assert finished.args == ('box_approach_finished',)
-    assert finished.kwargs['desired_front_gap_m'] == pytest.approx(0.015)
-    assert finished.kwargs['estimated_nearest_front_gap_m'] == pytest.approx(0.015)
+    assert finished.kwargs['desired_front_gap_m'] == pytest.approx(gap)
+    assert finished.kwargs['estimated_nearest_front_gap_m'] == pytest.approx(gap)
     # The old 5.5 cm stop is now far from the target.
     assert _final_judged(mission, (1.0 - 0.065 - 0.055, 0.0, 0.0)).args == (
         'box_gap_not_confirmed',)
@@ -1422,7 +1423,7 @@ def test_box_contract_judges_the_nearest_front_corner_at_1_5_cm(mission):
         0.006 - 0.225 * math.sin(tilt))
     # 2.69 deg with the nearest corner at the target is a park.
     tilt = math.radians(2.69)
-    corner_x = 1.0 - 0.015 - box_service.front_lead_m(0.065, 0.225, tilt)
+    corner_x = 1.0 - gap - box_service.front_lead_m(0.065, 0.225, tilt)
     assert _final_judged(mission, (corner_x, 0.0, tilt)).args == ('box_approach_finished',)
 
 

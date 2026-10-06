@@ -2964,6 +2964,5 @@ def test_transit_variants_pick_their_trees(monkeypatch, variant, planners, contr
     for tree in (node.through_behavior_tree, node.staging_behavior_tree):
         root = ET.parse(tree).getroot()
         used = [e.get('planner_id') for e in root.iter() if e.get('planner_id')]
-        assert sorted(set(used)) == sorted(planners) or (
-            'staging' in tree and variant == 'navfn-rpp')
+        assert sorted(set(used)) == sorted(planners)
         assert [e.get('controller_id') for e in root.iter('FollowPath')] == [controller]

@@ -1292,10 +1292,12 @@ def test_transit_and_staging_default_to_lattice_and_mppi_with_rpp_copies():
         assert lattice[:start] in body(f'{name}_navfn_mppi.xml')
     for name in ('navigate_through_poses_transit_rpp.xml', 'navigate_to_pose_staging_rpp.xml'):
         assert 'controller_id="FollowPath"' in (trees / name).read_text()
-    # The staging copy differs only in the controller and the header comments.
+    # The RPP staging copy plans with NavFn only (2026-10-06 16:21: Lattice looped past
+    # the dock) and differs from the NavFn + MPPI one only in the controller.
+    assert planners('navigate_to_pose_staging_rpp.xml') == ['GridBased']
     rpp = body('navigate_to_pose_staging_rpp.xml')
     assert rpp.replace('controller_id="FollowPath"', 'controller_id="MPPI"') == body(
-        'navigate_to_pose_staging.xml')
+        'navigate_to_pose_staging_navfn_mppi.xml')
 
 
 def _straight_zone_rejected(tmp_path, mutate, match):
