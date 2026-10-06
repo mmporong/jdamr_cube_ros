@@ -223,9 +223,22 @@ def test_uniform_offset_beyond_nearer_face_bound_is_rejected():
         witness(ranges, robot=robot)
 
 
-def test_line_normal_more_than_five_degrees_from_depth_is_rejected():
+def test_a_turned_lidar_line_keeps_the_depth_direction():
+    """2026-10-06: the short LiDAR line turned 4-5 deg; the depth plane was right."""
     robot = {'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0}
-    angle = math.radians(7.0)
+    angle = math.radians(4.5)
+    lidar_normal = (-math.cos(angle), -math.sin(angle))
+    result = witness(scan_for_face((0.5, 0.0), lidar_normal, robot), robot=robot)
+    assert result['outward_normal_map_xy'] == pytest.approx((-1.0, 0.0))
+    assert result['normal_source'] == 'depth'
+    assert result['lidar_normal_map_xy'] == pytest.approx(lidar_normal, abs=1e-6)
+    assert result['fused_face_center_map_xy_m'] == pytest.approx((0.5, 0.0), abs=1e-3)
+    assert math.degrees(result['normal_yaw_difference_rad']) == pytest.approx(4.5, abs=1e-3)
+
+
+def test_line_normal_more_than_eight_degrees_from_depth_is_rejected():
+    robot = {'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0}
+    angle = math.radians(9.0)
     lidar_normal = (-math.cos(angle), -math.sin(angle))
     ranges = scan_for_face((0.5, 0.0), lidar_normal, robot)
     with pytest.raises(ValueError, match='normals disagree'):

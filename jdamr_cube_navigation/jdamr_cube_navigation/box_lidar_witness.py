@@ -11,7 +11,14 @@ MAX_CANDIDATE_PLANE_DISTANCE_M = 0.04
 MINIMUM_SUPPORT = 5
 MINIMUM_TANGENT_SPREAD_M = 0.08
 MAXIMUM_RESIDUAL_RMS_M = 0.015
-MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD = math.radians(5.0)
+# The face direction is the depth plane's; the LiDAR line only has to agree. Over 36
+# runs (10-01 to 10-06) the LiDAR line turned the same way from the depth normal,
+# median 2 deg and 3.9-5.4 deg from 0.45 m: a few cm of range bias across a 0.31 m
+# face (1 cm is 1.8 deg) while the long dock walls agreed. At the water station
+# (2026-10-06 16:00) the operator saw the base's left wheel ahead as the depth plane
+# had it, against the LiDAR line, with the centre gap 2.5 cm measured (2.69 cm
+# estimated). The 5 deg bound rejected 5.2-5.95 deg observations of the same box.
+MAXIMUM_NORMAL_YAW_DIFFERENCE_RAD = math.radians(8.0)
 MAXIMUM_MEDIAN_NORMAL_OFFSET_M = 0.02
 # Beyond that agreement the two sensors see the face at different heights
 # (table_02, 2026-09-30: a steady 2.5 cm with a clean 45-point LiDAR line).
@@ -200,8 +207,9 @@ def witness_box_face_with_lidar(
     if abs(median_normal_offset_m) > MAXIMUM_NEARER_FACE_OFFSET_M:
         raise ValueError('LiDAR and depth face distances disagree')
 
-    # The fitted normal points out of the face, toward the robot.
-    face_to_plane_m = float(fitted_normal @ (center - face))
+    # Distance from the LiDAR line, along the depth normal (which points out of the
+    # face, toward the robot); the direction stays the depth plane's.
+    face_to_plane_m = median_normal_offset_m
     face_basis = 'lidar_plane'
     if abs(median_normal_offset_m) > MAXIMUM_MEDIAN_NORMAL_OFFSET_M:
         if face_to_plane_m < 0.0:
@@ -209,11 +217,13 @@ def witness_box_face_with_lidar(
             face_basis = 'depth_face_nearer'
         else:
             face_basis = 'lidar_plane_nearer'
-    fused_face = face + fitted_normal * face_to_plane_m
+    fused_face = face + depth_normal * face_to_plane_m
     return {
         'fused_face_center_map_xy_m': tuple(float(value) for value in fused_face),
         'outward_normal_map_xy': tuple(
-            float(value) for value in fitted_normal),
+            float(value) for value in depth_normal),
+        'normal_source': 'depth',
+        'lidar_normal_map_xy': tuple(float(value) for value in fitted_normal),
         'residual_rms_m': residual_rms_m,
         'distance_difference_m': median_normal_offset_m,
         'face_basis': face_basis,
