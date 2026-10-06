@@ -851,15 +851,21 @@ class ServiceRoute(CorridorRoute):
     def use_transit(self, variant):
         """Select the transit and staging trees by variant (TRANSIT_VARIANTS)."""
         self._set_transit_trees(TRANSIT_VARIANTS[variant])
+        # MPPI drives to the pre-point; RPP takes the straight leg to the observation
+        # pose (see _execute_through_once).
+        self.final_leg_behavior_tree = (
+            str(Path(get_package_share_directory('jdamr_cube_navigation'))
+                / 'behavior_trees/navigate_through_poses_transit_rpp.xml')
+            if variant.endswith('mppi') else None)
 
     def use_rpp_transit(self):
         """
         Follow the transit and dock staging legs with RPP (DEFAULT_TRANSIT).
 
-        Transit plans with NavFn, staging with Lattice then NavFn. Box approach,
-        alignment and the dock leg keep their controllers.
+        Transit and staging plan with NavFn. Box approach, alignment and the dock
+        leg keep their controllers.
         """
-        self._set_transit_trees('_rpp')
+        self.use_transit('navfn-rpp')
 
     def _set_transit_trees(self, suffix):
         package = Path(get_package_share_directory('jdamr_cube_navigation'))
@@ -1505,8 +1511,23 @@ class ServiceRoute(CorridorRoute):
         waypoint's yaw before the next leg began (2026-10-01). The waypoints
         now only shape one path; the last one keeps its yaw. A retry after an
         input gap resumes from the first waypoint not yet passed.
+
+        On the MPPI trees the last leg (pre-point to observation pose) is a
+        goal of its own on RPP (final_leg_behavior_tree): MPPI turns its path
+        critics off within 0.5 m straight-line distance of the final goal, so it
+        skipped the pre-point 0.42 m from the observation pose and reversed in
+        (2026-10-06). MPPI now ends at the pre-point, facing along the leg.
         """
         first, last = self._resume_waypoint_index, len(self.waypoints) - 1
+        final_leg = getattr(self, 'final_leg_behavior_tree', None)
+        if final_leg is not None and last > first:
+            if not self._send_through(first, last - 1, self.through_behavior_tree):
+                return False
+            return self._send_through(last, last, final_leg)
+        return self._send_through(first, last, self.through_behavior_tree)
+
+    def _send_through(self, first, last, behavior_tree):
+        """Send waypoints first..last as one NavigateThroughPoses goal on behavior_tree."""
         if not self.navigate_through.wait_for_server(timeout_sec=2.0):
             return False
         if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
@@ -1519,7 +1540,7 @@ class ServiceRoute(CorridorRoute):
         goal = NavigateThroughPoses.Goal()
         goal.poses = [self._pose(index, self.waypoints[index])
                       for index in range(first, last + 1)]
-        goal.behavior_tree = self.through_behavior_tree
+        goal.behavior_tree = behavior_tree
 
         def passed(message):
             left = int(message.feedback.number_of_poses_remaining)
@@ -1539,7 +1560,7 @@ class ServiceRoute(CorridorRoute):
                 return False
             self.active_handle = handle
             self._route_event('accepted', last, handle, through=[
-                waypoint['id'] for waypoint in self.waypoints[first:]])
+                waypoint['id'] for waypoint in self.waypoints[first:last + 1]])
             self.navigation_result = handle.get_result_async()
             while not self.navigation_result.done():
                 spin_node(self, timeout_sec=0.05)

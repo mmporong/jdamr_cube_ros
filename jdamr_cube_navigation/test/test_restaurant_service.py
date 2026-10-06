@@ -2933,6 +2933,9 @@ def test_default_transit_follows_navfn_paths_with_rpp(monkeypatch):
     node.use_transit(restaurant_service.DEFAULT_TRANSIT)
     assert node.through_behavior_tree.endswith('navigate_through_poses_transit_rpp.xml')
     assert node.staging_behavior_tree.endswith('navigate_to_pose_staging_rpp.xml')
+    assert node.final_leg_behavior_tree is None
+    node.use_transit('navfn-mppi')
+    assert node.final_leg_behavior_tree.endswith('navigate_through_poses_transit_rpp.xml')
 
 
 @pytest.mark.parametrize('variant, planners, controller', [

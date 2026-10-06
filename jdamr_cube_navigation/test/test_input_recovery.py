@@ -2502,6 +2502,30 @@ def test_transit_waypoints_go_as_one_through_poses_goal(monkeypatch, tmp_path):
     assert accepted['through'] == ['exit', 'pre', 'observation']
 
 
+def test_mppi_transit_ends_at_the_pre_point_and_rpp_takes_the_last_leg(monkeypatch, tmp_path):
+    """2026-10-06: MPPI skipped the pre-point 0.42 m from the observation pose."""
+    node, world = _service_world(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT, home=HOME,
+                                 pose=(0.0, 0.0, 0.0), covariance=E1_COVARIANCE)
+    node.navigate_through = _ActionPeer(world, 'NavigateThroughPoses')
+    node.through_behavior_tree = '/transit_navfn_mppi.xml'
+    node.final_leg_behavior_tree = '/transit_rpp.xml'
+    waypoints = [{'id': 'exit', 'x': 0.5, 'y': 0.0}, {'id': 'pre', 'x': 1.5, 'y': 0.0},
+                 {'id': 'observation', 'x': 1.0, 'y': 0.0, 'yaw': math.pi}]
+    node.config, node.waypoints = {'frame_id': 'map', 'waypoints': waypoints}, waypoints
+    node._resume_waypoint_index = 0
+    assert node.execute(final_parking=False) is True
+    goals = [goal for kind, goal in world.motions if kind == 'NavigateThroughPoses']
+    assert [[pose.pose.position.x for pose in goal.poses] for goal in goals] == [
+        [0.5, 1.5], [1.0]]
+    assert [goal.behavior_tree for goal in goals] == [
+        '/transit_navfn_mppi.xml', '/transit_rpp.xml']
+    # MPPI arrives at the pre-point facing along the last leg (toward the box).
+    pre = goals[0].poses[-1].pose.orientation
+    assert 2.0 * math.atan2(pre.z, pre.w) == pytest.approx(math.pi)
+    assert [e['through'] for e in _events(node, 'accepted')][-2:] == [
+        ['exit', 'pre'], ['observation']]
+
+
 def test_staging_leaves_a_small_residual_to_the_curved_reverse(monkeypatch, tmp_path):
     """2026-10-01: a 3.9 deg correction Spin overshot back by 7.1 deg."""
     node, _world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)

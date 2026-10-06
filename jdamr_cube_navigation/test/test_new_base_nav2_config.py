@@ -1318,6 +1318,14 @@ def test_transit_drops_a_passed_waypoint_on_every_tick(name):
     assert len(list(root.iter('RemovePassedGoals'))) == 1
 
 
+def test_mppi_drives_forward_and_turns_to_the_goal_heading_only_at_the_end():
+    """2026-10-06 bring-up: reverse backed it into the box; heading first stuck it 0.2 m off."""
+    document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
+    mppi = document['controller_server']['ros__parameters']['MPPI']
+    assert mppi['vx_min'] == 0.0
+    assert mppi['GoalAngleCritic']['threshold_to_consider'] == pytest.approx(0.1)
+
+
 def _straight_zone_rejected(tmp_path, mutate, match):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     mutate(document['collision_monitor']['ros__parameters']['StopZone'])

@@ -150,10 +150,11 @@ controller_server:
       vy_std: 0.0
       wz_std: 0.3
       vx_max: 0.12
-      # Reverse up to the parking reverse speed the smoother already allows (operator
-      # 2026-10-06: "allow reverse"). Without it MPPI stopped 0.12 m past and 0.21 m
-      # beside the water observation pose with the goal behind it (11:07).
-      vx_min: -0.08
+      # Forward only again. With -0.08 (operator 2026-10-06 11:21) MPPI turned 50 deg in
+      # the dock and backed 50 s into the water box (14:11); the stop past the observation
+      # pose that reverse was for (11:07) is gone now that MPPI ends at the pre-point and
+      # RPP takes the leg to the observation pose (final_leg_behavior_tree).
+      vx_min: 0.0
       vy_max: 0.0
       wz_max: 0.3
       ax_max: 0.5
@@ -199,7 +200,11 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 3.0
-        threshold_to_consider: 0.5
+        # Heading only in the last 0.1 m: from 0.5 m it turned the base onto the goal
+        # heading first and then could not close a 0.2 m sideways offset inside a
+        # 3 s (0.36 m) horizon (2026-10-06 S1, S2: 105 at 0.15-0.21 m). At 0.1 the
+        # same 0.17 m offset ended 2 cm off (S3).
+        threshold_to_consider: 0.1
       PathAlignCritic:
         enabled: true
         cost_power: 1
