@@ -103,6 +103,8 @@ def _clip_half_plane(polygon, keep):
 
 # Operator request 2026-09-30: transit +50 % and less slowdown.
 NEW_BASE_MAX_FORWARD_MPS = 0.12
+# Reverse at most at the parking reverse speed (parking_contract desired_linear_mps).
+NEW_BASE_MAX_REVERSE_MPS = 0.08
 # In-place turns stop on the footprint swept this far in the turn direction; it
 # covers the stop from the smoother's turn-rate cap (operator 2026-10-02).
 ROTATION_SWEEP_DEG = 6.0
@@ -514,13 +516,14 @@ def validate_new_base_params(params, geometry, precision_parking=False):
                     'new-base controller speed exceeds uncalibrated limit')
             continue
         if plugin.get('plugin') == mppi_controller:
-            # MPPI must score rollouts with the measured footprint, keep the
-            # uncalibrated speed limit and never reverse in transit (2026-10-02).
+            # MPPI must score rollouts with the measured footprint and keep the
+            # uncalibrated speed limits; it may reverse at most as fast as reverse
+            # parking (operator 2026-10-06).
             top, bottom = plugin.get('vx_max'), plugin.get('vx_min')
             cost = plugin.get('CostCritic') or {}
             if (any(type(v) not in (int, float) or not math.isfinite(v) for v in (top, bottom))
                     or not 0.0 < top <= NEW_BASE_MAX_FORWARD_MPS
-                    or bottom != 0.0
+                    or not -NEW_BASE_MAX_REVERSE_MPS <= bottom <= 0.0
                     or plugin.get('motion_model') != 'DiffDrive'
                     or type(plugin.get('wz_max')) not in (int, float)
                     or not 0.0 < plugin['wz_max'] <= ROTATION_SWEEP_MAX_RADPS

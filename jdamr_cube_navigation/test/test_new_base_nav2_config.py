@@ -1373,9 +1373,9 @@ def test_a_narrowed_front_band_is_rejected(tmp_path):
 
 @pytest.mark.parametrize('mutate, expected', [
     (lambda c: c['controller_plugins'].remove('MPPI'), 'must include MPPI'),
-    (lambda c: c['MPPI'].update(vx_min=-0.05), 'MPPI controller violates'),
+    (lambda c: c['MPPI'].update(vx_min=-0.10), 'MPPI controller violates'),
 ])
-def test_transit_controller_must_be_registered_and_forward_only(tmp_path, mutate, expected):
+def test_transit_controller_must_be_registered_and_reverse_bounded(tmp_path, mutate, expected):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     mutate(document['controller_server']['ros__parameters'])
     invalid = tmp_path / 'mppi.yaml'

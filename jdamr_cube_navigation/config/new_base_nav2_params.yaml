@@ -150,7 +150,10 @@ controller_server:
       vy_std: 0.0
       wz_std: 0.3
       vx_max: 0.12
-      vx_min: 0.0
+      # Reverse up to the parking reverse speed the smoother already allows (operator
+      # 2026-10-06: "allow reverse"). Without it MPPI stopped 0.12 m past and 0.21 m
+      # beside the water observation pose with the goal behind it (11:07).
+      vx_min: -0.08
       vy_max: 0.0
       wz_max: 0.3
       ax_max: 0.5
