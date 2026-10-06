@@ -16,7 +16,8 @@ from jdamr_cube_navigation.box_docking_target import (
     _validated_mount, compute_box_docking_target, MINIMUM_DISTANCE_M,
 )
 from jdamr_cube_navigation.box_lidar_witness import witness_box_face_with_lidar
-from jdamr_cube_navigation.corridor_route import load_route, TRANSIT_PLAN_END_TOLERANCE_M
+from jdamr_cube_navigation.corridor_route import (
+    load_route, spin_node, TRANSIT_PLAN_END_TOLERANCE_M)
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
 from jdamr_cube_navigation.parking import (
     DEFAULT_FRONT_GAP_M, load_parking_contract, MAXIMUM_CONTRACT_VALUES,
@@ -239,7 +240,7 @@ class BoxServiceRoute(ServiceRoute):
                 self.emit('box_camera_ready',
                           waited_s=round(time.monotonic() - requested_s, 1))
                 return True
-            rclpy.spin_once(self, timeout_sec=0.1)
+            spin_node(self, timeout_sec=0.1)
         self.emit('box_camera_ready', ready=False, timeout_s=timeout_s)
         return False
 
@@ -549,7 +550,7 @@ class BoxServiceRoute(ServiceRoute):
             return latency_limited
 
         while not self.stop_requested and time.monotonic() < deadline_s:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
             if not self._navigation_ready(require_fresh_amcl=False):
                 reason = self._guard_failure(False)
                 if (not input_recovered and not self.stop_requested

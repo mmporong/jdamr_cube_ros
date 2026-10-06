@@ -252,12 +252,45 @@ def _quaternion_yaw(rotation):
         1.0 - 2.0 * (rotation.y ** 2 + rotation.z ** 2))
 
 
+def spin_node(node, timeout_sec):
+    """
+    Run the callbacks of node that are ready within timeout_sec.
+
+    A route node spins on its own events executor (rclpy.experimental). rclpy's
+    wait-set executor rebuilt a set of about 80 entities for each of the ~120
+    messages a second a route receives (odom 49 Hz, tf 39 Hz, cmd_vel 20 Hz, scan
+    10 Hz): box_service took 78 % of a Pi 4 core during the 2026-10-06 14:11 cycle.
+    Replaying that run's topics on the PC, the same callbacks took 3.5 % of a core
+    on the events executor instead of 17.3 % (with or without re-adding the node
+    on each spin). Nodes without one (tests, JDAMR_EXECUTOR=waitset) spin as before.
+    """
+    executor = getattr(node, 'events_executor', None)
+    if executor is None:
+        rclpy.spin_once(node, timeout_sec=timeout_sec)
+    else:
+        executor.spin_once(timeout_sec=timeout_sec)
+
+
+def _events_executor(node):
+    """Return node's own events executor, or None for the wait-set executor."""
+    if os.environ.get('JDAMR_EXECUTOR', 'events') == 'waitset':
+        return None
+    try:
+        from rclpy.experimental import EventsExecutor
+    except ImportError:
+        return None
+    executor = EventsExecutor(context=node.context)
+    executor.add_node(node)
+    return executor
+
+
 class CorridorRoute(Node):
     """Validate every leg, then send one explicit-BT goal at a time."""
 
     def __init__(self, config, start_index=0, navigation_profile='corridor',
                  parking_contract=None):
         super().__init__('jdamr_corridor_route')
+        self.events_executor = _events_executor(self)
         self.config = config
         self.start_index = start_index
         self.waypoints = config['waypoints'][start_index:]
@@ -376,6 +409,15 @@ class CorridorRoute(Node):
             f'profile={navigation_profile} source=navigation_profile '
             f'path={self.behavior_tree}')
         self._last_feedback = 0.0
+
+    def destroy_node(self):
+        """Release the node's events executor before the node."""
+        executor = getattr(self, 'events_executor', None)
+        if executor is not None:
+            self.events_executor = None
+            executor.remove_node(self)
+            executor.shutdown()
+        return super().destroy_node()
 
     def _route_event(self, event, route_index, handle, **fields):
         """Emit one stable JSON line for goal lifecycle correlation."""
@@ -616,7 +658,7 @@ class CorridorRoute(Node):
         started_s = time.monotonic()
         self.get_logger().warning(f'paused for input recovery: {reason}')
         while not self.stop_requested and time.monotonic() - started_s < timeout_s:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
             if self.stop_requested:
                 return False
             failure = self._guard_failure(False)
@@ -688,7 +730,7 @@ class CorridorRoute(Node):
         probed_s = started_s
         clear_probes = 0
         while time.monotonic() - started_s < PATH_BLOCKED_WAIT_S:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
             if self.stop_requested:
                 return False
             failure = self._guard_failure(False)
@@ -754,7 +796,7 @@ class CorridorRoute(Node):
         deadline = time.monotonic() + timeout
         protection_failure = None
         while time.monotonic() < deadline and not self.stop_requested:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            spin_node(self, timeout_sec=0.1)
             protection_failure = (
                 self._revisit_protection_ready()
                 if self.navigation_profile == 'new_base_revisit_candidate'
@@ -809,14 +851,14 @@ class CorridorRoute(Node):
         goal.use_start = False
         future = self.compute.send_goal_async(goal)
         while not future.done() and not self.stop_requested:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            spin_node(self, timeout_sec=0.1)
         handle = future.result() if future.done() else None
         if handle is None or not handle.accepted:
             self.get_logger().error('route preflight goal rejected')
             return False
         result_future = handle.get_result_async()
         while not result_future.done() and not self.stop_requested:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            spin_node(self, timeout_sec=0.1)
         if not result_future.done():
             self._cancel(handle, 'operator interrupt during preflight')
             return False
@@ -886,7 +928,7 @@ class CorridorRoute(Node):
         deadline_s = time.monotonic() + 5.0
         while (not future.done() and not self.stop_requested and
                time.monotonic() < deadline_s):
-            rclpy.spin_once(self, timeout_sec=0.1)
+            spin_node(self, timeout_sec=0.1)
         if not future.done() or future.exception() is not None:
             self.get_logger().error('parking parameter query failed')
             return False
@@ -964,12 +1006,12 @@ class CorridorRoute(Node):
         result = {'confirmed': False, 'reason': 'NO_FRESH_OBSERVATION',
                   'physical_accuracy': 'NOT_MEASURED'}
         while time.monotonic() < deadline_s and not self.stop_requested:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
             # The route node also observes scan, TF, battery and AMCL. Drain
             # their ready callbacks so high-rate TF/odom cannot leave the
             # post-goal witness evaluating old queue entries.
             for _ in range(8):
-                rclpy.spin_once(self, timeout_sec=0.0)
+                spin_node(self, timeout_sec=0.0)
             if self.parking_motion_revision != motion_revision:
                 gate = ParkingHold(contract)
                 motion_revision = self.parking_motion_revision
@@ -1046,7 +1088,7 @@ class CorridorRoute(Node):
         future = handle.cancel_goal_async()
         deadline = time.monotonic() + 5.0
         while not future.done() and time.monotonic() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            spin_node(self, timeout_sec=0.1)
         return future.done()
 
     def execute(self):
@@ -1097,7 +1139,7 @@ class CorridorRoute(Node):
                 self._feedback(route_index, message),
             )
             while not future.done() and not self.stop_requested:
-                rclpy.spin_once(self, timeout_sec=0.1)
+                spin_node(self, timeout_sec=0.1)
             handle = future.result() if future.done() else None
             if handle is None or not handle.accepted:
                 self.get_logger().error('navigate goal rejected')
@@ -1105,7 +1147,7 @@ class CorridorRoute(Node):
             self._route_event('accepted', index, handle)
             result_future = handle.get_result_async()
             while not result_future.done():
-                rclpy.spin_once(self, timeout_sec=0.1)
+                spin_node(self, timeout_sec=0.1)
                 if self.stop_requested:
                     self._cancel(handle, 'operator interrupt', index)
                     return False
@@ -1115,7 +1157,7 @@ class CorridorRoute(Node):
                     if canceled and self._input_gap_recoverable(reason):
                         deadline_s = time.monotonic() + 5.0
                         while not result_future.done() and time.monotonic() < deadline_s:
-                            rclpy.spin_once(self, timeout_sec=0.05)
+                            spin_node(self, timeout_sec=0.05)
                         if (result_future.done() and result_future.exception() is None
                                 and result_future.result().status in (
                                     GoalStatus.STATUS_CANCELED, GoalStatus.STATUS_ABORTED,

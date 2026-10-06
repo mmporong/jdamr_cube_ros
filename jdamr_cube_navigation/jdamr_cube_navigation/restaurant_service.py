@@ -16,7 +16,8 @@ from action_msgs.srv import CancelGoal
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped, Twist
 from jdamr_cube_navigation.corridor_route import (
-    _quaternion_yaw, AMCL_QOS, CorridorRoute, ODOM_TRAIL_STEP_M, PATH_BLOCKED_NAV2_CODES)
+    _quaternion_yaw, AMCL_QOS, CorridorRoute, ODOM_TRAIL_STEP_M, PATH_BLOCKED_NAV2_CODES,
+    spin_node)
 from jdamr_cube_navigation.parking import (
     ENTRY_HEADING_TOLERANCE_DEG, load_parking_contract, MAXIMUM_CONTRACT_VALUES, ParkingHold,
     pose_errors,
@@ -527,7 +528,7 @@ class ServiceRoute(CorridorRoute):
     def _wait(self, future, timeout_s):
         deadline_s = time.monotonic() + timeout_s
         while not future.done() and not self.stop_requested and time.monotonic() < deadline_s:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
         if not future.done() or future.exception() is not None:
             raise RuntimeError('request interrupted, failed or timed out')
         return future.result()
@@ -597,7 +598,7 @@ class ServiceRoute(CorridorRoute):
                 return (
                     f'{topic} publisher must be {node_name} only; '
                     f'actual={actual}')
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
 
     def _read_parameters(self, remote_node, names):
         """Reuse one read-only endpoint; never cache the returned parameter values."""
@@ -638,7 +639,7 @@ class ServiceRoute(CorridorRoute):
         deadline_s = time.monotonic() + 30.0
         while (len(self.live_grids) != 2 and not self.map_mismatch and not self.stop_requested
                and time.monotonic() < deadline_s):
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
         missing = sorted(set(self.expected_grids) - set(self.live_grids))
         if missing and not self.map_mismatch:
             raise RuntimeError('live map data unavailable: ' + ', '.join(missing))
@@ -735,7 +736,7 @@ class ServiceRoute(CorridorRoute):
         if self.pending_goal is not None:
             deadline_s = time.monotonic() + 5.0
             while not self.pending_goal.done() and time.monotonic() < deadline_s:
-                rclpy.spin_once(self, timeout_sec=0.05)
+                spin_node(self, timeout_sec=0.05)
             if not self.pending_goal.done() or self.pending_goal.exception():
                 if self._cancel_navigation_uuid():
                     return True
@@ -753,7 +754,7 @@ class ServiceRoute(CorridorRoute):
             self._cancel(handle, 'service command interrupted')
             deadline_s = time.monotonic() + 5.0
             while not result_future.done() and time.monotonic() < deadline_s:
-                rclpy.spin_once(self, timeout_sec=0.05)
+                spin_node(self, timeout_sec=0.05)
         terminal = (result_future.done() and result_future.exception() is None
                     and result_future.result().status in (
                         GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_CANCELED,
@@ -799,7 +800,7 @@ class ServiceRoute(CorridorRoute):
                 request = action_type.Impl.GetResultService.Request()
                 request.goal_id = self.navigation_uuid
                 query_future = query_client.call_async(request)
-            rclpy.spin_once(self, timeout_sec=0.1)
+            spin_node(self, timeout_sec=0.1)
             if (query_future is not None and query_future.done()
                     and query_future.exception() is None):
                 status = query_future.result().status
@@ -1141,7 +1142,7 @@ class ServiceRoute(CorridorRoute):
         future = client.call_async(request)
         deadline_s = time.monotonic() + 2.0
         while not future.done() and time.monotonic() < deadline_s:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
         if not future.done():
             client.remove_pending_request(future)
             return False
@@ -1235,19 +1236,19 @@ class ServiceRoute(CorridorRoute):
                 if now_s - published_s >= 0.05:
                     publisher.publish(command)
                     published_s = time.monotonic()
-                rclpy.spin_once(self, timeout_sec=0.02)
+                spin_node(self, timeout_sec=0.02)
                 value = measure()
         finally:
             for _repeat in range(5):
                 publisher.publish(Twist())
-                rclpy.spin_once(self, timeout_sec=0.02)
+                spin_node(self, timeout_sec=0.02)
         stopped_s = time.monotonic()
         while time.monotonic() - stopped_s < DIRECT_SETTLE_S:
             motion = getattr(self, 'latest_motion', None)
             if (motion is not None and motion[0] > stopped_s
                     and abs(motion[1]) < 0.01 and abs(motion[2]) < 0.01):
                 break
-            rclpy.spin_once(self, timeout_sec=0.02)
+            spin_node(self, timeout_sec=0.02)
         return measure()
 
     def _rotate_in_place(self, delta_rad):
@@ -1490,7 +1491,7 @@ class ServiceRoute(CorridorRoute):
                 self._route_event('accepted', index, handle)
                 self.navigation_result = handle.get_result_async()
                 while not self.navigation_result.done():
-                    rclpy.spin_once(self, timeout_sec=0.05)
+                    spin_node(self, timeout_sec=0.05)
                     if (self.stop_requested
                             or not self._navigation_ready(require_fresh_amcl=False)):
                         reason = self._guard_failure(False) or 'operator_or_timeout'
@@ -1559,7 +1560,7 @@ class ServiceRoute(CorridorRoute):
                 waypoint['id'] for waypoint in self.waypoints[first:]])
             self.navigation_result = handle.get_result_async()
             while not self.navigation_result.done():
-                rclpy.spin_once(self, timeout_sec=0.05)
+                spin_node(self, timeout_sec=0.05)
                 if (self.stop_requested
                         or not self._navigation_ready(require_fresh_amcl=False)):
                     reason = self._guard_failure(False) or 'operator_or_timeout'
@@ -1668,7 +1669,7 @@ class ServiceRoute(CorridorRoute):
             self.emit(f'{event}_accepted', requested_yaw_rad=delta_yaw_rad,
                       goal_uuid=bytes(self.navigation_uuid.uuid).hex())
             while not self.navigation_result.done():
-                rclpy.spin_once(self, timeout_sec=0.05)
+                spin_node(self, timeout_sec=0.05)
                 if (self.stop_requested or time.monotonic() >= deadline_s
                         or not self._navigation_ready(require_fresh_amcl=False)):
                     guard_failure = self._guard_failure(False)
@@ -1719,7 +1720,7 @@ class ServiceRoute(CorridorRoute):
         deadline_s = time.monotonic() + timeout_s
         last_guard_failure = None
         while time.monotonic() < deadline_s and not self.stop_requested:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
             if self.parking_odom is None or self.amcl_covariance is None:
                 continue
             guard_failure = self._guard_failure(require_fresh_amcl=True)
@@ -1814,7 +1815,7 @@ class ServiceRoute(CorridorRoute):
         self.emit('box_wait_started', dwell_s=float(dwell_s), timeout_s=float(timeout_s))
         deadline_s = time.monotonic() + float(timeout_s)
         while not self.stop_requested and time.monotonic() < deadline_s:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            spin_node(self, timeout_sec=0.05)
             result = gate.observe(
                 time.monotonic(), self.box_status_received_s, self.box_status)
             if result['confirmed']:
@@ -2461,7 +2462,7 @@ class ServiceRoute(CorridorRoute):
             self._route_event('accepted', target_index, handle, motion=motion)
             self.navigation_result = handle.get_result_async()
             while not self.navigation_result.done():
-                rclpy.spin_once(self, timeout_sec=0.05)
+                spin_node(self, timeout_sec=0.05)
                 if (self.stop_requested
                         or not self._navigation_ready(require_fresh_amcl=False)):
                     reason = self._guard_failure(False) or 'operator_or_timeout'
