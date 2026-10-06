@@ -1,0 +1,40 @@
+<!--
+  NavFn plans and MPPI follows on the live costmap (box_service transit variant navfn-mppi,
+  2026-10-06 algorithm selection). Same tree as navigate_through_poses_transit.xml without the Lattice
+  step: on 10-06 Lattice's waypoint headings planned a 5 m loop back to a waypoint
+  MPPI had passed 0.31 m away, alternating with NavFn paths every replan. A waypoint
+  within 0.35 m counts as passed (0.25 m in the RPP tree, which tracks the path).
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="1" name="Transit">
+      <PipelineSequence>
+        <RateController hz="1.0">
+          <Fallback>
+            <ReactiveSequence>
+              <Inverter>
+                <PathExpiringTimer seconds="10" path="{path}"/>
+              </Inverter>
+              <Inverter>
+                <GlobalUpdatedGoal/>
+              </Inverter>
+              <IsPathValid path="{path}"/>
+            </ReactiveSequence>
+            <Sequence>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.35"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+            </Sequence>
+          </Fallback>
+        </RateController>
+        <FollowPath path="{path}" controller_id="MPPI" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+      </PipelineSequence>
+      <Sequence>
+        <Fallback>
+          <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+          <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+        </Fallback>
+        <Wait wait_duration="1.0"/>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

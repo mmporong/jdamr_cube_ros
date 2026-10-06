@@ -161,6 +161,13 @@ SCAN_MEMORY_RESET_M = 0.5
 ESCAPE_WATCH_BAND_M = 0.10
 
 
+# Transit and dock staging trees per planner + controller (behavior_trees/*.xml):
+# lattice-mppi is the default since 2026-10-05, navfn-rpp ran until then, and
+# navfn-mppi keeps MPPI on NavFn paths (2026-10-06: Lattice's waypoint headings
+# planned a 5 m loop back to a waypoint MPPI had passed 0.31 m away).
+TRANSIT_VARIANTS = {'lattice-mppi': '', 'navfn-mppi': '_navfn_mppi', 'navfn-rpp': '_rpp'}
+
+
 def _ahead(pose, distance_m):
     """Return the pose distance_m in front of pose along its heading."""
     x, y, yaw = pose
@@ -825,6 +832,10 @@ class ServiceRoute(CorridorRoute):
             return False
         return (wrapped.status == GoalStatus.STATUS_SUCCEEDED
                 and not wrapped.result.error_code and len(wrapped.result.path.poses) > 0)
+
+    def use_transit(self, variant):
+        """Select the transit and staging trees by variant (TRANSIT_VARIANTS)."""
+        self._set_transit_trees(TRANSIT_VARIANTS[variant])
 
     def use_rpp_transit(self):
         """

@@ -164,18 +164,38 @@ def test_restart_must_show_a_new_start_time(env, monkeypatch):
         d.restart_sensor_services()
 
 
-def test_restart_refuses_an_inactive_sensor_service(env, monkeypatch):
-    pi = Pi()
+def _inactive(pi, unit):
     real = pi.__call__
 
-    def inactive_observer(command, **kw):
+    def answer(command, **kw):
         result = real(command, **kw)
-        if command.startswith('systemctl show') and command.endswith('jdamr-box-observer.service'):
+        if command.startswith('systemctl show') and command.endswith(unit):
             result.stdout = 'ActiveState=inactive\nActiveEnterTimestampMonotonic=0\n'
         return result
-    monkeypatch.setattr(d, 'pi', inactive_observer)
+    return answer
+
+
+def test_restart_refuses_an_inactive_base_but_skips_the_on_demand_camera(env, monkeypatch):
+    """2026-10-06: the executor starts camera and observer for the box stops only."""
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', _inactive(pi, 'jdamr-base.service'))
     with pytest.raises(SystemExit):
         d.restart_sensor_services()
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', _inactive(pi, 'jdamr-box-observer.service'))
+    d.restart_sensor_services()
+    restarted = [c.split()[-1] for c in pi.calls if c.startswith('sudo -n systemctl restart')]
+    assert 'jdamr-box-observer.service' not in restarted
+    assert 'jdamr-base.service' in restarted
+
+
+def test_a_session_start_leaves_the_camera_to_the_executor(env, monkeypatch):
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', lambda command, **kw: pi(command, **kw) if not command.startswith(
+        'systemctl is-active') else SimpleNamespace(returncode=3, stdout='inactive'))
+    d.start_sensor_services()
+    started = [c for c in pi.calls if c.startswith('sudo -n systemctl start')]
+    assert started == ['sudo -n systemctl start jdamr-base.service']
 
 
 def test_restart_covers_all_sensor_services(env, monkeypatch):
@@ -451,6 +471,16 @@ def test_go_passes_the_rpp_transit_switch_only_when_asked(env, monkeypatch):
         seen.append(json.loads(next(s for s in pi.stdins if s))['argv'])
     assert '--rpp-transit' not in seen[0]
     assert '--rpp-transit' in seen[1]
+
+
+def test_go_passes_the_transit_variant(env, monkeypatch):
+    monkeypatch.setattr(d.time, 'strftime', lambda _fmt: '20261006_110000')
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    d.run_cycle(go_args(transit='navfn-mppi'), d.load_state(), 'table_02')
+    argv = json.loads(next(s for s in pi.stdins if s))['argv']
+    assert argv[argv.index('--transit') + 1] == 'navfn-mppi'
 
 
 def test_operator_alerts_can_be_switched_off_for_test_runs(env, monkeypatch):

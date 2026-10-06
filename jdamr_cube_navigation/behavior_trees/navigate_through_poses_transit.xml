@@ -7,7 +7,8 @@
   Transit through several waypoints as one goal (2026-10-01: separate
   NavigateToPose legs slowed to a stop and turned at every waypoint). Replan
   only when the path became invalid, is 10 s old, or the goals changed; a
-  passed waypoint (within 0.25 m) is dropped first. The last pose keeps its
+  passed waypoint (within 0.35 m: MPPI passed one 0.31 m away on 2026-10-06 and
+  Lattice planned a 5 m loop back to it) is dropped first. The last pose keeps its
   yaw through the general goal checker.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
@@ -26,7 +27,7 @@
               <IsPathValid path="{path}"/>
             </ReactiveSequence>
             <Sequence>
-              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.25"/>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.35"/>
               <Fallback name="LatticeThenNavFn">
                 <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="Lattice" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
                 <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>

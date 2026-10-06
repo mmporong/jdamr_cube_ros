@@ -204,7 +204,10 @@ controller_server:
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
         threshold_to_consider: 0.5
-        offset_from_furthest: 20
+        # The furthest path point the 3 s rollouts reach at 0.12 m/s is about 7
+        # (0.36 m at 5 cm spacing); at Nav2's 20 this critic never scored, MPPI cut
+        # corners and passed a waypoint 0.31 m away (2026-10-06 10:11).
+        offset_from_furthest: 5
         use_path_orientations: false
       PathFollowCritic:
         enabled: true

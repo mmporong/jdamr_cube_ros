@@ -140,6 +140,9 @@ AMCL_AGREE_YAW_RAD = math.radians(2.0)
 CLICK_MAX_AGE_S = 1800.0
 # The 2026-09-30 morning fix for new processes receiving nothing restarted all three.
 SENSOR_UNITS = ('jdamr-base.service', 'jdamr-box-rgbd.service', 'jdamr-box-observer.service')
+# The executor starts these for the box stops and stops them afterwards (2026-10-06:
+# they held the Pi at 80 deg C); a session or recovery does not start them.
+CAMERA_UNITS = ('jdamr-box-rgbd.service', 'jdamr-box-observer.service')
 # Recorded on the Pi for every go: wheel odom, raw IMU and scan for the odom/IMU EKF
 # comparison (rotation_truth.py), velocity commands for the Spin overshoot.
 ONBOARD_BAG_CHECK_S = 25.0
@@ -388,8 +391,10 @@ exit 4
 
 
 def start_sensor_services():
-    """After a reboot only jdamr-base starts by itself; bring up camera and observer."""
+    """After a reboot only jdamr-base starts by itself; the camera starts on demand."""
     for unit in SENSOR_UNITS:
+        if unit in CAMERA_UNITS:
+            continue
         if pi(f'systemctl is-active {unit}', check=False).stdout.strip() != 'active':
             pi(f'sudo -n systemctl start {unit}', timeout=120, check=False)
             log(f'{unit}: ' + pi(f'systemctl is-active {unit}', check=False).stdout.strip())
@@ -710,6 +715,7 @@ def run_cycle(args, state, table_id):
                    + (' --home-only ' if args.dock_only else '')
                    + (' --graceful-final ' if args.graceful_final else '')
                    + (' --rpp-transit ' if getattr(args, 'rpp_transit', False) else '')
+                   + (f' --transit {args.transit} ' if getattr(args, 'transit', None) else '')
                    + (' --zero-turn-final ' if getattr(args, 'zero_turn_final', False) else '')
                    + (' --resume-at-observation ' if args.resume_at_observation else '')
                    + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
@@ -978,8 +984,12 @@ def restart_sensor_services():
     """Restart each running sensor service and confirm it really started again."""
     for unit in SENSOR_UNITS:
         before = unit_state(unit)
+        if unit in CAMERA_UNITS and before[0] == 'inactive':
+            # Started by the executor for the box stops only.
+            log(f'{unit}: inactive (on demand), not restarted')
+            continue
         if before[0] != 'active':
-            # A box cycle needs all three; None means the ssh read failed.
+            # None means the ssh read failed.
             fail(f'{unit} is {before[0]}; start it before recovering')
         pi(f'sudo -n systemctl restart {unit}', timeout=200, check=False)
         after = unit_state(unit)
@@ -1145,6 +1155,9 @@ def main():
                     help='final box approach: trim the residual in place, then zero-turn straight')
     go.add_argument('--rpp-transit', action='store_true',
                     help='RPP on NavFn paths for the transit and staging legs (until 10-05; A/B)')
+    go.add_argument('--transit', choices=('lattice-mppi', 'navfn-mppi', 'navfn-rpp'),
+                    help='planner + controller for the transit and staging legs '
+                         '(default lattice-mppi; 2026-10-06 algorithm selection)')
     go.add_argument('--resume-at-observation', action='store_true',
                     help='robot already at an observation point: the table one skips the '
                          'water stop, the water one resumes there (--skip-via forces the table)')

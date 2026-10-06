@@ -1,0 +1,36 @@
+<!--
+  NavFn plans and MPPI follows on the live costmap (box_service transit variant navfn-mppi,
+  2026-10-06 algorithm selection). Same tree as navigate_to_pose_staging.xml without the Lattice
+  step: on 10-06 Lattice's waypoint headings planned a 5 m loop back to a waypoint
+  MPPI had passed 0.31 m away, alternating with NavFn paths every replan.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="1" name="Staging">
+      <PipelineSequence>
+        <RateController hz="1.0">
+          <Fallback>
+            <ReactiveSequence>
+              <Inverter>
+                <PathExpiringTimer seconds="10" path="{path}"/>
+              </Inverter>
+              <Inverter>
+                <GlobalUpdatedGoal/>
+              </Inverter>
+              <IsPathValid path="{path}"/>
+            </ReactiveSequence>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}" server_timeout="3000"/>
+          </Fallback>
+        </RateController>
+        <FollowPath path="{path}" controller_id="MPPI" goal_checker_id="staging_position_checker" error_code_id="{follow_path_error_code}" server_timeout="3000"/>
+      </PipelineSequence>
+      <Sequence>
+        <Fallback>
+          <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+          <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+        </Fallback>
+        <Wait wait_duration="1.0"/>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

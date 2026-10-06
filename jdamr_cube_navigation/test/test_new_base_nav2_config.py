@@ -1270,21 +1270,29 @@ def test_transit_and_staging_default_to_lattice_and_mppi_with_rpp_copies():
     trees = ROOT / 'jdamr_cube_navigation/behavior_trees'
     selecting = sorted(tree.name for tree in trees.glob('*.xml')
                        if 'controller_id="MPPI"' in tree.read_text())
-    assert selecting == ['navigate_through_poses_transit.xml', 'navigate_to_pose_staging.xml']
+    assert selecting == ['navigate_through_poses_transit.xml',
+                         'navigate_through_poses_transit_navfn_mppi.xml',
+                         'navigate_to_pose_staging.xml', 'navigate_to_pose_staging_navfn_mppi.xml']
 
     def planners(name):
         return re.findall(r'planner_id="(\w+)"', (trees / name).read_text())
 
-    assert planners('navigate_through_poses_transit.xml') == ['Lattice', 'GridBased']
-    assert planners('navigate_to_pose_staging.xml') == ['Lattice', 'GridBased']
-    assert planners('navigate_through_poses_transit_rpp.xml') == ['GridBased']
-    for name in ('navigate_through_poses_transit_rpp.xml', 'navigate_to_pose_staging_rpp.xml'):
-        assert 'controller_id="FollowPath"' in (trees / name).read_text()
-    # The staging copy differs only in the controller and the header comments.
-
     def body(name):
         return re.sub(r'<!--.*?-->\n', '', (trees / name).read_text(), flags=re.S)
 
+    assert planners('navigate_through_poses_transit.xml') == ['Lattice', 'GridBased']
+    assert planners('navigate_to_pose_staging.xml') == ['Lattice', 'GridBased']
+    assert planners('navigate_through_poses_transit_rpp.xml') == ['GridBased']
+    # 2026-10-06 selection: the same MPPI trees without the Lattice step.
+    for name in ('navigate_through_poses_transit', 'navigate_to_pose_staging'):
+        assert planners(f'{name}_navfn_mppi.xml') == ['GridBased']
+        lattice = body(f'{name}.xml')
+        start = lattice.index('<Fallback name="LatticeThenNavFn">')
+        assert 'planner_id="Lattice"' not in body(f'{name}_navfn_mppi.xml')
+        assert lattice[:start] in body(f'{name}_navfn_mppi.xml')
+    for name in ('navigate_through_poses_transit_rpp.xml', 'navigate_to_pose_staging_rpp.xml'):
+        assert 'controller_id="FollowPath"' in (trees / name).read_text()
+    # The staging copy differs only in the controller and the header comments.
     rpp = body('navigate_to_pose_staging_rpp.xml')
     assert rpp.replace('controller_id="FollowPath"', 'controller_id="MPPI"') == body(
         'navigate_to_pose_staging.xml')

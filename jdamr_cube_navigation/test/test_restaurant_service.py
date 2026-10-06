@@ -2887,3 +2887,22 @@ def test_a_trim_just_over_the_minimum_still_turns(monkeypatch):
     turned = node._rotate_in_place(math.radians(0.32))
     assert restaurant_service.TRIM_ANGULAR_RADPS in published
     assert turned >= math.radians(0.16)
+
+
+@pytest.mark.parametrize('variant, planners, controller', [
+    ('lattice-mppi', ['Lattice', 'GridBased'], 'MPPI'),
+    ('navfn-mppi', ['GridBased'], 'MPPI'),
+    ('navfn-rpp', ['GridBased'], 'FollowPath'),
+])
+def test_transit_variants_pick_their_trees(monkeypatch, variant, planners, controller):
+    from xml.etree import ElementTree as ET
+    monkeypatch.setattr(restaurant_service, 'get_package_share_directory',
+                        lambda _: str(PACKAGE))
+    node = route()
+    node.use_transit(variant)
+    for tree in (node.through_behavior_tree, node.staging_behavior_tree):
+        root = ET.parse(tree).getroot()
+        used = [e.get('planner_id') for e in root.iter() if e.get('planner_id')]
+        assert sorted(set(used)) == sorted(planners) or (
+            'staging' in tree and variant == 'navfn-rpp')
+        assert [e.get('controller_id') for e in root.iter('FollowPath')] == [controller]

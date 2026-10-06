@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import time
 
@@ -21,7 +22,7 @@ from jdamr_cube_navigation.parking import (
     load_parking_contract, MAXIMUM_CONTRACT_VALUES, pose_errors,
 )
 from jdamr_cube_navigation.restaurant_service import (
-    OPERATOR_LINK_TIMEOUT_S, SCAN_MEMORY_KEYFRAMES, ServiceRoute)
+    OPERATOR_LINK_TIMEOUT_S, SCAN_MEMORY_KEYFRAMES, ServiceRoute, TRANSIT_VARIANTS)
 from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
 from nav2_msgs.action import Spin
 from nav_msgs.msg import Path as RosPath
@@ -44,6 +45,13 @@ DEPTH_WINDOW_CEILING_M = 2.0
 FINAL_PLAN_END_TOLERANCE_M = 0.06
 # Zero-turn final approach (--zero-turn-final): trim residuals from 0.3 deg up to
 # 30 deg, accept the trim within 0.3 deg, and the straight within 5 mm.
+# The box camera and its observer run only while a box is the next stop (2026-10-06:
+# their 0.8 core held the Pi at 80 deg C and throttled, Nav2's control loop fell to
+# 2.5-7 Hz and the controller dropped out of the DDS graph; stopped, 80.8 -> 74.0 deg C
+# and load 6.3 -> 3.1 within a minute). The Astra needs 11.3 s to its first depth
+# image, so it starts with the transit to the first observation point.
+CAMERA_UNITS = ('jdamr-box-rgbd.service', 'jdamr-box-observer.service')
+CAMERA_READY_TIMEOUT_S = 30.0
 FINAL_TRIM_MIN_RAD = math.radians(0.3)
 FINAL_TRIM_MAX_RAD = math.radians(30.0)
 FINAL_TRIM_TOLERANCE_RAD = math.radians(0.3)
@@ -183,6 +191,49 @@ class BoxServiceRoute(ServiceRoute):
         super().__init__(*args, **kwargs)
         self.precision_parameters = AsyncParameterClient(
             self, 'collision_monitor')
+
+    def _camera(self, on):
+        """
+        Start or stop the box camera and observer when they run on demand.
+
+        Returns whether systemctl accepted the request; always True when the camera
+        stays on (camera_on_demand unset, as before 2026-10-06).
+        """
+        if not getattr(self, 'camera_on_demand', False):
+            return True
+        action = 'start' if on else 'stop'
+        if on:
+            self._camera_requested_s = time.monotonic()
+        try:
+            result = subprocess.run(['sudo', '-n', 'systemctl', action, *CAMERA_UNITS],
+                                    capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.emit('box_camera', action=action, ok=False, reason=str(error))
+            return False
+        ok = result.returncode == 0
+        self.emit('box_camera', action=action, ok=ok,
+                  reason=None if ok else result.stderr.strip()[-200:])
+        return ok
+
+    def _camera_ready(self, timeout_s=CAMERA_READY_TIMEOUT_S):
+        """Wait until the observer published after the camera was requested."""
+        if not getattr(self, 'camera_on_demand', False):
+            return True
+        requested_s = getattr(self, '_camera_requested_s', None)
+        if requested_s is None:
+            if not self._camera(True):
+                return False
+            requested_s = self._camera_requested_s
+        deadline_s = time.monotonic() + timeout_s
+        while not self.stop_requested and time.monotonic() < deadline_s:
+            received_s = getattr(self, 'box_status_received_s', None)
+            if received_s is not None and received_s >= requested_s:
+                self.emit('box_camera_ready',
+                          waited_s=round(time.monotonic() - requested_s, 1))
+                return True
+            rclpy.spin_once(self, timeout_sec=0.1)
+        self.emit('box_camera_ready', ready=False, timeout_s=timeout_s)
+        return False
 
     def _scan_callback(self, message):
         super()._scan_callback(message)
@@ -825,11 +876,18 @@ class BoxServiceRoute(ServiceRoute):
             return True
         # Setup time must not consume the motion/search budget.
         self.run_deadline_s = time.monotonic() + task_timeout_s
+        # The camera starts with the transit: its 11 s start-up runs while driving.
+        if not self._camera(True):
+            self.emit('failed', phase='box_camera_start')
+            return False
         if resume_at_observation:
             self.emit('resume_at_reached_observation', actual_pose=list(actual),
                       transit_skipped=True, final_parking_confirmed=False)
         elif not self.execute(final_parking=False):
             self.emit('failed', phase='table_region_transit')
+            return False
+        if not self._camera_ready():
+            self.emit('failed', phase='box_camera_ready')
             return False
         search_budget = BoxSearchBudget()
         # Face alignment happens while depth is still in its usable range.
@@ -1200,6 +1258,8 @@ class BoxServiceRoute(ServiceRoute):
         if not self.wait_parked(dwell_s):
             self.emit('failed', phase='table_dwell')
             return False
+        # The escape uses the face observed on the way in; the dock needs no camera.
+        self._camera(False)
         return self.go_home(execute=True, timeout_s=timeout_s)
 
 
@@ -1243,6 +1303,12 @@ def parse_args(argv=None):
     parser.add_argument('--rpp-transit', action='store_true',
                         help='follow the transit and dock staging legs with RPP on NavFn '
                              'paths as until 2026-10-05 instead of Lattice + MPPI (A/B)')
+    parser.add_argument('--transit', choices=TRANSIT_VARIANTS,
+                        help='planner + controller for the transit and dock staging legs '
+                             '(default lattice-mppi; navfn-rpp equals --rpp-transit)')
+    parser.add_argument('--camera-always-on', action='store_true',
+                        help='keep the box camera and observer running (before 2026-10-06) '
+                             'instead of starting them for the box stops only')
     parser.add_argument('--home-only', action='store_true',
                         help='return to the dock only (needs --execute and --return-home)')
     parser.add_argument('--via-route', type=Path)
@@ -1345,6 +1411,9 @@ def run_attempt(args, active=None):
                 node.dock_leg_controller = 'GracefulReverse'
             if args.rpp_transit:
                 node.use_rpp_transit()
+            if args.transit:
+                node.use_transit(args.transit)
+            node.camera_on_demand = not args.camera_always_on
             node.zero_turn_final = args.zero_turn_final
             node.operator_heartbeat = args.operator_heartbeat
             node.operator_link_timeout_s = args.operator_link_timeout_s
@@ -1419,6 +1488,8 @@ def run_attempt(args, active=None):
                 if active is not None:
                     active['node'] = None
                 if node is not None:
+                    # Every attempt ends with the camera off, failed ones included.
+                    node._camera(False)
                     node.destroy_node()
 
 

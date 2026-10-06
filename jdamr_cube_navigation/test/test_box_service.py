@@ -813,6 +813,7 @@ def test_t28_failed_visit_never_returns_home(monkeypatch, tmp_path):
             self.visit_observed_box = Mock(return_value=Route.visit_ok)
             self.dwell_and_return_home = Mock(return_value=True)
             self.go_home = Mock(return_value=True)
+            self._camera = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
             self.call_operator = Mock(return_value='CRITICAL')
@@ -827,6 +828,10 @@ def test_t28_failed_visit_never_returns_home(monkeypatch, tmp_path):
     failed, succeeded = created
     failed.dwell_and_return_home.assert_not_called()
     failed.go_home.assert_not_called()
+    # Every attempt ends with the box camera off, the failed one included.
+    for node in created:
+        assert node.camera_on_demand is True
+        node._camera.assert_called_with(False)
     # A cycle that stopped short calls the operator once; a finished one does not.
     failed.call_operator.assert_called_once_with()
     succeeded.call_operator.assert_not_called()
@@ -940,6 +945,7 @@ def _via_main(monkeypatch, tmp_path, via_ok=True, leave_ok=True, battery_low=Fal
                 ('dwell_and_leave', dwell)) or leave_ok)
             self.dwell_and_return_home = Mock(side_effect=lambda dwell, timeout: calls.append(
                 ('dwell_and_return_home', dwell, timeout)) or True)
+            self._camera = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
             self.call_operator = Mock(side_effect=lambda: calls.append(('call_operator',))
@@ -1108,6 +1114,7 @@ def _resume_main(monkeypatch, tmp_path, extra, at_table_observation=False):
                 ('at_observation', Path(route).name)) or at_table_observation)
             self.verify_live_maps = Mock()
             self.wait_until_ready = Mock(return_value=True)
+            self._camera = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
             self.call_operator = Mock(return_value='CRITICAL')
@@ -1300,6 +1307,7 @@ def test_rpp_transit_flag_selects_rpp_before_the_cycle(monkeypatch, tmp_path):
             calls = []
             self.use_rpp_transit = Mock(side_effect=lambda: calls.append('rpp'))
             self.visit_observed_box = Mock(side_effect=lambda *a, **k: calls.append('visit'))
+            self._camera = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
             self.call_operator = Mock(return_value='CRITICAL')
@@ -1313,3 +1321,66 @@ def test_rpp_transit_flag_selects_rpp_before_the_cycle(monkeypatch, tmp_path):
     default, rpp = created
     assert default.calls == ['visit']
     assert rpp.calls == ['rpp', 'visit']
+
+
+def _camera_node():
+    node = object.__new__(BoxServiceRoute)
+    node.camera_on_demand = True
+    node.stop_requested = False
+    node.events = []
+    node.emit = lambda event, **fields: node.events.append((event, fields))
+    return node
+
+
+def test_box_camera_starts_and_stops_through_systemd_only_on_demand(monkeypatch):
+    """2026-10-06: camera and observer held the Pi at 80 deg C; they run for box stops."""
+    calls = []
+    monkeypatch.setattr(box_service.subprocess, 'run', lambda command, **_kw: calls.append(
+        command) or SimpleNamespace(returncode=0, stderr=''))
+    node = _camera_node()
+    assert node._camera(True) and node._camera(False)
+    assert calls == [['sudo', '-n', 'systemctl', 'start', *box_service.CAMERA_UNITS],
+                     ['sudo', '-n', 'systemctl', 'stop', *box_service.CAMERA_UNITS]]
+    assert [fields['action'] for event, fields in node.events if event == 'box_camera'] == [
+        'start', 'stop']
+    node.camera_on_demand = False                    # --camera-always-on
+    calls.clear()
+    assert node._camera(False) is True and calls == []
+
+
+def test_box_camera_failure_is_reported(monkeypatch):
+    node = _camera_node()
+    monkeypatch.setattr(box_service.subprocess, 'run', lambda *_a, **_k: SimpleNamespace(
+        returncode=1, stderr='Unit not found'))
+    assert node._camera(True) is False
+    assert node.events[-1][1]['reason'] == 'Unit not found'
+
+
+def test_box_camera_ready_needs_an_observer_status_after_the_start(monkeypatch):
+    node = _camera_node()
+    node._camera_requested_s = 100.0
+    clock = iter([100.0 + 0.1 * k for k in range(1000)])
+    monkeypatch.setattr(box_service.time, 'monotonic', lambda: next(clock))
+    statuses = iter([None, 99.0, 99.0, 111.3])         # an old status does not count
+
+    def spin(*_a, **_k):
+        node.box_status_received_s = next(statuses, 111.3)
+    monkeypatch.setattr(box_service.rclpy, 'spin_once', spin)
+    node.box_status_received_s = None
+    assert node._camera_ready(timeout_s=30.0) is True
+    node = _camera_node()
+    node._camera_requested_s = 100.0
+    node.box_status_received_s = 50.0
+    monkeypatch.setattr(box_service.rclpy, 'spin_once', lambda *_a, **_k: None)
+    assert node._camera_ready(timeout_s=1.0) is False
+    assert node.events[-1] == ('box_camera_ready', {'ready': False, 'timeout_s': 1.0})
+
+
+def test_transit_option_selects_the_planner_and_controller_trees():
+    base = ['--registry', 'r', '--approach-route', 'a', '--camera-mount', 'm', '--geometry',
+            'g', '--log', 'l', '--parking-contract', 'p', '--table-id', 'table_02',
+            '--region-xy', '0', '0']
+    args = parse_args([*base, '--transit', 'navfn-mppi'])
+    assert args.transit == 'navfn-mppi' and args.camera_always_on is False
+    with pytest.raises(SystemExit):
+        parse_args([*base, '--transit', 'dwb'])
