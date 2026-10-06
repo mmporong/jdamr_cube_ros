@@ -1,6 +1,6 @@
 # 코드 리뷰와 수정 (2026-10-06, 실차 없음)
 
-- **범위:** `git diff 87652f2..ba0ef54`의 코드 변경 전체(문서·rviz 제외)
+- **범위:** `git diff 87652f2..bf377f9`의 코드 변경 전체(문서·rviz 제외)
   - 탈출·되짚기: `restaurant_service.py`, `corridor_route.py`, `reverse_parking.py`
   - 박스 최종 접근: `box_service.py`
   - 계약과 설정: `new_base_contract.py`, `docking_stop_profile.py`, `config/new_base_nav2_params.yaml`, `behavior_trees/*.xml`
