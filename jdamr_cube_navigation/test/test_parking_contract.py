@@ -237,9 +237,9 @@ def test_hold_distinguishes_observation_timeout_from_short_gap():
 
 
 def test_box_contract_sets_the_final_front_gap_and_older_contracts_keep_5_cm(tmp_path):
-    """The box contract closes to 2 cm (2026-10-06); a contract without it keeps 5 cm."""
+    """The box contract closes to 1 cm (2026-10-06); a contract without it keeps 5 cm."""
     box = load_parking_contract(ROOT / 'config/box_parking_contract.yaml')
-    assert box['target_front_gap_m'] == pytest.approx(0.02)
+    assert box['target_front_gap_m'] == pytest.approx(0.01)
     assert _contract()['target_front_gap_m'] == pytest.approx(0.05)
     document = yaml.safe_load((ROOT / 'config/box_parking_contract.yaml').read_text(
         encoding='utf-8'))

@@ -23,7 +23,9 @@ rotate_angular_radps: 0.2
 # front, so no Collision Monitor zone sees the face in the last part; the gap rests on
 # the face observed before the approach and odom. Operator tape at the water station
 # centre: 2.0 cm at a 1.5 cm target (estimate 1.85 cm), 1.5 cm at a 1.0 cm target
-# (estimate 1.33 cm); a part of the front protrudes a little, so 2 cm (operator).
-target_front_gap_m: 0.02
+# (estimate 1.33 cm). 2 cm for a protruding front part, then 1 cm (operator, 16:31).
+# 1 cm is the loader's lower bound: the +-1 cm judgement then keeps the nearest
+# corner above the face.
+target_front_gap_m: 0.01
 target_basis: USER_ACCEPTED_TARGET
 physical_validation: NOT_PHYSICALLY_VALIDATED
