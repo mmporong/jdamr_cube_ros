@@ -106,6 +106,7 @@ def test_recovery_retries_only_remaining_waypoint_once():
 PACKAGE = Path(__file__).resolve().parents[1]
 CONTRACT = PACKAGE / 'config/parking_contract.yaml'
 BOX_CONTRACT = PACKAGE / 'config/box_parking_contract.yaml'
+BOX_GAP_M = load_parking_contract(BOX_CONTRACT)['target_front_gap_m']
 # The gating logic is exercised with the gated fixture; the deployed contract disables it.
 SERVICE_CONTRACT = Path(__file__).parent / 'fixtures/restaurant_service_contract_gated.yaml'
 PARAMS = PACKAGE / 'config/new_base_nav2_params.yaml'
@@ -2423,6 +2424,7 @@ def test_final_approach_follows_the_reobserved_face_when_squared_off():
     fake = SimpleNamespace(
         capture_stationary_pose=lambda: ((0.0, -0.47, yaw), None),
         parking_contract={'yaw_tolerance_rad': math.radians(3.0)},
+        _final_gap_m=lambda: BOX_GAP_M,
         emit=lambda name, **fields: sent.setdefault(name, fields),
         _json_scalar=float, config=None, waypoints=None,
         _pose=lambda _i, wp: SimpleNamespace(header=None, yaw=wp['yaw'], x=wp['x']),
@@ -2438,7 +2440,9 @@ def test_final_approach_follows_the_reobserved_face_when_squared_off():
     assert reached
     assert sent['final_approach_straight']['heading_basis'] == 'face'
     assert sent['end']['yaw'] == pytest.approx(-math.pi / 2)
-    assert sent['final_approach_straight']['travel_m'] == pytest.approx(0.53 - 0.135)
+    # Closes to the contract gap; the Parking straight runs FINAL_STOP_SHORT_M further.
+    assert sent['final_approach_straight']['travel_m'] == pytest.approx(
+        0.53 - 0.085 - BOX_GAP_M + box_service.FINAL_STOP_SHORT_M)
     assert all(pose.yaw == pytest.approx(-math.pi / 2) for pose in sent['path'].poses)
 
 
@@ -2513,6 +2517,7 @@ def _zero_turn_fake(yaw, poses_after=None):
     captures = iter([((0.0, -0.47, yaw), None)] + (poses_after or []))
     fake = SimpleNamespace(
         capture_stationary_pose=lambda: next(captures),
+        _final_gap_m=lambda: BOX_GAP_M,
         emit=lambda name, **fields: sent.setdefault(name, fields),
         _json_scalar=float,
         _pose=lambda _i, wp: SimpleNamespace(header=None, yaw=wp['yaw'], x=wp['x'], y=wp['y']),
@@ -2536,7 +2541,7 @@ def test_zero_turn_final_trims_the_residual_then_drives_straight():
         fake, TARGET, 0.085)
     assert reached and to_odom is not None
     assert calls[0][0] == 'turn' and calls[0][1] == pytest.approx(off)
-    assert calls[1] == ('drive', pytest.approx(0.53 - 0.085 - 0.05))
+    assert calls[1] == ('drive', pytest.approx(0.53 - 0.085 - BOX_GAP_M))
     assert sent['final_yaw_trim']['turned_deg'] == pytest.approx(2.0, abs=1e-3)
     assert sent['final_approach_straight']['controller_id'] == 'zero_turn'
 
@@ -2575,7 +2580,8 @@ def test_zero_turn_final_turns_either_way_and_rejects_what_it_cannot_do():
     fake._rotate_in_place = lambda delta: None                    # no odom
     reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
     assert not reached and sent['failed']['reason'] == 'final_trim_missed'
-    for y_m in (-0.87, 0.2):                                      # travel <= 0 or > 0.6 m
+    # travel <= 0 (the front already 5 mm inside the gap) or > 0.6 m
+    for y_m in (-1.0 + 0.085 + BOX_GAP_M - 0.005, 0.2):
         fake, sent, calls = _zero_turn_fake(-math.pi / 2)
         fake.capture_stationary_pose = lambda y=y_m: ((0.0, y, -math.pi / 2), None)
         reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)

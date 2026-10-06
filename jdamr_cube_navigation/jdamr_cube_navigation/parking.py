@@ -24,6 +24,11 @@ POSITIVE_FIELDS = {
     'sample_max_age_s', 'desired_linear_mps',
     'min_approach_linear_mps', 'rotate_angular_radps',
 }
+# Optional: the box contract sets the front gap its final approach closes to.
+OPTIONAL_CONTRACT = {'target_front_gap_m'}
+# Without it a contract keeps the 5 cm target used until 2026-10-06.
+DEFAULT_FRONT_GAP_M = 0.05
+MAXIMUM_FRONT_GAP_M = 0.10
 COMMAND_ZERO_EPSILON = 1e-9
 # Requirement/candidate bounds, not measured calibration constants. A custom
 # contract may tighten them but must not silently weaken the accepted target.
@@ -65,7 +70,7 @@ def load_parking_contract(path: Path) -> dict:
     if not isinstance(document, dict):
         raise ValueError('parking contract must be a mapping')
     missing = REQUIRED_CONTRACT - document.keys()
-    unknown = document.keys() - REQUIRED_CONTRACT
+    unknown = document.keys() - REQUIRED_CONTRACT - OPTIONAL_CONTRACT
     if missing or unknown:
         raise ValueError(
             f'parking contract keys invalid: missing={sorted(missing)}, '
@@ -99,6 +104,11 @@ def load_parking_contract(path: Path) -> dict:
         raise ValueError('yaw_tolerance_deg must not exceed 180')
     document['yaw_tolerance_rad'] = math.radians(
         document['yaw_tolerance_deg'])
+    gap_m = _finite_number(document.get('target_front_gap_m', DEFAULT_FRONT_GAP_M),
+                           'target_front_gap_m')
+    if not 0.0 < gap_m <= MAXIMUM_FRONT_GAP_M:
+        raise ValueError('target_front_gap_m must be in (0, 0.10] m')
+    document['target_front_gap_m'] = gap_m
     return document
 
 

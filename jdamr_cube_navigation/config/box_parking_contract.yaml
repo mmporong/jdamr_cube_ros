@@ -18,5 +18,10 @@ desired_linear_mps: 0.08
 # the 0.05 m / 10 s progress requirement; 0.01 stalled 8 cm short (2026-09-30).
 min_approach_linear_mps: 0.02
 rotate_angular_radps: 0.2
+# Front gap of the final box approach (operator, 2026-10-06: 1-2 cm, "relax the
+# safety distance"; 5 cm until then). The LiDAR cannot see within 0.205 m of the
+# front, so no Collision Monitor zone sees the face in the last part; the gap rests on
+# the face observed before the approach and odom. Not externally measured.
+target_front_gap_m: 0.015
 target_basis: USER_ACCEPTED_TARGET
 physical_validation: NOT_PHYSICALLY_VALIDATED

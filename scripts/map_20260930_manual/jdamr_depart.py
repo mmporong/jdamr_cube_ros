@@ -716,6 +716,10 @@ def run_cycle(args, state, table_id):
                    + (' --graceful-final ' if args.graceful_final else '')
                    + (' --rpp-transit ' if getattr(args, 'rpp_transit', False) else '')
                    + (f' --transit {args.transit} ' if getattr(args, 'transit', None) else '')
+                   + (f' --final-gap-m {args.final_gap_m} '
+                      if getattr(args, 'final_gap_m', None) is not None else '')
+                   + (f' --dwell-s {args.dwell_s} '
+                      if getattr(args, 'dwell_s', None) is not None else '')
                    + (' --zero-turn-final ' if getattr(args, 'zero_turn_final', False) else '')
                    + (' --resume-at-observation ' if args.resume_at_observation else '')
                    + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
@@ -1158,6 +1162,11 @@ def main():
     go.add_argument('--transit', choices=('lattice-mppi', 'navfn-mppi', 'navfn-rpp'),
                     help='planner + controller for the transit and staging legs '
                          '(default navfn-rpp, 2026-10-06 algorithm selection)')
+    go.add_argument('--final-gap-m', type=float,
+                    help='front gap of the final box approach (default: the box parking '
+                         'contract target_front_gap_m, 0.015 since 2026-10-06)')
+    go.add_argument('--dwell-s', type=float,
+                    help='held stop at each box (default 2 s; longer to measure the gap)')
     go.add_argument('--resume-at-observation', action='store_true',
                     help='robot already at an observation point: the table one skips the '
                          'water stop, the water one resumes there (--skip-via forces the table)')

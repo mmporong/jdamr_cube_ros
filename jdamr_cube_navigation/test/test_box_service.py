@@ -292,6 +292,32 @@ def test_parser_requires_explicit_candidate_trial_for_execution():
     assert parse_args([*base, '--candidate-trial']).candidate_trial is True
 
 
+def test_final_gap_and_dwell_options_are_bounded():
+    base = [
+        '--registry', '/r', '--approach-route', '/a', '--camera-mount', '/c',
+        '--geometry', '/g', '--log', '/l', '--parking-contract', '/p',
+        '--table-id', 'table_01', '--region-xy', '1.896', '0.303',
+    ]
+    args = parse_args(base)
+    assert args.final_gap_m is None and args.dwell_s == box_service.STOP_DWELL_S
+    args = parse_args([*base, '--final-gap-m', '0.02', '--dwell-s', '30'])
+    assert (args.final_gap_m, args.dwell_s) == (0.02, 30.0)
+    for extra in (['--final-gap-m', '0'], ['--final-gap-m', '0.2'],
+                  ['--final-gap-m', 'nan'], ['--dwell-s', '0'], ['--dwell-s', '500']):
+        with pytest.raises(SystemExit):
+            parse_args([*base, *extra])
+
+
+def test_final_gap_comes_from_the_option_then_the_contract():
+    fake = SimpleNamespace(final_gap_override_m=None,
+                           parking_contract={'target_front_gap_m': 0.015})
+    assert BoxServiceRoute._final_gap_m(fake) == pytest.approx(0.015)
+    fake.final_gap_override_m = 0.02
+    assert BoxServiceRoute._final_gap_m(fake) == pytest.approx(0.02)
+    older = SimpleNamespace(parking_contract={})
+    assert BoxServiceRoute._final_gap_m(older) == pytest.approx(0.05)
+
+
 @pytest.mark.parametrize('flag', ['--search', '--resume-at-observation'])
 def test_search_and_resume_require_explicit_execution(flag):
     base = [

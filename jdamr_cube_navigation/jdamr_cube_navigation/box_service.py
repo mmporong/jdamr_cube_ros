@@ -19,7 +19,8 @@ from jdamr_cube_navigation.box_lidar_witness import witness_box_face_with_lidar
 from jdamr_cube_navigation.corridor_route import load_route, TRANSIT_PLAN_END_TOLERANCE_M
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
 from jdamr_cube_navigation.parking import (
-    load_parking_contract, MAXIMUM_CONTRACT_VALUES, pose_errors,
+    DEFAULT_FRONT_GAP_M, load_parking_contract, MAXIMUM_CONTRACT_VALUES,
+    MAXIMUM_FRONT_GAP_M, pose_errors,
 )
 from jdamr_cube_navigation.restaurant_service import (
     OPERATOR_LINK_TIMEOUT_S, SCAN_MEMORY_KEYFRAMES, ServiceRoute, TRANSIT_VARIANTS)
@@ -43,6 +44,13 @@ DEPTH_WINDOW_CEILING_M = 2.0
 # goal 0.135 m from a LiDAR-marked face can sit one cell inside its inflation, and
 # the plan then ends 0.05 m short (table_01, 2026-10-01 15:50): one cell + 1 cm.
 FINAL_PLAN_END_TOLERANCE_M = 0.06
+# That plan check still ends 5 cm from the face; the straight approach then closes to
+# the contract's target_front_gap_m.
+FINAL_PLAN_GAP_M = 0.05
+# The Parking straight stops inside its 1 cm goal checker before the goal: 38 parks
+# at a 5 cm target (09-30 to 10-02) ended at 5.51 cm on average (sd 0.10 cm, internal
+# estimate), so the straight runs this much further.
+FINAL_STOP_SHORT_M = 0.005
 # Zero-turn final approach (--zero-turn-final): trim residuals from 0.3 deg up to
 # 30 deg, accept the trim within 0.3 deg, and the straight within 5 mm.
 # The box camera and its observer run only while a box is the next stop (2026-10-06:
@@ -55,7 +63,7 @@ CAMERA_READY_TIMEOUT_S = 30.0
 FINAL_TRIM_MIN_RAD = math.radians(0.3)
 FINAL_TRIM_MAX_RAD = math.radians(30.0)
 FINAL_TRIM_TOLERANCE_RAD = math.radians(0.3)
-# The zero-turn straight may end this much short: the gap judgement (5 +-1 cm)
+# The zero-turn straight may end this much short: the gap judgement (target +-1 cm)
 # decides, and a StopZone stop a few mm early is not a failed approach.
 FINAL_STRAIGHT_TOLERANCE_M = 0.01
 SEARCH_MAX_STEPS = 12
@@ -892,7 +900,7 @@ class BoxServiceRoute(ServiceRoute):
         search_budget = BoxSearchBudget()
         # Face alignment happens while depth is still in its usable range.
         straight_to_odom = None
-        for phase, gap_m in (('face_alignment', 0.45), ('final_approach', 0.05)):
+        for phase, gap_m in (('face_alignment', 0.45), ('final_approach', FINAL_PLAN_GAP_M)):
             # Observation and face alignment are intermediate; the final approach,
             # its confirmation and the final capture keep the strict AMCL bounds.
             with self._localization_bound(phase == 'face_alignment'):
@@ -977,8 +985,9 @@ class BoxServiceRoute(ServiceRoute):
         # Centre gap and the contract heading decide; inside that heading the
         # corners only follow it and are logged (2026-09-30 table_02: 2.74 deg,
         # centre 5.7 cm, corners 4.4 and 7.0 cm stopped a good park).
+        target_gap_m = self._final_gap_m()
         gap_confirmed = (
-            math.isfinite(estimated_gap_m) and abs(estimated_gap_m - 0.05) <= 0.01
+            math.isfinite(estimated_gap_m) and abs(estimated_gap_m - target_gap_m) <= 0.01
             and all(math.isfinite(gap) for gap in corner_gaps)
             and yaw_error <= self.parking_contract['yaw_tolerance_rad'])
         if gap_confirmed:
@@ -989,10 +998,17 @@ class BoxServiceRoute(ServiceRoute):
                   estimated_front_gap_m=estimated_gap_m,
                   estimated_front_corner_gaps_m=corner_gaps,
                   estimated_face_yaw_error_rad=yaw_error,
-                  desired_front_gap_m=0.05, confirmation=self.confirmation,
+                  desired_front_gap_m=target_gap_m, confirmation=self.confirmation,
                   physical_accuracy='NOT_EXTERNALLY_MEASURED',
                   final_depth_measurement=False)
         return gap_confirmed
+
+    def _final_gap_m(self):
+        """Front gap the final approach closes to: --final-gap-m, else the contract."""
+        override = getattr(self, 'final_gap_override_m', None)
+        if override is not None:
+            return override
+        return self.parking_contract.get('target_front_gap_m', DEFAULT_FRONT_GAP_M)
 
     def _fail_final(self, reason, **fields):
         """Report the final approach failure once, with its own reason."""
@@ -1042,7 +1058,7 @@ class BoxServiceRoute(ServiceRoute):
                   turned_deg=round(math.degrees(turned), 3),
                   residual_after_deg=round(math.degrees(after), 3))
         distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
-        travel_m = distance_m - front_extent_m - 0.05
+        travel_m = distance_m - front_extent_m - self._final_gap_m()
         if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
             self._fail_final('final_approach_unavailable', travel_m=self._json_scalar(travel_m))
             return False, None
@@ -1085,8 +1101,8 @@ class BoxServiceRoute(ServiceRoute):
         aligned = facing >= math.cos(self.parking_contract['yaw_tolerance_rad'])
         heading = actual[2] if aligned else math.atan2(-outward[1], -outward[0])
         along = facing if aligned else 1.0
-        travel_m = ((distance_m - front_extent_m - 0.05) / along
-                    if facing > math.cos(math.pi / 6) else float('nan'))
+        travel_m = ((distance_m - front_extent_m - self._final_gap_m()) / along
+                    + FINAL_STOP_SHORT_M if facing > math.cos(math.pi / 6) else float('nan'))
         if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
             self._fail_final('final_approach_unavailable',
                              face_heading_cos=self._json_scalar(facing),
@@ -1324,7 +1340,17 @@ def parse_args(argv=None):
              'starts once it is older than --operator-link-timeout-s')
     parser.add_argument('--operator-link-timeout-s', type=float,
                         default=OPERATOR_LINK_TIMEOUT_S)
+    parser.add_argument('--final-gap-m', type=float,
+                        help='front gap of the final box approach instead of the parking '
+                             "contract's target_front_gap_m (calibration trials)")
+    parser.add_argument('--dwell-s', type=float, default=STOP_DWELL_S,
+                        help='held stop at each box (longer for an external gap measurement)')
     args = parser.parse_args(argv)
+    if args.final_gap_m is not None and not (
+            math.isfinite(args.final_gap_m) and 0.0 < args.final_gap_m <= MAXIMUM_FRONT_GAP_M):
+        parser.error('--final-gap-m must be in (0, 0.10] m')
+    if not (math.isfinite(args.dwell_s) and 0.0 < args.dwell_s <= 120.0):
+        parser.error('--dwell-s must be in (0, 120] s')
     if (not math.isfinite(args.operator_link_timeout_s)
             or args.operator_link_timeout_s <= 0.0):
         parser.error('--operator-link-timeout-s must be finite and positive')
@@ -1417,6 +1443,7 @@ def run_attempt(args, active=None):
             node.zero_turn_final = args.zero_turn_final
             node.operator_heartbeat = args.operator_heartbeat
             node.operator_link_timeout_s = args.operator_link_timeout_s
+            node.final_gap_override_m = args.final_gap_m
             ok = True
             if args.home_only:
                 # Dock return alone, e.g. to re-dock after a crooked stop; it may run
@@ -1433,7 +1460,7 @@ def run_attempt(args, active=None):
                 node.verify_live_maps()
                 if not node.wait_until_ready(timeout=10.0):
                     raise RuntimeError('localization or sensor data unavailable')
-                ok = node.resume_parked(face, STOP_DWELL_S)
+                ok = node.resume_parked(face, args.dwell_s)
                 if args.via_id is None:
                     # The parked stop was the table: its escape leads straight home.
                     ok = ok and node.go_home(execute=True, timeout_s=args.return_timeout_s)
@@ -1455,7 +1482,7 @@ def run_attempt(args, active=None):
                     candidate_trial=args.candidate_trial,
                     resume_at_observation=args.resume_at_observation,
                     search=args.search, task_timeout_s=args.task_timeout_s)
-                ok = ok and node.dwell_and_leave(STOP_DWELL_S)
+                ok = ok and node.dwell_and_leave(args.dwell_s)
                 if ok and node.battery_return_due():
                     # Low between stops: no further stop, dock, then call (research P10).
                     node.go_home(execute=True, timeout_s=args.return_timeout_s)
@@ -1470,7 +1497,7 @@ def run_attempt(args, active=None):
                 search=args.search, task_timeout_s=args.task_timeout_s)
             # Exit 0 only when every requested stage, including the return, succeeded.
             if ok and args.return_home:
-                ok = node.dwell_and_return_home(STOP_DWELL_S, args.return_timeout_s)
+                ok = node.dwell_and_return_home(args.dwell_s, args.return_timeout_s)
             return _attempt_code(node, ok)
         except (ValueError, RuntimeError) as error:
             if node is not None:
