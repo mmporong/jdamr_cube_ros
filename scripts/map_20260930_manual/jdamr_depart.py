@@ -1154,10 +1154,10 @@ def main():
     go.add_argument('--zero-turn-final', action='store_true',
                     help='final box approach: trim the residual in place, then zero-turn straight')
     go.add_argument('--rpp-transit', action='store_true',
-                    help='RPP on NavFn paths for the transit and staging legs (until 10-05; A/B)')
+                    help='RPP on NavFn paths for the transit and staging legs (the default)')
     go.add_argument('--transit', choices=('lattice-mppi', 'navfn-mppi', 'navfn-rpp'),
                     help='planner + controller for the transit and staging legs '
-                         '(default lattice-mppi; 2026-10-06 algorithm selection)')
+                         '(default navfn-rpp, 2026-10-06 algorithm selection)')
     go.add_argument('--resume-at-observation', action='store_true',
                     help='robot already at an observation point: the table one skips the '
                          'water stop, the water one resumes there (--skip-via forces the table)')

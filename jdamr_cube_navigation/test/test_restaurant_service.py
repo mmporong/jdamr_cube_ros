@@ -2887,6 +2887,20 @@ def test_a_trim_just_over_the_minimum_still_turns(monkeypatch):
     assert turned >= math.radians(0.16)
 
 
+def test_default_transit_follows_navfn_paths_with_rpp(monkeypatch):
+    """2026-10-06 selection: transit and staging run on the RPP trees by default."""
+    monkeypatch.setattr(restaurant_service, 'get_package_share_directory',
+                        lambda _: str(PACKAGE))
+    assert restaurant_service.DEFAULT_TRANSIT == 'navfn-rpp'
+    node = route()
+    node.use_transit(restaurant_service.DEFAULT_TRANSIT)
+    assert node.through_behavior_tree.endswith('navigate_through_poses_transit_rpp.xml')
+    assert node.staging_behavior_tree.endswith('navigate_to_pose_staging_rpp.xml')
+    # A blocked RPP leg still retries on Lattice + MPPI.
+    node._use_recovery_controller()
+    assert node.through_behavior_tree.endswith('navigate_through_poses_transit.xml')
+
+
 @pytest.mark.parametrize('variant, planners, controller', [
     ('lattice-mppi', ['Lattice', 'GridBased'], 'MPPI'),
     ('navfn-mppi', ['GridBased'], 'MPPI'),

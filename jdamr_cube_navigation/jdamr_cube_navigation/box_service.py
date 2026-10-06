@@ -1302,10 +1302,10 @@ def parse_args(argv=None):
                              'place, then close the gap at zero turn rate (precision trial)')
     parser.add_argument('--rpp-transit', action='store_true',
                         help='follow the transit and dock staging legs with RPP on NavFn '
-                             'paths as until 2026-10-05 instead of Lattice + MPPI (A/B)')
+                             'paths (the default; kept for older commands)')
     parser.add_argument('--transit', choices=TRANSIT_VARIANTS,
                         help='planner + controller for the transit and dock staging legs '
-                             '(default lattice-mppi; navfn-rpp equals --rpp-transit)')
+                             '(default navfn-rpp, see DEFAULT_TRANSIT)')
     parser.add_argument('--camera-always-on', action='store_true',
                         help='keep the box camera and observer running (before 2026-10-06) '
                              'instead of starting them for the box stops only')

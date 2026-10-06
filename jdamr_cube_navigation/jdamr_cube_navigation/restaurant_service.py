@@ -168,10 +168,14 @@ ESCAPE_WATCH_BAND_M = 0.10
 
 
 # Transit and dock staging trees per planner + controller (behavior_trees/*.xml):
-# lattice-mppi is the default since 2026-10-05, navfn-rpp ran until then, and
 # navfn-mppi keeps MPPI on NavFn paths (2026-10-06: Lattice's waypoint headings
 # planned a 5 m loop back to a waypoint MPPI had passed 0.31 m away).
 TRANSIT_VARIANTS = {'lattice-mppi': '', 'navfn-mppi': '_navfn_mppi', 'navfn-rpp': '_rpp'}
+# NavFn + RPP again since 2026-10-06 (lattice-mppi 10-05 to 10-06). One go table_02
+# each: RPP 175.3 s, MPPI 284.2 s; MPPI's path critics turn off within 0.5 m
+# straight-line distance of the final goal, so it skipped the pre-point 0.42 m from
+# the observation pose and reversed in (evaluation/20261006_CONTROLLER_SELECTION_*).
+DEFAULT_TRANSIT = 'navfn-rpp'
 
 
 def _ahead(pose, distance_m):
@@ -319,12 +323,9 @@ class ServiceRoute(CorridorRoute):
         package = Path(get_package_share_directory('jdamr_cube_navigation'))
         self.alignment_behavior_tree = str(
             package / 'behavior_trees/navigate_to_pose_alignment.xml')
-        self.staging_behavior_tree = str(
-            package / 'behavior_trees/navigate_to_pose_staging.xml')
         self.face_alignment_behavior_tree = str(
             package / 'behavior_trees/navigate_to_pose_face_alignment.xml')
-        self.through_behavior_tree = str(
-            package / 'behavior_trees/navigate_through_poses_transit.xml')
+        self.use_transit(DEFAULT_TRANSIT)
         # RPP for the box approach and the dock leg. Graceful (--graceful-final) checks
         # its own trajectory against the costmap in Nav2 1.3.12 with no switch, so a
         # 5 cm stop at a box ended in 105 (2026-10-01).
@@ -845,12 +846,10 @@ class ServiceRoute(CorridorRoute):
 
     def use_rpp_transit(self):
         """
-        Follow the transit and dock staging legs with RPP, as until 10-05.
+        Follow the transit and dock staging legs with RPP (DEFAULT_TRANSIT).
 
-        Since 2026-10-05 those legs plan with Lattice (NavFn when it finds nothing)
-        and follow with MPPI on the live costmap; the RPP trees stay for the A/B and
-        as a fallback (transit plans with NavFn, staging with Lattice then NavFn).
-        Box approach, alignment and the dock leg keep their controllers.
+        Transit plans with NavFn, staging with Lattice then NavFn. Box approach,
+        alignment and the dock leg keep their controllers.
         """
         self._set_transit_trees('_rpp')
 
@@ -963,10 +962,10 @@ class ServiceRoute(CorridorRoute):
         """
         On the RPP trees (--rpp-transit), retry a leg the controller could not finish.
 
-        The retry runs on the default trees. RPP follows the planner's path as
+        The retry runs on the Lattice + MPPI trees. RPP follows the planner's path as
         given; NavFn plans for a point and put the path 1-2 cm into an object beside
         a 0.64 m gap, so every RPP retry swung the right wheel into the same object
-        (2026-10-02 17:49-17:52). The default trees plan with Lattice
+        (2026-10-02 17:49-17:52). Those trees plan with Lattice
         (footprint-aware, NavFn when it finds nothing) and follow with MPPI, which
         weighs the footprint cost against the path and can pass off it.
         """
