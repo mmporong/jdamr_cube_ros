@@ -21,7 +21,7 @@ from jdamr_cube_navigation.corridor_route import (
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
 from jdamr_cube_navigation.parking import (
     DEFAULT_FRONT_GAP_M, load_parking_contract, MAXIMUM_CONTRACT_VALUES,
-    MAXIMUM_FRONT_GAP_M, pose_errors,
+    MAXIMUM_FRONT_GAP_M, MINIMUM_FRONT_GAP_M, pose_errors,
 )
 from jdamr_cube_navigation.restaurant_service import (
     OPERATOR_LINK_TIMEOUT_S, SCAN_MEMORY_KEYFRAMES, ServiceRoute, TRANSIT_VARIANTS)
@@ -50,8 +50,10 @@ FINAL_PLAN_END_TOLERANCE_M = 0.06
 FINAL_PLAN_GAP_M = 0.05
 # The Parking straight stops inside its 1 cm goal checker before the goal: 38 parks
 # at a 5 cm target (09-30 to 10-02) ended at 5.51 cm on average (sd 0.10 cm, internal
-# estimate), so the straight runs this much further.
+# estimate), so the Parking straight runs this much further (no record for Graceful).
 FINAL_STOP_SHORT_M = 0.005
+# The nearest front point is judged within this of the target gap.
+FINAL_GAP_TOLERANCE_M = 0.01
 # Zero-turn final approach (--zero-turn-final): trim residuals from 0.3 deg up to
 # 30 deg, accept the trim within 0.3 deg, and the straight within 5 mm.
 # The box camera and its observer run only while a box is the next stop (2026-10-06:
@@ -110,6 +112,19 @@ ESCAPE_PATH_CONTRACT = {
 # Held stop at the water station and the table before leaving (operator,
 # 2026-10-01: 5 s -> 2 s).
 STOP_DWELL_S = 2.0
+
+
+def front_lead_m(front_extent_m, half_width_m, heading_error_rad):
+    """
+    Return how far the leading front corner is ahead of the axle along the face normal.
+
+    The front edge is straight across the frame, so a base turned by the heading error
+    against the face meets it first at a corner: 2.7 deg on the 0.45 m frame puts that
+    corner 1.06 cm ahead of the edge centre. The 0.54 m wheels sit 2.7 cm behind the
+    front edge and would lead only past a 30 deg turn.
+    """
+    return (front_extent_m * math.cos(heading_error_rad)
+            + half_width_m * abs(math.sin(heading_error_rad)))
 
 
 class BoxObservationUnavailable(RuntimeError):
@@ -845,6 +860,12 @@ class BoxServiceRoute(ServiceRoute):
         if (isinstance(width_m, bool) or not isinstance(width_m, (int, float))
                 or not math.isfinite(width_m) or width_m <= 0):
             raise ValueError('invalid chassis width')
+        # The front corners are the frame's; older geometry files give only the wheels.
+        frame_m = geometry.get('frame_width', {'value': width_m})['value']
+        if (isinstance(frame_m, bool) or not isinstance(frame_m, (int, float))
+                or not math.isfinite(frame_m) or not 0 < frame_m <= width_m):
+            raise ValueError('invalid chassis frame width')
+        self.box_front_half_width_m = frame_m / 2
         for key, field in (('map', 'map_yaml'), ('keepout', 'keepout_mask_yaml')):
             verify_identity(self.registry[key], route[field])
         if route.get('frame_id') != 'map':
@@ -916,7 +937,9 @@ class BoxServiceRoute(ServiceRoute):
                     self.last_box_face = {
                         'face_center_map_xy_m': list(target['face_center_map_xy_m']),
                         'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
-                    self.emit('box_phase', phase=phase, requested_front_gap_m=gap_m)
+                    self.emit('box_phase', phase=phase, requested_front_gap_m=gap_m,
+                              target_front_gap_m=(self._final_gap_m()
+                                                  if phase == 'final_approach' else gap_m))
                     if phase == 'face_alignment':
                         # Judged by the alignment goal checker, not the final contract.
                         planned = self.plan_pose(
@@ -973,9 +996,10 @@ class BoxServiceRoute(ServiceRoute):
         front = (actual[0] + front_extent_m * math.cos(actual[2]),
                  actual[1] + front_extent_m * math.sin(actual[2]))
         estimated_gap_m = sum((front[i] - face[i]) * outward[i] for i in (0, 1))
+        half_width_m = self.box_front_half_width_m
         corners = [
-            (front[0] - side * width_m / 2 * math.sin(actual[2]),
-             front[1] + side * width_m / 2 * math.cos(actual[2]))
+            (front[0] - side * half_width_m * math.sin(actual[2]),
+             front[1] + side * half_width_m * math.cos(actual[2]))
             for side in (-1, 1)
         ]
         corner_gaps = [sum((corner[i] - face[i]) * outward[i] for i in (0, 1))
@@ -983,13 +1007,15 @@ class BoxServiceRoute(ServiceRoute):
         yaw_error = abs(math.atan2(
             math.sin(actual[2] - target_yaw),
             math.cos(actual[2] - target_yaw)))
-        # Centre gap and the contract heading decide; inside that heading the
-        # corners only follow it and are logged (2026-09-30 table_02: 2.74 deg,
-        # centre 5.7 cm, corners 4.4 and 7.0 cm stopped a good park).
+        # The nearest front corner decides, with the contract heading: at a 1.5 cm
+        # target a 3 deg stop judged on the centre left a corner computed 0.8 cm inside
+        # the face (review 2026-10-06). At 5 cm the centre was judged (2026-09-30
+        # table_02: 2.74 deg, centre 5.7 cm, corners 4.4 and 7.0 cm).
         target_gap_m = self._final_gap_m()
+        nearest_gap_m = min(corner_gaps)
         gap_confirmed = (
-            math.isfinite(estimated_gap_m) and abs(estimated_gap_m - target_gap_m) <= 0.01
-            and all(math.isfinite(gap) for gap in corner_gaps)
+            math.isfinite(estimated_gap_m) and math.isfinite(nearest_gap_m)
+            and abs(nearest_gap_m - target_gap_m) <= FINAL_GAP_TOLERANCE_M
             and yaw_error <= self.parking_contract['yaw_tolerance_rad'])
         if gap_confirmed:
             # The dwell holds the confirmed stop where it is (map pose at rest).
@@ -998,6 +1024,7 @@ class BoxServiceRoute(ServiceRoute):
         self.emit('box_approach_finished' if gap_confirmed else 'box_gap_not_confirmed',
                   estimated_front_gap_m=estimated_gap_m,
                   estimated_front_corner_gaps_m=corner_gaps,
+                  estimated_nearest_front_gap_m=nearest_gap_m,
                   estimated_face_yaw_error_rad=yaw_error,
                   desired_front_gap_m=target_gap_m, confirmation=self.confirmation,
                   physical_accuracy='NOT_EXTERNALLY_MEASURED',
@@ -1059,7 +1086,8 @@ class BoxServiceRoute(ServiceRoute):
                   turned_deg=round(math.degrees(turned), 3),
                   residual_after_deg=round(math.degrees(after), 3))
         distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
-        travel_m = distance_m - front_extent_m - self._final_gap_m()
+        lead_m = front_lead_m(front_extent_m, getattr(self, 'box_front_half_width_m', 0.0), after)
+        travel_m = (distance_m - lead_m - self._final_gap_m()) / math.cos(after)
         if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
             self._fail_final('final_approach_unavailable', travel_m=self._json_scalar(travel_m))
             return False, None
@@ -1102,13 +1130,19 @@ class BoxServiceRoute(ServiceRoute):
         aligned = facing >= math.cos(self.parking_contract['yaw_tolerance_rad'])
         heading = actual[2] if aligned else math.atan2(-outward[1], -outward[0])
         along = facing if aligned else 1.0
-        travel_m = ((distance_m - front_extent_m - self._final_gap_m()) / along
-                    + FINAL_STOP_SHORT_M if facing > math.cos(math.pi / 6) else float('nan'))
-        if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
+        # The heading held (or the face normal turned onto) sets which front corner
+        # leads; it, not the edge centre, closes to the target gap.
+        lead_m = front_lead_m(front_extent_m, getattr(self, 'box_front_half_width_m', 0.0),
+                              math.acos(max(-1.0, min(1.0, along))))
+        closing_m = ((distance_m - lead_m - self._final_gap_m()) / along
+                     if facing > math.cos(math.pi / 6) else float('nan'))
+        if not math.isfinite(closing_m) or not 0.0 < closing_m <= 0.6:
             self._fail_final('final_approach_unavailable',
                              face_heading_cos=self._json_scalar(facing),
-                             travel_m=self._json_scalar(travel_m))
+                             travel_m=self._json_scalar(closing_m))
             return False, None
+        controller = getattr(self, 'final_approach_controller', 'Parking')
+        travel_m = closing_m + (FINAL_STOP_SHORT_M if controller == 'Parking' else 0.0)
         steps = int(math.ceil(travel_m / 0.05)) + 1
         points = [(actual[0] + travel_m * k / steps * math.cos(heading),
                    actual[1] + travel_m * k / steps * math.sin(heading))
@@ -1127,10 +1161,10 @@ class BoxServiceRoute(ServiceRoute):
             end_x, end_y, end_yaw = to_odom(end['x'], end['y'], end['yaw'])
             self.emit('final_approach_straight', travel_m=travel_m,
                       face_heading_cos=facing, heading_basis='robot' if aligned else 'face',
-                      controller_id=getattr(self, 'final_approach_controller', 'Parking'))
+                      lead_m=lead_m, controller_id=controller)
             reached = self._execute_reverse_path(
                 path, send_path=odom_path,
-                controller_id=getattr(self, 'final_approach_controller', 'Parking'),
+                controller_id=controller,
                 verify_contract={**self.parking_contract, 'reference_frame': 'odom'},
                 verify_waypoint={'x': end_x, 'y': end_y, 'yaw': end_yaw})
         finally:
@@ -1304,13 +1338,13 @@ def parse_args(argv=None):
         help='Motion and search budget from transit start to the final stop')
     parser.add_argument(
         '--return-home', action='store_true',
-        help='After a confirmed approach, hold five seconds, escape and dock')
+        help='After a confirmed approach, hold --dwell-s, escape and dock')
     parser.add_argument(
         '--return-timeout-s', type=float,
         help='Budget for the escape and dock return; required by --return-home')
     parser.add_argument(
         '--via-id', choices=('water_station',),
-        help='First stop before the table: approach, hold five seconds and escape')
+        help='First stop before the table: approach, hold --dwell-s and escape')
     parser.add_argument('--graceful-final', action='store_true',
                         help='use the Graceful controllers for the box approach and dock '
                              'leg instead of RPP (trajectory collision check, see 105)')
@@ -1334,7 +1368,7 @@ def parse_args(argv=None):
     parser.add_argument(
         '--resume-parked-from-log', type=Path,
         help='An earlier run stopped at the first box (via stop if given, else the table): '
-             'hold five seconds, escape from the face logged there, then continue')
+             'hold --dwell-s, escape from the face logged there, then continue')
     parser.add_argument(
         '--operator-heartbeat', type=Path,
         help='file the operator PC touches while it follows the run; no further goal '
@@ -1348,8 +1382,9 @@ def parse_args(argv=None):
                         help='held stop at each box (longer for an external gap measurement)')
     args = parser.parse_args(argv)
     if args.final_gap_m is not None and not (
-            math.isfinite(args.final_gap_m) and 0.0 < args.final_gap_m <= MAXIMUM_FRONT_GAP_M):
-        parser.error('--final-gap-m must be in (0, 0.10] m')
+            math.isfinite(args.final_gap_m)
+            and MINIMUM_FRONT_GAP_M <= args.final_gap_m <= MAXIMUM_FRONT_GAP_M):
+        parser.error('--final-gap-m must be in [0.01, 0.10] m')
     if not (math.isfinite(args.dwell_s) and 0.0 < args.dwell_s <= 120.0):
         parser.error('--dwell-s must be in (0, 120] s')
     if (not math.isfinite(args.operator_link_timeout_s)

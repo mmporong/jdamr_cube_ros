@@ -243,7 +243,8 @@ def test_box_contract_sets_the_final_front_gap_and_older_contracts_keep_5_cm(tmp
     assert _contract()['target_front_gap_m'] == pytest.approx(0.05)
     document = yaml.safe_load((ROOT / 'config/box_parking_contract.yaml').read_text(
         encoding='utf-8'))
-    for value in (0.0, -0.01, 0.2, float('nan'), True):
+    # Below 1 cm the +-1 cm judgement would accept a front inside the face.
+    for value in (0.0, 0.005, -0.01, 0.2, float('nan'), True):
         document['target_front_gap_m'] = value
         path = tmp_path / 'contract.yaml'
         path.write_text(yaml.safe_dump(document), encoding='utf-8')

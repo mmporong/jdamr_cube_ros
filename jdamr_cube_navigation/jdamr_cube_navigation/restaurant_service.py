@@ -177,6 +177,13 @@ TRANSIT_VARIANTS = {'lattice-mppi': '', 'navfn-mppi': '_navfn_mppi', 'navfn-rpp'
 # straight-line distance of the final goal, so it skipped the pre-point 0.42 m from
 # the observation pose and reversed in (evaluation/20261006_CONTROLLER_SELECTION_*).
 DEFAULT_TRANSIT = 'navfn-rpp'
+# A parked dwell is confirmed as a stationary window for at most this long; a longer
+# dwell (an external gap measurement) then only has to stay put. One recovered input
+# gap after the first seconds failed a 120 s window that held for 64 s (review
+# 2026-10-06).
+PARKED_CONFIRM_MAX_S = 5.0
+PARKED_HOLD_MAX_MOVE_M = 0.02
+PARKED_HOLD_MAX_TURN_RAD = math.radians(2.0)
 
 
 def _ahead(pose, distance_m):
@@ -2499,10 +2506,32 @@ class ServiceRoute(CorridorRoute):
         # A navigation deadline must not expire during the subsequent dwell.
         self.run_deadline_s = None
         self.emit('parked_dwell_started', dwell_s=dwell_s)
-        success = self._verify_parking_stop(index, waypoint, None, hold_s=dwell_s)
+        confirm_s = min(dwell_s, PARKED_CONFIRM_MAX_S)
+        success = self._verify_parking_stop(index, waypoint, None, hold_s=confirm_s)
+        if success and dwell_s > confirm_s:
+            success = self._hold_still(dwell_s - confirm_s)
         self.emit('parked_dwell_complete' if success else 'parked_dwell_failed',
                   dwell_s=dwell_s, confirmation=self.confirmation)
         return success
+
+    def _hold_still(self, seconds):
+        """Keep a confirmed stop for seconds more; fail if odom shows it moved."""
+        x0, y0, yaw0 = self._odom_pose()
+        end_s = time.monotonic() + seconds
+        while time.monotonic() < end_s:
+            if self.stop_requested:
+                return False
+            spin_node(self, timeout_sec=0.1)
+            try:
+                x, y, yaw = self._odom_pose()
+            except RuntimeError:
+                continue
+            moved_m = math.dist((x0, y0), (x, y))
+            turned = abs(math.atan2(math.sin(yaw - yaw0), math.cos(yaw - yaw0)))
+            if moved_m > PARKED_HOLD_MAX_MOVE_M or turned > PARKED_HOLD_MAX_TURN_RAD:
+                self.emit('parked_hold_moved', moved_m=moved_m, turned_rad=turned)
+                return False
+        return True
 
     def serve(self, table_id, execute=False):
         """Dock at home, hold five seconds, serve one table, then dock home."""

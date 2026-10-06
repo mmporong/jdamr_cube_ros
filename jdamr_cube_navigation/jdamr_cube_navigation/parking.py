@@ -26,8 +26,10 @@ POSITIVE_FIELDS = {
 }
 # Optional: the box contract sets the front gap its final approach closes to.
 OPTIONAL_CONTRACT = {'target_front_gap_m'}
-# Without it a contract keeps the 5 cm target used until 2026-10-06.
+# Without it a contract keeps the 5 cm target used until 2026-10-06. The final gap
+# is judged within +-1 cm, so a target below 1 cm would accept a front inside the face.
 DEFAULT_FRONT_GAP_M = 0.05
+MINIMUM_FRONT_GAP_M = 0.01
 MAXIMUM_FRONT_GAP_M = 0.10
 COMMAND_ZERO_EPSILON = 1e-9
 # Requirement/candidate bounds, not measured calibration constants. A custom
@@ -106,8 +108,8 @@ def load_parking_contract(path: Path) -> dict:
         document['yaw_tolerance_deg'])
     gap_m = _finite_number(document.get('target_front_gap_m', DEFAULT_FRONT_GAP_M),
                            'target_front_gap_m')
-    if not 0.0 < gap_m <= MAXIMUM_FRONT_GAP_M:
-        raise ValueError('target_front_gap_m must be in (0, 0.10] m')
+    if not MINIMUM_FRONT_GAP_M <= gap_m <= MAXIMUM_FRONT_GAP_M:
+        raise ValueError('target_front_gap_m must be in [0.01, 0.10] m')
     document['target_front_gap_m'] = gap_m
     return document
 

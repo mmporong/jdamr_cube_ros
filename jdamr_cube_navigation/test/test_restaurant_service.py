@@ -2887,6 +2887,38 @@ def test_a_trim_just_over_the_minimum_still_turns(monkeypatch):
     assert turned >= math.radians(0.16)
 
 
+def _dwell_node(monkeypatch, poses, verified=True):
+    node = route()
+    node.selected_pose = {'x_m': 1.0, 'y_m': 0.0, 'yaw_rad': 0.0}
+    node.waypoints = [{'id': 'main', 'x': 1.0, 'y': 0.0, 'yaw': 0.0}]
+    node._verify_parking_stop = Mock(return_value=verified)
+    poses = iter(poses)
+    node._odom_pose = lambda: next(poses)
+    clock = iter(range(0, 10000))
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: float(next(clock)))
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
+    return node
+
+
+def test_short_dwell_is_one_stationary_window(monkeypatch):
+    node = _dwell_node(monkeypatch, [])
+    assert node.wait_parked(2.0) is True
+    assert node._verify_parking_stop.call_args.kwargs['hold_s'] == 2.0
+
+
+def test_long_dwell_confirms_five_seconds_then_only_has_to_stay_put(monkeypatch):
+    """A 30 s measurement dwell: 5 s confirmed window, then odom must not move."""
+    still = [(0.0, 0.0, 0.0)] + [(0.001, 0.0, 0.001)] * 100
+    node = _dwell_node(monkeypatch, still)
+    assert node.wait_parked(30.0) is True
+    assert node._verify_parking_stop.call_args.kwargs['hold_s'] == (
+        restaurant_service.PARKED_CONFIRM_MAX_S)
+    moved = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.03, 0.0, 0.0)] + [(0.03, 0.0, 0.0)] * 100
+    node = _dwell_node(monkeypatch, moved)
+    assert node.wait_parked(30.0) is False
+    assert [e for e in _events(node) if e['event'] == 'parked_hold_moved']
+
+
 def test_default_transit_follows_navfn_paths_with_rpp(monkeypatch):
     """2026-10-06 selection: transit and staging run on the RPP trees by default."""
     monkeypatch.setattr(restaurant_service, 'get_package_share_directory',

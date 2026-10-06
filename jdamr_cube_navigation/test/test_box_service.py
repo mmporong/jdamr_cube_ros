@@ -302,7 +302,8 @@ def test_final_gap_and_dwell_options_are_bounded():
     assert args.final_gap_m is None and args.dwell_s == box_service.STOP_DWELL_S
     args = parse_args([*base, '--final-gap-m', '0.02', '--dwell-s', '30'])
     assert (args.final_gap_m, args.dwell_s) == (0.02, 30.0)
-    for extra in (['--final-gap-m', '0'], ['--final-gap-m', '0.2'],
+    assert parse_args([*base, '--final-gap-m', '0.01']).final_gap_m == 0.01
+    for extra in (['--final-gap-m', '0'], ['--final-gap-m', '0.005'], ['--final-gap-m', '0.2'],
                   ['--final-gap-m', 'nan'], ['--dwell-s', '0'], ['--dwell-s', '500']):
         with pytest.raises(SystemExit):
             parse_args([*base, *extra])
@@ -1347,6 +1348,96 @@ def test_rpp_transit_flag_selects_rpp_before_the_cycle(monkeypatch, tmp_path):
     default, rpp = created
     assert default.calls == ['visit']
     assert rpp.calls == ['rpp', 'visit']
+
+
+def test_final_gap_and_dwell_reach_the_attempt(monkeypatch, tmp_path):
+    for name in ('registry', 'mount', 'geometry', 'route'):
+        (tmp_path / f'{name}.yaml').write_text('{}\n')
+    argv = ['--registry', str(tmp_path / 'registry.yaml'),
+            '--approach-route', str(tmp_path / 'route.yaml'),
+            '--camera-mount', str(tmp_path / 'mount.yaml'),
+            '--geometry', str(tmp_path / 'geometry.yaml'),
+            '--parking-contract', str(BOX_CONTRACT), '--table-id', 'table_01',
+            '--region-xy', '1.896', '0.303', '--execute', '--candidate-trial', '--return-home',
+            '--return-timeout-s', '600']
+    monkeypatch.setattr(box_service, 'load_registry', lambda _path: {'home': {}})
+    monkeypatch.setattr(box_service.rclpy, 'init', lambda **_kwargs: None)
+    monkeypatch.setattr(box_service.rclpy, 'shutdown', lambda **_kwargs: None)
+    created = []
+
+    class Route:
+        def __init__(self, *args, **kwargs):
+            self.visit_observed_box = Mock(return_value=True)
+            self.dwell_and_return_home = Mock(return_value=True)
+            self._camera = Mock(return_value=True)
+            self.finish_navigation = Mock(return_value=True)
+            self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
+            self.call_operator = Mock(return_value='CRITICAL')
+            self.battery_return_due = Mock(return_value=False)
+            created.append(self)
+
+    monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
+    box_service.main([*argv, '--log', str(tmp_path / 'default.jsonl')])
+    box_service.main([*argv, '--final-gap-m', '0.02', '--dwell-s', '30',
+                      '--log', str(tmp_path / 'trial.jsonl')])
+    default, trial = created
+    assert default.final_gap_override_m is None
+    assert default.dwell_and_return_home.call_args.args[0] == box_service.STOP_DWELL_S
+    assert trial.final_gap_override_m == 0.02
+    assert trial.dwell_and_return_home.call_args.args[0] == 30.0
+
+
+def _final_judged(mission, final_pose, frame_width_m=0.45):
+    """Run one visit whose straight approach ended at final_pose; return the last event."""
+    mission.capture_stationary_pose = Mock(side_effect=[((0, 0, 0), {}), (final_pose, {})])
+    mission.visit_observed_box(
+        'route', {}, {'front_to_wheel_axis': {'value': 0.065},
+                      'wheel_outer_width': {'value': 0.540},
+                      'frame_width': {'value': frame_width_m}},
+        'table_01', (1, 0), 0.6, execute=True, candidate_trial=True)
+    return mission.emit.call_args
+
+
+def test_box_contract_judges_the_nearest_front_corner_at_1_5_cm(mission):
+    """Face at x 1.0 facing -x; the 1.5 cm target is met at the nearest frame corner."""
+    from jdamr_cube_navigation.parking import load_parking_contract
+    mission.parking_contract = load_parking_contract(BOX_CONTRACT)
+    finished = _final_judged(mission, (1.0 - 0.065 - 0.015, 0.0, 0.0))
+    assert finished.args == ('box_approach_finished',)
+    assert finished.kwargs['desired_front_gap_m'] == pytest.approx(0.015)
+    assert finished.kwargs['estimated_nearest_front_gap_m'] == pytest.approx(0.015)
+    # The old 5.5 cm stop is now far from the target.
+    assert _final_judged(mission, (1.0 - 0.065 - 0.055, 0.0, 0.0)).args == (
+        'box_gap_not_confirmed',)
+    # 3 deg inside the contract, centre 0.6 cm: a corner is 0.58 cm inside the face.
+    tilt = math.radians(3.0)
+    centre_x = 1.0 - 0.006 - 0.065 * math.cos(tilt)
+    tilted = _final_judged(mission, (centre_x, 0.0, tilt))
+    assert tilted.args == ('box_gap_not_confirmed',)
+    assert min(tilted.kwargs['estimated_front_corner_gaps_m']) == pytest.approx(
+        0.006 - 0.225 * math.sin(tilt))
+    # 2.69 deg with the nearest corner at the target is a park.
+    tilt = math.radians(2.69)
+    corner_x = 1.0 - 0.015 - box_service.front_lead_m(0.065, 0.225, tilt)
+    assert _final_judged(mission, (corner_x, 0.0, tilt)).args == ('box_approach_finished',)
+
+
+def test_final_gap_option_overrides_the_contract_in_the_judgement(mission):
+    from jdamr_cube_navigation.parking import load_parking_contract
+    mission.parking_contract = load_parking_contract(BOX_CONTRACT)
+    mission.final_gap_override_m = 0.05
+    finished = _final_judged(mission, (1.0 - 0.065 - 0.05, 0.0, 0.0))
+    assert finished.args == ('box_approach_finished',)
+    assert finished.kwargs['desired_front_gap_m'] == pytest.approx(0.05)
+
+
+def test_final_approach_constants_keep_their_measured_basis():
+    """0.5 cm: 38 Parking stops ended 0.51 cm short of 5 cm (09-30 to 10-02)."""
+    assert box_service.FINAL_STOP_SHORT_M == pytest.approx(0.005)
+    assert box_service.FINAL_GAP_TOLERANCE_M == pytest.approx(0.01)
+    assert box_service.front_lead_m(0.065, 0.225, 0.0) == pytest.approx(0.065)
+    assert box_service.front_lead_m(0.065, 0.225, math.radians(-2.7)) == pytest.approx(
+        0.065 * math.cos(math.radians(2.7)) + 0.225 * math.sin(math.radians(2.7)))
 
 
 def _camera_node():

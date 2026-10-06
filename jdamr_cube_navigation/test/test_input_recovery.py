@@ -2511,6 +2511,53 @@ def test_l2b_missing_entry_heading_checker_fails_before_escape(monkeypatch, tmp_
     assert isinstance(result, RuntimeError) and 'entry heading' in str(result)
 
 
+def _parking_fake(yaw, y_m=-0.47, controller='Parking'):
+    """Face at y=-1.0 facing +y; the base at y_m looking -y off by `yaw`."""
+    sent = {}
+    fake = SimpleNamespace(
+        capture_stationary_pose=lambda: ((0.0, y_m, -math.pi / 2 + yaw), None),
+        parking_contract={'yaw_tolerance_rad': math.radians(3.0)},
+        box_front_half_width_m=0.225, final_approach_controller=controller,
+        _final_gap_m=lambda: BOX_GAP_M,
+        emit=lambda name, **fields: sent.setdefault(name, fields),
+        _json_scalar=float, config=None, waypoints=None,
+        _pose=lambda _i, wp: SimpleNamespace(header=None, yaw=wp['yaw'], x=wp['x']),
+        _frozen_in_odom=lambda path: (path, lambda x, y, yaw: (x, y, yaw)))
+    fake._execute_reverse_path = lambda path, **kwargs: sent.setdefault('end', kwargs) or True
+    fake._fail_final = lambda reason, **fields: box_service.BoxServiceRoute._fail_final(
+        fake, reason, **fields)
+    return fake, sent
+
+
+def test_parking_straight_closes_the_leading_corner_to_the_target():
+    """2 deg inside the contract: the robot keeps its heading and its corner leads."""
+    tilt = math.radians(2.0)
+    fake, sent = _parking_fake(tilt)
+    reached, _ = box_service.BoxServiceRoute._parking_final_approach(
+        fake, {'face_center_map_xy_m': (0.0, -1.0), 'outward_normal_map_xy': (0.0, 1.0)}, 0.065)
+    assert reached and sent['final_approach_straight']['heading_basis'] == 'robot'
+    lead = box_service.front_lead_m(0.065, 0.225, tilt)
+    assert sent['final_approach_straight']['lead_m'] == pytest.approx(lead)
+    assert sent['final_approach_straight']['travel_m'] == pytest.approx(
+        (0.53 - lead - BOX_GAP_M) / math.cos(tilt) + box_service.FINAL_STOP_SHORT_M)
+
+
+def test_graceful_straight_gets_no_parking_stop_correction():
+    fake, sent = _parking_fake(0.0, controller='GracefulParking')
+    box_service.BoxServiceRoute._parking_final_approach(
+        fake, {'face_center_map_xy_m': (0.0, -1.0), 'outward_normal_map_xy': (0.0, 1.0)}, 0.065)
+    assert sent['final_approach_straight']['travel_m'] == pytest.approx(0.53 - 0.065 - BOX_GAP_M)
+
+
+def test_parking_straight_refuses_a_front_already_inside_the_target_gap():
+    """4 mm inside: the 5 mm correction must not turn it into a 1 mm approach."""
+    fake, sent = _parking_fake(0.0, y_m=-1.0 + 0.065 + BOX_GAP_M - 0.004)
+    reached, _ = box_service.BoxServiceRoute._parking_final_approach(
+        fake, {'face_center_map_xy_m': (0.0, -1.0), 'outward_normal_map_xy': (0.0, 1.0)}, 0.065)
+    assert not reached and sent['failed']['reason'] == 'final_approach_unavailable'
+    assert 'end' not in sent
+
+
 def _zero_turn_fake(yaw, poses_after=None):
     """Face at y=-1.0 facing +y, robot 0.47 m behind it looking -y off by `yaw`."""
     sent, calls = {}, []

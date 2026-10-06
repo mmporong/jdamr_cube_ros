@@ -890,6 +890,13 @@ def stop_requested_since(started):
 
 def cmd_go(args):
     """One cycle per table: `go table_01 table_02` docks and re-inits between them."""
+    # The executor's own bounds, checked before any recorder or monitor starts.
+    gap = getattr(args, 'final_gap_m', None)
+    if gap is not None and not (math.isfinite(gap) and 0.01 <= gap <= 0.10):
+        fail('--final-gap-m must be in [0.01, 0.10] m')
+    dwell = getattr(args, 'dwell_s', None)
+    if dwell is not None and not (math.isfinite(dwell) and 0.0 < dwell <= 120.0):
+        fail('--dwell-s must be in (0, 120] s')
     tables = list(getattr(args, 'table_ids', None) or [args.table_id])
     if len(tables) > 1 and (args.skip_via or args.resume_at_observation or args.resume_parked_log
                             or args.dock_only or args.route or args.region):
