@@ -1300,6 +1300,24 @@ def test_transit_and_staging_default_to_lattice_and_mppi_with_rpp_copies():
         'navigate_to_pose_staging_navfn_mppi.xml')
 
 
+@pytest.mark.parametrize('name', ['navigate_through_poses_transit.xml',
+                                  'navigate_through_poses_transit_navfn_mppi.xml',
+                                  'navigate_through_poses_transit_rpp.xml'])
+def test_transit_drops_a_passed_waypoint_on_every_tick(name):
+    """2026-10-06 16:48: dropped only at a replan, a passed waypoint pulled the base back."""
+    from xml.etree import ElementTree as ET
+    root = ET.parse(ROOT / 'jdamr_cube_navigation/behavior_trees' / name).getroot()
+    rate = next(root.iter('RateController'))
+    sequence = list(rate)[0]
+    assert sequence.tag == 'Sequence'
+    first, replan = list(sequence)
+    assert first.tag == 'ForceSuccess' and list(first)[0].tag == 'RemovePassedGoals'
+    assert replan.tag == 'Fallback'
+    # The changed goals trigger the replan; nothing else drops goals.
+    assert [e.tag for e in replan.iter('GlobalUpdatedGoal')] == ['GlobalUpdatedGoal']
+    assert len(list(root.iter('RemovePassedGoals'))) == 1
+
+
 def _straight_zone_rejected(tmp_path, mutate, match):
     document = yaml.safe_load(PARAMS.read_text(encoding='utf-8'))
     mutate(document['collision_monitor']['ros__parameters']['StopZone'])
