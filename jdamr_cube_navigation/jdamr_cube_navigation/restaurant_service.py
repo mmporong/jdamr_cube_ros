@@ -966,31 +966,6 @@ class ServiceRoute(CorridorRoute):
         """Whether the band ahead is empty on a fresh scan (an unreadable scan is not)."""
         return self._blocked_ahead() is False
 
-    def _use_recovery_controller(self):
-        """
-        On the RPP trees (--rpp-transit), retry a leg the controller could not finish.
-
-        The retry runs on the Lattice + MPPI trees. RPP follows the planner's path as
-        given; NavFn plans for a point and put the path 1-2 cm into an object beside
-        a 0.64 m gap, so every RPP retry swung the right wheel into the same object
-        (2026-10-02 17:49-17:52). Those trees plan with Lattice
-        (footprint-aware, NavFn when it finds nothing) and follow with MPPI, which
-        weighs the footprint cost against the path and can pass off it.
-        """
-        if (getattr(self, '_recovery_saved_trees', None) is None
-                and self.through_behavior_tree.endswith('_rpp.xml')):
-            self._recovery_saved_trees = (self.through_behavior_tree,
-                                          self.staging_behavior_tree)
-            self._set_transit_trees('')
-            self.emit('recovery_controller', controller='MPPI', planner='Lattice')
-
-    def _restore_controller(self):
-        """Return to the configured transit and staging trees after the leg."""
-        saved = getattr(self, '_recovery_saved_trees', None)
-        if saved is not None:
-            self.through_behavior_tree, self.staging_behavior_tree = saved
-            self._recovery_saved_trees = None
-
     def _escape_blocked(self, wait=1):
         """
         Move away from what blocks the base before the hold.

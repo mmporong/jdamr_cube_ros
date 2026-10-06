@@ -682,10 +682,7 @@ class CorridorRoute(Node):
         PATH_BLOCKED_RETRIES after holding PATH_BLOCKED_WAIT_S on a blocked path.
         """
         self._resume_waypoint_index = 0
-        try:
-            return self._retry_loop(attempt)
-        finally:
-            self._restore_controller()
+        return self._retry_loop(attempt)
 
     def _retry_loop(self, attempt):
         input_retried = False
@@ -706,8 +703,11 @@ class CorridorRoute(Node):
                 blocked_waits += 1
                 code = self._retry_blocked_code
                 if code not in PATH_BLOCKED_PLANNER_CODES:
+                    # The retry stays on the configured controller with a new plan:
+                    # the Lattice + MPPI retry ran four times on 2026-10-02, none
+                    # finished, and the escapes since then take the base off what
+                    # blocked it (operator 2026-10-06: drop MPPI).
                     self._escape_blocked(blocked_waits)
-                    self._use_recovery_controller()
                 if not self._wait_for_path_clear(blocked, blocked_waits, code):
                     return False
                 continue
@@ -758,12 +758,6 @@ class CorridorRoute(Node):
     def _escape_blocked(self, wait=1):
         """Move clear of a blocking object before the hold (see ServiceRoute)."""
         return False
-
-    def _use_recovery_controller(self):
-        """Retry a leg the controller could not finish differently (see ServiceRoute)."""
-
-    def _restore_controller(self):
-        """Undo _use_recovery_controller once the leg ends (see ServiceRoute)."""
 
     def _front_clear(self):
         """Whether the band ahead of the chassis is empty (see ServiceRoute)."""

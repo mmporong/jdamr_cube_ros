@@ -2355,14 +2355,11 @@ def test_back_off_grows_with_each_hold_at_the_same_block():
         assert node._blocked_behind.call_args.kwargs['band_m'] == pytest.approx(distance + 0.05)
 
 
-def test_controller_block_retries_the_leg_with_mppi_and_restores_the_trees(monkeypatch):
+def test_controller_block_retries_the_leg_on_the_same_rpp_trees(monkeypatch):
+    """2026-10-06: no MPPI retry; the escape, then the same trees with a new plan."""
     _fast_clock(monkeypatch, step_s=1)
-    monkeypatch.setattr(restaurant_service, 'get_package_share_directory',
-                        lambda _: str(PACKAGE))
     node = route()
     node.through_behavior_tree, node.staging_behavior_tree = 'transit_rpp.xml', 'staging_rpp.xml'
-    node.final_approach_controller, node.dock_leg_controller = 'Parking', 'ParkingReverse'
-    node.alignment_behavior_tree = 'alignment'
     node._escape_blocked = Mock(return_value=True)
     node._front_clear = Mock(return_value=True)
     trees = []
@@ -2373,11 +2370,9 @@ def test_controller_block_retries_the_leg_with_mppi_and_restores_the_trees(monke
         return attempt()
 
     assert node._run_with_input_recovery(recording_attempt) is True
-    assert trees[0] == 'staging_rpp.xml' and trees[1].endswith('navigate_to_pose_staging.xml')
-    assert (node.through_behavior_tree, node.staging_behavior_tree) == (
-        'transit_rpp.xml', 'staging_rpp.xml')
+    assert trees == ['staging_rpp.xml', 'staging_rpp.xml']
     assert node._escape_blocked.call_args.args == (1,)
-    assert any(e['event'] == 'recovery_controller' for e in _events(node))
+    assert not any(e['event'] == 'recovery_controller' for e in _events(node))
 
 
 def test_planner_block_keeps_the_controller(monkeypatch):
@@ -2639,13 +2634,6 @@ def test_in_place_trim_commands_no_translation_and_stops_early_by_the_overshoot(
     assert all(v == 0.0 for v, _w in published)
     assert {w for _v, w in published[:-5]} == {restaurant_service.TRIM_ANGULAR_RADPS}
     assert published[-5:] == [(0.0, 0.0)] * 5
-
-
-def test_default_mppi_trees_need_no_recovery_switch():
-    node = route()
-    node._use_recovery_controller()
-    assert node.staging_behavior_tree == 'staging.xml'
-    assert not any(e['event'] == 'recovery_controller' for e in _events(node))
 
 
 @pytest.mark.parametrize('points, poses, hit', [
@@ -2945,9 +2933,6 @@ def test_default_transit_follows_navfn_paths_with_rpp(monkeypatch):
     node.use_transit(restaurant_service.DEFAULT_TRANSIT)
     assert node.through_behavior_tree.endswith('navigate_through_poses_transit_rpp.xml')
     assert node.staging_behavior_tree.endswith('navigate_to_pose_staging_rpp.xml')
-    # A blocked RPP leg still retries on Lattice + MPPI.
-    node._use_recovery_controller()
-    assert node.through_behavior_tree.endswith('navigate_through_poses_transit.xml')
 
 
 @pytest.mark.parametrize('variant, planners, controller', [
