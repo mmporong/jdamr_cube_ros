@@ -1014,7 +1014,8 @@ class BoxServiceRoute(ServiceRoute):
         target_gap_m = self._final_gap_m()
         nearest_gap_m = min(corner_gaps)
         gap_confirmed = (
-            math.isfinite(estimated_gap_m) and math.isfinite(nearest_gap_m)
+            math.isfinite(estimated_gap_m) and all(math.isfinite(gap) for gap in corner_gaps)
+            and nearest_gap_m > 0.0
             and abs(nearest_gap_m - target_gap_m) <= FINAL_GAP_TOLERANCE_M
             and yaw_error <= self.parking_contract['yaw_tolerance_rad'])
         if gap_confirmed:
@@ -1082,6 +1083,11 @@ class BoxServiceRoute(ServiceRoute):
         # Logged against the face in map; the trim itself was judged in odom.
         after = math.atan2(math.sin(face_heading - actual[2]),
                            math.cos(face_heading - actual[2]))
+        # The trim was judged in odom; a map heading this far off means AMCL moved.
+        if abs(after) > self.parking_contract['yaw_tolerance_rad']:
+            self._fail_final('final_trim_missed', residual_deg=round(math.degrees(residual), 2),
+                             residual_after_deg=round(math.degrees(after), 2))
+            return False, None
         self.emit('final_yaw_trim', residual_deg=round(math.degrees(residual), 3),
                   turned_deg=round(math.degrees(turned), 3),
                   residual_after_deg=round(math.degrees(after), 3))
@@ -1121,17 +1127,35 @@ class BoxServiceRoute(ServiceRoute):
         actual, _ = self.capture_stationary_pose()
         face = target['face_center_map_xy_m']
         outward = target['outward_normal_map_xy']
+        face_heading = math.atan2(-outward[1], -outward[0])
         facing = -(math.cos(actual[2]) * outward[0] + math.sin(actual[2]) * outward[1])
-        distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
+        tolerance_cos = math.cos(self.parking_contract['yaw_tolerance_rad'])
+        basis = 'robot'
         # Alignment squares the base to the face seen from the observation point;
         # the closer re-observation can differ by a few degrees (3.5 deg at table_02,
-        # 2026-10-01). Then the path runs along the re-observed normal and Parking
-        # turns onto it instead of failing.
-        aligned = facing >= math.cos(self.parking_contract['yaw_tolerance_rad'])
-        heading = actual[2] if aligned else math.atan2(-outward[1], -outward[0])
-        along = facing if aligned else 1.0
-        # The heading held (or the face normal turned onto) sets which front corner
-        # leads; it, not the edge centre, closes to the target gap.
+        # 2026-10-01). A path along the re-observed normal left Parking 1.0-2.5 deg
+        # off at its end (four stops 10-01 to 10-02), and the leading corner then
+        # 0.4-1.0 cm nearer than the target (review 2026-10-06), so the base turns
+        # onto the normal in place first, judged in odom.
+        if math.cos(math.pi / 6) < facing < tolerance_cos:
+            residual = math.atan2(math.sin(face_heading - actual[2]),
+                                  math.cos(face_heading - actual[2]))
+            if self._rotate_in_place(residual) is None:
+                self._fail_final('final_trim_missed',
+                                 residual_deg=round(math.degrees(residual), 2))
+                return False, None
+            actual, _ = self.capture_stationary_pose()
+            facing = -(math.cos(actual[2]) * outward[0] + math.sin(actual[2]) * outward[1])
+            if facing < tolerance_cos:
+                self._fail_final('final_alignment_missed',
+                                 face_heading_cos=self._json_scalar(facing))
+                return False, None
+            basis = 'face'
+        distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
+        heading = actual[2]
+        along = facing
+        # The held heading sets which front corner leads; it, not the edge centre,
+        # closes to the target gap.
         lead_m = front_lead_m(front_extent_m, getattr(self, 'box_front_half_width_m', 0.0),
                               math.acos(max(-1.0, min(1.0, along))))
         closing_m = ((distance_m - lead_m - self._final_gap_m()) / along
@@ -1160,7 +1184,7 @@ class BoxServiceRoute(ServiceRoute):
             odom_path, to_odom = self._frozen_in_odom(path)
             end_x, end_y, end_yaw = to_odom(end['x'], end['y'], end['yaw'])
             self.emit('final_approach_straight', travel_m=travel_m,
-                      face_heading_cos=facing, heading_basis='robot' if aligned else 'face',
+                      face_heading_cos=facing, heading_basis=basis,
                       lead_m=lead_m, controller_id=controller)
             reached = self._execute_reverse_path(
                 path, send_path=odom_path,

@@ -2515,17 +2515,26 @@ class ServiceRoute(CorridorRoute):
         return success
 
     def _hold_still(self, seconds):
-        """Keep a confirmed stop for seconds more; fail if odom shows it moved."""
-        x0, y0, yaw0 = self._odom_pose()
+        """Keep a confirmed stop for seconds more; fail if odom moved or went unread."""
+        try:
+            x0, y0, yaw0 = self._odom_pose()
+        except RuntimeError as error:
+            self.emit('parked_hold_unobserved', reason=str(error))
+            return False
         end_s = time.monotonic() + seconds
+        read_s = time.monotonic()
         while time.monotonic() < end_s:
             if self.stop_requested:
                 return False
             spin_node(self, timeout_sec=0.1)
             try:
                 x, y, yaw = self._odom_pose()
-            except RuntimeError:
+            except RuntimeError as error:
+                if time.monotonic() - read_s > self.parking_contract['observation_timeout_s']:
+                    self.emit('parked_hold_unobserved', reason=str(error))
+                    return False
                 continue
+            read_s = time.monotonic()
             moved_m = math.dist((x0, y0), (x, y))
             turned = abs(math.atan2(math.sin(yaw - yaw0), math.cos(yaw - yaw0)))
             if moved_m > PARKED_HOLD_MAX_MOVE_M or turned > PARKED_HOLD_MAX_TURN_RAD:

@@ -1369,6 +1369,7 @@ def test_final_gap_and_dwell_reach_the_attempt(monkeypatch, tmp_path):
         def __init__(self, *args, **kwargs):
             self.visit_observed_box = Mock(return_value=True)
             self.dwell_and_return_home = Mock(return_value=True)
+            self.dwell_and_leave = Mock(return_value=True)
             self._camera = Mock(return_value=True)
             self.finish_navigation = Mock(return_value=True)
             self.destroy_node, self.emit, self.request_stop = Mock(), Mock(), Mock()
@@ -1379,12 +1380,15 @@ def test_final_gap_and_dwell_reach_the_attempt(monkeypatch, tmp_path):
     monkeypatch.setattr(box_service, 'BoxServiceRoute', Route)
     box_service.main([*argv, '--log', str(tmp_path / 'default.jsonl')])
     box_service.main([*argv, '--final-gap-m', '0.02', '--dwell-s', '30',
-                      '--log', str(tmp_path / 'trial.jsonl')])
+                      '--via-id', 'water_station', '--via-route', str(tmp_path / 'route.yaml'),
+                      '--via-region-xy', '0.06', '-1.27', '--log', str(tmp_path / 'trial.jsonl')])
     default, trial = created
     assert default.final_gap_override_m is None
     assert default.dwell_and_return_home.call_args.args[0] == box_service.STOP_DWELL_S
     assert trial.final_gap_override_m == 0.02
     assert trial.dwell_and_return_home.call_args.args[0] == 30.0
+    # The water stop holds as long as the table.
+    assert trial.dwell_and_leave.call_args.args[0] == 30.0
 
 
 def _final_judged(mission, final_pose, frame_width_m=0.45):

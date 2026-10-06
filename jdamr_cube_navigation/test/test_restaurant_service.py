@@ -2919,6 +2919,23 @@ def test_long_dwell_confirms_five_seconds_then_only_has_to_stay_put(monkeypatch)
     assert [e for e in _events(node) if e['event'] == 'parked_hold_moved']
 
 
+def test_long_dwell_fails_when_odom_goes_unread(monkeypatch):
+    """No odom for longer than the observation timeout is not a held stop."""
+    node = _dwell_node(monkeypatch, [])
+    node.parking_contract = {'observation_timeout_s': 5.0}
+    reads = iter([(0.0, 0.0, 0.0)])
+
+    def odom():
+        try:
+            return next(reads)
+        except StopIteration:
+            raise RuntimeError('odom transform unavailable') from None
+    node._odom_pose = odom
+    assert node.wait_parked(30.0) is False
+    assert [e for e in _events(node) if e['event'] == 'parked_hold_unobserved']
+    assert [e for e in _events(node) if e['event'] == 'parked_dwell_failed']
+
+
 def test_default_transit_follows_navfn_paths_with_rpp(monkeypatch):
     """2026-10-06 selection: transit and staging run on the RPP trees by default."""
     monkeypatch.setattr(restaurant_service, 'get_package_share_directory',

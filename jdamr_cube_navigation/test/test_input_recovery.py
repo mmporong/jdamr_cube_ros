@@ -2417,14 +2417,16 @@ def test_t35_unconverged_localization_never_moves(monkeypatch, tmp_path, state):
 
 
 def test_final_approach_follows_the_reobserved_face_when_squared_off():
-    """A 3.5 deg residual runs the path along the face normal instead of failing."""
+    """A 3.5 deg residual is turned out in place first, then the straight runs on it."""
     face, outward = (0.0, -1.0), (0.0, 1.0)
     yaw = -math.pi / 2 - math.radians(3.5)
-    sent = {}
+    sent, turns = {}, []
+    captures = iter([((0.0, -0.47, yaw), None), ((0.0, -0.47, -math.pi / 2), None)])
     fake = SimpleNamespace(
-        capture_stationary_pose=lambda: ((0.0, -0.47, yaw), None),
+        capture_stationary_pose=lambda: next(captures),
         parking_contract={'yaw_tolerance_rad': math.radians(3.0)},
         _final_gap_m=lambda: BOX_GAP_M,
+        _rotate_in_place=lambda delta: turns.append(delta) or delta,
         emit=lambda name, **fields: sent.setdefault(name, fields),
         _json_scalar=float, config=None, waypoints=None,
         _pose=lambda _i, wp: SimpleNamespace(header=None, yaw=wp['yaw'], x=wp['x']),
@@ -2438,12 +2440,28 @@ def test_final_approach_follows_the_reobserved_face_when_squared_off():
     reached, _ = box_service.BoxServiceRoute._parking_final_approach(
         fake, {'face_center_map_xy_m': face, 'outward_normal_map_xy': outward}, 0.085)
     assert reached
+    assert turns == [pytest.approx(math.radians(3.5))]
     assert sent['final_approach_straight']['heading_basis'] == 'face'
     assert sent['end']['yaw'] == pytest.approx(-math.pi / 2)
     # Closes to the contract gap; the Parking straight runs FINAL_STOP_SHORT_M further.
     assert sent['final_approach_straight']['travel_m'] == pytest.approx(
         0.53 - 0.085 - BOX_GAP_M + box_service.FINAL_STOP_SHORT_M)
     assert all(pose.yaw == pytest.approx(-math.pi / 2) for pose in sent['path'].poses)
+
+
+def test_final_approach_fails_when_the_turn_onto_the_face_misses():
+    yaw = -math.pi / 2 - math.radians(3.5)
+    sent = {}
+    fake = SimpleNamespace(
+        capture_stationary_pose=lambda: ((0.0, -0.47, yaw), None),
+        parking_contract={'yaw_tolerance_rad': math.radians(3.0)},
+        _final_gap_m=lambda: BOX_GAP_M, _rotate_in_place=lambda delta: 0.0,
+        emit=lambda name, **fields: sent.setdefault(name, fields), _json_scalar=float)
+    fake._fail_final = lambda reason, **fields: box_service.BoxServiceRoute._fail_final(
+        fake, reason, **fields)
+    reached, _ = box_service.BoxServiceRoute._parking_final_approach(
+        fake, {'face_center_map_xy_m': (0.0, -1.0), 'outward_normal_map_xy': (0.0, 1.0)}, 0.085)
+    assert not reached and sent['failed']['reason'] == 'final_alignment_missed'
 
 
 def test_staging_offset_is_taken_out_by_a_curved_reverse_without_alignment_leg(
@@ -2564,6 +2582,8 @@ def _zero_turn_fake(yaw, poses_after=None):
     captures = iter([((0.0, -0.47, yaw), None)] + (poses_after or []))
     fake = SimpleNamespace(
         capture_stationary_pose=lambda: next(captures),
+        parking_contract={'yaw_tolerance_rad': math.radians(3.0)},
+        box_front_half_width_m=0.225,
         _final_gap_m=lambda: BOX_GAP_M,
         emit=lambda name, **fields: sent.setdefault(name, fields),
         _json_scalar=float,
@@ -2638,6 +2658,16 @@ def test_zero_turn_final_turns_either_way_and_rejects_what_it_cannot_do():
     fake._drive_zero_turn = lambda distance: None                 # no odom
     reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
     assert not reached and sent['final_approach_short']['travelled_m'] is None
+
+
+def test_zero_turn_refuses_a_map_heading_far_from_the_odom_trim():
+    """The trim is judged in odom; 4 deg left on the map means AMCL moved."""
+    fake, sent, calls = _zero_turn_fake(
+        -math.pi / 2 + math.radians(2.0),
+        poses_after=[((0.0, -0.47, -math.pi / 2 + math.radians(4.0)), None)])
+    reached, _ = box_service.BoxServiceRoute._zero_turn_final_approach(fake, TARGET, 0.085)
+    assert not reached and sent['failed']['reason'] == 'final_trim_missed'
+    assert [kind for kind, _ in calls] == ['turn']
 
 
 def test_final_approach_dispatch_follows_the_zero_turn_switch():
