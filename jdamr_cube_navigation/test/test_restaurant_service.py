@@ -2634,9 +2634,7 @@ def test_in_place_trim_commands_no_translation_and_stops_early_by_the_overshoot(
     node.parking_tf = SimpleNamespace(lookup_transform=lookup)
     monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', lambda *a, **k: None)
     turned = node._rotate_in_place(math.radians(2.0))
-    early = (restaurant_service.TRIM_ANGULAR_RADPS ** 2
-             / (2 * restaurant_service.TRIM_DECEL_RADPS2)
-             + restaurant_service.TRIM_ANGULAR_RADPS * restaurant_service.DIRECT_STOP_LATENCY_S)
+    early = restaurant_service.TRIM_STOP_RAD
     assert math.radians(2.0) - early <= turned <= math.radians(2.0) - early + 0.003
     assert all(v == 0.0 for v, _w in published)
     assert {w for _v, w in published[:-5]} == {restaurant_service.TRIM_ANGULAR_RADPS}

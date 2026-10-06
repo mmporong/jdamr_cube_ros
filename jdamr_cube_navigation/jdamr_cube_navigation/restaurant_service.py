@@ -70,10 +70,14 @@ PRE_DOCK_DISTANCE_M = 0.25
 STRAIGHT_DOCK_LATERAL_M = 0.01
 # The straight entry, then one pull-out, heading set and entry again.
 DOCK_ENTRY_ATTEMPTS = 2
-# A dock heading only a little over the contract is turned where the robot stands
-# (operator, 2026-10-02: the pull-out and re-entry shuttled back and forth). At
-# 5 deg the rear corners (0.414 m from the turn centre) sweep about 3.6 cm.
+# A dock heading off by up to 5 deg is turned where the robot stands (operator,
+# 2026-10-02: the pull-out and re-entry shuttled back and forth). At 5 deg the
+# rear corners (0.414 m from the turn centre) sweep about 3.6 cm.
 DOCK_END_TURN_MAX_RAD = math.radians(5.0)
+# There it is trimmed to 1 deg, not the 3 deg contract: 2.7 deg left the left
+# front corner about 2 cm ahead of the right (operator, 2026-10-06).
+DOCK_HEADING_TOLERANCE_RAD = math.radians(1.0)
+DOCK_TRIM_ATTEMPTS = 3
 ENTRY_HEADING_CHECKER = 'entry_heading_checker'
 ENTRY_HEADING_TOLERANCE_RAD = math.radians(ENTRY_HEADING_TOLERANCE_DEG)
 # Events whose reason may explain why a cycle stopped short (operator_call).
@@ -120,10 +124,12 @@ STRAIGHT_ESCAPE_EXTRA_S = 5.0
 STRAIGHT_ESCAPE_TOLERANCE_M = 0.01
 # The velocity smoother's linear deceleration (max_decel) that ends a direct move.
 STRAIGHT_DECEL_MPS2 = 0.5
-# In-place trims (zero-turn final approach): slow enough that the smoother's
-# 1.5 rad/s^2 stop adds only w^2 / 2a = 0.12 deg, which the stop anticipates.
+# In-place trims (zero-turn final approach, dock heading). Their stop is sent
+# TRIM_STOP_RAD early: anticipating 0.35 deg (smoother 1.5 rad/s^2 plus 50 ms), a
+# 0.08 rad/s trim still went 0.52 deg past (2026-10-06); the base kept turning
+# 70 ms after the stop and stopped over 140 ms, 0.87 deg in all.
 TRIM_ANGULAR_RADPS = 0.08
-TRIM_DECEL_RADPS2 = 1.5
+TRIM_STOP_RAD = math.radians(0.87)
 TRIM_EXTRA_S = 4.0
 # A direct move's stop is sent this much early on top of the deceleration: one
 # 20 Hz smoother cycle plus odometry delay (reviewed 2026-10-06; not measured).
@@ -1279,8 +1285,7 @@ class ServiceRoute(CorridorRoute):
         command = Twist()
         command.angular.z = math.copysign(TRIM_ANGULAR_RADPS, delta_rad)
         # At most half the turn: a trim just over the minimum must still turn.
-        early_rad = min(TRIM_ANGULAR_RADPS ** 2 / (2.0 * TRIM_DECEL_RADPS2)
-                        + TRIM_ANGULAR_RADPS * DIRECT_STOP_LATENCY_S, abs(delta_rad) / 2.0)
+        early_rad = min(TRIM_STOP_RAD, abs(delta_rad) / 2.0)
         deadline_s = time.monotonic() + abs(delta_rad) / TRIM_ANGULAR_RADPS + TRIM_EXTRA_S
         return self._direct_motion(
             command, lambda turned: abs(turned) >= abs(delta_rad) - early_rad, measure,
@@ -2298,9 +2303,9 @@ class ServiceRoute(CorridorRoute):
         robot turned in place there (2026-10-01, see PRE_DOCK_DISTANCE_M). A
         staging offset is now taken out by a curved reverse to pre_dock, and the
         heading is set to 1.5 deg where the straight part starts. A dock heading
-        a little over the contract (up to DOCK_END_TURN_MAX_RAD) is turned in
-        place there; a larger one pulls straight out to that start, sets the
-        heading and enters once more. Staging was confirmed on the map; every leg
+        up to DOCK_END_TURN_MAX_RAD off is trimmed in place there to
+        DOCK_HEADING_TOLERANCE_RAD; a larger one pulls straight out to that
+        start, sets the heading and enters once more. Staging was confirmed on the map; every leg
         runs and is confirmed in odom as frozen here, so AMCL jumps cannot bend it.
         """
         controller = getattr(self, 'dock_leg_controller', 'ParkingReverse')
@@ -2354,10 +2359,7 @@ class ServiceRoute(CorridorRoute):
             error = math.atan2(math.sin(dock['yaw'] - yaw), math.cos(dock['yaw'] - yaw))
             self.emit('dock_heading_measured', delta_yaw_rad=error, attempt=attempt + 1)
             if abs(error) <= DOCK_END_TURN_MAX_RAD:
-                if (abs(error) > home['yaw_tolerance_rad']
-                        and not self._turn_to_dock_heading(
-                            dock, ENTRY_HEADING_TOLERANCE_RAD, ENTRY_HEADING_CHECKER,
-                            event='dock_end_turn_measured')):
+                if not self._trim_dock_heading(dock):
                     return False
                 return self._verify_parking_stop(
                     len(self.waypoints) - 1, dock, None,
@@ -2365,6 +2367,24 @@ class ServiceRoute(CorridorRoute):
         self.emit('dock_heading_out_of_tolerance', delta_yaw_rad=error,
                   attempts=DOCK_ENTRY_ATTEMPTS)
         return False
+
+    def _trim_dock_heading(self, dock):
+        """
+        Trim the heading in the dock to DOCK_HEADING_TOLERANCE_RAD by slow direct turns.
+
+        Each turn is measured again in odom, and one that stopped short or went
+        past is trimmed again, at most DOCK_TRIM_ATTEMPTS times; the dock contract
+        still judges the stop. False only without odom.
+        """
+        for trims in range(DOCK_TRIM_ATTEMPTS + 1):
+            _x, _y, yaw = self._odom_pose()
+            error = math.atan2(math.sin(dock['yaw'] - yaw), math.cos(dock['yaw'] - yaw))
+            if (abs(error) <= DOCK_HEADING_TOLERANCE_RAD or trims == DOCK_TRIM_ATTEMPTS
+                    or self.stop_requested):
+                self.emit('dock_heading_trimmed', delta_yaw_rad=error, trims=trims)
+                return True
+            if self._rotate_in_place(error) is None:
+                return False
 
     def _odom_path(self, points):
         """Return (x, y, yaw) points as a path in odom."""

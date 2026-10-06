@@ -1608,13 +1608,28 @@ def _in_place_turns(world):
     return turns
 
 
+def _dock_trims(node, world, overshoot_deg=0.0):
+    """Turn the world in place as asked, going overshoot_deg past each time."""
+    trims = []
+
+    def rotate(delta_rad):
+        trims.append(delta_rad)
+        turned = delta_rad + math.copysign(math.radians(overshoot_deg), delta_rad)
+        world.pose[2] += turned
+        return turned
+
+    node._rotate_in_place = rotate
+    return trims
+
+
 @pytest.mark.parametrize('offset_deg, entries, end_turns', [
-    (2.0, 1, 0), (4.4, 1, 1), (7.0, 2, 0)])
+    (0.8, 1, 0), (2.0, 1, 1), (4.4, 1, 1), (7.0, 2, 0)])
 def test_t27_dock_heading_is_set_outside_the_dock(
         monkeypatch, tmp_path, offset_deg, entries, end_turns):
-    """Up to 5 deg over, turn where the robot stands; beyond that, pull out and enter again."""
+    """Up to 5 deg off, trim to 1 deg where the robot stands; beyond, pull out and enter again."""
     node, world, stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
     _dock_entries(node, world, offset_deg)
+    trims = _dock_trims(node, world)
     assert node._go_home_reverse(HOME, True) is True
     goals = [goal for kind, goal in world.motions if kind == 'FollowPath']
     reverses = [goal for goal in goals if goal.controller_id == 'ParkingReverse']
@@ -1626,7 +1641,13 @@ def test_t27_dock_heading_is_set_outside_the_dock(
     at_dock = [goal for goal in turns
                if _pose_xyyaw(goal.path.poses[0].pose)[:2] == pytest.approx(dock_xy)]
     outside = [goal for goal in turns if goal not in at_dock]
-    assert len(at_dock) == end_turns
+    # The dock heading is trimmed by direct slow turns, not Nav2 goals in the dock.
+    assert at_dock == []
+    assert len(trims) == end_turns
+    if end_turns:
+        assert math.degrees(trims[0]) == pytest.approx(-offset_deg, abs=1e-6)
+        trimmed = [e for e in _events(node) if e.get('event') == 'dock_heading_trimmed']
+        assert abs(trimmed[-1]['delta_yaw_rad']) <= restaurant_service.DOCK_HEADING_TOLERANCE_RAD
     # A pull-out sets the heading again at the straight entry (staging here).
     assert len(outside) == entries - 1
     assert all(_pose_xyyaw(goal.path.poses[0].pose)[:2]
@@ -1643,6 +1664,33 @@ def test_t27_dock_heading_is_set_outside_the_dock(
     verified = node._verify_parking_stop.call_args_list[-1]
     home = load_parking_contract(CONTRACT)
     assert verified.kwargs['contract'] == {**home, 'reference_frame': 'odom'}
+
+
+def test_t27d_dock_trim_is_measured_again_until_within_one_degree(monkeypatch, tmp_path):
+    """A trim that goes 0.9 deg past is trimmed back; the attempts are bounded."""
+    node, world, _stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    _dock_entries(node, world, 2.5)
+    trims = _dock_trims(node, world, overshoot_deg=0.9)
+    assert node._go_home_reverse(HOME, True) is True
+    # -2.5 deg, then 0.9 deg past is inside 1 deg.
+    assert [round(math.degrees(t), 6) for t in trims] == [-2.5]
+    node, world, _stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    _dock_entries(node, world, 3.0)
+    trims = _dock_trims(node, world, overshoot_deg=1.5)
+    assert node._go_home_reverse(HOME, True) is True
+    # 3.0, -1.5, +1.5 ... never inside 1 deg: stop after DOCK_TRIM_ATTEMPTS.
+    assert len(trims) == restaurant_service.DOCK_TRIM_ATTEMPTS
+    trimmed = [e for e in _events(node) if e.get('event') == 'dock_heading_trimmed']
+    assert trimmed[-1]['trims'] == restaurant_service.DOCK_TRIM_ATTEMPTS
+    # The dock contract still judges the stop.
+    assert node._verify_parking_stop.call_args_list
+
+
+def test_t27e_dock_trim_without_odom_fails(monkeypatch, tmp_path):
+    node, world, _stage = _home_stub_node(monkeypatch, tmp_path, BOX_CONTRACT, CONTRACT)
+    _dock_entries(node, world, 2.0)
+    node._rotate_in_place = lambda _delta: None
+    assert node._go_home_reverse(HOME, True) is False
 
 
 def test_t27b_dock_heading_still_far_off_after_the_second_entry_fails(monkeypatch, tmp_path):
