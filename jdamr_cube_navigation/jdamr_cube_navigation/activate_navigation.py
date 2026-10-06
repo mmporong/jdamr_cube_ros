@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from jdamr_cube_navigation.corridor_route import AMCL_QOS
+from jdamr_cube_navigation.corridor_route import AMCL_QOS, spin_node
 from jdamr_cube_navigation.parking import load_parking_contract
 from jdamr_cube_navigation.restaurant_service import ServiceRoute
 from jdamr_cube_navigation.service_destinations import load_registry
@@ -175,7 +175,9 @@ def initialize_localization(
             if update_future is None and now_s >= next_update_s:
                 update_future = update_client.call_async(Empty.Request())
                 next_update_s = now_s + .2
-            rclpy.spin_once(node, timeout_sec=.05)
+            # rclpy.spin_once() would move the node off its own events executor
+            # for good (2026-10-06: every later reply was dropped).
+            spin_node(node, timeout_sec=.05)
         if fresh_pose_seen and covariance_limits is not None:
             raise RuntimeError(
                 'AMCL covariance did not converge after initialization ACK')
@@ -191,7 +193,7 @@ def rollback_navigation(node, client):
     def wait(future, timeout_s):
         deadline = time.monotonic() + timeout_s
         while rclpy.ok() and not future.done() and time.monotonic() < deadline:
-            rclpy.spin_once(node, timeout_sec=0.05)
+            spin_node(node, timeout_sec=0.05)
         if not future.done() or future.exception() is not None or future.result() is None:
             raise RuntimeError('navigation rollback response unconfirmed')
         return future.result()

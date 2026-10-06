@@ -144,7 +144,7 @@ def test_initialization_uses_service_ack_and_post_ack_amcl_stamp(monkeypatch):
             header=SimpleNamespace(
                 stamp=SimpleNamespace(sec=101, nanosec=0))))
 
-    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+    monkeypatch.setattr(module, 'spin_node', spin_once)
     module.initialize_localization(node, initial_pose())
 
     check.assert_called_once_with(node, module.LOCALIZATION_NODES)
@@ -161,6 +161,38 @@ def test_initialization_uses_service_ack_and_post_ack_amcl_stamp(monkeypatch):
     node.destroy_subscription.assert_called_once()
     assert [item.args[0] for item in node.destroy_client.call_args_list] == [
         initial_client, update_client]
+
+
+def test_initialization_spins_on_the_node_events_executor(monkeypatch):
+    """rclpy.spin_once() detached the node from it; the next reply never came."""
+    monkeypatch.setattr(module, 'require_active', Mock())
+    initial_client = Mock()
+    update_client = Mock()
+    initial_client.wait_for_service.return_value = True
+    update_client.wait_for_service.return_value = True
+    node = Mock()
+    node.stop_requested = False
+    node.create_client.side_effect = [initial_client, update_client]
+    node._wait.return_value = SimpleNamespace()
+    request_time = SimpleNamespace(
+        to_msg=lambda: SimpleNamespace(sec=99, nanosec=0))
+    ack_time = SimpleNamespace(nanoseconds=100_000_000_000)
+    node.get_clock.return_value.now.side_effect = [request_time, ack_time]
+
+    def events_spin_once(timeout_sec):
+        callback = node.create_subscription.call_args.args[2]
+        callback(SimpleNamespace(
+            header=SimpleNamespace(
+                stamp=SimpleNamespace(sec=101, nanosec=0))))
+
+    node.events_executor.spin_once.side_effect = events_spin_once
+
+    def global_spin_once(*_args, **_kwargs):
+        raise AssertionError('rclpy.spin_once moves the node off its executor')
+
+    monkeypatch.setattr(module.rclpy, 'spin_once', global_spin_once)
+    module.initialize_localization(node, initial_pose())
+    node.events_executor.spin_once.assert_called()
 
 
 def test_initialization_rejects_cached_amcl_pose_after_timeout(monkeypatch):
@@ -225,7 +257,7 @@ def test_initialization_rejects_amcl_stamp_equal_to_ack(monkeypatch):
             header=SimpleNamespace(
                 stamp=SimpleNamespace(sec=100, nanosec=0))))
 
-    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+    monkeypatch.setattr(module, 'spin_node', spin_once)
     with pytest.raises(RuntimeError, match='fresh AMCL pose missing'):
         module.initialize_localization(node, initial_pose(), timeout_s=1.0)
 
@@ -248,7 +280,7 @@ def test_initialization_keeps_nomotion_updates_until_covariance_converges(
         callback(amcl_pose(101, next(covariance_samples)))
         now_s[0] += .1
 
-    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+    monkeypatch.setattr(module, 'spin_node', spin_once)
 
     module.initialize_localization(
         node, initial_pose(), timeout_s=1.0,
@@ -272,7 +304,7 @@ def test_initialization_fails_before_startup_when_covariance_never_converges(
         callback(amcl_pose(101, (0.25, 0.25, 0.0685)))
         now_s[0] += .1
 
-    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+    monkeypatch.setattr(module, 'spin_node', spin_once)
     activate = Mock()
     monkeypatch.setattr(module, 'activate_prepared', activate)
 
@@ -295,7 +327,7 @@ def test_initialization_stop_during_covariance_convergence(monkeypatch):
         node.stop_requested = True
         now_s[0] += .1
 
-    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+    monkeypatch.setattr(module, 'spin_node', spin_once)
 
     with pytest.raises(RuntimeError, match='initialization interrupted'):
         module.initialize_localization(
@@ -316,7 +348,7 @@ def test_initialization_rejects_nonfinite_or_negative_covariance(
         callback(amcl_pose(101, (bad_value, .001, .001)))
         now_s[0] += .1
 
-    monkeypatch.setattr(module.rclpy, 'spin_once', spin_once)
+    monkeypatch.setattr(module, 'spin_node', spin_once)
 
     with pytest.raises(RuntimeError, match='covariance did not converge'):
         module.initialize_localization(
