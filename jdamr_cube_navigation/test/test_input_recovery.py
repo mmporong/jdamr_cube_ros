@@ -2548,8 +2548,8 @@ def _parking_fake(yaw, y_m=-0.47, controller='Parking'):
 
 
 def test_parking_straight_closes_the_leading_corner_to_the_target():
-    """2 deg inside the contract: the robot keeps its heading and its corner leads."""
-    tilt = math.radians(2.0)
+    """0.8 deg, under the trim threshold: the robot keeps its heading and its corner leads."""
+    tilt = math.radians(0.8)
     fake, sent = _parking_fake(tilt)
     reached, _ = box_service.BoxServiceRoute._parking_final_approach(
         fake, {'face_center_map_xy_m': (0.0, -1.0), 'outward_normal_map_xy': (0.0, 1.0)}, 0.065)
@@ -2558,6 +2558,22 @@ def test_parking_straight_closes_the_leading_corner_to_the_target():
     assert sent['final_approach_straight']['lead_m'] == pytest.approx(lead)
     assert sent['final_approach_straight']['travel_m'] == pytest.approx(
         (0.53 - lead - BOX_GAP_M) / math.cos(tilt) + box_service.FINAL_STOP_SHORT_M)
+
+
+def test_parking_straight_turns_a_2_9_degree_heading_onto_the_face_first():
+    """2026-10-06 16:00: 2.9 deg after face alignment ended at 3.28 deg and failed."""
+    tilt = math.radians(2.9)
+    fake, sent = _parking_fake(tilt)
+    captures = iter([((0.0, -0.47, -math.pi / 2 + tilt), None),
+                     ((0.0, -0.47, -math.pi / 2), None)])
+    fake.capture_stationary_pose = lambda: next(captures)
+    turns = []
+    fake._rotate_in_place = lambda delta: turns.append(delta) or delta
+    reached, _ = box_service.BoxServiceRoute._parking_final_approach(
+        fake, {'face_center_map_xy_m': (0.0, -1.0), 'outward_normal_map_xy': (0.0, 1.0)}, 0.065)
+    assert reached and turns == [pytest.approx(-tilt)]
+    assert sent['final_approach_straight']['heading_basis'] == 'face'
+    assert sent['final_approach_straight']['lead_m'] == pytest.approx(0.065)
 
 
 def test_graceful_straight_gets_no_parking_stop_correction():

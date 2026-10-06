@@ -54,6 +54,10 @@ FINAL_PLAN_GAP_M = 0.05
 FINAL_STOP_SHORT_M = 0.005
 # The nearest front point is judged within this of the target gap.
 FINAL_GAP_TOLERANCE_M = 0.01
+# Before the straight the base is turned onto the face normal when it is off by more
+# than this: face alignment ended 2.9 deg off (inside its 3 deg), the straight added
+# 0.4 deg and the 3.28 deg stop failed the contract (2026-10-06 16:00, water station).
+FINAL_HEADING_TRIM_RAD = math.radians(1.0)
 # Zero-turn final approach (--zero-turn-final): trim residuals from 0.3 deg up to
 # 30 deg, accept the trim within 0.3 deg, and the straight within 5 mm.
 # The box camera and its observer run only while a box is the next stop (2026-10-06:
@@ -1137,7 +1141,7 @@ class BoxServiceRoute(ServiceRoute):
         # off at its end (four stops 10-01 to 10-02), and the leading corner then
         # 0.4-1.0 cm nearer than the target (review 2026-10-06), so the base turns
         # onto the normal in place first, judged in odom.
-        if math.cos(math.pi / 6) < facing < tolerance_cos:
+        if math.cos(math.pi / 6) < facing < math.cos(FINAL_HEADING_TRIM_RAD):
             residual = math.atan2(math.sin(face_heading - actual[2]),
                                   math.cos(face_heading - actual[2]))
             if self._rotate_in_place(residual) is None:
