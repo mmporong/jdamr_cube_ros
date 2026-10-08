@@ -1171,7 +1171,7 @@ def main():
                          '(default navfn-rpp, 2026-10-06 algorithm selection)')
     go.add_argument('--final-gap-m', type=float,
                     help='front gap of the final box approach (default: the box parking '
-                         'contract target_front_gap_m, 0.015 since 2026-10-06)')
+                         'contract target_front_gap_m: 0.01 since 2026-10-06, 0.05 before)')
     go.add_argument('--dwell-s', type=float,
                     help='held stop at each box (default 2 s; longer to measure the gap)')
     go.add_argument('--resume-at-observation', action='store_true',
