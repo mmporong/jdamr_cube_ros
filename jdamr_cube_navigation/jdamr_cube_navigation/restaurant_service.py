@@ -537,7 +537,11 @@ class ServiceRoute(CorridorRoute):
         while not future.done() and not self.stop_requested and time.monotonic() < deadline_s:
             spin_node(self, timeout_sec=0.05)
         if not future.done() or future.exception() is not None:
-            raise RuntimeError('request interrupted, failed or timed out')
+            # Which of the three, so a cycle log tells them apart (2026-10-06).
+            detail = ('stop requested' if not future.done() and self.stop_requested
+                      else f'no response in {timeout_s:.1f} s' if not future.done()
+                      else f'failed: {future.exception()!r}')
+            raise RuntimeError(f'request interrupted, failed or timed out ({detail})')
         return future.result()
 
     @staticmethod
@@ -608,7 +612,16 @@ class ServiceRoute(CorridorRoute):
             spin_node(self, timeout_sec=0.05)
 
     def _read_parameters(self, remote_node, names):
-        """Reuse one read-only endpoint; never cache the returned parameter values."""
+        """
+        Reuse one read-only endpoint; never cache the returned parameter values.
+
+        A new client's first response can be lost before the server matches its
+        reply reader ("client will not receive response", 20260929_RUNTIME_ROOT_CAUSE).
+        Every executor attempt starts with a new node, and this first map_server
+        read ended the 2026-10-06 10:26 and 17:09 cycles before any motion. An
+        unanswered first read is sent once more within the same 5 s, as
+        require_active() does for GetState.
+        """
         client = self._parameter_readers.get(remote_node)
         if client is None:
             client = self.create_client(GetParameters, f'{remote_node}/get_parameters')
@@ -617,12 +630,23 @@ class ServiceRoute(CorridorRoute):
             return None
         request = GetParameters.Request()
         request.names = list(names)
-        future = client.call_async(request)
-        try:
-            return self._wait(future, 2.0)
-        finally:
-            if not future.done():
-                client.remove_pending_request(future)
+        deadline_s = time.monotonic() + 5.0
+        for attempt in range(2):
+            remaining_s = deadline_s - time.monotonic()
+            future = client.call_async(request)
+            try:
+                return self._wait(future, min(2.0, remaining_s) if attempt == 0 else remaining_s)
+            except RuntimeError as error:
+                incomplete = not future.done()
+                if incomplete:
+                    client.remove_pending_request(future)
+                if (attempt == 0 and incomplete and not self.stop_requested
+                        and time.monotonic() < deadline_s):
+                    self.get_logger().warning(
+                        f'parameter read timeout: node={remote_node} attempt=1/2; '
+                        f'retrying GetParameters within the 5 s budget; error={error}')
+                    continue
+                raise RuntimeError(f'{remote_node} parameter read: {error}') from error
 
     def verify_live_maps(self, require_command_path=True):
         """Require the running map servers to name the registered assets."""

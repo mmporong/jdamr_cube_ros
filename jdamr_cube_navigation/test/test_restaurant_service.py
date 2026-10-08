@@ -868,14 +868,58 @@ def test_parameter_reader_absent_service_never_sends_request():
 
 def test_parameter_reader_discards_pending_request_on_interruption():
     node = route()
+    node.stop_requested = True
     client = Mock()
     pending = Future()
     client.call_async.return_value = pending
     node.create_client = Mock(return_value=client)
     node._wait = Mock(side_effect=RuntimeError('request interrupted, failed or timed out'))
-    with pytest.raises(RuntimeError, match='request interrupted'):
+    with pytest.raises(RuntimeError, match='map_server parameter read: request interrupted'):
         node._read_parameters('map_server', ['yaml_filename'])
     client.remove_pending_request.assert_called_once_with(pending)
+    client.call_async.assert_called_once()
+
+
+def test_parameter_reader_resends_an_unanswered_first_read_once():
+    """A new node's first map_server read went unanswered (2026-10-06 10:26, 17:09)."""
+    node = route()
+    node.stop_requested = False
+    node.get_logger = Mock()
+    client = Mock()
+    lost, answered = Future(), Future()
+    response = SimpleNamespace(values=['map.yaml'])
+    answered.set_result(response)
+    client.call_async.side_effect = [lost, answered]
+    node.create_client = Mock(return_value=client)
+    waits = []
+
+    def wait(future, timeout_s):
+        waits.append(timeout_s)
+        if not future.done():
+            raise RuntimeError('request interrupted, failed or timed out')
+        return future.result()
+
+    node._wait = wait
+    assert node._read_parameters('map_server', ['yaml_filename']) is response
+    client.remove_pending_request.assert_called_once_with(lost)
+    # The second read takes what is left of the 5 s (all of it, as no time passes here).
+    assert waits[0] == 2.0 and 4.9 < waits[1] <= 5.0
+    assert 'node=map_server attempt=1/2' in node.get_logger().warning.call_args.args[0]
+
+
+def test_parameter_reader_names_the_node_after_two_unanswered_reads():
+    node = route()
+    node.stop_requested = False
+    node.get_logger = Mock()
+    client = Mock()
+    client.call_async.side_effect = [Future(), Future()]
+    node.create_client = Mock(return_value=client)
+    node._wait = Mock(side_effect=RuntimeError(
+        'request interrupted, failed or timed out (no response in 2.0 s)'))
+    with pytest.raises(RuntimeError, match='keepout_filter_mask_server parameter read'):
+        node._read_parameters('keepout_filter_mask_server', ['yaml_filename'])
+    assert client.call_async.call_count == 2
+    assert client.remove_pending_request.call_count == 2
 
 
 def test_parameter_reader_uses_real_read_only_service_and_fresh_responses(monkeypatch):
