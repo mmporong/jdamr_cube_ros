@@ -1900,7 +1900,8 @@ def test_m3_escape_not_confirmed_never_stages(monkeypatch, tmp_path):
 
 
 def test_t44_escape_heading_drift_still_clears_face(monkeypatch, tmp_path):
-    """Confirm the escape by face clearance; heading and lateral drift only log.
+    """
+    Confirm the escape by face clearance; heading and lateral drift only log.
 
     2026-09-30 water_station escapes reversed to 0.526 m from the face but ended
     6.0 deg off heading, and the service stopped before the table.

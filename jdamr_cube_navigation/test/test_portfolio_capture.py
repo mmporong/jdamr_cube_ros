@@ -3,11 +3,11 @@
 import hashlib
 import importlib.util
 import json
+from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
 import pytest
-from pathlib import Path
 
 
 EVALUATION = Path(__file__).resolve().parents[1] / 'evaluation'

@@ -1,13 +1,12 @@
 """Regression tests for corridor evidence extraction and media helpers."""
 
 import math
-import sys
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
-from PIL import Image, ImageSequence
-
 import numpy as np
+from PIL import Image, ImageSequence
 import pytest  # noqa: I201
 import yaml  # noqa: I201
 
@@ -16,8 +15,6 @@ EVALUATION_ROOT = Path(__file__).resolve().parents[1] / 'evaluation'
 sys.path.insert(0, str(EVALUATION_ROOT))
 
 from corridor_run_media import (  # noqa: E402,I100,I201
-    ANIMATION_BOTTOM_PX,
-    ANIMATION_TOP_PX,
     _cluster_points,
     _collision_badge,
     _compose_pose2d,
@@ -28,6 +25,8 @@ from corridor_run_media import (  # noqa: E402,I100,I201
     _select_frame_collision_event,
     _select_path_obstacle_cluster,
     analyse_run,
+    ANIMATION_BOTTOM_PX,
+    ANIMATION_TOP_PX,
     gap_statistics,
     parse_route_log,
     render_animation,

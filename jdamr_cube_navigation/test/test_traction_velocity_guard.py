@@ -5,15 +5,15 @@ from collections import deque
 from jdamr_cube_navigation.traction_velocity_guard import (
     FAULT_LATCHED,
     GuardConfig,
+    injected_fault_requires_stop,
     LOW_SPEED_RESUME,
+    motion_ratio,
     NAVIGATING,
     PROTECTIVE_STOP,
     RECOVERED,
     RELOCALIZE,
-    TractionRecoveryState,
-    injected_fault_requires_stop,
-    motion_ratio,
     traction_observation_allowed,
+    TractionRecoveryState,
 )
 
 from nav2_msgs.msg import CollisionMonitorState

@@ -8,10 +8,10 @@ import json
 from pathlib import Path
 
 from run_restaurant_replay_sim import (
-    PLAYBACK_SPEED,
     _sha256,
     camera_sim_timing,
     encode_camera_video,
+    PLAYBACK_SPEED,
     resample_camera_on_sim_clock,
     scene_video_annotations,
     select_video_encoder,

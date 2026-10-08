@@ -1,4 +1,5 @@
-"""Republish /imu/data_raw with the gyro bias removed, for the odom+IMU EKF.
+"""
+Republish /imu/data_raw with the gyro bias removed, for the odom+IMU EKF.
 
 The bias is learned only while the wheels report no motion (/odom twist within one
 encoder count for STILL_MIN_S), so turning the robot never feeds the estimate. The output keeps the

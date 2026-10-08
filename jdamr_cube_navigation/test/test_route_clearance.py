@@ -4,8 +4,8 @@
 # waypoints ran within the robot footprint of mapped walls.  Saved-map unknown
 # cells and rotation feasibility still require a Nav2 planning-only preflight.
 
-import math
 import json
+import math
 from pathlib import Path
 
 import pytest

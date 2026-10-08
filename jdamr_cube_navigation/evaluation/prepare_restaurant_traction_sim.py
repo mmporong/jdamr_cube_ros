@@ -8,8 +8,8 @@ import csv
 import hashlib
 import json
 import math
-import xml.etree.ElementTree as ET
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from corridor_run_media import parse_route_log  # noqa: I201
 

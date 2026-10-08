@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 import hashlib
 import json
 import math
-import subprocess
-from bisect import bisect_right
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import cv2

@@ -11,15 +11,15 @@ authority.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-import math
-import threading
-import time
 from dataclasses import dataclass, field
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import math
 from pathlib import Path
+import threading
+import time
 from typing import Any
 from urllib.parse import urlsplit
 

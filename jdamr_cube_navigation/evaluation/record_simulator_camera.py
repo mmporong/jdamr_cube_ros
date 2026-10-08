@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import signal
 import threading
 import time
-from pathlib import Path
 
 import cv2
 from cv_bridge import CvBridge  # noqa: I201

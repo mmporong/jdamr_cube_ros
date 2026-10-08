@@ -9,8 +9,10 @@ from launch import LaunchDescription, LaunchService
 from launch.actions import ExecuteProcess, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 import pytest
+from sealed_inputs import bind_g005_sealed_inputs
 
 
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 LAUNCH = (
     Path(__file__).parents[1] / 'launch' / 'g005_frontier_runtime.launch.py')
 NAVIGATION_LAUNCH = (
@@ -22,6 +24,25 @@ def _module():
     spec = importlib.util.spec_from_file_location('g005_runtime_launch', LAUNCH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # The launch file under test comes from the source tree, so its sealed
+    # evaluator must too: a copied (non-symlink) install resolves the
+    # generator's repository root inside install/ where no inputs exist.
+    share_directory = module.get_package_share_directory
+
+    def source_share_directory(package):
+        if package == 'jdamr_cube_navigation':
+            return str(PACKAGE_ROOT)
+        return share_directory(package)
+
+    module.get_package_share_directory = source_share_directory
+    load_asset_generator = module._load_asset_generator
+
+    def load_sealed_asset_generator():
+        generator = load_asset_generator()
+        bind_g005_sealed_inputs(generator.PRODUCTION_INPUTS)
+        return generator
+
+    module._load_asset_generator = load_sealed_asset_generator
     return module
 
 

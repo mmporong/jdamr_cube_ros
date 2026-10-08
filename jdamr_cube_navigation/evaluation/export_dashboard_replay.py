@@ -5,9 +5,9 @@ import argparse
 import bisect
 import json
 import math
+from pathlib import Path
 import subprocess
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 import cv2
 
@@ -171,7 +171,7 @@ def export_replay(mcap: Path, capture: Path, offset_s: float = 0.0) -> dict:
         navigation = latest('navigation', stamp_ns)
         sample['monitor'] = {'action': (
             {0: 'DO_NOTHING', 1: 'STOP', 2: 'SLOWDOWN', 3: 'APPROACH',
-            4: 'LIMIT'}.get(monitor[1], 'UNKNOWN') if monitor else 'NO_DATA')}
+             4: 'LIMIT'}.get(monitor[1], 'UNKNOWN') if monitor else 'NO_DATA')}
         sample['monitor']['polygon'] = monitor[2] if monitor else None
         sample['navigation'] = {'status': (
             {1: 'ACCEPTED', 2: 'EXECUTING', 3: 'CANCELING', 4: 'SUCCEEDED',

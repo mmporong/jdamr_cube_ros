@@ -1,10 +1,10 @@
 """Geometry tests for actual-map Gazebo reconstruction."""
 
+from argparse import Namespace
 import json
+from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
-from argparse import Namespace
-from pathlib import Path
 
 import cv2
 import numpy as np  # noqa: I201

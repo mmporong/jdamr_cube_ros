@@ -21,6 +21,7 @@ from g006_candidate_contract import (
 )
 from probe_g006_candidate_bundle import probe_bundle
 import pytest
+from sealed_inputs import g006_sealed_repository
 import validate_g006_candidate_bundle as validator
 from validate_g006_candidate_bundle import validate_bundle
 
@@ -410,8 +411,15 @@ def _promote_bundle_to_complete(root):
 
 @pytest.fixture(scope='module')
 def bundle(tmp_path_factory):
+    # Build from the repository profile sources sealed with G006 (84b9128)
+    # and the live G006 harness, not from today's production launch files.
+    repository = g006_sealed_repository(
+        tmp_path_factory.mktemp('g006-sealed-repository'),
+        builder.PROFILE_SOURCES, builder.HARNESS_SOURCES)
     root = tmp_path_factory.mktemp('g006') / 'bundle'
-    builder.build_bundle(root)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(builder, 'REPO_ROOT', repository)
+        builder.build_bundle(root)
     return root
 
 
@@ -525,6 +533,30 @@ def test_offline_bundle_build_probe_and_fresh_validation(bundle):
     probe = probe_bundle(bundle)
     assert probe['status'] == 'PASS'
     assert probe['claim_scope'] == 'OFFLINE_STATIC_TOPOLOGY_PROBE_NO_ROS_NO_MOTION'
+
+
+def test_probe_rejects_profile_a_with_composed_mapping_nav2(bundle, tmp_path):
+    """Fail Profile A once mapping Nav2 no longer runs non-composed."""
+    copy = tmp_path / 'composed-mapping'
+    __import__('shutil').copytree(bundle, copy)
+    manifest = strict_json_load(copy / 'bundle_manifest.json')
+    source = 'jdamr_cube_navigation/launch/autonomous_mapping.launch.py'
+    record = next(item for item in manifest['profiles']['A']
+                  if item['source_relative_path'] == source)
+    launch = copy / 'payload' / record['relative_path']
+    content = launch.read_text(encoding='utf-8')
+    token = "'use_composition': 'False'"
+    assert content.count(token + ',') == 1
+    launch.write_text(content.replace(token + ',', '', 1), encoding='utf-8')
+    probe = probe_bundle(copy)
+    assert probe['status'] == 'FAIL'
+    assert [check for check in probe['checks']
+            if check['status'] == 'FAIL'] == [{
+                'profile': 'A', 'source': source, 'status': 'FAIL',
+                'missing_tokens': [token]}]
+    result = validate_bundle(copy)
+    assert result['status'] == 'FAIL'
+    assert 'offline_topology_probe' in result['failures']
 
 
 def test_synthetic_ready_claim_without_mcap_elf_and_official_predecessors_fails(

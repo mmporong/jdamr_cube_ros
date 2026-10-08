@@ -30,6 +30,7 @@ from frontier_policy_contract import (
     validate_planner_batch,
 )
 
+import generate_frontier_policy_assets as asset_generator
 from generate_frontier_policy_assets import (
     _evaluation_nav2_params,
     _evaluation_robot_urdf,
@@ -45,7 +46,15 @@ import pytest
 
 from run_frontier_policy_smoke import run_smoke
 
+from sealed_inputs import bind_g005_sealed_inputs
+
 import yaml
+
+
+@pytest.fixture(autouse=True)
+def _sealed_g005_inputs(monkeypatch):
+    """Generate assets from the robot and Nav2 inputs sealed with G005."""
+    bind_g005_sealed_inputs(asset_generator.PRODUCTION_INPUTS, monkeypatch)
 
 
 def _candidates():
@@ -397,6 +406,25 @@ def test_asset_validator_rejects_resealed_evaluation_robot_tamper(tmp_path):
     manifest_path.write_bytes(canonical_json_bytes(manifest))
     with pytest.raises(ValueError, match='robot profile drift'):
         validate_assets(root, 'smoke')
+
+
+def test_source_lidar_remount_fails_closed(tmp_path, monkeypatch):
+    """Reject the 2026-09-15 LiDAR remount instead of resealing G005."""
+    sealed = Path(asset_generator.PRODUCTION_INPUTS['robot_urdf'])
+    source = sealed.read_bytes()
+    mount = b'<origin xyz="0 0 0.1" rpy="0 0 3.141592653589793"/>'
+    assert source.count(mount) == 1
+    remounted = tmp_path / 'jdamr_cube.urdf'
+    remounted.write_bytes(source.replace(
+        mount,
+        b'<origin xyz="-0.010 0 0.075" rpy="0 0 3.141592653589793"/>', 1))
+    monkeypatch.setitem(
+        asset_generator.PRODUCTION_INPUTS, 'robot_urdf', remounted)
+    with pytest.raises(ValueError, match='source LiDAR profile drift'):
+        _evaluation_robot_urdf()
+    with pytest.raises(ValueError, match='source LiDAR profile drift'):
+        generate(tmp_path / 'assets', 'smoke')
+    assert not (tmp_path / 'assets').exists()
 
 
 def test_strict_json_rejects_duplicate_and_nonfinite(tmp_path):

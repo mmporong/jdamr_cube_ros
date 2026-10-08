@@ -8,10 +8,10 @@ import bisect
 import hashlib
 import json
 import math
-import subprocess
-import xml.etree.ElementTree as ET
 from pathlib import Path
+import subprocess
 from typing import Any
+import xml.etree.ElementTree as ET
 
 import cv2
 import numpy as np  # noqa: I201

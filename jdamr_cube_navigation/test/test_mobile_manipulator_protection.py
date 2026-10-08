@@ -121,7 +121,7 @@ def test_base_only_profile_has_no_arm_pose_dependency():
 
     source = ONBOARD_CORE_LAUNCH.read_text(encoding='utf-8')
     assert "elif profile == 'obstacle_base_candidate':" in source
-    assert "load_base_obstacle_protection" in source
+    assert 'load_base_obstacle_protection' in source
 
 
 def test_corridor_route_blocks_stale_or_non_stowed_arm_state():

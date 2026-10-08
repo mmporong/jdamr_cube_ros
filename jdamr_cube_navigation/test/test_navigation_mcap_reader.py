@@ -1,7 +1,7 @@
 """Exercise schema-less recordings and reject mismatched source types."""
 
-import sys
 from pathlib import Path
+import sys
 
 from mcap.writer import Writer
 import pytest  # noqa: I201
@@ -10,8 +10,8 @@ import pytest  # noqa: I201
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'evaluation'))
 
 from navigation_mcap_reader import (  # noqa: E402,I100,I201
-    TOPIC_TYPES,
     read_navigation_messages,
+    TOPIC_TYPES,
 )
 
 

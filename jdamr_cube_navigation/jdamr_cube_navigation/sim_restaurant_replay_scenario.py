@@ -6,9 +6,9 @@ import argparse
 import json
 import math
 import os
+from pathlib import Path
 import subprocess
 import time
-from pathlib import Path
 from typing import Any, Callable
 
 from geometry_msgs.msg import PoseStamped, Twist

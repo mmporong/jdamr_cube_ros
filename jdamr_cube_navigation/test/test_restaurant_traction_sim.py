@@ -3,9 +3,9 @@
 import csv
 import importlib.util
 import json
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import yaml
 

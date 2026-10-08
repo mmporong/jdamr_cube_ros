@@ -1,7 +1,7 @@
 """Regression tests for real protective-stop latency extraction."""
 
-import sys
 from pathlib import Path
+import sys
 
 
 EVALUATION_ROOT = Path(__file__).resolve().parents[1] / 'evaluation'

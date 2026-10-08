@@ -23,6 +23,8 @@ import rclpy
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 
+from sealed_inputs import bind_g005_sealed_inputs
+
 from sensor_msgs.msg import LaserScan
 
 
@@ -82,9 +84,10 @@ def _scan(stamp_ns, contract):
 
 
 @pytest.fixture
-def generated_assets(tmp_path):
+def generated_assets(tmp_path, monkeypatch):
     contract, _ = load_evaluation_modules()
     import generate_frontier_policy_assets as generator
+    bind_g005_sealed_inputs(generator.PRODUCTION_INPUTS, monkeypatch)
     root = tmp_path / 'assets'
     generator.generate(root, 'smoke')
     layout, observer_contract = load_observer_contract(root, 11, contract)

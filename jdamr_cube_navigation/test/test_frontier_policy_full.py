@@ -15,6 +15,7 @@ from frontier_policy_contract import (
     policy_rank,
 )
 
+import generate_frontier_policy_assets as asset_generator
 from generate_frontier_policy_assets import generate
 
 import pytest
@@ -39,6 +40,14 @@ from run_frontier_policy_full import (
     validate_paired_first_decisions,
     validate_runtime_proof,
 )
+
+from sealed_inputs import bind_g005_sealed_inputs
+
+
+@pytest.fixture(autouse=True)
+def _sealed_g005_inputs(monkeypatch):
+    """Generate assets from the robot and Nav2 inputs sealed with G005."""
+    bind_g005_sealed_inputs(asset_generator.PRODUCTION_INPUTS, monkeypatch)
 
 
 def _identity(name='input'):

@@ -1,0 +1,10 @@
+noChunkCRC: false
+noAttachmentCRC: false
+enableDataCRC: true
+noSummaryCRC: false
+noChunking: false
+noMessageIndex: false
+noSummary: false
+chunkSize: 1048576
+compression: "None"
+forceCompression: false

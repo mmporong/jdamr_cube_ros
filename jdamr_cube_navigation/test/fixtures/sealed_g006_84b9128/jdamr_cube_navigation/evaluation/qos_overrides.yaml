@@ -1,0 +1,81 @@
+# 기록·재생 QoS 정본. jdamr_cube_navigation.onboard_recording 에서 생성한다.
+#
+# 2026-09-04 주행에서 Nav2의 TF 처리와 heartbeat가 함께 멈췄다. 기록기 역압은
+# 후보지만 당시 CPU 계측기가 합성 컨테이너를 빠뜨려 원인으로 확정할 수 없다.
+# 고주기 토픽은 제어 경로와의 결합을 줄이는 예방책으로 best_effort를 사용하며,
+# 효과는 다음 동일 조건 A/B 주행으로 검증한다.
+#
+# /tf_static 은 한 번만 오는 latched 라 reliable 을 유지한다. 저주기 토픽도
+# 역압 위험이 없어 reliable 이다.
+
+/scan:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/odom:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 25
+
+/tf:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 50
+
+/tf_static:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 1
+
+/imu/data_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 25
+
+/cmd_vel:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 40
+
+/cmd_vel_nav:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 40
+
+/amcl_pose:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 10
+
+/battery_state:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/plan:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 10
+
+/collision_monitor_state:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 20
+
+/joint_states:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10

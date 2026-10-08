@@ -1,7 +1,7 @@
 """Terminal-gate tests for the integrated restaurant replay runner."""
 
-import sys
 from pathlib import Path
+import sys
 
 import pytest
 import yaml  # noqa: I201

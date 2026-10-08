@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from sim_nav_obstacle_contract import (
-    GOAL_POSE, SCENARIOS, START_POSE, derive_contract, scenario_matrix)
+    derive_contract, GOAL_POSE, scenario_matrix, SCENARIOS, START_POSE)
 
 import yaml
 
