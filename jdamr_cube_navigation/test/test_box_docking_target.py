@@ -92,6 +92,14 @@ def test_optical_right_maps_to_base_right_negative_left_axis(
     assert result['y_m'] == pytest.approx(expected_y)
 
 
+def test_horizontal_mount_preserves_target_when_vertical_position_is_present():
+    """A supplied optical Y value does not alter legacy level geometry."""
+    observed = observation()
+    baseline = target(observed=observed)
+    observed['vertical_position_m'] = 0.25
+    assert target(observed=observed) == baseline
+
+
 def test_robot_map_yaw_rotates_target_and_heading():
     result = target(robot={'x_m': 1.0, 'y_m': 2.0, 'yaw_rad': math.pi / 2.0})
     local_x = 0.065 + 0.8 - 0.25 - 0.05
@@ -117,6 +125,21 @@ def test_repository_nominal_camera_mount_is_consumed_as_configuration():
     result = target(mounted=configured_mount)
     assert result['x_m'] == pytest.approx(0.065 + 0.8 - 0.25 - 0.05)
     assert result['provenance'] == 'NOMINAL_CAMERA_MOUNT_ESTIMATE'
+
+
+def test_derived_camera_mount_is_accepted_without_claiming_measurement():
+    """URDF-derived geometry is accepted under its explicit provenance."""
+    mounted = mount()
+    mounted['camera_mount']['status'] = 'derived'
+    assert target(mounted=mounted) == target()
+
+
+def test_unknown_camera_mount_status_is_rejected():
+    """Unrecognized provenance cannot enter docking geometry."""
+    mounted = mount()
+    mounted['camera_mount']['status'] = 'estimated'
+    with pytest.raises(ValueError, match='measured or derived'):
+        target(mounted=mounted)
 
 
 @pytest.mark.parametrize(
@@ -148,11 +171,99 @@ def test_unit_but_nonfront_normal_is_rejected_by_point_consistency():
 
 
 @pytest.mark.parametrize('axis', ['roll_rad', 'pitch_rad'])
-def test_nonzero_nominal_tilt_is_rejected_without_vertical_face_position(axis):
+def test_nonzero_mount_tilt_is_rejected_without_vertical_face_position(axis):
+    """Tilted geometry cannot silently assume an optical Y coordinate."""
     mounted = deepcopy(mount())
     mounted['camera_mount']['transform'][axis] = 0.01
     with pytest.raises(ValueError, match='vertical face position'):
         target(mounted=mounted)
+
+
+@pytest.mark.parametrize('vertical_position_m', [math.nan, math.inf])
+def test_nonfinite_vertical_position_is_rejected_for_tilted_mount(
+        vertical_position_m):
+    """Tilted geometry requires a finite optical Y coordinate."""
+    mounted = deepcopy(mount())
+    mounted['camera_mount']['transform']['pitch_rad'] = 0.1
+    observed = observation()
+    observed['vertical_position_m'] = vertical_position_m
+    with pytest.raises(ValueError, match='vertical_position_m must be finite'):
+        target(observed=observed, mounted=mounted)
+
+
+def _base_to_optical(vector, roll_rad, pitch_rad, yaw_rad):
+    """Apply the inverse URDF rotation, then camera_link-to-optical axes."""
+    yaw_cosine = math.cos(yaw_rad)
+    yaw_sine = math.sin(yaw_rad)
+    pitch_cosine = math.cos(pitch_rad)
+    pitch_sine = math.sin(pitch_rad)
+    roll_cosine = math.cos(roll_rad)
+    roll_sine = math.sin(roll_rad)
+    base_x, base_y, base_z = vector
+    yaw_x = yaw_cosine * base_x + yaw_sine * base_y
+    yaw_y = -yaw_sine * base_x + yaw_cosine * base_y
+    pitch_x = pitch_cosine * yaw_x - pitch_sine * base_z
+    pitch_z = pitch_sine * yaw_x + pitch_cosine * base_z
+    camera_y = roll_cosine * yaw_y + roll_sine * pitch_z
+    camera_z = -roll_sine * yaw_y + roll_cosine * pitch_z
+    return -camera_y, -camera_z, pitch_x
+
+
+@pytest.mark.parametrize(
+    ('roll_rad', 'pitch_rad', 'yaw_rad'),
+    [
+        (0.12, 0.18, math.pi),
+        (-0.15, 0.22, math.pi - 0.25),
+        (0.20, 0.10, -math.pi + 0.20),
+    ],
+)
+def test_tilted_rear_camera_recovers_same_base_target(
+        roll_rad, pitch_rad, yaw_rad):
+    """Known tilted rear views recover one physical face and goal."""
+    mounted = mount()
+    transform = mounted['camera_mount']['transform']
+    transform.update({
+        'x_m': -0.4,
+        'y_m': 0.12,
+        'z_m': 1.0,
+        'roll_rad': roll_rad,
+        'pitch_rad': pitch_rad,
+        'yaw_rad': yaw_rad,
+    })
+    face_base_m = (-1.2, 0.10, 0.50)
+    outward_normal_base = (1.0, 0.0, 0.0)
+    point_from_camera = tuple(
+        face_base_m[index] - transform[axis]
+        for index, axis in enumerate(('x_m', 'y_m', 'z_m')))
+    optical_point = _base_to_optical(
+        point_from_camera, roll_rad, pitch_rad, yaw_rad)
+    optical_normal = _base_to_optical(
+        outward_normal_base, roll_rad, pitch_rad, yaw_rad)
+    observed = observation()
+    observed.update({
+        'front_distance_m': optical_point[2],
+        'lateral_error_m': optical_point[0],
+        'vertical_position_m': optical_point[1],
+        'plane_normal': list(optical_normal),
+    })
+
+    result = target(observed=observed, mounted=mounted)
+
+    assert result['face_center_map_xy_m'] == pytest.approx(face_base_m[:2])
+    assert result['outward_normal_map_xy'] == pytest.approx((1.0, 0.0))
+    assert result['x_m'] == pytest.approx(-0.9)
+    assert result['y_m'] == pytest.approx(0.10)
+    assert abs(result['yaw_rad']) == pytest.approx(math.pi)
+
+
+def test_tilted_mount_rejects_normal_without_base_plane_direction():
+    """A transformed vertical normal cannot define a planar heading."""
+    mounted = mount()
+    mounted['camera_mount']['transform']['pitch_rad'] = math.pi / 2.0
+    observed = observation()
+    observed['vertical_position_m'] = 0.0
+    with pytest.raises(ValueError, match='no usable base-plane direction'):
+        target(observed=observed, mounted=mounted)
 
 
 @pytest.mark.parametrize(

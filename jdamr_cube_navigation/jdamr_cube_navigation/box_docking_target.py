@@ -34,28 +34,46 @@ def _rotate_xy(x_m, y_m, yaw_rad):
     return cosine * x_m - sine * y_m, sine * x_m + cosine * y_m
 
 
+def _rotate_rpy(x_m, y_m, z_m, roll_rad, pitch_rad, yaw_rad):
+    """Apply the URDF fixed-axis Rz(yaw) Ry(pitch) Rx(roll) rotation."""
+    roll_cosine = math.cos(roll_rad)
+    roll_sine = math.sin(roll_rad)
+    pitch_cosine = math.cos(pitch_rad)
+    pitch_sine = math.sin(pitch_rad)
+    yaw_cosine = math.cos(yaw_rad)
+    yaw_sine = math.sin(yaw_rad)
+
+    roll_y_m = roll_cosine * y_m - roll_sine * z_m
+    roll_z_m = roll_sine * y_m + roll_cosine * z_m
+    pitch_x_m = pitch_cosine * x_m + pitch_sine * roll_z_m
+    pitch_z_m = -pitch_sine * x_m + pitch_cosine * roll_z_m
+    return (
+        yaw_cosine * pitch_x_m - yaw_sine * roll_y_m,
+        yaw_sine * pitch_x_m + yaw_cosine * roll_y_m,
+        pitch_z_m,
+    )
+
+
 def _validated_mount(document):
     try:
         mount = document['camera_mount']
         transform = mount['transform']
     except (KeyError, TypeError) as error:
         raise ValueError('camera mount document is incomplete') from error
-    if (mount.get('status') != 'measured'
+    if (mount.get('status') not in {'measured', 'derived'}
             or mount.get('parent_frame') != 'base_link'
             or mount.get('child_frame') != 'camera_link'):
-        raise ValueError('camera mount must be measured base_link to camera_link')
+        raise ValueError(
+            'camera mount must be measured or derived '
+            'base_link to camera_link')
     values = _finite_fields(
         transform,
         ('x_m', 'y_m', 'z_m', 'roll_rad', 'pitch_rad', 'yaw_rad'),
         'camera_mount.transform')
-    if not math.isclose(values[3], 0.0, abs_tol=1e-9) or not math.isclose(
-            values[4], 0.0, abs_tol=1e-9):
-        raise ValueError(
-            'nonzero camera roll/pitch requires observed vertical face position')
     return values
 
 
-def _validated_observation(document, now_s):
+def _validated_observation(document, now_s, *, require_vertical_position):
     if (not isinstance(document, dict)
             or document.get('detected') is not True
             or document.get('stable') is not True
@@ -73,6 +91,16 @@ def _validated_observation(document, now_s):
         raise ValueError('box front distance is outside the observed range')
     if not 0.0 <= confidence <= 1.0:
         raise ValueError('box confidence must be in [0, 1]')
+    vertical_position = document.get('vertical_position_m')
+    if require_vertical_position and vertical_position is None:
+        raise ValueError(
+            'nonzero camera roll/pitch requires observed '
+            'vertical face position')
+    if vertical_position is not None:
+        vertical_position = _finite_number(
+            vertical_position, 'observation.vertical_position_m')
+    else:
+        vertical_position = 0.0
     normal = document.get('plane_normal')
     if not isinstance(normal, (list, tuple)) or len(normal) != 3:
         raise ValueError('plane_normal must contain three optical components')
@@ -84,13 +112,20 @@ def _validated_observation(document, now_s):
         raise ValueError('plane_normal must be a unit optical vector')
     if normal[2] >= 0.0:
         raise ValueError('front plane normal must point toward the camera')
-    point_magnitude = math.hypot(lateral_m, distance_m)
-    toward_camera = (-lateral_m / point_magnitude, 0.0,
+    consistency_vertical_m = (
+        vertical_position if require_vertical_position else 0.0)
+    point_magnitude = math.sqrt(
+        lateral_m * lateral_m
+        + consistency_vertical_m * consistency_vertical_m
+        + distance_m * distance_m)
+    toward_camera = (-lateral_m / point_magnitude,
+                     -consistency_vertical_m / point_magnitude,
                      -distance_m / point_magnitude)
     consistency = sum(a * b for a, b in zip(normal, toward_camera))
     if consistency < MINIMUM_NORMAL_POINT_DOT:
-        raise ValueError('plane normal and observed face point are inconsistent')
-    return distance_m, lateral_m, normal
+        raise ValueError(
+            'plane normal and observed face point are inconsistent')
+    return distance_m, lateral_m, vertical_position, normal
 
 
 def compute_box_docking_target(
@@ -105,17 +140,30 @@ def compute_box_docking_target(
         raise ValueError('front_extent_m must be positive')
     robot_x, robot_y, robot_yaw = _finite_fields(
         robot_pose, ('x_m', 'y_m', 'yaw_rad'), 'robot_pose')
-    distance_m, lateral_m, optical_normal = _validated_observation(
-        observation, now_s)
-    mount_x, mount_y, _mount_z, _roll, _pitch, mount_yaw = (
+    mount_x, mount_y, mount_z, roll_rad, pitch_rad, mount_yaw = (
         _validated_mount(camera_mount))
+    tilted_mount = (
+        not math.isclose(roll_rad, 0.0, abs_tol=1e-9)
+        or not math.isclose(pitch_rad, 0.0, abs_tol=1e-9)
+    )
+    if not tilted_mount:
+        roll_rad = 0.0
+        pitch_rad = 0.0
+    distance_m, lateral_m, vertical_m, optical_normal = (
+        _validated_observation(
+            observation, now_s,
+            require_vertical_position=tilted_mount))
 
     # Optical (right, down, forward) -> mount (forward, left, up).
-    face_x, face_y = _rotate_xy(distance_m, -lateral_m, mount_yaw)
+    face_x, face_y, _face_z = _rotate_rpy(
+        distance_m, -lateral_m, -vertical_m,
+        roll_rad, pitch_rad, mount_yaw)
     face_x += mount_x
     face_y += mount_y
-    normal_x, normal_y = _rotate_xy(
-        optical_normal[2], -optical_normal[0], mount_yaw)
+    _face_z += mount_z
+    normal_x, normal_y, _normal_z = _rotate_rpy(
+        optical_normal[2], -optical_normal[0], -optical_normal[1],
+        roll_rad, pitch_rad, mount_yaw)
     planar_norm = math.hypot(normal_x, normal_y)
     if planar_norm <= 1e-9:
         raise ValueError('plane normal has no usable base-plane direction')

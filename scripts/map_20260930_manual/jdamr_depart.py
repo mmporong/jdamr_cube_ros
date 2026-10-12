@@ -65,7 +65,7 @@ PI_SHARE = f'{PI_WS}/install/jdamr_cube_navigation/share/jdamr_cube_navigation'
 PI_BOX_CONTRACT = f'{PI_SHARE}/config/box_parking_contract.yaml'
 PI_GEOMETRY = (f'{PI_WS}/install/jdamr_cube_description/share/jdamr_cube_description/'
                'config/new_base_geometry.yaml')
-PI_MOUNT = '/home/lim/jdamr_deploy/camera_mount_confirmed_20260917.yaml'
+PI_MOUNT = '/home/lim/jdamr_deploy/camera_mount_derived_20261012.yaml'
 ROS_ENV = ('export ROS_DOMAIN_ID=12 ROS_LOCALHOST_ONLY=0 '
            'ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST FASTDDS_BUILTIN_TRANSPORTS=UDPv4')
 # Nav2 session and every short-lived Pi participant use loopback UDP without shared

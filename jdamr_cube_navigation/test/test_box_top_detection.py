@@ -5,10 +5,12 @@ import math
 from pathlib import Path
 
 from jdamr_cube_navigation.box_top_detection import (
+    BoxTopConfig,
     CameraIntrinsics,
     detect_box_front,
     detect_box_top,
     DetectionStability,
+    _normal_is_valid,
 )
 import numpy as np
 import pytest
@@ -86,6 +88,39 @@ def test_detects_metric_box_front_and_yaw_without_a_tag():
         13.8, abs=2.0)
 
 
+def test_tilted_camera_front_gate_accepts_base_vertical_face_not_floor():
+    """Mount tilt is removed before applying the existing front threshold."""
+    pitch_rad = math.radians(27.0)
+    config = BoxTopConfig(
+        minimum_front_normal_z=0.9,
+        camera_roll_rad=math.radians(1.0),
+        camera_pitch_rad=pitch_rad,
+    )
+    roll_rad = config.camera_roll_rad
+    vertical_face = np.array([
+        math.sin(roll_rad) * math.sin(pitch_rad),
+        math.cos(roll_rad) * math.sin(pitch_rad),
+        -math.cos(pitch_rad),
+    ])
+    floor = np.array([
+        -math.sin(roll_rad) * math.cos(pitch_rad),
+        -math.cos(roll_rad) * math.cos(pitch_rad),
+        -math.sin(pitch_rad),
+    ])
+
+    assert abs(vertical_face[2]) < config.minimum_front_normal_z
+    assert _normal_is_valid(vertical_face, config, 'front')
+    assert not _normal_is_valid(floor, config, 'front')
+
+
+@pytest.mark.parametrize('field', ['camera_roll_rad', 'camera_pitch_rad'])
+def test_rejects_nonfinite_camera_mount_angles(field):
+    """Detector configuration requires finite camera mount angles."""
+    config = replace(BoxTopConfig(), **{field: math.nan})
+    with pytest.raises(ValueError, match='camera roll/pitch must be finite'):
+        detect_box_front(_synthetic_box_front_depth(), INTRINSICS, config)
+
+
 @pytest.mark.parametrize(('detector', 'image', 'expected'), [
     (detect_box_top, _synthetic_box_depth(), (
         0.0015271533475867643, -0.200011501866774,
@@ -145,6 +180,42 @@ def test_detection_stability_requires_consecutive_consistency():
     assert tracker.frame_count == 1
     assert tracker.update(None) is False
     assert tracker.frame_count == 0
+
+
+def test_front_stability_rejects_alternating_vertical_position():
+    """A tilted-camera control input must remain stable across the window."""
+    detection = detect_box_front(_synthetic_box_front_depth(), INTRINSICS)
+    assert detection is not None
+    tracker = DetectionStability(required_frames=8)
+
+    results = [
+        tracker.update(replace(
+            detection, center_y_m=(-0.3 if index % 2 == 0 else 0.3)))
+        for index in range(8)
+    ]
+
+    assert results == [False] * 8
+    assert tracker.frame_count == 1
+
+
+def test_stability_rejects_full_plane_normal_angular_spread():
+    """Normal pitch or roll changes cannot hide behind a stable edge angle."""
+    detection = detect_box_front(_synthetic_box_front_depth(), INTRINSICS)
+    assert detection is not None
+    tracker = DetectionStability(required_frames=4)
+    normal_angle_rad = math.radians(4.0)
+    normals = (
+        (0.0, math.sin(normal_angle_rad), -math.cos(normal_angle_rad)),
+        (0.0, -math.sin(normal_angle_rad), -math.cos(normal_angle_rad)),
+    )
+
+    results = [
+        tracker.update(replace(detection, plane_normal=normals[index % 2]))
+        for index in range(4)
+    ]
+
+    assert results == [False] * 4
+    assert tracker.frame_count == 1
 
 
 def test_ros_observer_is_perception_only():

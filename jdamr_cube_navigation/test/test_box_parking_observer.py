@@ -192,6 +192,16 @@ def test_observer_source_never_publishes_velocity_or_control_ready_true():
     assert "'control_ready': True" not in source
 
 
+def test_observer_declares_camera_mount_angles_for_front_detection():
+    """Startup parameters carry URDF roll and pitch into detection config."""
+    source = Path(__file__).resolve().parents[1].joinpath(
+        'jdamr_cube_navigation', 'depth_box_parking.py').read_text()
+    assert source.count(
+        "('camera_roll_rad', defaults.camera_roll_rad)") == 1
+    assert source.count(
+        "('camera_pitch_rad', defaults.camera_pitch_rad)") == 1
+
+
 def test_age_includes_detection_processing_time(monkeypatch):
     """A fast input must not hide a slow detector in published diagnostics."""
     info, image = _messages(np.ones((2, 2), dtype='<u2') * 1000)
@@ -214,6 +224,36 @@ def test_age_includes_detection_processing_time(monkeypatch):
     assert document['age_s'] == pytest.approx(.7)
     assert document['processing_duration_s'] >= 0.
     assert document['control_ready'] is False
+
+
+def test_front_observation_publishes_optical_vertical_position(monkeypatch):
+    """The JSON boundary retains the detected optical Y face coordinate."""
+    info, image = _messages(np.ones((2, 2), dtype='<u2') * 1000)
+    detection = SimpleNamespace(
+        surface_kind='front', front_distance_m=0.8,
+        center_x_m=0.04, center_y_m=0.23,
+        edge_angle_rad=0.0, width_m=0.5, height_m=0.25,
+        depth_extent_m=0.1, plane_normal=(0.0, 0.0, -1.0),
+        plane_rms_m=0.001, inlier_count=100, candidate_count=120,
+        confidence=0.9)
+    node = object.__new__(DepthBoxParkingNode)
+    node._minimum_period_s, node._last_processed_s = 0.0, -math.inf
+    node._camera_info, node._optical_frame = info, OPTICAL_FRAME
+    node._calibration_model, node._max_image_age_s = 'rectified_projection', .5
+    node._surface_mode, node._config = 'front', BoxTopConfig()
+    node._stability = SimpleNamespace(update=lambda item: True, frame_count=8)
+    node.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=10_100_000_000))
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.depth_box_parking.detect_box_front',
+        lambda *_: detection)
+    messages = []
+    node._status = SimpleNamespace(publish=messages.append)
+
+    node._on_depth(image)
+
+    document = json.loads(messages[0].data)
+    assert document['vertical_position_m'] == pytest.approx(0.23)
 
 
 def test_executor_may_narrow_only_the_maximum_depth_within_the_configured_range():

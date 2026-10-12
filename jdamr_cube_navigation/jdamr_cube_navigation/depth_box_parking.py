@@ -82,6 +82,8 @@ class DepthBoxParkingNode(Node):
             ('plane_distance_m', defaults.plane_distance_m),
             ('minimum_normal_y', defaults.minimum_normal_y),
             ('minimum_front_normal_z', defaults.minimum_front_normal_z),
+            ('camera_roll_rad', defaults.camera_roll_rad),
+            ('camera_pitch_rad', defaults.camera_pitch_rad),
             ('maximum_top_y_m', defaults.maximum_top_y_m),
             ('minimum_width_m', defaults.minimum_width_m),
             ('maximum_width_m', defaults.maximum_width_m),
@@ -259,6 +261,7 @@ class DepthBoxParkingNode(Node):
                 detection.front_distance_m
                 - self._config.desired_standoff_m),
             'lateral_error_m': detection.center_x_m,
+            'vertical_position_m': detection.center_y_m,
             'edge_angle_deg': math.degrees(detection.edge_angle_rad),
             'width_m': detection.width_m,
             'height_m': detection.height_m,

@@ -29,6 +29,8 @@ class BoxTopConfig:
     plane_distance_m: float = 0.025
     minimum_normal_y: float = 0.65
     minimum_front_normal_z: float = 0.80
+    camera_roll_rad: float = 0.0
+    camera_pitch_rad: float = 0.0
     maximum_top_y_m: float = 0.05
     minimum_width_m: float = 0.18
     maximum_width_m: float = 1.20
@@ -75,6 +77,9 @@ def _validate(intrinsics: CameraIntrinsics, config: BoxTopConfig) -> None:
         raise ValueError('minimum_normal_y must be in [0, 1]')
     if not 0.0 <= config.minimum_front_normal_z <= 1.0:
         raise ValueError('minimum_front_normal_z must be in [0, 1]')
+    if (not math.isfinite(config.camera_roll_rad)
+            or not math.isfinite(config.camera_pitch_rad)):
+        raise ValueError('camera roll/pitch must be finite')
     if not 0.0 < config.minimum_width_m < config.maximum_width_m:
         raise ValueError('box width bounds are invalid')
     if not 0.0 < config.minimum_height_m < config.maximum_height_m:
@@ -158,7 +163,17 @@ def _normal_is_valid(
         normal: np.ndarray, config: BoxTopConfig,
         surface_kind: str) -> bool:
     if surface_kind == 'front':
-        return abs(normal[2]) >= config.minimum_front_normal_z
+        # Optical (right, down, forward) -> camera_link (forward, left, up).
+        camera_x = normal[2]
+        camera_y = -normal[0]
+        camera_z = -normal[1]
+        roll_sine = math.sin(config.camera_roll_rad)
+        roll_cosine = math.cos(config.camera_roll_rad)
+        pitch_sine = math.sin(config.camera_pitch_rad)
+        pitch_cosine = math.cos(config.camera_pitch_rad)
+        rolled_z = roll_sine * camera_y + roll_cosine * camera_z
+        base_x = pitch_cosine * camera_x + pitch_sine * rolled_z
+        return abs(base_x) >= config.minimum_front_normal_z
     return abs(normal[1]) >= config.minimum_normal_y
 
 
@@ -282,6 +297,18 @@ def detect_box_front(
     return _detect_box_plane(depth_mm, intrinsics, config, 'front')
 
 
+def _maximum_normal_angle_rad(detections: list[BoxTopDetection]) -> float:
+    """Return the largest 3D plane-normal separation in the window."""
+    normals = np.asarray(
+        [item.plane_normal for item in detections], dtype=np.float64)
+    magnitudes = np.linalg.norm(normals, axis=1)
+    if not np.all(np.isfinite(magnitudes)) or np.any(magnitudes <= 0.0):
+        return math.inf
+    normalized = normals / magnitudes[:, None]
+    cosines = np.clip(normalized @ normalized.T, -1.0, 1.0)
+    return float(np.max(np.arccos(cosines)))
+
+
 class DetectionStability:
     """Require consecutive, mutually consistent box observations."""
 
@@ -308,15 +335,24 @@ class DetectionStability:
             return False
         distances = [item.front_distance_m for item in self._history]
         laterals = [item.center_x_m for item in self._history]
+        verticals = [
+            item.center_y_m for item in self._history
+            if item.surface_kind == 'front'
+        ]
         angles = [item.edge_angle_rad for item in self._history]
-        stable = (
-            max(distances) - min(distances)
-            <= self.maximum_distance_spread_m
-            and max(laterals) - min(laterals)
-            <= self.maximum_lateral_spread_m
-            and max(angles) - min(angles)
-            <= self.maximum_angle_spread_rad
-        )
+        distance_spread_m = max(distances) - min(distances)
+        lateral_spread_m = max(laterals) - min(laterals)
+        vertical_spread_m = (
+            max(verticals) - min(verticals) if verticals else 0.0)
+        edge_angle_spread_rad = max(angles) - min(angles)
+        normal_angle_spread_rad = _maximum_normal_angle_rad(self._history)
+        stable = all((
+            distance_spread_m <= self.maximum_distance_spread_m,
+            lateral_spread_m <= self.maximum_lateral_spread_m,
+            vertical_spread_m <= self.maximum_lateral_spread_m,
+            edge_angle_spread_rad <= self.maximum_angle_spread_rad,
+            normal_angle_spread_rad <= self.maximum_angle_spread_rad,
+        ))
         if not stable:
             self._history = [detection]
         return stable
