@@ -11,15 +11,15 @@ Claude Code가 2026-10-06 오후부터 10-08까지 처리한 내용과 남은 �
 | 도크 방향 | 1–5°면 1° 안까지 제자리 보정(최대 3회). 10-06 9회 1.45–4.85° → 0.22° 이하 | 커밋 `4d9dd3d`, run별 `dock_heading_*` 이벤트 |
 | 실행기 CPU | 경로 노드마다 EventsExecutor. 실행기 Pi 한 코어의 78 % → 25–34 % | 커밋 `3603ea1`, run별 `load_profile.jsonl` |
 | 테스트 기준선 | 내비게이션 패키지 2572 통과, 5 실패(AMCL Axis B, §1-B). 10-12 전체 재실행 결과가 아님 | 커밋 `0c79182` |
-| Pi 이번 반영 | `ace59b8`(실행기 첫 파라미터 읽기 재요청) 배포·빌드·관련 테스트 6건·소스/설치본 해시 대조 완료. 실행기 비구동 기동 확인 후 종료 | 10-12 확인(§2-14). 실제 `go` 사이클 확인은 남음 |
-| Pi 이전 배포 기준 | `b1deb7a`까지(10-06 18:03 배포·빌드, `init` 성공 확인). 이번에는 실행기 수정과 관련 테스트 입력만 추가 반영 | §2-5·§2-14. `main` 전체 배포라고 주장하지 않음 |
-| 로봇 위치·복귀점 | 10-12 14:42 현재 시작 위치를 새 HOME으로 저장: 지도 (0.1755, -0.0993) m, yaw 7.94°. `parking_direction: forward`로 일반 복귀 | §2-16. 기존 실물 도크 후진 진입 대신 운영자가 지정한 시작점으로 복귀 |
+| Pi 이번 반영 | `ace59b8`, 하향 카메라 기하, USB 열거 판정, 수동 웹 명령 대기, 탐색 Spin의 odom 검증 반영·빌드·설치본 해시 대조 완료 | §2-14·16·17. 관측 지점 이동과 Spin action 성공은 확인했지만 새 수정본의 실차 주차 사이클은 미확인 |
+| Pi 배포 범위 | 필요한 파일만 복사·빌드했다. Pi 작업공간은 Git 저장소가 아니며 PC `main` 전체와 같다고 주장하지 않는다 | §2-17의 파일별 설치본 해시·백업·빌드 기록 |
+| 로봇 위치·복귀점 | 17:24 재등록 HOME: 지도 (0.126851, 0.057200) m, yaw 0.111160 rad(약 6.37°), `parking_direction: forward` | §2-17. 14:42 HOME을 대체한다. 마지막에는 운영자가 도크에 놓겠다고 했으며 실제 배치 완료는 아직 관측하지 않음 |
 | 차체 결합 | 10-12 결합 완료. 결합 뒤 돌출부·팔·적재물의 치수와 가동 상태는 미확인 | 10-12 운영자 보고. `new_base_geometry.yaml`의 주장 범위는 하단 프레임 |
-| LiDAR | USB 연결 문제를 해결했다는 운영자 보고 뒤 CP2102·`/dev/ydlidar_g4` 인식과 스캔 약 9.63 Hz 수신 확인. 장착 위치와 기존 TF는 유지 | 10-12 13:40–13:43 재확인(§2-15). 결합 차체의 자기 반사는 실측 전 |
+| LiDAR | USB 연결 복구 뒤 수신 확인. 장착 위치·기존 TF 유지. 차체 후방 기둥 반사 두 군집만 기존 자기 반사 필터로 제거 | §2-15·17. 80 scan 재생에서 779점 제거·0.45 m보다 먼 반사 변경 0. 기둥의 물리 치수 실측은 아님 |
 | 접촉센서 | 운영자가 5V·GND 두 선만 연결했다고 확인. 눌림 입력·정지 연동은 사용할 수 없음 | 신호선 미연결, 모델 미확인. 펌웨어에도 접촉 입력 경로 없음 |
-| 뎁스 카메라 | 상판 뒤끝에 하향 장착 완료. URDF/CAD와 설치 가정으로 x=-0.275 m, 깊이 바닥 후보 평면으로 z=0.9071 m·pitch=26.7465°·roll=0.6838° 계산 | §2-16. `derived` 설정이며 y=0·yaw=0·상하판 정렬은 가정. 1 cm 주차 실측 완료 아님 |
-| 바퀴 모터선 | 분리 후 재연결(운영자 보고). UART 읽기 전용 확인에서 좌우 읽기 오류 0건·워치독 정지 유지. 회전 방향·구동 뒤 정지는 미검증 | 10-12 12:48 UART 5 s·250개 상태 패킷(§2-13) |
-| Pi 접속·서비스 | Wi-Fi 접속 정상. 현재 출발 준비와 RViz·대시보드 표시를 위해 센서·Nav2 세션을 기동 | 최신 준비 결과와 유지 서비스·종료 명령은 §2-16. 13:43의 서비스 상태는 당시 기록 |
+| 뎁스 카메라 | 상판 뒤끝 하향 장착. x=-0.275 m, z=0.9071 m·pitch=26.7465°·roll=0.6838° 계산. 17:55 물리 USB 재연결 뒤 실제 영상 복구 확인 | §2-16·17. `derived`, y=0·yaw=0·상하판 정렬은 가정. 1 cm 주차 외부 실측은 미완료. 현재 서비스는 종료 |
+| 바퀴 모터선 | UART 읽기 오류 0건. 재연결 뒤 관측 지점 주행과 Spin action 성공 확인. 오른쪽 바퀴 들뜸·나사 조임은 운영자 보고 | §2-13·17. Spin odom과 IMU 회전량은 부합하지만 실물 병진은 외부 계측하지 않음 |
+| Pi 접속·서비스 | Wi-Fi 접속 정상. 정지 요청 뒤 Nav2·이동 실행기·카메라·수동 제어·대시보드·PC RViz/중계/기록기/터널 종료 | §2-17. 사용자 기존 `jdamr-base` PID 1284만 유지. 다음 시작은 새 HOME에서 새 `init` 필요 |
 
 ## 1. 할 일
 
@@ -27,18 +27,18 @@ Claude Code가 2026-10-06 오후부터 10-08까지 처리한 내용과 남은 �
 
 운영자는 다른 반영 가능 항목부터 진행하고, 재연결한 바퀴 모터선을 확인해 달라고 요청했다. §1-B의 AMCL 선택지나 §1-C의 미지시 고도화를 승인한 것으로 확대하지 않는다.
 
-1. **Pi 접속과 모터 확인.** Wi-Fi 변경 뒤 기존 주소 접속이 복구됐다. 베이스 드라이버가 꺼진 상태에서 UART를 읽어 좌우 읽기 오류 0건·CRC 오류 0건·워치독 정지 유지를 확인했다(§2-13). 펌웨어의 기대값은 좌측 ID 2·우측 ID 1(`LEFT_ID`·`RIGHT_ID`)이다. 이는 버스 응답 확인이며 실제 좌우 배치·회전 방향의 검증은 아니다. 초기의 LiDAR USB 미인식은 운영자의 연결 수정 뒤 복구됐다(§2-15). 구동 시험은 아직 하지 않았다. 기존 실행 경로에서 실제 배선·회전 방향·최종 정지 확인이 남아 있으며, 충전 중에는 구동하지 않는다. 10-12 14:42 현재 위치는 AMCL·라이다 매칭으로 확인하고 새 HOME으로 저장했다. 바퀴 구동 시험은 이동 허가 뒤 첫 주행에서 확인한다.
-2. **차체·LiDAR 상태 반영.** 결합 완료와 LiDAR 위치 유지를 기록했다. 기존 하단 프레임 치수·라이다 TF는 유지한다. 결합 차체의 돌출부와 LiDAR 평면에 걸리는 기둥은 실측 후 필요한 제원과 자기 반사 필터에 반영한다. `$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_bringup/config/self_filter_hold_flow_model.yaml`은 `model_not_measured`이며 실측 설정으로 취급하지 않는다. 라이다 위치가 같아도 결합 뒤 반사·가림까지 같다고 가정하지 않는다.
+1. **Pi 접속과 모터 확인.** Wi-Fi 변경 뒤 기존 주소 접속이 복구됐다. UART 읽기에서 좌우 오류 0건·CRC 오류 0건·워치독 정지를 확인했다(§2-13). 펌웨어 기대값은 좌측 ID 2·우측 ID 1이다. 이후 사용자의 출발 지시에 따라 관측 지점 이동과 제한된 Spin action을 성공했다(§2-17). 이를 좌우 실물 배선 도면이나 외부 이동 계측으로 확대하지 않는다. 운영자는 오른쪽 바퀴 들뜸이 약간 개선됐다고 했고 정지 중 나사를 조였다. 충전 중에는 구동하지 않는다. 등록 HOME은 17:24의 재등록 값이며, 다음 새 세션에서 `init`으로 배치와 위치를 확인한다.
+2. **차체·LiDAR 상태 반영.** 하단 프레임 치수·라이다 TF는 유지한다. 운영자의 네 기둥 설명과 이동 전후 스캔으로 후방 자기 반사 두 군집을 확인해 기존 필터에 반영했다(§2-17). 영구 설정은 `$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_bringup/config/self_filter_columns_20261012.yaml`이다. `self_filter_hold_flow_model.yaml`은 계속 `model_not_measured`이며 실측 설정으로 취급하지 않는다. 반사점 외접 범위는 기둥 치수나 결합 차체 전체 제원을 뜻하지 않는다.
 3. **접촉센서 배선과 입력 확인.** 운영자는 5V·GND 두 선만 연결했다고 확인했다. 신호선이 없고 펌웨어 입력 경로도 없어 눌림 검증은 미완료다. 모델·단자 표기를 요청한 상태다. 핀·출력 형식이 확인되기 전에는 GPIO 번호를 추측해 펌웨어에 넣지 않는다. 입력 전환을 읽고 기존 정지 경로와 연동하는 확인은 그 뒤에 수행한다. 현재 소프트웨어 래치 비상정지와 접촉센서 연동은 별개다.
 4. **뎁스 설치·계산 보정.** 운영자는 높이 약 1 m, 상판 뒤끝, 약간 하향으로 장착했고 URDF로 위치를 계산하라고 지시했다. 계산값·가정·원본 깊이는 §2-16과 `config/camera_mount_derived_20261012.yaml`에 기록했다. 기존 9/17의 x=0.065 m·z=0.215 m·수평 설정은 새 설치에 사용하지 않는다. 상판 모서리 주차는 여전히 `20261006_TABLE_EDGE_DOCKING_PLAN.md`의 별도 설계 후보다.
-5. **실행기 수정 반영.** §1-A1의 `ace59b8` 배포·Pi 검증과 실행기 비구동 기동 확인을 마쳤다(§2-14). 처음 꺼져 있던 실행기는 확인 뒤 다시 종료했으며 베이스·내비게이션도 기동하지 않았다. 다음 주행에서의 첫 파라미터 읽기 응답 확인은 남아 있다. 10-12에는 사용자가 현재 시작점을 HOME으로 바꾸도록 지시하여, 새 라이다 매칭을 거친 위치로 `init`과 HOME 재등록을 수행했다(§2-16).
+5. **실행기 수정 반영.** `ace59b8` 배포·Pi 검증 뒤 실제 `go`가 이동 전 파라미터 읽기를 통과하고 관측 지점까지 도달했다. 마지막 실패는 Spin action 성공 뒤 지도 위치 보정을 병진으로 오판한 별도 문제였다. 종료 후 탐색 회전 검증을 odom 기준으로 고쳤고 실패 사유도 분리했다(§2-17). 새 수정본의 실차 주차·복귀 사이클 확인은 다음 출발에서 수행한다.
 
 ### A. Pi 반영 상태와 다음 주행 준비 (사용자 요청 범위에서)
 
-1. **`ace59b8` 반영 완료, 실제 사이클 확인 대기.** 상주 실행기(`jdamr-box-executor`)가 `restaurant_service.py`를 불러오므로 기동할 때 설치된 수정본을 읽는다.
+1. **`ace59b8` 반영 완료, 이동 전 읽기 단계 통과 확인.** 상주 실행기(`jdamr-box-executor`)가 `restaurant_service.py`를 불러오므로 기동할 때 설치된 수정본을 읽는다.
    - 10-12 수행: Pi 백업 → 소스·관련 테스트·누락된 YAML 테스트 입력을 `rsync -cR`로 복사 → `colcon build --packages-select jdamr_cube_navigation`(복사 설치) → Pi 테스트 6건 통과 → 소스/설치본 SHA-256 대조 → 기존 `jdamr_depart.start_executor()`로 비구동 기동 확인 → 종료. 상세·백업·로그는 §2-14.
    - 실행기는 초기 inactive였으며 확인 때 PID 2479로 `active/running`에 도달했다. 요청 파일이나 이동 명령을 추가하지 않았고 확인 뒤 inactive로 복원했다. 다음 사용은 기존 `session-start` 경로로 기동한다. 이를 Nav2 활성화나 실제 사이클 성공으로 기록하지 않는다.
-   - 남은 확인: 다음 `go`의 사이클이 이동 전 `request interrupted ...`로 끝나지 않는지. 재요청이 일어나면 실행기 저널에 `parameter read timeout: node=... attempt=1/2` 경고가 남는다(`journalctl -u jdamr-box-executor`).
+   - 10-12 실제 `go`에서 이동 전 읽기 단계 통과와 관측 지점 도착을 확인했다. 재요청 발생 시 실행기 저널에 `parameter read timeout: node=... attempt=1/2` 경고가 남는 계약은 유지한다. 박스 최종 주차·복귀 성공은 별도 확인 항목이다.
 2. **시작점과 `init`.** 10-12부터 등록 HOME은 새 시작점이다. 같은 장소에서 다음 세션을 시작할 때 기존 `jdamr_depart.py init` 경로를 쓴다. 주행 도중 재개에서는 현재 실제 위치를 보존한다.
    - 10-06 17:52에는 도크 주변의 지도에 없는 물체 때문에 스캔 일치율(inlier)이 0.34–0.43으로 기준 0.45 아래였다. 지역 매칭과 전역 탐색이 같은 자리를 가리키면 `init --local-only --min-inlier 0.30`(저장소의 운영자 재정의, 하한 0.25)으로 통과시켰고, AMCL 일치 검사(5 cm, 2°)는 그대로 둔다.
    - 복구 주행 전에는 AMCL 공분산을 먼저 본다(평소 방향 분산 약 0.009 rad²). 10-06 17:44에 이를 보지 않고 도크 복귀를 보내 방향 표준편차가 45°까지 무너졌다(§2-8).
@@ -78,7 +78,7 @@ Claude Code가 2026-10-06 오후부터 10-08까지 처리한 내용과 남은 �
 - 가든: `20261006_CONTROLLER_SELECTION_GARDEN_HANDOFF.md`(10-08 갱신, 반복 비교 3.4절·"틀렸던 판단" 행 추가).
 - **공개 금지:** 면접 QA 문서(`20261002_JDAMR_면접QA_50.md`, 최신 커밋 `076c3b7`)는 로컬 브랜치 `local/interview-qa`에만 둔다. push하지 않는다. main·원격·포트폴리오·가든 어디에도 넣거나 링크하지 않는다.
 
-## 2. 10-06 오후–10-08 사실 기록
+## 2. 10-06 오후–10-12 사실 기록
 
 ### 2-1. 추종기 반복 비교 (10-06 17:10–17:36, `go table_02`)
 
@@ -121,7 +121,7 @@ MPPI 구성은 사전 지점까지만 맡고(전진만, 목표 방향 비용은 
 - 원인(확인): `activate_navigation.py`가 AMCL 초기화를 기다리며 `rclpy.spin_once(node)`를 불렀다. 이 호출이 노드를 전용 EventsExecutor에서 떼어 내 이후 `map_server` `get_state` 응답이 처리되지 않았다. Pi에서 같은 절차가 waitset 실행기로는 통과, EventsExecutor로는 실패(3/3)했고, rclpy `Executor.add_node`·`Node.executor` setter 소스로 기전을 확인했다.
 - 조치: 두 곳을 `spin_node()`로. 배포 직후 `init` 성공(AMCL과 스캔 매칭 차 0.004 m, 0.4°).
 
-### 2-6. 실행기 이동 전 실패 (커밋 `ace59b8`, Pi 미배포)
+### 2-6. 실행기 이동 전 실패 (커밋 `ace59b8`, 당시 Pi 미배포·10-12 반영은 §2-14)
 
 - 현상: 10-06 10:26·17:09 사이클이 이동 전 `request interrupted, failed or timed out`으로 끝남(run `table_02_20261006_102633`, `_170919`). 10:26은 EventsExecutor 도입(15:23) 전이다.
 - 위치(코드 경로 분석으로 확인): 이동 전 단계에서 이 예외를 위로 올리는 경로는 `verify_live_maps()`의 `map_server`·`keepout_filter_mask_server` `yaml_filename` 읽기뿐이다. 실행기는 시도마다 새 노드라 매번 새 클라이언트의 첫 요청이고, 한 번 2 s 기다렸다.
@@ -194,6 +194,8 @@ README 서빙 행과 두 인계 문서를 위 사실로 고쳤고, 별도 검증
 
 ### 2-16. 새 시작점·하향 카메라·출발 대기 (2026-10-12)
 
+이 절은 14:42–14:58의 준비 시점 기록이다. HOME·서비스·PID의 현재값은 §2-17이 대체한다.
+
 - 사용자 요청 범위는 출발 직전까지다. 이동 목표·비영 속도·팔 구동 명령은 보내지 않았다.
 - 실제 위치는 새 라이다 40개로 매칭했다. 초기화에 사용한 inlier는 약 0.39, 전역 탐색도 동의했다. 기존 문서의 `--local-only --min-inlier 0.30`를 사용하되 이번 실행에서는 전역 동의도 확인했다. AMCL과 라이다 위치 차이는 약 0.006 m·0.2°였다.
 - 기존 `teach-home --parking-direction forward --replace`로 현재 정지 위치를 저장했다. 새 HOME은 (0.175466, -0.099308) m·yaw 0.138536 rad이며 모든 운영 경로의 HOME을 갱신했다. 이전 레지스트리·상태·경로 백업은 아래 근거 폴더 `home_change_backup/`, Pi 레지스트리 옆 `.before_start_home_20261012`다.
@@ -208,7 +210,61 @@ README 서빙 행과 두 인계 문서를 위 사실로 고쳤고, 별도 검증
 - 촉각센서는 5V·GND 두 선만 연결됐다. 신호 입력과 펌웨어 경로가 없어 눌림 검증·접촉 정지는 미완료다. 임의 GPIO를 사용하거나 제어보드 펌웨어를 변경하지 않았다.
 - 근거 폴더: PC `$HOME/jdamr_data/predeparture_20261012_141234/`. 주요 파일: `start_home_after.json`, `camera_floor_samples.npz`, `floor_plane_fit.json`, `floor_candidate.png`, `camera_mount_derived_20261012.yaml`. 초기화 기록: `$HOME/jdamr_data/map_20260930_manual/aligned/runs/init_20261012_144049/`.
 
-## 3. 커밋 (10-06 15:00 이후, 모두 `origin/main`)
+### 2-17. 실차 중단 원인·새 HOME·종료 후 수정 (2026-10-12 15:17 이후)
+
+#### HOME과 실제 완료 범위
+
+- 운영자는 기존 실물 도크 안으로 진입할 수 없어 시작점을 복귀점으로 사용하도록 지시했다. 17:24 `teach-home --parking-direction forward --replace`로 등록한 HOME은 (0.12685095998538692, 0.057200166122187035) m, yaw 0.11115982800318104 rad다. 레지스트리·상태·운영 경로를 갱신했으며 14:42의 값은 폐기한 이전 등록값이다. 원본은 `$HOME/jdamr_data/map_20260930_manual/aligned/service_destinations.yaml`, 이전 값 백업은 `runs/dock_reteach_20261012_171717/previous_home/`이다.
+- 17:21 초기화에서 스캔과 AMCL 차이는 약 0.003 m·0.1°였다. 카메라 재연결 뒤 17:56 새 초기화는 전역·지역 탐색이 동의했고 inlier 약 0.34, AMCL 차이 약 0.005 m·0.5°였다. 기존 `init --local-only --min-inlier 0.30`를 사용했고 AMCL 5 cm·2° 검사는 유지했다. 이 초기화는 HOME 재등록이 아니며 등록값은 바꾸지 않았다.
+- `table_01_20261012_173445`의 복귀 실행은 HOME 대기점 도착(status 4) 뒤 최종 HOME 목표를 수락했으나 사용자 정지 요청으로 끝났다. HOME 도착 성공으로 기록하지 않는다. 이후 마지막 `table_01_20261012_175643`은 물 받는 곳 관측 지점에 도착했고 카메라 준비도 통과했지만 탐색 Spin 후 검증에서 실패했다. 박스 주차·대기·이탈·HOME 복귀 완료는 모두 미확인이다.
+- 사용자 최종 요청은 정지, 퇴근 후 개선, 도크에 놓겠다는 내용이다. 17:59 이동 중지와 18:00 세션 종료를 마쳤다. 실제 도크 재배치 완료는 새 관측으로 확인하지 않았다. `state.json.localized=false`이며 다음 새 세션은 등록 HOME에서 `init`을 새로 수행한다. 주행 중 재개에 HOME pose를 덮어쓰지 않는다.
+
+#### 차체 기둥 자기 반사
+
+- `table_01_20261012_151708`은 약 0.44 m 이동 뒤 자기 반사로 충돌 방지 정지가 걸렸다. 사용자는 주변에 장애물이 없고 높인 네 기둥이 LiDAR 평면에 걸린다고 설명했다. 이동 전후의 차체 기준 좌표가 유지된 후방 두 군집을 기존 `scan_self_filter`에 반영했다. 앞 기둥 위치에는 유효 반사점이 없어 필터 박스를 추가하지 않았다.
+- 영구 저장소 설정: `jdamr_cube_bringup/config/self_filter_columns_20261012.yaml`, `status: derived_from_lidar_returns`, margin 0.005 m. 왼쪽 중심 (-0.251, 0.230) m·범위 (0.018, 0.026) m, 오른쪽 중심 (-0.283, -0.200) m·범위 (0.024, 0.024) m다. 실제 기둥 치수가 아니라 반사점 외접 범위이며 각도 전체를 차단하지 않는다.
+- 원본 스캔 40+40개 재생에서 자기 반사 779점 제거, 0.4 m 안 유효 반사 잔여 0, 0.45 m보다 먼 반사 변경 0을 확인했다. 적용 당시 raw/filtered 동시 48개 비교에서도 근거리 461점 → 0, 먼 반사 변경 0이었다. 기둥 자체 가림은 남으며 사각은 왼쪽 132.5–140.3°·오른쪽 -147.7–-139.7°다. 기록 목록에 `/scan_raw`가 없어 주행 전체의 연속 원본은 없고 준비 시점의 별도 원본 스캔을 보존했다.
+- Pi 설정 `$HOME/jdamr_deploy/self_filter_columns_20261012.yaml`과 `/etc/systemd/system/jdamr-base.service.d/95-column-self-filter.conf`로 베이스 기동에 통합했다. 처음 적용할 때는 베이스 PID를 유지하고 임시 raw/filter 유닛을 사용했지만 17:01 재부팅 뒤에는 베이스 안에서 통합 기동한다. 임시 유닛을 다시 중복 기동하지 않는다.
+- 근거: `runs/table_01_20261012_151708/filter_application.json`, `column_points_current.json`, 준비 폴더의 `scan.json`·`scan_current.json`; 재생 재검증은 `$HOME/jdamr_data/predeparture_improvement_20261012/self_filter_replay.json`이다.
+
+#### 사이트 끊김과 수동 명령
+
+- 사이트와 LiDAR가 함께 꺼진 시점에는 Pi가 17:01에 재부팅한 사실을 확인했다. 배터리·전원 원인은 미확정이며 `vcgencmd get_throttled`는 0이었다. 웹 대시보드가 LiDAR를 중지시킨 근거는 없다. 정지된 서비스 조회의 `systemctl is-active` exit 3, 존재하지 않는 임시 유닛의 stop exit 1은 명령 상태 코드이며 그 자체로 하드웨어 고장을 뜻하지 않는다.
+- 수동 페이지는 100 ms마다 새 명령을 보내면서 진행 중 HTTP 요청을 취소해 느린 응답을 계속 버리는 문제가 있었다. `/cmd` 한 요청만 진행시키고 대기 중에는 최신 명령 하나만 보존하도록 수정했다. 키 변경·해제·STOP·창 포커스 이탈은 즉시 새 명령을 보낸다. 300 ms 응답 시간 상한과 `/state` 단일 요청·800 ms 상한을 추가했고 서버 350 ms deadman과 펌웨어 400 ms watchdog은 유지했다.
+- 200 ms 응답 지연, 키 해제·STOP·포커스 이탈, 무응답 복구, 상태 요청 중첩, deadman 회귀를 확인했다. 이는 발견한 클라이언트 결함 수정이며 사용자가 본 모든 가다 서다 현상의 유일 원인으로 단정하지 않는다. `web_teleop.py`를 Pi에 반영·빌드하고 기본 정지 시간 0.35 s와 설치본 해시를 확인했다. 실제 수동 구동 재검증은 정지 요청 뒤 수행하지 않았다.
+- 수동 운용은 Pi `jdamr-webteleop`와 `jdamr-manual-motion`, PC `jdamr-manual-control-link`가 한 구성이다. Pi 출력은 `cmd_vel_nav`를 거쳐 기존 평활기·충돌 방지를 통과한다. 현재 모두 종료했다. 다음 수동 요청 때 주소는 PC `http://127.0.0.1:8080/`, 같은 Wi-Fi 기기는 `http://192.168.0.159:8080/`다. 자율 실행과 동시에 켜지 않는다. 수동 구성 기록: `runs/manual_control_20261012/manual_control_state.json`.
+
+#### Astra USB와 실제 영상
+
+- `table_01_20261012_172507`은 관측 지점에 도착(status 4, Nav2 error 0)했지만 30 s 카메라 준비가 끝나 실패했다. USB VID/PID는 보였으나 `bNumInterfaces=0`이었고 드라이버는 `Entity not found`를 보고했다. 기존 복구 헬퍼가 `lsusb` 존재만으로 성공 처리한 것은 불충분했다.
+- 기존 Astra 전용 포트 reset으로 인터페이스는 3개로 복구됐지만 실제 영상은 0개였다. 이후 SDK segfault(-11)와 장치 busy 오류도 관찰했다. 사용자의 물리 USB 재연결 뒤 17:55 깊이 281개·박스 관측 39개, 마지막 깊이 나이 약 0.0025 s, camera-ready true를 확인했다. 소프트웨어 포트 reset만으로 영상이 복구됐다고 기록하지 않는다.
+- 헬퍼는 VID/PID 외에 authorized·configuration·interface 수, descriptor, vendor class ff의 Bulk IN endpoint 2개 이상을 검사하도록 수정했다. 출력도 USB 열거 성공이라고만 표현하며 영상 수신 성공과 구분한다. 기존 포트 원상 복구 trap과 재시도 상한은 유지한다. Pi `/usr/local/sbin/jdamr-astra-usb-recover`에 반영하고 정상 열거 확인을 통과했다.
+- 근거: `runs/table_01_20261012_172507/camera_usb_recovery.json`, `$HOME/jdamr_data/predeparture_improvement_20261012/camera_usb_and_crash.txt`. 다음 기동에서는 이름·USB 존재만 확인하지 말고 기존 실행기의 실제 영상 신선도 검사를 사용한다. 현재 카메라는 정지 요청에 따라 꺼져 있다.
+
+#### 성공한 Spin을 실패로 기록한 원인과 수정
+
+- 마지막 run `table_01_20261012_175643`의 Spin 요청은 +0.455108 rad였다. Nav2 결과는 status 4·error 0으로 성공했지만 map 기준 관측 이동량 0.135171 m가 5 cm 검사를 넘어서 `nav2_spin_failed`로 잘못 분류됐다.
+- 같은 MCAP 구간을 분리하면 odom 회전 0.516950 rad, odom 계산 병진 0.000401 m, IMU 회전 적분 절댓값 0.498068 rad다. map→odom 보정은 병진 0.096534 m·yaw -0.113655 rad 변했다. 따라서 map 위치 변화에는 위치 추정 보정이 섞여 있었다. 바퀴 odom과 IMU는 회전에 부합하지만 실물 병진은 외부 계측하지 않았다.
+- 종료 후 일반 탐색 회전도 기존 staging 회전처럼 odom 기준으로 바꿨다. 최초 target·before, 종료 after, 입력 공백 복구의 남은 각도를 같은 프레임에서 계산하며 정지 확인은 유지한다. **5 cm 이동·회전 오차 15° 제한은 완화하지 않았다.** MCAP의 map 13.5 cm 변화/odom 0.4 mm 회귀는 통과하고 odom 5 cm 초과는 계속 거부된다.
+- 실패 사유는 `nav2_spin_failed`, `nav2_spin_rejected`, `rotation_observation_not_confirmed`, `operator_stop` 등으로 구분한다. 중단 요청과 센서/AMCL 오류가 겹치면 `operator_stop`을 우선한다. 복구 뒤 남은 각도가 5° 이내라 추가 Spin 없이 성공할 때 이전 실패 사유를 지운다. 관측 이벤트에 `observation_frame`도 기록한다.
+- 분석 스크립트·입력 해시·JSON: `$HOME/jdamr_data/predeparture_improvement_20261012/spin_frame_analysis/`. 수정본의 실물 Spin이나 다음 박스 주차는 정지 요청 뒤 수행하지 않았다.
+
+#### 종료 후 검증·반영
+
+- 작성과 독립 code-reviewer 검토를 분리했고 USB·웹·Spin·필터 설정 모두 승인됐다. 최종 관련 테스트는 **437 통과**(내비게이션 두 파일 397, 수동 웹 17, USB 11, 기존 자기 반사 필터 12), 문법 검사·`bash -n`·diff 검사 통과다. 전체 내비게이션 기준선 5개 실패(§1-B)를 해결했다고 주장하지 않는다.
+- 처음 묶음 검사에서 PC 작업공간 overlay를 source하지 않아 package-not-found 19건이 발생했다. 올바른 `/opt/ros/jazzy/setup.bash`와 `$HOME/jdamr_rgbd_ws/install/setup.bash`를 읽고 재실행한 결과가 위 437 통과다. 실패 출력도 `targeted_tests_without_overlay.txt`로 보존했다. 최종 로그는 `final_targeted_tests.txt`·`final_targeted_tests.xml`이다.
+- Pi에서 `jdamr_cube_node` 빌드와 이후 `jdamr_cube_navigation`·`jdamr_cube_bringup` 2패키지 빌드를 완료했다. 카메라·이동 실행기·Nav2가 꺼진 상태에서 파일 반영과 import만 확인했으며 이동 명령은 보내지 않았다. 최종 빌드 기록: Pi `$HOME/jdamr_data/predeparture_improvement_20261012/colcon_log_final/`.
+- PC 파일, Pi 소스와 설치본 해시를 대조했다. `restaurant_service.py`는 `64cf86e512df0c2bc86495760f94198ea12d89b9b49a3a35ca6508760b477cef`, `box_service.py`는 `25648612336a835703da2601c793d19b2259fbb2c392a3580d114ca141203dc5`, `web_teleop.py`는 `5e9eae3ec6b4560607fc206281de40032953dc74e5c8ff65c810077ae1442d61`, USB 헬퍼는 `d6ff74990b611e2ca7af5094fad1e7a268929951d1f91d303581265d08f5694e`, 필터 YAML은 `1ec5ffc28f3cf1189594445fe88fbb5225f5ac3758b0dbee88a6106a53b7e46f`다. 필터 YAML은 Pi deploy·설치 share와도 같다.
+- 해시·서비스 상태·import 근거: PC `$HOME/jdamr_data/predeparture_improvement_20261012/deployment_final.json`, PC 표시·터널 종료 상태는 `cleanup_final.json`. Pi 백업: 같은 이름의 폴더 `backup/`에 USB·웹 이전 파일, `backup/spin_odom/`에 네비게이션 이전 파일과 이전 필터 YAML을 보존했다. Python의 구문·잘못된 식·미정의 이름 범위를 검사한 flake8(`E9,F63,F7,F82`)도 통과했다. PC 수정은 로컬 커밋으로만 보존하며 이번 작업의 원격 push는 수행하지 않는다.
+
+#### 유지 서비스와 다음 시작
+
+- 종료 확인: Pi Nav2·상주 실행기·RGB-D·박스 관측·카메라 mount·대시보드·웹 수동·수동 평활기/충돌 방지 inactive. PC RViz·mapserver·relay·markers·click·record·대시보드/짝 터널·수동 터널 inactive. 이미 제거된 transient unit은 `LoadState=not-found`이며 새 고장이 아니다.
+- 사용자 기존 `jdamr-base.service`만 active, MainPID 1284로 유지한다. 이동 실행기가 아니라 기존 베이스 센서·UART 상태 공급을 유지하는 서비스이며 이번 종료 후 새 속도 명령은 보내지 않았다. 사용자가 전원을 끄거나 베이스 종료를 요청하면 `ssh lim@192.168.0.159 'sudo -n systemctl stop jdamr-base'`로 끈다. 이전 준비 절의 PID·유지 목록으로 서비스를 다시 켜지 않는다.
+- 다음 출발 요청에는 기존 `$HOME/jdamr_data/map_20260930_manual/tools/jdamr_depart.py`의 `session-start` → 등록 HOME의 `init` → 요청한 `go` 순서를 쓴다. 일치율이 낮을 때는 지역·전역 위치 동의 근거가 있는 경우에만 기존 `--local-only --min-inlier 0.30`를 사용하며 AMCL 일치 기준은 유지한다. 센서 입력은 기존 실행기의 신선도 확인을 사용하고 준비된 코드 검사·문서·리뷰를 출발 때 반복하지 않는다.
+- 다음 실차 확인은 수정본의 탐색 Spin 이후 박스 면 정렬·목표 간격 접근·정지·복귀 완료다. 1 cm 외부 정확도나 접촉센서 연동 완료는 주장하지 않는다. 촉각센서는 여전히 5V·GND뿐이며 신호선 없이는 눌림 입력을 읽을 수 없다. §1-B의 결정 대기와 §1-C의 미지시 고도화는 그대로 둔다.
+
+## 3. 최초 인계의 커밋 (10-06 15:00 이후, 아래 표는 `origin/main`)
 
 | 커밋 | 내용 |
 |---|---|
@@ -226,6 +282,17 @@ README 서빙 행과 두 인계 문서를 위 사실로 고쳤고, 별도 검증
 | `4518da3` | README·인계 문서 정정 |
 | `0c79182` | 봉인 평가 입력 스냅샷·린트 기준선 |
 
+10-12 수정은 로컬 `main`에만 있으며 원격 기준은 `b1daa6a`다. 아래 로컬 커밋과 이 인계 갱신을 원격 배포 완료로 취급하지 않는다.
+
+| 로컬 커밋 | 내용 |
+|---|---|
+| `95fff23` | 차체 결합 상태와 Pi 반영 검증 기록 |
+| `df70044` | USB 복구 뒤 LiDAR·뎁스 수신 기록 |
+| `58763db` | 후방 하향 카메라 보정과 출발 대기 설정 |
+| `187d03d` | Astra USB 열거 검사와 기둥 반사 설정 보존 |
+| `1301d9e` | 느린 HTTP 응답에서 수동 명령 순서 처리 |
+| `f4313a1` | 탐색 Spin의 odom 검증과 중단 사유 구분 |
+
 ## 4. 원본 경로
 
 | 내용 | 경로 |
@@ -239,6 +306,7 @@ README 서빙 행과 두 인계 문서를 위 사실로 고쳤고, 별도 검증
 | 9/29 응답 유실 근거 | `jdamr_cube_navigation/evaluation/20260929_RUNTIME_ROOT_CAUSE.md` |
 | 10-12 결합 뒤 읽기·배포 근거 | PC `$HOME/jdamr_data/analysis_20261012_reassembly_124830/` (UART 전 샘플, 배포·복원·재검증·실행기 종료 로그, §2-13–14) |
 | 10-12 USB 복구 뒤 센서 재확인 | PC `$HOME/jdamr_data/sensor_recheck_20261012_134306/` (센서 수신·깊이 디코드·카메라 종료 근거, §2-15) |
+| 10-12 실차 중단 뒤 수정·검증 | PC `$HOME/jdamr_data/predeparture_improvement_20261012/` (Spin 프레임 분리, 필터 재생, 최종 테스트·설치본 해시·서비스 상태, §2-17) |
 
 ## 5. 운영 규칙 (이 작업에 걸리는 것)
 
