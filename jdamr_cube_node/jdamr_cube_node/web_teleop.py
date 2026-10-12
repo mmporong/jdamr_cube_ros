@@ -121,8 +121,11 @@ const clientId = (globalThis.crypto && crypto.randomUUID)
   ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 let sequence = 0;
 let pendingRequest = null;
+let queuedCommand = null;
+let stateRequest = null;
 let latestAck = 0;
 let lastReplyAt = 0;
+const COMMAND_TIMEOUT_MS = 300;
 function scale() { return document.getElementById("spd").value / 100; }
 function target() {
   let vx = 0, wz = 0;
@@ -139,12 +142,21 @@ function paint() {
   document.getElementById("requested").textContent =
     (t.vx || t.wz) ? `전후 ${t.vx.toFixed(2)} · 회전 ${t.wz.toFixed(2)}` : "정지";
 }
-function send() {
-  if (pendingRequest) pendingRequest.abort();
+function dispatchCommand(command) {
   const controller = new AbortController();
-  pendingRequest = controller;
-  const command = {...target(), client_id: clientId, sequence: ++sequence};
+  const request = {controller, command, timeoutId:null};
+  pendingRequest = request;
   const startedAt = performance.now();
+  request.timeoutId = setTimeout(() => {
+    if (pendingRequest !== request) return;
+    pendingRequest = null;
+    controller.abort();
+    setSync(false, "명령 응답 지연 · 자동 정지");
+    const next = queuedCommand;
+    queuedCommand = null;
+    if (next) dispatchCommand(next);
+    else if (held.size) send();
+  }, COMMAND_TIMEOUT_MS);
   fetch("/cmd", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
@@ -167,11 +179,30 @@ function send() {
     if (error.name !== "AbortError")
       setSync(false, "명령 응답 지연 · 자동 정지");
   }).finally(() => {
-    if (pendingRequest === controller) pendingRequest = null;
+    clearTimeout(request.timeoutId);
+    if (pendingRequest !== request) return;
+    pendingRequest = null;
+    const next = queuedCommand;
+    queuedCommand = null;
+    if (next) dispatchCommand(next);
   });
 }
+function send({urgent=false} = {}) {
+  const command = {...target(), client_id: clientId, sequence: ++sequence};
+  if (pendingRequest && !urgent) {
+    queuedCommand = command;
+    return;
+  }
+  if (pendingRequest) {
+    pendingRequest.controller.abort();
+    clearTimeout(pendingRequest.timeoutId);
+    pendingRequest = null;
+  }
+  queuedCommand = null;
+  dispatchCommand(command);
+}
 function sendStopBurst() {
-  held.clear(); paint(); send();
+  held.clear(); paint(); send({urgent:true});
   setTimeout(send, 70);
   setTimeout(send, 160);
 }
@@ -199,18 +230,30 @@ function renderState(state) {
   else setSync(false, "명령 동기화 확인 중");
 }
 async function pollState() {
+  if (stateRequest) return;
+  const controller = new AbortController();
+  stateRequest = controller;
+  const timeoutId = setTimeout(() => controller.abort(), 800);
   try {
-    const response = await fetch("/state", {cache:"no-store"});
+    const response = await fetch("/state", {
+      cache:"no-store", signal:controller.signal});
     const state = await response.json();
     lastReplyAt = Date.now();
     latestAck = Math.max(latestAck, state.accepted_sequence || 0);
     renderState(state);
   } catch (_) {
     setSync(false, "파이 연결 끊김 · 자동 정지");
+  } finally {
+    clearTimeout(timeoutId);
+    if (stateRequest === controller) stateRequest = null;
   }
 }
-function press(k){ if(!held.has(k)){ held.add(k); paint(); send(); } }
-function release(k){ if(held.delete(k)){ paint(); send(); } }
+function press(k) {
+  if (!held.has(k)) { held.add(k); paint(); send({urgent:true}); }
+}
+function release(k) {
+  if (held.delete(k)) { paint(); send({urgent:true}); }
+}
 setInterval(() => { if (held.size) send(); }, 100);   // 킵얼라이브
 document.addEventListener("keydown", e => {
   const k = e.key.toLowerCase();
