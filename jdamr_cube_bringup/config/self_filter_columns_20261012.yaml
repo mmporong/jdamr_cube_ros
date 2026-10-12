@@ -1,0 +1,30 @@
+status: derived_from_lidar_returns
+base_frame: base_footprint
+margin_m: 0.005
+self_boxes:
+- name: rear_left_column_returns
+  center_xy_m:
+  - -0.251
+  - 0.23
+  size_xy_m:
+  - 0.018
+  - 0.026
+- name: rear_right_column_returns
+  center_xy_m:
+  - -0.283
+  - -0.2
+  size_xy_m:
+  - 0.024
+  - 0.024
+provenance:
+  date: '2026-10-12'
+  operator_evidence: 주변 장애물이 없고 높인 네 기둥이 라이다 평면을 지난다고 사용자 확인
+  measurement: 출발 전 80 scan과 약 0.44 m 전진 후 정지 scan의 후방 두 군집 위치 유지
+  coordinates: URDF laser_link to base_footprint x=-0.010 m, yaw=pi
+  front_columns: '유효 반사점 없음: range_min 0.28 m 안쪽 CAD 위치이므로 필터 box 미추가'
+  physical_column_geometry: 반사점 외접 범위이며 기둥 치수 실측은 아님
+  scope: 위 두 근거리 XY box만 무반사로 처리, 각도 전체 차단 없음, box 뒤 먼 장애물 반사 보존
+  sources:
+  - $HOME/jdamr_data/predeparture_20261012_141234/scan.json
+  - $HOME/jdamr_data/predeparture_20261012_141234/scan_current.json
+  - $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_01_20261012_151708/column_points_current.json

@@ -13,10 +13,47 @@ BASE_OVERRIDE = (
     PACKAGE / 'systemd/jdamr-base.service.d/15-astra-usb-recover.conf')
 
 
-def run_recovery(tmp_path, lsusb_bin, **overrides):
+def create_enumerated_camera(
+        sysfs_root, interface_count='3', endpoint_addresses=('81', '82')):
+    """Create the Astra descriptor shape observed on the robot."""
+    device = sysfs_root / '1-1.2'
+    device.mkdir(parents=True)
+    descriptor_values = {
+        'idVendor': '2bc5',
+        'idProduct': '0402',
+        'authorized': '1',
+        'bConfigurationValue': '1',
+        'bNumConfigurations': '1',
+        'bNumInterfaces': interface_count,
+    }
+    for name, value in descriptor_values.items():
+        (device / name).write_text(value, encoding='utf-8')
+    (device / 'descriptors').write_bytes(b'usb-descriptors')
+
+    vendor_interface = sysfs_root / '1-1.2:1.0'
+    vendor_interface.mkdir()
+    (vendor_interface / 'bInterfaceClass').write_text('ff', encoding='utf-8')
+    (vendor_interface / 'bNumEndpoints').write_text('02', encoding='utf-8')
+    for address in endpoint_addresses:
+        endpoint = vendor_interface / f'ep_{address}'
+        endpoint.mkdir()
+        (endpoint / 'type').write_text('Bulk', encoding='utf-8')
+        (endpoint / 'direction').write_text('in', encoding='utf-8')
+    return device
+
+
+def run_recovery(
+        tmp_path, lsusb_bin, *, create_camera=True, interface_count='3',
+        endpoint_addresses=('81', '82'),
+        **overrides):
     """Run the helper against a temporary port-control file."""
     port = tmp_path / 'disable'
     port.write_text('unchanged', encoding='utf-8')
+    sysfs_root = tmp_path / 'usb-devices'
+    sysfs_root.mkdir()
+    if create_camera:
+        create_enumerated_camera(
+            sysfs_root, interface_count, endpoint_addresses)
     environment = {
         **os.environ,
         'ASTRA_USB_PORT_DISABLE': str(port),
@@ -27,6 +64,7 @@ def run_recovery(tmp_path, lsusb_bin, **overrides):
         'LSUSB_BIN': lsusb_bin,
         'SLEEP_BIN': '/bin/true',
         'ASTRA_USB_FORCE_RECOVERY': '0',
+        'ASTRA_USB_SYSFS_ROOT': str(sysfs_root),
         **overrides,
     }
     result = subprocess.run(
@@ -41,10 +79,88 @@ def test_present_camera_does_not_cycle_port(tmp_path):
 
     assert result.returncode == 0
     assert port_state == 'unchanged'
-    assert 'already present' in result.stdout
+    assert 'USB enumeration already valid' in result.stdout
 
 
-def test_explicit_recovery_cycles_present_but_unopenable_camera(tmp_path):
+def test_lsusb_name_without_sysfs_descriptors_is_not_accepted(tmp_path):
+    """A matching lsusb line alone does not prove usable USB enumeration."""
+    result, port_state = run_recovery(
+        tmp_path, '/bin/true', create_camera=False)
+
+    assert result.returncode == 1
+    assert port_state == '0'
+    assert 'recovery failed' in result.stderr
+
+
+def test_zero_interface_descriptor_is_not_accepted(tmp_path):
+    """Reject the boot failure that exposed bNumInterfaces as zero."""
+    result, port_state = run_recovery(
+        tmp_path, '/bin/true', interface_count='0')
+
+    assert result.returncode == 1
+    assert port_state == '0'
+
+
+def test_incomplete_vendor_depth_interface_is_not_accepted(tmp_path):
+    """Require the two Bulk IN endpoints observed on Astra depth USB."""
+    result, port_state = run_recovery(
+        tmp_path, '/bin/true', endpoint_addresses=('81',))
+
+    assert result.returncode == 1
+    assert port_state == '0'
+
+
+def test_recovery_rechecks_full_enumeration_contract(tmp_path):
+    """Accept recovery only after descriptors and depth endpoints appear."""
+    port = tmp_path / 'disable'
+    port.write_text('unchanged', encoding='utf-8')
+    sysfs_root = tmp_path / 'usb-devices'
+    sysfs_root.mkdir()
+    helper = tmp_path / 'enumerate-camera'
+    helper.write_text(
+        '#!/bin/bash\n'
+        'root="$FAKE_SYSFS_ROOT"\n'
+        'device="$root/1-1.2"\n'
+        'mkdir -p "$device" "$root/1-1.2:1.0/ep_81" '
+        '"$root/1-1.2:1.0/ep_82"\n'
+        'printf 2bc5 > "$device/idVendor"\n'
+        'printf 0402 > "$device/idProduct"\n'
+        'printf 1 > "$device/authorized"\n'
+        'printf 1 > "$device/bConfigurationValue"\n'
+        'printf 1 > "$device/bNumConfigurations"\n'
+        'printf 3 > "$device/bNumInterfaces"\n'
+        'printf descriptors > "$device/descriptors"\n'
+        'printf ff > "$root/1-1.2:1.0/bInterfaceClass"\n'
+        'printf 02 > "$root/1-1.2:1.0/bNumEndpoints"\n'
+        'printf Bulk > "$root/1-1.2:1.0/ep_81/type"\n'
+        'printf in > "$root/1-1.2:1.0/ep_81/direction"\n'
+        'printf Bulk > "$root/1-1.2:1.0/ep_82/type"\n'
+        'printf in > "$root/1-1.2:1.0/ep_82/direction"\n',
+        encoding='utf-8')
+    helper.chmod(0o755)
+    environment = {
+        **os.environ,
+        'ASTRA_USB_PORT_DISABLE': str(port),
+        'ASTRA_USB_INITIAL_WAIT_S': '0',
+        'ASTRA_USB_PORT_OFF_S': '0',
+        'ASTRA_USB_RECOVERY_WAIT_S': '0',
+        'ASTRA_USB_RETRY_COUNT': '1',
+        'ASTRA_USB_FORCE_RECOVERY': '0',
+        'ASTRA_USB_SYSFS_ROOT': str(sysfs_root),
+        'LSUSB_BIN': '/bin/true',
+        'SLEEP_BIN': str(helper),
+        'FAKE_SYSFS_ROOT': str(sysfs_root),
+    }
+    result = subprocess.run(
+        [str(SCRIPT)], env=environment, capture_output=True, text=True,
+        timeout=5, check=False)
+
+    assert result.returncode == 0
+    assert port.read_text(encoding='utf-8') == '0'
+    assert 'USB enumeration recovered' in result.stdout
+
+
+def test_explicit_recovery_cycles_enumerated_camera(tmp_path):
     result, port_state = run_recovery(
         tmp_path, '/bin/true', ASTRA_USB_FORCE_RECOVERY='1')
     assert result.returncode == 0
