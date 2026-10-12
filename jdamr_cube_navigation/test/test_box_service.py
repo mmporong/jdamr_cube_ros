@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PARAMS = ROOT / 'jdamr_cube_navigation/config/new_base_nav2_params.yaml'
 GEOMETRY = ROOT / 'jdamr_cube_description/config/new_base_geometry.yaml'
 BOX_CONTRACT = ROOT / 'jdamr_cube_navigation/config/box_parking_contract.yaml'
+CAMERA_MOUNT = ROOT / 'jdamr_cube_navigation/config/camera_mount_derived_20261012.yaml'
 
 
 @pytest.fixture
@@ -318,6 +319,8 @@ def test_final_gap_and_dwell_options_are_bounded():
     ]
     args = parse_args(base)
     assert args.final_gap_m is None and args.dwell_s == box_service.STOP_DWELL_S
+    assert args.surface_mode == 'front'
+    assert parse_args([*base, '--surface-mode', 'table_edge']).surface_mode == 'table_edge'
     args = parse_args([*base, '--final-gap-m', '0.02', '--dwell-s', '30'])
     assert (args.final_gap_m, args.dwell_s) == (0.02, 30.0)
     assert parse_args([*base, '--final-gap-m', '0.01']).final_gap_m == 0.01
@@ -335,6 +338,11 @@ def test_final_gap_comes_from_the_option_then_the_contract():
     assert BoxServiceRoute._final_gap_m(fake) == pytest.approx(0.02)
     older = SimpleNamespace(parking_contract={})
     assert BoxServiceRoute._final_gap_m(older) == pytest.approx(0.05)
+    table = SimpleNamespace(final_gap_override_m=None, surface_mode='table_edge',
+                            parking_contract={'target_front_gap_m': 0.01})
+    assert BoxServiceRoute._final_gap_m(table) == pytest.approx(0.05)
+    table.final_gap_override_m = 0.02
+    assert BoxServiceRoute._final_gap_m(table) == pytest.approx(0.02)
 
 
 @pytest.mark.parametrize('flag', ['--search', '--resume-at-observation'])
@@ -377,10 +385,12 @@ def _observer_node(monkeypatch, *, scan=True, observation_stamp=10.1):
     node.capture_stationary_pose = Mock(return_value=((0.0, 0.0, 0.0), {}))
     node.parking_motion_revision = 0
     node.candidate_trial = True
+    node.surface_mode = 'front'
     node.stop_requested = False
     node._navigation_ready = Mock(return_value=True)
     node._guard_failure = Mock(return_value=None)
     node.emit = Mock()
+    node._configure_observer = Mock(return_value=True)
     node.box_geometry = yaml.safe_load(GEOMETRY.read_text())
     node.box_status = {
         'frame_id': 'camera_color_optical_frame',
@@ -530,6 +540,69 @@ def test_fused_lidar_face_recomputes_final_goal_and_preserves_provenance(
     assert result['physical_accuracy'] == 'NOT_EXTERNALLY_MEASURED'
     assert [call.args for call in node.emit.call_args_list].count(
         ('box_target_observed',)) == 1
+
+
+def test_table_edge_target_succeeds_without_lidar_face(monkeypatch):
+    node = _observer_node(monkeypatch, scan=False)
+    node.surface_mode = 'table_edge'
+    node.box_status['surface_kind'] = 'table_edge'
+    expected = {
+        'x_m': 0.385, 'y_m': 0.0, 'yaw_rad': 0.0,
+        'estimate_gap_m': 0.05,
+        'face_center_map_xy_m': (0.5, 0.0),
+        'outward_normal_map_xy': (-1.0, 0.0),
+        'surface_kind': 'table_edge', 'table_height_m': 0.75,
+        'edge_basis_map_xy': (0.0, 1.0), 'edge_rms_m': 0.003,
+        'provenance': 'TABLE_EDGE_CAMERA_MOUNT_ESTIMATE',
+    }
+    monkeypatch.setattr(
+        box_service, 'compute_table_edge_docking_target', Mock(return_value=expected))
+    result = node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    assert result is expected
+    assert result['front_extent_m'] == pytest.approx(0.065)
+    assert result['physical_accuracy'] == 'NOT_EXTERNALLY_MEASURED'
+    box_service.compute_table_edge_docking_target.assert_called_once()
+    box_service.witness_box_face_with_lidar.assert_not_called()
+    observed = [call for call in node.emit.call_args_list
+                if call.args == ('box_target_observed',)]
+    assert observed[-1].kwargs['target_basis'] == 'tabletop_front_edge'
+    assert observed[-1].kwargs['lidar_face_fusion'] is False
+
+
+def test_table_edge_observer_parameter_failure_blocks_before_consuming_status(monkeypatch):
+    node = _observer_node(monkeypatch, scan=False)
+    node.surface_mode = 'table_edge'
+    node._configure_observer.return_value = False
+    monkeypatch.setattr(box_service, 'compute_table_edge_docking_target', Mock())
+    with pytest.raises(RuntimeError, match='observer surface and camera parameters'):
+        node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    box_service.compute_table_edge_docking_target.assert_not_called()
+    box_service.witness_box_face_with_lidar.assert_not_called()
+
+
+def test_front_mode_switch_failure_also_blocks_a_cli_attempt(monkeypatch):
+    node = _observer_node(monkeypatch)
+    node.surface_mode = 'front'
+    node.require_observer_configuration = True
+    node._configure_observer.return_value = False
+    with pytest.raises(RuntimeError, match='observer surface and camera parameters'):
+        node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    box_service.compute_box_docking_target.assert_not_called()
+    box_service.witness_box_face_with_lidar.assert_not_called()
+
+
+def test_stale_table_edge_never_reaches_target_geometry(monkeypatch):
+    node = _observer_node(monkeypatch, scan=False, observation_stamp=9.9)
+    node.surface_mode = 'table_edge'
+    node.box_status['surface_kind'] = 'table_edge'
+    monkeypatch.setattr(box_service, 'compute_table_edge_docking_target', Mock())
+    monkeypatch.setattr(
+        box_service.rclpy, 'spin_once',
+        lambda *_a, **_k: setattr(node, 'stop_requested', True))
+    with pytest.raises(RuntimeError, match='no_stable_box'):
+        node.observe_target({}, 0.065, 0.05, (0.5, 0.0), 0.6)
+    box_service.compute_table_edge_docking_target.assert_not_called()
+    box_service.witness_box_face_with_lidar.assert_not_called()
 
 
 def test_observation_consumer_requires_explicit_candidate(monkeypatch):
@@ -1283,10 +1356,10 @@ class _ParameterClientStub:
     def wait_for_services(self, timeout_sec=None):
         return self.available
 
-    def set_parameters(self, parameters):
+    def set_parameters_atomically(self, parameters):
         self.requests.append([(p.name, p.value) for p in parameters])
-        return SimpleNamespace(results=[SimpleNamespace(
-            successful=self.successful, reason='' if self.successful else 'rejected')])
+        return SimpleNamespace(
+            successful=self.successful, reason='' if self.successful else 'rejected')
 
 
 @pytest.mark.parametrize('distance_m, radius_m, expected_m', [
@@ -1294,17 +1367,28 @@ class _ParameterClientStub:
     (1.9, 0.4, 2.0),         # never wider than the configured observer range
     (None, 0.4, 2.0),        # no region bearing: the full range
 ])
-def test_observation_limits_the_observer_depth_to_the_region(distance_m, radius_m, expected_m):
+def test_observation_atomically_configures_mode_mount_and_depth(
+        distance_m, radius_m, expected_m):
     node = object.__new__(BoxServiceRoute)
     events = []
     node.emit = lambda event, **fields: events.append((event, fields))
     node._wait = lambda future, timeout_s: future
     node.observer_parameters = _ParameterClientStub()
     node.last_region_distance_m = distance_m
-    assert node._set_depth_window(radius_m) is True
-    (name, value), = node.observer_parameters.requests[0]
-    assert name == 'maximum_depth_m' and value == pytest.approx(expected_m)
-    assert events[-1][0] == 'box_depth_window' and events[-1][1]['applied'] is True
+    node.surface_mode = 'table_edge'
+    mount = yaml.safe_load(CAMERA_MOUNT.read_text())
+    assert node._configure_observer(mount, radius_m) is True
+    requested = dict(node.observer_parameters.requests[0])
+    transform = mount['camera_mount']['transform']
+    assert requested.pop('surface_mode') == 'table_edge'
+    assert requested == pytest.approx({
+        'maximum_depth_m': expected_m,
+        'camera_height_m': transform['z_m'],
+        'camera_roll_rad': transform['roll_rad'],
+        'camera_pitch_rad': transform['pitch_rad'],
+    })
+    assert events[-1][0] == 'box_observer_configuration'
+    assert events[-1][1]['applied'] is True
 
 
 @pytest.mark.parametrize('client', [_ParameterClientStub(successful=False),
@@ -1316,7 +1400,9 @@ def test_depth_window_failure_is_recorded_and_does_not_stop_the_observation(clie
     node._wait = lambda future, timeout_s: future
     node.observer_parameters = client
     node.last_region_distance_m = 0.7
-    assert node._set_depth_window(0.4) is False
+    node.surface_mode = 'front'
+    assert node._configure_observer(
+        yaml.safe_load(CAMERA_MOUNT.read_text()), 0.4) is False
     assert events[-1][1]['applied'] is False and events[-1][1]['reason']
 
 
@@ -1452,6 +1538,34 @@ def test_final_gap_option_overrides_the_contract_in_the_judgement(mission):
     finished = _final_judged(mission, (1.0 - 0.065 - 0.05, 0.0, 0.0))
     assert finished.args == ('box_approach_finished',)
     assert finished.kwargs['desired_front_gap_m'] == pytest.approx(0.05)
+
+
+def test_table_edge_alignment_pose_still_closes_from_45cm_to_default_5cm():
+    node = object.__new__(BoxServiceRoute)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = None
+    node.parking_contract = {'yaw_tolerance_rad': math.radians(3.0)}
+    node.box_front_half_width_m = 0.225
+    node.capture_stationary_pose = Mock(return_value=((0.5, 0.0, 0.0), {}))
+    node._pose = Mock(side_effect=lambda _index, pose: SimpleNamespace(
+        header=SimpleNamespace(), pose=pose))
+    node._frozen_in_odom = Mock(return_value=(
+        SimpleNamespace(), lambda x, y, yaw: (x, y, yaw)))
+    node._execute_reverse_path = Mock(return_value=True)
+    node.emit = Mock()
+    node.config = {'frame_id': 'map', 'waypoints': []}
+    node.waypoints = []
+    target = {
+        'face_center_map_xy_m': (1.0, 0.0),
+        'outward_normal_map_xy': (-1.0, 0.0),
+    }
+    reached, _to_odom = node._parking_final_approach(target, 0.065)
+    assert reached is True
+    straight = next(call for call in node.emit.call_args_list
+                    if call.args == ('final_approach_straight',))
+    # The robot starts with its front 43.5 cm from the edge and advances toward 5 cm.
+    assert straight.kwargs['travel_m'] == pytest.approx(0.39)
+    node._execute_reverse_path.assert_called_once()
 
 
 def test_final_approach_constants_keep_their_measured_basis():

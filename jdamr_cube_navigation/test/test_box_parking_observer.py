@@ -283,3 +283,131 @@ def test_executor_may_narrow_only_the_maximum_depth_within_the_configured_range(
         assert not set_('maximum_depth_m', value).successful
     assert not set_('minimum_width_m', 0.1).successful
     assert node._config.maximum_depth_m == node._depth_ceiling_m
+
+
+def _surface_parameter_node():
+    from jdamr_cube_navigation.table_edge_detection import TableEdgeConfig
+    node = object.__new__(DepthBoxParkingNode)
+    node._config = BoxTopConfig()
+    node._table_config = TableEdgeConfig()
+    node._surface_mode = 'front'
+    node._depth_ceiling_m = node._config.maximum_depth_m
+    node.resets = []
+    node._stability = SimpleNamespace(update=node.resets.append)
+    return node
+
+
+def _parameters(**values):
+    return [SimpleNamespace(name=name, value=value) for name, value in values.items()]
+
+
+def test_table_mode_requires_height_and_updates_geometry_as_one_configuration():
+    """No old frame survives the atomic surface and calibration switch."""
+    node = _surface_parameter_node()
+    assert not node._on_parameters(_parameters(surface_mode='table_edge')).successful
+    assert node._surface_mode == 'front'
+    assert not node.resets
+    result = node._on_parameters(_parameters(
+        surface_mode='table_edge', camera_height_m=1.1,
+        camera_roll_rad=0.02, camera_pitch_rad=0.6))
+    assert result.successful
+    assert node._surface_mode == 'table_edge'
+    assert node._table_config.camera_height_m == 1.1
+    assert node._table_config.camera_pitch_rad == node._config.camera_pitch_rad == 0.6
+    assert node.resets == [None]
+
+
+def test_real_observer_keeps_table_bounds_when_switching_from_box_parameters():
+    """Legacy box defaults cannot weaken the stricter table detector bounds."""
+    import rclpy
+    from rclpy.parameter import Parameter
+    rclpy.init(domain_id=91)
+    node = None
+    try:
+        node = DepthBoxParkingNode()
+        result = node.set_parameters_atomically([
+            Parameter('surface_mode', value='table_edge'),
+            Parameter('camera_height_m', value=1.0),
+            Parameter('camera_pitch_rad', value=0.5),
+        ])
+        assert result.successful
+        assert node._table_config.minimum_depth_m == 0.40
+        assert node._table_config.minimum_normal_y == 0.90
+        assert node._config.minimum_depth_m == 0.35
+        assert node._config.minimum_normal_y == 0.65
+        assert not node.set_parameters_atomically([
+            Parameter('maximum_depth_m', value=0.39)]).successful
+        assert node._table_config.maximum_depth_m == 2.0
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize('height', [0.0, -1.0, True, float('nan')])
+def test_bad_height_does_not_partially_change_mode_or_camera_angles(height):
+    """An invalid batch keeps the previous usable observer state."""
+    node = _surface_parameter_node()
+    before = node._config
+    result = node._on_parameters(_parameters(
+        surface_mode='table_edge', camera_roll_rad=0.1, camera_height_m=height))
+    assert not result.successful
+    assert node._config == before
+    assert node._surface_mode == 'front'
+    assert node._table_config.camera_height_m == 0.0
+    assert not node.resets
+
+
+def test_camera_reposition_and_return_to_box_clear_previous_stability():
+    """Both mount changes and switching back discard prior evidence."""
+    node = _surface_parameter_node()
+    assert node._on_parameters(_parameters(
+        surface_mode='table_edge', camera_height_m=0.95, camera_pitch_rad=0.4)).successful
+    assert node._on_parameters(_parameters(
+        camera_height_m=1.1, camera_pitch_rad=0.6)).successful
+    assert node._table_config.camera_height_m == 1.1
+    assert node._table_config.camera_pitch_rad == 0.6
+    assert node._on_parameters(_parameters(surface_mode='front')).successful
+    assert node._surface_mode == 'front'
+    assert node.resets == [None, None, None]
+
+
+def test_table_edge_json_carries_endpoints_and_calibration_without_velocity(monkeypatch):
+    """Endpoint geometry crosses the ROS boundary without granting motion."""
+    from jdamr_cube_navigation.table_edge_detection import TableEdgeConfig
+    info, image = _messages(np.ones((2, 2), dtype='<u2') * 1000)
+    detection = SimpleNamespace(
+        surface_kind='table_edge', front_distance_m=0.8,
+        center_x_m=0.04, center_y_m=0.23,
+        edge_angle_rad=0.0, width_m=0.5, height_m=0.0,
+        depth_extent_m=0.3, plane_normal=(0.0, -0.9, -0.435889894),
+        plane_rms_m=0.001, inlier_count=200, candidate_count=240,
+        confidence=0.9, edge_endpoints_optical_m=((-0.25, 0.23, 0.8), (0.25, 0.23, 0.8)),
+        table_height_m=0.75, edge_rms_m=0.002)
+    node = object.__new__(DepthBoxParkingNode)
+    node._minimum_period_s, node._last_processed_s = 0.0, -math.inf
+    node._camera_info, node._optical_frame = info, OPTICAL_FRAME
+    node._calibration_model, node._max_image_age_s = 'rectified_projection', .5
+    node._surface_mode, node._config = 'table_edge', BoxTopConfig()
+    node._table_config = TableEdgeConfig(camera_height_m=1.0, camera_pitch_rad=0.5)
+    node._stability = SimpleNamespace(update=lambda item: True, frame_count=8)
+    node.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=10_100_000_000))
+    called = []
+
+    def detect(_depth, _intrinsics, config):
+        called.append(config)
+        return detection
+
+    monkeypatch.setattr('jdamr_cube_navigation.depth_box_parking.detect_table_edge', detect)
+    messages = []
+    node._status = SimpleNamespace(publish=messages.append)
+    node._on_depth(image)
+    document = json.loads(messages[0].data)
+    assert called == [node._table_config]
+    assert document['surface_kind'] == 'table_edge'
+    assert document['edge_endpoints_optical_m'] == [[-0.25, 0.23, 0.8], [0.25, 0.23, 0.8]]
+    assert document['table_height_m'] == 0.75
+    assert document['camera_height_m'] == 1.0
+    assert document['camera_pitch_rad'] == 0.5
+    assert document['stable'] and document['control_ready'] is False

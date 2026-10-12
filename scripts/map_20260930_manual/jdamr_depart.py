@@ -14,7 +14,7 @@ localization seeding through the existing `activate_navigation`, home teaching.
     jdamr_depart.py session-start   Pi Nav2 session (precision, prepare-only, LOCALHOST)
     jdamr_depart.py init            registered dock pose -> scan-matched pose -> activation
                                     (--click: RViz click instead, re-teaches home unless --keep-home)
-    jdamr_depart.py go table_01     table cycle: observe -> align -> 5 cm -> 2 s -> escape -> dock
+    jdamr_depart.py go table_01     tabletop edge: observe -> align -> 5 cm -> 2 s -> escape -> dock
     jdamr_depart.py health          read-only: does a fresh Pi process receive map/TF/scan
     jdamr_depart.py recover         no-motion restart of sensors, session and display + init
     jdamr_depart.py status | stop | display-stop | session-stop
@@ -683,9 +683,16 @@ def alert_operator(event):
 def run_cycle(args, state, table_id):
     """Start one box_service run on the Pi and follow its log until the unit ends."""
     region = state['regions'][table_id]
-    via = state['regions'][VIA_ID]
+    surface_mode = getattr(args, 'surface_mode', 'table_edge')
+    include_via = (not args.dock_only and (
+        (surface_mode == 'front' and not args.skip_via)
+        or (surface_mode == 'table_edge' and getattr(args, 'with_via', False))))
+    via = state['regions'].get(VIA_ID)
+    if include_via and via is None:
+        fail(f'{VIA_ID} region is required by the selected via mode')
     if args.region:
-        region = {'xy': args.region[:2], 'radius_m': args.region[2], 'basis': 'operator-confirmed box'}
+        region = {'xy': args.region[:2], 'radius_m': args.region[2],
+                  'basis': f'operator-confirmed {surface_mode}'}
     run = time.strftime('%Y%m%d_%H%M%S')
     run_dir = P2 / 'runs' / f'{table_id}_{run}'
     run_dir.mkdir(parents=True)
@@ -712,6 +719,7 @@ def run_cycle(args, state, table_id):
                    f'--candidate-trial --execute --search --task-timeout-s {TASK_TIMEOUT_S} '
                    f'--return-home --return-timeout-s {RETURN_TIMEOUT_S} '
                    f'--operator-heartbeat {heartbeat} '
+                   f'--surface-mode {surface_mode} '
                    + (' --home-only ' if args.dock_only else '')
                    + (' --graceful-final ' if args.graceful_final else '')
                    + (' --rpp-transit ' if getattr(args, 'rpp_transit', False) else '')
@@ -724,7 +732,7 @@ def run_cycle(args, state, table_id):
                    + (' --resume-at-observation ' if args.resume_at_observation else '')
                    + (f' --resume-parked-from-log {shlex.quote(args.resume_parked_log)} '
                       if args.resume_parked_log else '')
-                   + ('' if args.skip_via or args.dock_only else
+                   + ('' if not include_via else
                       f'--via-id {VIA_ID} '
                       f'--via-route {args.via_route or P2 / (VIA_ID + "_route.yaml")} '
                       f'--via-region-xy {via["xy"][0]} {via["xy"][1]} '
@@ -897,8 +905,15 @@ def cmd_go(args):
     dwell = getattr(args, 'dwell_s', None)
     if dwell is not None and not (math.isfinite(dwell) and 0.0 < dwell <= 120.0):
         fail('--dwell-s must be in (0, 120] s')
+    surface_mode = getattr(args, 'surface_mode', 'table_edge')
+    with_via = getattr(args, 'with_via', False)
+    if with_via and args.skip_via:
+        fail('--with-via cannot be combined with --skip-via')
+    if with_via and surface_mode != 'table_edge':
+        fail('--with-via is only valid with --surface-mode table_edge')
     tables = list(getattr(args, 'table_ids', None) or [args.table_id])
-    if len(tables) > 1 and (args.skip_via or args.resume_at_observation or args.resume_parked_log
+    if len(tables) > 1 and (args.skip_via or with_via or args.resume_at_observation
+                            or args.resume_parked_log
                             or args.dock_only or args.route or args.region):
         fail('a sequence starts every cycle at the dock; resume, route and region options '
              'apply to a single table')
@@ -1158,8 +1173,13 @@ def main():
     go.add_argument('--route', help='route file (default: <table_id>_route.yaml)')
     go.add_argument('--region', nargs=3, type=float, metavar=('X', 'Y', 'R'))
     go.add_argument('--via-route', help='water_station route (default: <P2>/water_station_route.yaml)')
-    go.add_argument('--skip-via', action='store_true', help='water stop already done: table then dock')
+    go.add_argument('--skip-via', action='store_true',
+                    help='front mode: skip the legacy water stop and go to the table')
+    go.add_argument('--with-via', action='store_true',
+                    help='with table_edge, include the registered water-station tabletop stop')
     go.add_argument('--dock-only', action='store_true', help='return to the dock only (re-dock)')
+    go.add_argument('--surface-mode', choices=('front', 'table_edge'), default='table_edge',
+                    help='parking surface (default table_edge; use front for legacy box parking)')
     go.add_argument('--graceful-final', action='store_true',
                     help='Graceful box approach and dock leg instead of RPP (default)')
     go.add_argument('--zero-turn-final', action='store_true',
@@ -1170,8 +1190,8 @@ def main():
                     help='planner + controller for the transit and staging legs '
                          '(default navfn-rpp, 2026-10-06 algorithm selection)')
     go.add_argument('--final-gap-m', type=float,
-                    help='front gap of the final box approach (default: the box parking '
-                         'contract target_front_gap_m: 0.01 since 2026-10-06, 0.05 before)')
+                    help='front gap override (table_edge default 0.05 m; front uses the '
+                         'box parking contract target)')
     go.add_argument('--dwell-s', type=float,
                     help='held stop at each box (default 2 s; longer to measure the gap)')
     go.add_argument('--resume-at-observation', action='store_true',

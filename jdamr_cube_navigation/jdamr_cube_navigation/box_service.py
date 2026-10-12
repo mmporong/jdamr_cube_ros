@@ -1,4 +1,4 @@
-"""Approach a mapped table region, then park using a fresh observed box face."""
+"""Approach a mapped table region, then park using a fresh observed surface."""
 
 import argparse
 from collections import deque
@@ -16,6 +16,7 @@ from jdamr_cube_navigation.box_docking_target import (
     _validated_mount, compute_box_docking_target, MINIMUM_DISTANCE_M,
 )
 from jdamr_cube_navigation.box_lidar_witness import witness_box_face_with_lidar
+from jdamr_cube_navigation.table_edge_target import compute_table_edge_docking_target
 from jdamr_cube_navigation.corridor_route import (
     load_route, spin_node, TRANSIT_PLAN_END_TOLERANCE_M)
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
@@ -86,6 +87,8 @@ SEARCH_RECOVERABLE_REASONS = frozenset({
     'LiDAR and depth face normals disagree',
     'LiDAR and depth face distances disagree',
     'observed_box_outside_selected_table_region',
+    'stable detected table_edge surface is required',
+    'observed_table_edge_outside_selected_table_region',
 })
 # Observer statuses without a frame: the depth input itself was late.
 OBSERVER_LATENCY_REASONS = frozenset({'stale_or_future_depth', 'camera_info_missing'})
@@ -116,6 +119,8 @@ ESCAPE_PATH_CONTRACT = {
 # Held stop at the water station and the table before leaving (operator,
 # 2026-10-01: 5 s -> 2 s).
 STOP_DWELL_S = 2.0
+TABLE_EDGE_DEFAULT_GAP_M = 0.05
+SURFACE_MODES = ('front', 'table_edge')
 
 
 def front_lead_m(front_extent_m, half_width_m, heading_error_rad):
@@ -495,14 +500,18 @@ class BoxServiceRoute(ServiceRoute):
                 return False
         return True
 
-    def _set_depth_window(self, region_radius_m):
+    def _configure_observer(self, camera_mount, region_radius_m):
         """
-        Limit the observer's depth range to the table region and its radius.
+        Atomically select the surface detector, live mount and bounded depth range.
 
         The detector keeps the largest plane in view. At table_01 a 1 m wide
         surface 1.33 m away won over the box 0.64 m away for all 12 search
         turns (2026-10-01 15:37); beyond the region there is no box to see.
         """
+        _x, _y, height_m, roll_rad, pitch_rad, _yaw = _validated_mount(camera_mount)
+        surface_mode = getattr(self, 'surface_mode', 'front')
+        if surface_mode not in SURFACE_MODES:
+            raise ValueError('surface mode must be front or table_edge')
         distance_m = getattr(self, 'last_region_distance_m', None)
         window_m = DEPTH_WINDOW_CEILING_M if distance_m is None else min(
             DEPTH_WINDOW_CEILING_M, max(MINIMUM_DISTANCE_M + 0.1, distance_m + region_radius_m))
@@ -514,21 +523,31 @@ class BoxServiceRoute(ServiceRoute):
                 self.observer_parameters = client
             if not client.wait_for_services(timeout_sec=1.0):
                 raise RuntimeError('observer parameter service unavailable')
-            response = self._wait(client.set_parameters(
-                [Parameter('maximum_depth_m', value=float(window_m))]), 2.0)
-            if not all(result.successful for result in response.results):
-                raise RuntimeError('; '.join(result.reason for result in response.results))
+            response = self._wait(client.set_parameters_atomically([
+                Parameter('maximum_depth_m', value=float(window_m)),
+                Parameter('surface_mode', value=surface_mode),
+                Parameter('camera_height_m', value=height_m),
+                Parameter('camera_roll_rad', value=roll_rad),
+                Parameter('camera_pitch_rad', value=pitch_rad),
+            ]), 2.0)
+            if response.successful is not True:
+                raise RuntimeError(response.reason or 'observer parameters rejected')
         except Exception as error:
             reason = str(error) or type(error).__name__
-        # Without the window the observer keeps its previous range: record, go on.
-        self.emit('box_depth_window', maximum_depth_m=window_m,
+        self.emit('box_observer_configuration', maximum_depth_m=window_m,
+                  surface_mode=surface_mode, camera_height_m=height_m,
+                  camera_roll_rad=roll_rad, camera_pitch_rad=pitch_rad,
                   region_distance_m=distance_m, applied=reason is None, reason=reason)
         return reason is None
+
+    def _set_depth_window(self, region_radius_m):
+        """Apply the complete observer configuration for the current mount."""
+        return self._configure_observer(self._observer_camera_mount, region_radius_m)
 
     def observe_target(self, camera_mount, front_extent_m, gap_m, region_xy,
                        region_radius_m, timeout_s=12.0):
         """
-        Capture a stationary robot and a new stable face, never a cached face.
+        Capture a stationary robot and a new stable surface, never a cached one.
 
         One recoverable input gap restarts the window from a new stationary
         capture. Each observer stamp is judged once. A verdict with fewer than
@@ -541,7 +560,11 @@ class BoxServiceRoute(ServiceRoute):
         self._ensure_depth_info()
         robot_pose, _ = self.capture_stationary_pose()
         self._observation_pose_diagnostic(robot_pose, camera_mount, region_xy)
-        self._set_depth_window(region_radius_m)
+        self._observer_camera_mount = camera_mount
+        if (not self._set_depth_window(region_radius_m)
+                and (getattr(self, 'surface_mode', 'front') == 'table_edge'
+                     or getattr(self, 'require_observer_configuration', False))):
+            raise RuntimeError('observer surface and camera parameters unavailable')
         revision = self.parking_motion_revision
         cutoff_s = self.get_clock().now().nanoseconds * 1e-9
         # A later cutoff advances by elapsed monotonic time, not another clock read.
@@ -581,7 +604,13 @@ class BoxServiceRoute(ServiceRoute):
                     fresh_since_latency = 0
                     robot_pose, _ = self.capture_stationary_pose()
                     self._observation_pose_diagnostic(robot_pose, camera_mount, region_xy)
-                    self._set_depth_window(region_radius_m)
+                    self._observer_camera_mount = camera_mount
+                    if (not self._set_depth_window(region_radius_m)
+                            and (getattr(self, 'surface_mode', 'front') == 'table_edge'
+                                 or getattr(
+                                     self, 'require_observer_configuration', False))):
+                        raise RuntimeError(
+                            'observer surface and camera parameters unavailable')
                     revision = self.parking_motion_revision
                     now_monotonic_s = time.monotonic()
                     cutoff_s += now_monotonic_s - cutoff_monotonic_s
@@ -627,15 +656,45 @@ class BoxServiceRoute(ServiceRoute):
                 if observation.get('control_ready') is not False:
                     raise ValueError(
                         'observer must remain perception-only; candidate gate is separate')
+                surface_mode = getattr(self, 'surface_mode', 'front')
                 retryable = (
                     observation.get('detected') is not True
                     or observation.get('stable') is not True
-                    or observation.get('surface_kind') != 'front')
+                    or observation.get('surface_kind') != surface_mode)
+                robot_pose_document = dict(zip(
+                    ('x_m', 'y_m', 'yaw_rad'), robot_pose))
+                if surface_mode == 'table_edge':
+                    target = compute_table_edge_docking_target(
+                        observation, camera_mount, robot_pose_document,
+                        requested_gap_m=gap_m, front_extent_m=front_extent_m,
+                        now_s=now_s)
+                    target.update({
+                        'front_extent_m': front_extent_m,
+                        'front_extent_provenance': self._json_evidence(
+                            getattr(self, 'front_extent_provenance', None)),
+                        'physical_accuracy': 'NOT_EXTERNALLY_MEASURED',
+                    })
+                    retryable = False
+                    if self.parking_motion_revision != revision:
+                        raise ValueError('robot moved during table edge observation')
+                    retryable = True
+                    if math.dist(target['face_center_map_xy_m'], region_xy) > region_radius_m:
+                        raise ValueError('observed_table_edge_outside_selected_table_region')
+                    self.emit(
+                        'box_target_observed', observation=observation, target=target,
+                        surface_mode=surface_mode, target_basis='tabletop_front_edge',
+                        lidar_face_fusion=False, candidate_trial=True,
+                        physical_accuracy='NOT_EXTERNALLY_MEASURED')
+                    return target
                 target = compute_box_docking_target(
-                    observation, camera_mount,
-                    dict(zip(('x_m', 'y_m', 'yaw_rad'), robot_pose)),
+                    observation, camera_mount, robot_pose_document,
                     requested_gap_m=gap_m, front_extent_m=front_extent_m,
                     now_s=now_s)
+                target.update({
+                    'front_extent_m': front_extent_m,
+                    'front_extent_provenance': self._json_evidence(
+                        getattr(self, 'front_extent_provenance', None)),
+                })
                 retryable = False
                 scan = self.last_scan
                 if scan is None:
@@ -646,8 +705,6 @@ class BoxServiceRoute(ServiceRoute):
                 if (not math.isfinite(scan_stamp_s) or scan_age_s < 0.0
                         or scan_age_s > 0.5):
                     raise ValueError('LiDAR scan is stale or future-dated')
-                robot_pose_document = dict(zip(
-                    ('x_m', 'y_m', 'yaw_rad'), robot_pose))
                 diagnostics = {}
                 try:
                     scan_frame = scan.header.frame_id
@@ -715,7 +772,9 @@ class BoxServiceRoute(ServiceRoute):
                 if math.dist(target['face_center_map_xy_m'], region_xy) > region_radius_m:
                     raise ValueError('observed_box_outside_selected_table_region')
                 self.emit('box_target_observed', observation=observation,
-                          target=target, candidate_trial=True,
+                          target=target, surface_mode=surface_mode,
+                          target_basis='lidar_depth_front_face',
+                          lidar_face_fusion=True, candidate_trial=True,
                           physical_accuracy='NOT_EXTERNALLY_MEASURED')
                 return target
             except ValueError as error:
@@ -856,8 +915,13 @@ class BoxServiceRoute(ServiceRoute):
                 'execution requires explicit nominal-camera candidate trial')
         self.candidate_trial = candidate_trial is True
         self.box_geometry = geometry
+        surface_mode = getattr(self, 'surface_mode', 'front')
+        if surface_mode not in SURFACE_MODES:
+            raise ValueError('surface mode must be front or table_edge')
         route = load_route(route_path)
-        front_extent_m = geometry['front_to_wheel_axis']['value']
+        front_extent = geometry['front_to_wheel_axis']
+        front_extent_m = front_extent['value']
+        self.front_extent_provenance = front_extent
         width_m = geometry['wheel_outer_width']['value']
         if (isinstance(front_extent_m, bool) or not isinstance(front_extent_m, (int, float))
                 or not math.isfinite(front_extent_m) or not 0 < front_extent_m < 0.5):
@@ -900,6 +964,8 @@ class BoxServiceRoute(ServiceRoute):
             raise RuntimeError('robot is not at the observation route starting place')
         self.config, self.waypoints = route, route['waypoints']
         self.emit('observation_route_selected', waypoints=self.waypoints,
+                  surface_mode=surface_mode,
+                  front_extent_provenance=self._json_evidence(front_extent),
                   candidate_trial=self.candidate_trial,
                   physical_accuracy='NOT_EXTERNALLY_MEASURED')
         if not resume_at_observation and not self.preflight():
@@ -943,6 +1009,10 @@ class BoxServiceRoute(ServiceRoute):
                         'face_center_map_xy_m': list(target['face_center_map_xy_m']),
                         'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
                     self.emit('box_phase', phase=phase, requested_front_gap_m=gap_m,
+                              surface_mode=surface_mode,
+                              target_basis=('tabletop_front_edge'
+                                            if surface_mode == 'table_edge'
+                                            else 'lidar_depth_front_face'),
                               target_front_gap_m=(self._final_gap_m()
                                                   if phase == 'final_approach' else gap_m))
                     if phase == 'face_alignment':
@@ -1042,6 +1112,8 @@ class BoxServiceRoute(ServiceRoute):
         override = getattr(self, 'final_gap_override_m', None)
         if override is not None:
             return override
+        if getattr(self, 'surface_mode', 'front') == 'table_edge':
+            return TABLE_EDGE_DEFAULT_GAP_M
         return self.parking_contract.get('target_front_gap_m', DEFAULT_FRONT_GAP_M)
 
     def _fail_final(self, reason, **fields):
@@ -1389,6 +1461,8 @@ def parse_args(argv=None):
     parser.add_argument('--camera-always-on', action='store_true',
                         help='keep the box camera and observer running (before 2026-10-06) '
                              'instead of starting them for the box stops only')
+    parser.add_argument('--surface-mode', choices=SURFACE_MODES, default='front',
+                        help='parking surface: legacy box front or tabletop front edge')
     parser.add_argument('--home-only', action='store_true',
                         help='return to the dock only (needs --execute and --return-home)')
     parser.add_argument('--via-route', type=Path)
@@ -1405,8 +1479,8 @@ def parse_args(argv=None):
     parser.add_argument('--operator-link-timeout-s', type=float,
                         default=OPERATOR_LINK_TIMEOUT_S)
     parser.add_argument('--final-gap-m', type=float,
-                        help='front gap of the final box approach instead of the parking '
-                             "contract's target_front_gap_m (calibration trials)")
+                        help='front gap override; table_edge defaults to 0.05 m and front '
+                             "uses the parking contract's target_front_gap_m")
     parser.add_argument('--dwell-s', type=float, default=STOP_DWELL_S,
                         help='held stop at each box (longer for an external gap measurement)')
     args = parser.parse_args(argv)
@@ -1505,6 +1579,8 @@ def run_attempt(args, active=None):
             if args.transit:
                 node.use_transit(args.transit)
             node.camera_on_demand = not args.camera_always_on
+            node.surface_mode = args.surface_mode
+            node.require_observer_configuration = True
             node.zero_turn_final = args.zero_turn_final
             node.operator_heartbeat = args.operator_heartbeat
             node.operator_link_timeout_s = args.operator_link_timeout_s

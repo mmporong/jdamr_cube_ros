@@ -14,6 +14,7 @@ from jdamr_cube_navigation.box_top_detection import (
 )
 from jdamr_cube_navigation.depth_obstacle_core import _depth_view
 from jdamr_cube_navigation.depth_obstacle_filter import camera_intrinsics
+from jdamr_cube_navigation.table_edge_detection import TableEdgeConfig, detect_table_edge
 import numpy as np
 from rcl_interfaces.msg import SetParametersResult
 import rclpy
@@ -105,10 +106,23 @@ class DepthBoxParkingNode(Node):
             ('surface_mode', 'front'),
         ):
             self.declare_parameter(name, value)
+        table_defaults = TableEdgeConfig()
+        for name in TableEdgeConfig.__dataclass_fields__:
+            if name not in BoxTopConfig.__dataclass_fields__:
+                self.declare_parameter(name, getattr(table_defaults, name))
         self._config = BoxTopConfig(**{
             field: self.get_parameter(field).value
             for field in BoxTopConfig.__dataclass_fields__
         })
+        table_values = {
+            name: self.get_parameter(name).value
+            for name in TableEdgeConfig.__dataclass_fields__
+        }
+        table_values['minimum_depth_m'] = max(
+            self._config.minimum_depth_m, table_defaults.minimum_depth_m)
+        table_values['minimum_normal_y'] = max(
+            self._config.minimum_normal_y, table_defaults.minimum_normal_y)
+        self._table_config = TableEdgeConfig(**table_values)
         # The configured range is the ceiling; the executor narrows it per table.
         self._depth_ceiling_m = float(self._config.maximum_depth_m)
         self._stability = DetectionStability(
@@ -122,8 +136,8 @@ class DepthBoxParkingNode(Node):
         )
         self._surface_mode = str(
             self.get_parameter('surface_mode').value)
-        if self._surface_mode not in {'front', 'top'}:
-            raise ValueError('surface_mode must be front or top')
+        if self._surface_mode not in {'front', 'top', 'table_edge'}:
+            raise ValueError('surface_mode must be front, top or table_edge')
         processing_hz = float(self.get_parameter('processing_hz').value)
         self._max_image_age_s = float(
             self.get_parameter('max_image_age_s').value)
@@ -153,23 +167,57 @@ class DepthBoxParkingNode(Node):
             'velocity output is disabled')
 
     def _on_parameters(self, parameters) -> SetParametersResult:
-        """Accept only a maximum_depth_m inside the configured range at run time."""
-        depth_m = None
+        """Apply a bounded depth window or a complete camera/surface update."""
+        updates = {}
+        mode = getattr(self, '_surface_mode', 'front')
         for parameter in parameters:
             value = parameter.value
-            if parameter.name != 'maximum_depth_m':
+            name = parameter.name
+            if name == 'surface_mode':
+                if not isinstance(value, str) or value not in {'front', 'top', 'table_edge'}:
+                    return SetParametersResult(successful=False, reason='invalid surface_mode')
+                mode = value
+                continue
+            if name not in {'maximum_depth_m', 'camera_roll_rad',
+                            'camera_pitch_rad', 'camera_height_m'}:
                 return SetParametersResult(
-                    successful=False, reason=f'{parameter.name} is fixed at start')
+                    successful=False, reason=f'{name} is fixed at start')
             if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not math.isfinite(value)
-                    or not self._config.minimum_depth_m < value <= self._depth_ceiling_m):
+                    or not math.isfinite(value)):
+                return SetParametersResult(successful=False, reason=f'{name} must be finite')
+            if (name == 'maximum_depth_m'
+                    and not self._config.minimum_depth_m < value <= self._depth_ceiling_m):
                 return SetParametersResult(
                     successful=False,
                     reason='maximum_depth_m must lie in (minimum_depth_m, configured maximum]')
-            depth_m = float(value)
-        if depth_m is not None:
-            self._config = replace(self._config, maximum_depth_m=depth_m)
-            # Frames judged with the old range must not count toward stability.
+            if name == 'camera_height_m' and value <= 0.0:
+                return SetParametersResult(
+                    successful=False, reason='camera_height_m must be positive')
+            updates[name] = float(value)
+        table_config = getattr(self, '_table_config', None)
+        if table_config is None:
+            table_values = {
+                name: getattr(self._config, name) for name in BoxTopConfig.__dataclass_fields__
+            }
+            table_values['minimum_depth_m'] = max(
+                self._config.minimum_depth_m, TableEdgeConfig().minimum_depth_m)
+            table_values['minimum_normal_y'] = max(
+                self._config.minimum_normal_y, TableEdgeConfig().minimum_normal_y)
+            table_config = TableEdgeConfig(**table_values)
+        candidate_table = replace(table_config, **updates)
+        if mode == 'table_edge':
+            if candidate_table.camera_height_m <= 0.0:
+                return SetParametersResult(
+                    successful=False, reason='table_edge requires a camera height')
+            if candidate_table.maximum_depth_m <= candidate_table.minimum_depth_m:
+                return SetParametersResult(
+                    successful=False, reason='table_edge depth window is empty')
+        common_updates = {name: value for name, value in updates.items()
+                          if name in BoxTopConfig.__dataclass_fields__}
+        if parameters:
+            self._config = replace(self._config, **common_updates)
+            self._table_config = candidate_table
+            self._surface_mode = mode
             self._stability.update(None)
         return SetParametersResult(successful=True)
 
@@ -212,12 +260,11 @@ class DepthBoxParkingNode(Node):
                 self._camera_info, message, self._optical_frame,
                 self._calibration_model, ros_now_s,
                 self._max_image_age_s)
-            detector = (
-                detect_box_front
-                if self._surface_mode == 'front'
-                else detect_box_top
-            )
-            detection = detector(depth_mm, intrinsics, self._config)
+            if self._surface_mode == 'table_edge':
+                detection = detect_table_edge(depth_mm, intrinsics, self._table_config)
+            else:
+                detector = detect_box_front if self._surface_mode == 'front' else detect_box_top
+                detection = detector(depth_mm, intrinsics, self._config)
         except (AttributeError, ValueError, TypeError,
                 OverflowError, IndexError) as error:
             self._reject(str(error) or type(error).__name__)
@@ -241,10 +288,22 @@ class DepthBoxParkingNode(Node):
                 'detected': False,
                 'stable': False,
                 'stable_frame_count': self._stability.frame_count,
-                'reason': 'no_box_surface_candidate',
+                'reason': ('no_table_edge_candidate' if self._surface_mode == 'table_edge'
+                           else 'no_box_surface_candidate'),
                 'control_ready': False,
             })
             return
+        edge_fields = {}
+        if detection.surface_kind == 'table_edge':
+            edge_fields = {
+                'edge_endpoints_optical_m': detection.edge_endpoints_optical_m,
+                'table_height_m': detection.table_height_m,
+                'edge_rms_m': detection.edge_rms_m,
+                'edge_basis': 'tabletop_front_boundary',
+                'camera_height_m': self._table_config.camera_height_m,
+                'camera_roll_rad': self._table_config.camera_roll_rad,
+                'camera_pitch_rad': self._table_config.camera_pitch_rad,
+            }
         self._publish({
             'stamp_s': stamp_s,
             'age_s': age_s,
@@ -254,6 +313,7 @@ class DepthBoxParkingNode(Node):
             'stable': stable,
             'stable_frame_count': self._stability.frame_count,
             'surface_kind': detection.surface_kind,
+            **edge_fields,
             'front_distance_m': detection.front_distance_m,
             'desired_standoff_m': self._config.desired_standoff_m,
             'maximum_depth_m': self._config.maximum_depth_m,

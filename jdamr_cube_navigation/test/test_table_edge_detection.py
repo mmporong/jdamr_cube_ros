@@ -1,0 +1,302 @@
+"""Synthetic projection tests for table-top front-edge detection."""
+
+import math
+from dataclasses import replace
+
+from jdamr_cube_navigation.box_top_detection import CameraIntrinsics
+from jdamr_cube_navigation.table_edge_detection import (
+    TableEdgeConfig,
+    _horizontal_plane_is_valid,
+    _optical_to_level_rotation,
+    detect_table_edge,
+)
+
+import numpy as np
+
+import pytest
+
+
+INTRINSICS = CameraIntrinsics(
+    width=320,
+    height=240,
+    focal_x_px=285.1711,
+    focal_y_px=285.1711,
+    center_x_px=159.5,
+    center_y_px=119.5,
+)
+
+
+def config(camera_height_m=1.0, pitch_deg=27.0, roll_deg=0.0):
+    """Return a compact table detector configuration for synthetic images."""
+    return TableEdgeConfig(
+        camera_height_m=camera_height_m,
+        camera_pitch_rad=math.radians(pitch_deg),
+        camera_roll_rad=math.radians(roll_deg),
+        minimum_depth_m=0.30,
+        maximum_depth_m=2.0,
+        pixel_step=2,
+        plane_distance_m=0.015,
+        minimum_inliers=80,
+        ransac_iterations=100,
+        minimum_edge_length_m=0.25,
+        maximum_edge_rms_m=0.01,
+    )
+
+
+def _render_table(
+        configured, *, table_height_m=0.75, front_x_m=0.58,
+        width_m=0.80, depth_m=0.75, yaw_deg=0.0,
+        invalid_fraction=0.0, seed=4, background_height_m=None,
+        background_depth_m=2.5):
+    """Ray-cast a finite horizontal tabletop over a distant background."""
+    rows, columns = np.mgrid[0:INTRINSICS.height, 0:INTRINSICS.width]
+    rays_optical = np.stack((
+        (columns - INTRINSICS.center_x_px) / INTRINSICS.focal_x_px,
+        (rows - INTRINSICS.center_y_px) / INTRINSICS.focal_y_px,
+        np.ones_like(rows, dtype=np.float64),
+    ), axis=-1)
+    rotation = _optical_to_level_rotation(configured)
+    rays_level = rays_optical @ rotation.T
+    relative_height_m = table_height_m - configured.camera_height_m
+    with np.errstate(divide='ignore', invalid='ignore'):
+        scale = relative_height_m / rays_level[..., 2]
+    points = rays_level * scale[..., None]
+    yaw = math.radians(yaw_deg)
+    inward = np.array([math.cos(yaw), math.sin(yaw)])
+    edge_basis = np.array([-math.sin(yaw), math.cos(yaw)])
+    front_center = inward * front_x_m
+    offset = points[..., :2] - front_center
+    along_depth = offset @ inward
+    along_edge = offset @ edge_basis
+    inside = np.isfinite(scale) & (scale > 0.0)
+    inside &= (along_depth >= 0.0) & (along_depth <= depth_m)
+    inside &= np.abs(along_edge) <= width_m / 2.0
+    if background_height_m is None:
+        depth = np.full(
+            rows.shape, round(background_depth_m * 1000.0),
+            dtype=np.uint16)
+    else:
+        background_relative_m = (
+            background_height_m - configured.camera_height_m)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            background_scale = background_relative_m / rays_level[..., 2]
+        background_scale = np.where(background_scale > 0.0,
+                                    background_scale, 2.5)
+        depth = np.rint(np.clip(background_scale, 0.0, 65.0) * 1000.0).astype(
+            np.uint16)
+    optical_depth_m = scale
+    usable = inside & (optical_depth_m > 0.0)
+    depth[usable] = np.rint(optical_depth_m[usable] * 1000.0).astype(
+        np.uint16)
+    if invalid_fraction:
+        random = np.random.default_rng(seed)
+        invalid = random.random(depth.shape) < invalid_fraction
+        depth[invalid & usable] = 0
+        # Sparse invalid background samples must not erase the whole edge.
+        depth[invalid & ~usable] = 0
+    return depth, front_center, edge_basis
+
+
+def _to_level(detection, configured):
+    endpoints = np.asarray(detection.edge_endpoints_optical_m)
+    return endpoints @ _optical_to_level_rotation(configured).T
+
+
+@pytest.mark.parametrize(
+    ('camera_height_m', 'pitch_deg', 'roll_deg', 'table_yaw_deg'),
+    [
+        (0.92, 24.0, 0.0, 0.0),
+        (1.00, 27.0, 2.0, 12.0),
+        (1.10, 32.0, -3.0, -15.0),
+    ],
+)
+def test_recovers_visible_front_edge_across_mount_geometry(
+        camera_height_m, pitch_deg, roll_deg, table_yaw_deg):
+    """Camera pose changes preserve the recovered physical front line."""
+    configured = config(camera_height_m, pitch_deg, roll_deg)
+    depth, front_center, edge_basis = _render_table(
+        configured, yaw_deg=table_yaw_deg, background_depth_m=1.8)
+
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+
+    assert detection is not None
+    assert detection.surface_kind == 'table_edge'
+    assert detection.table_height_m == pytest.approx(0.75, abs=0.015)
+    endpoints = _to_level(detection, configured)
+    detected_center = np.mean(endpoints[:, :2], axis=0)
+    inward = np.array([edge_basis[1], -edge_basis[0]])
+    assert abs(float((detected_center - front_center) @ inward)) < 0.025
+    detected_basis = endpoints[1, :2] - endpoints[0, :2]
+    detected_basis /= np.linalg.norm(detected_basis)
+    assert abs(float(detected_basis @ edge_basis)) > 0.995
+    assert detection.width_m >= configured.minimum_edge_length_m
+    assert detection.edge_rms_m <= configured.maximum_edge_rms_m
+    assert detection.center_x_m == pytest.approx(
+        np.mean(np.asarray(detection.edge_endpoints_optical_m), axis=0)[0])
+    assert detection.center_y_m == pytest.approx(
+        np.mean(np.asarray(detection.edge_endpoints_optical_m), axis=0)[1])
+    assert detection.front_distance_m == pytest.approx(
+        np.mean(np.asarray(detection.edge_endpoints_optical_m), axis=0)[2])
+
+
+def test_tolerates_sparse_invalid_depth_without_using_a_side_face():
+    """Sparse missing pixels do not require a visible thin side face."""
+    configured = config()
+    depth, front_center, _ = _render_table(
+        configured, invalid_fraction=0.12, background_depth_m=1.8)
+
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+
+    assert detection is not None
+    endpoints = _to_level(detection, configured)
+    assert np.mean(endpoints[:, :2], axis=0) == pytest.approx(
+        front_center, abs=0.03)
+
+
+def test_current_derived_mount_sees_near_table_edge_above_astra_minimum():
+    """The current derived mount observes a near edge above 0.4 metres."""
+    configured = TableEdgeConfig(
+        camera_height_m=0.9070543261338818,
+        camera_roll_rad=0.011934068034722573,
+        camera_pitch_rad=0.46681472099722787,
+        minimum_inliers=80,
+        plane_distance_m=0.015,
+        ransac_iterations=100,
+    )
+    depth, front_center, edge_basis = _render_table(
+        configured, front_x_m=0.42, width_m=0.70, depth_m=0.70,
+        background_depth_m=1.8)
+
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+
+    assert detection is not None
+    endpoints = _to_level(detection, configured)
+    detected_center = np.mean(endpoints[:, :2], axis=0)
+    inward = np.array([edge_basis[1], -edge_basis[0]])
+    assert abs(float((detected_center - front_center) @ inward)) < 0.025
+    assert detection.front_distance_m >= configured.minimum_depth_m
+
+
+def test_rejects_vertical_wall_and_floor():
+    """A wall or floor cannot pass the bounded tabletop-height gate."""
+    configured = config()
+    wall = np.full((INTRINSICS.height, INTRINSICS.width), 900,
+                   dtype=np.uint16)
+    floor, _, _ = _render_table(
+        configured, table_height_m=0.0, front_x_m=0.1,
+        width_m=3.0, depth_m=3.0)
+
+    assert detect_table_edge(wall, INTRINSICS, configured) is None
+    assert detect_table_edge(floor, INTRINSICS, configured) is None
+
+
+def test_table_mode_rejects_a_thirty_degree_sloped_plane():
+    """Table mode uses a stricter horizontal gate than generic box tops."""
+    configured = config()
+    normal = np.array([0.5, 0.0, math.cos(math.radians(30.0))])
+    points = np.array([
+        [0.5, -0.2, -0.25],
+        [0.6, 0.0, -0.25],
+        [0.7, 0.2, -0.25],
+    ])
+    assert configured.minimum_normal_y == pytest.approx(0.90)
+    assert not _horizontal_plane_is_valid(normal, points, configured)
+
+
+def test_rejects_image_boundary_instead_of_calling_it_a_table_edge():
+    """An image crop without a depth discontinuity is not a table edge."""
+    configured = config()
+    # The physical front lies below the image. Only the top surface is visible.
+    depth, _, _ = _render_table(
+        configured, front_x_m=0.05, width_m=2.0, depth_m=2.0)
+    assert detect_table_edge(depth, INTRINSICS, configured) is None
+
+
+def test_rejects_minimum_depth_clipping_as_an_edge():
+    """The configured near-range cutoff cannot create a false edge."""
+    configured = replace(
+        config(), minimum_depth_m=0.72, minimum_edge_length_m=0.18)
+    depth, _, _ = _render_table(
+        configured, front_x_m=0.05, width_m=2.0, depth_m=2.0)
+    assert detect_table_edge(depth, INTRINSICS, configured) is None
+
+
+@pytest.mark.parametrize('stripe_row', [140, 160, 180, 200, 220])
+def test_rejects_invalid_depth_sentinel_as_edge_evidence(stripe_row):
+    """A 65535 no-return stripe cannot manufacture a front edge."""
+    configured = config()
+    depth, _, _ = _render_table(
+        configured, front_x_m=0.05, width_m=2.0, depth_m=2.0)
+    depth[stripe_row:, :] = np.iinfo(np.uint16).max
+    assert detect_table_edge(depth, INTRINSICS, configured) is None
+
+
+def test_rejects_out_of_range_background_as_edge_evidence():
+    """Depth beyond the configured maximum is not a measured background."""
+    configured = config()
+    depth, _, _ = _render_table(
+        configured,
+        background_depth_m=configured.maximum_background_depth_m + 0.5)
+    assert detect_table_edge(depth, INTRINSICS, configured) is None
+
+
+def test_candidate_roi_does_not_shrink_valid_background_sensor_range():
+    """A 0.9m table ROI can use valid 1.8m background evidence."""
+    configured = replace(config(), maximum_depth_m=0.9)
+    depth, front_center, edge_basis = _render_table(
+        configured, front_x_m=0.58, background_depth_m=1.8)
+
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+
+    assert detection is not None
+    endpoints = _to_level(detection, configured)
+    detected_center = np.mean(endpoints[:, :2], axis=0)
+    inward = np.array([edge_basis[1], -edge_basis[0]])
+    assert abs(float((detected_center - front_center) @ inward)) < 0.025
+    assert detection.front_distance_m < configured.maximum_depth_m
+    assert 1.8 < configured.maximum_background_depth_m
+
+
+def test_rejects_same_plane_gradient_at_the_astra_near_range():
+    """A clipped infinite tabletop cannot become a false interior edge."""
+    configured = replace(
+        config(0.8, 5.0), pixel_step=4, minimum_depth_m=0.4)
+    depth, _, _ = _render_table(
+        configured, front_x_m=0.05, width_m=0.80, depth_m=0.75)
+    assert detect_table_edge(depth, INTRINSICS, configured) is None
+
+
+@pytest.mark.parametrize(
+    ('camera_height_m', 'pitch_deg', 'roll_deg'),
+    [(0.92, 24.0, 0.0), (1.0, 27.0, 2.0), (1.1, 32.0, -3.0)],
+)
+def test_rejects_when_floor_beyond_edge_is_outside_sensor_range(
+        camera_height_m, pitch_deg, roll_deg):
+    """An out-of-range floor cannot substantiate a visible table edge."""
+    configured = config(camera_height_m, pitch_deg, roll_deg)
+    depth, _, _ = _render_table(
+        configured, background_height_m=0.0)
+
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+
+    assert detection is None
+
+
+def test_requires_a_positive_camera_height_calibration():
+    """Unknown camera height disables metric table-height detection."""
+    depth = np.full((INTRINSICS.height, INTRINSICS.width), 1000,
+                    dtype=np.uint16)
+    with pytest.raises(ValueError, match='camera_height_m'):
+        detect_table_edge(depth, INTRINSICS, TableEdgeConfig())
+
+
+@pytest.mark.parametrize('background_max', [math.nan, 0.8])
+def test_rejects_invalid_background_sensor_range(background_max):
+    """The background sensor ceiling must cover the candidate ROI."""
+    configured = replace(
+        config(), maximum_depth_m=0.9,
+        maximum_background_depth_m=background_max)
+    depth = np.full((INTRINSICS.height, INTRINSICS.width), 1000,
+                    dtype=np.uint16)
+    with pytest.raises(ValueError, match='maximum_background_depth_m'):
+        detect_table_edge(depth, INTRINSICS, configured)

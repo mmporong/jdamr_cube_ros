@@ -524,6 +524,47 @@ def test_go_passes_the_final_gap_and_dwell_only_when_asked(env, monkeypatch):
     assert argv[argv.index('--dwell-s') + 1] == '30.0'
 
 
+def test_go_spools_table_edge_by_default_and_front_only_when_requested(env, monkeypatch):
+    seen = []
+    for second, extra in enumerate(({}, {'surface_mode': 'front'})):
+        monkeypatch.setattr(d.time, 'strftime',
+                            lambda _fmt, s=second: f'20261013_10000{s}')
+        pi = ExecutorPi()
+        monkeypatch.setattr(d, 'pi', pi)
+        monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+        d.run_cycle(go_args(**extra), d.load_state(), 'table_02')
+        seen.append(json.loads(next(s for s in pi.stdins if s))['argv'])
+    assert seen[0][seen[0].index('--surface-mode') + 1] == 'table_edge'
+    assert '--final-gap-m' not in seen[0]
+    assert '--via-id' not in seen[0]
+    assert seen[1][seen[1].index('--surface-mode') + 1] == 'front'
+    assert seen[1][seen[1].index('--via-id') + 1] == d.VIA_ID
+
+
+def test_table_edge_via_is_spooled_only_when_explicitly_requested(env, monkeypatch):
+    monkeypatch.setattr(d.time, 'strftime', lambda _fmt: '20261013_100010')
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    d.run_cycle(go_args(surface_mode='table_edge', with_via=True),
+                d.load_state(), 'table_02')
+    argv = json.loads(next(s for s in pi.stdins if s))['argv']
+    assert argv[argv.index('--via-id') + 1] == d.VIA_ID
+    assert argv[argv.index('--surface-mode') + 1] == 'table_edge'
+
+
+@pytest.mark.parametrize('extra', [
+    {'surface_mode': 'table_edge', 'with_via': True, 'skip_via': True},
+    {'surface_mode': 'front', 'with_via': True},
+])
+def test_go_rejects_conflicting_or_front_with_via_before_pi_work(env, monkeypatch, extra):
+    pi = Pi()
+    monkeypatch.setattr(d, 'pi', pi)
+    with pytest.raises(SystemExit):
+        d.cmd_go(go_args(**extra))
+    assert pi.calls == []
+
+
 @pytest.mark.parametrize('extra', [{'final_gap_m': 0.005}, {'final_gap_m': 0.2},
                                    {'dwell_s': 0.0}, {'dwell_s': 500.0}])
 def test_go_refuses_out_of_range_gap_or_dwell_before_anything_starts(env, monkeypatch, extra):
