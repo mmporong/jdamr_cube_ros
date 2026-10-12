@@ -1,6 +1,6 @@
 # 2026-10-06–10-12 JD-AMR 상태와 이어서 할 일 (Codex용)
 
-Claude Code가 2026-10-06 오후부터 10-08까지 처리한 내용과 남은 일을 Codex가 이어받을 수 있게 정리한 인계다. 기준 커밋은 `main` `0c79182`(2026-10-12 `origin/main`과 같음)다. 사실·수치·경로는 아래와 원 기록에 있다. 새 숫자를 만들지 말고, 추론은 추론으로 표시한다. 작성 시점에 Pi는 꺼져 있었다.
+Claude Code가 2026-10-06 오후부터 10-08까지 처리한 내용과 남은 일을 Codex가 이어받을 수 있게 정리한 인계다. 최초 인계의 소프트웨어 기준은 `0c79182`이며, 인계 문서와 README 문서 지도는 `b1daa6a`로 `origin/main`에 반영됐다. 2026-10-12 Codex 작업 시작 시 로컬 HEAD와 `origin/main` 추적 참조가 `b1daa6a`로 같았다. 사실·수치·경로는 아래와 원 기록에 있다. 새 숫자를 만들지 말고, 추론은 추론으로 표시한다. 최초 인계 작성 시점에 Pi는 꺼져 있었다.
 
 ## 0. 지금 상태 (한눈에)
 
@@ -10,19 +10,35 @@ Claude Code가 2026-10-06 오후부터 10-08까지 처리한 내용과 남은 �
 | 박스 주차 | 목표 간격 1 cm(`config/box_parking_contract.yaml`), 면 방향은 깊이 평면 법선, 판정은 가장 앞선 프레임 모서리 | 커밋 `ea3fbf0`·`db20d5f`·`0ceeab8` |
 | 도크 방향 | 1–5°면 1° 안까지 제자리 보정(최대 3회). 10-06 9회 1.45–4.85° → 0.22° 이하 | 커밋 `4d9dd3d`, run별 `dock_heading_*` 이벤트 |
 | 실행기 CPU | 경로 노드마다 EventsExecutor. 실행기 Pi 한 코어의 78 % → 25–34 % | 커밋 `3603ea1`, run별 `load_profile.jsonl` |
-| 테스트 | 내비게이션 패키지 2572 통과, 5 실패(AMCL Axis B, §1-B) | 커밋 `0c79182` |
-| **Pi 미배포** | `ace59b8`(실행기 첫 파라미터 읽기 재요청, `restaurant_service.py`) | §1-A1 |
-| Pi 배포됨 | `b1deb7a`까지(10-06 18:03 배포·빌드, `init` 성공 확인) | §2-5 |
+| 테스트 기준선 | 내비게이션 패키지 2572 통과, 5 실패(AMCL Axis B, §1-B). 10-12 전체 재실행 결과가 아님 | 커밋 `0c79182` |
+| Pi 이번 반영 | `ace59b8`(실행기 첫 파라미터 읽기 재요청) 배포·빌드·관련 테스트 6건·소스/설치본 해시 대조 완료. 실행기 비구동 기동 확인 후 종료 | 10-12 확인(§2-14). 실제 `go` 사이클 확인은 남음 |
+| Pi 이전 배포 기준 | `b1deb7a`까지(10-06 18:03 배포·빌드, `init` 성공 확인). 이번에는 실행기 수정과 관련 테스트 입력만 추가 반영 | §2-5·§2-14. `main` 전체 배포라고 주장하지 않음 |
 | 로봇 위치 | 마지막 기록은 10-06 18:14 도크 앞 (0.81, 0.21)에서 정지. 그 뒤 위치는 기록 없음 | §2-9 |
+| 차체 결합 | 10-12 결합 완료. 결합 뒤 돌출부·팔·적재물의 치수와 가동 상태는 미확인 | 10-12 운영자 보고. `new_base_geometry.yaml`의 주장 범위는 하단 프레임 |
+| LiDAR | 장착 위치 유지(운영자 보고). Pi의 현재 USB 목록에는 LiDAR 어댑터가 없고 `/dev/ydlidar_g4`·`ttyUSB*`도 없음. 기존 TF 수치를 변경하지 않음 | 10-12 운영자 보고와 12:48 Pi 조회. 결합 차체의 자기 반사는 확인 전 |
+| 접촉센서 | 제어보드 5V·GND 연결. 센서 모델·신호선/핀·접촉 시 정지 연동 미확인 | 10-12 운영자 보고. 현재 펌웨어·베이스 드라이버에는 접촉센서 입력 경로 없음 |
+| 뎁스 카메라 | 미장착. 바닥에서 약 100 cm 높이에서 아래를 보도록 기울여 설치할 예정. 피치·수평 위치 미확정 | 10-12 운영자 보고. 실측값·보정값으로 사용하지 않음 |
+| 바퀴 모터선 | 분리 후 재연결(운영자 보고). UART 읽기 전용 확인에서 좌우 읽기 오류 0건·워치독 정지 유지. 회전 방향·구동 뒤 정지는 미검증 | 10-12 12:48 UART 5 s·250개 상태 패킷(§2-13) |
+| Pi 접속 | Wi-Fi 변경 뒤 `jdamr.local` 조회와 `192.168.0.159` SSH 복구. 접속 시 베이스·내비게이션·실행기는 모두 inactive | 10-12 12:46 Pi 조회. 최초의 `No route to host`는 초기 조회 기록 |
 
 ## 1. 할 일
 
-### A. Pi를 켠 뒤 (필수, 사용자 요청 범위에서)
+### A0. 차체 결합 뒤 이번 요청 범위 (2026-10-12)
 
-1. **`ace59b8` 배포.** 상주 실행기(`jdamr-box-executor`)가 `restaurant_service.py`를 불러오므로 재시작해야 반영된다.
-   - 순서: Pi 백업(`~/jdamr_data/deploy_backup_<시각>`) → 변경 파일 `rsync -cR`로 `~/jdamr_ws/src/jdamr_cube_ros/` → Pi에서 `colcon build --packages-select jdamr_cube_navigation`(복사 설치) → 실행기 재시작.
-   - 실행기 재시작은 PC에서 `cd ~/jdamr_data/map_20260930_manual/tools && python3 -c "import jdamr_depart as j; j.refuse_during_cycle('restart'); j.pi('sudo -n systemctl stop '+j.EXECUTOR_UNIT, check=False); j.start_executor()"`로 했다(10-06 방식).
-   - 확인: 다음 `go`의 사이클이 이동 전 `request interrupted ...`로 끝나지 않는지. 재요청이 일어나면 실행기 저널에 `parameter read timeout: node=... attempt=1/2` 경고가 남는다(`journalctl -u jdamr-box-executor`).
+운영자는 다른 반영 가능 항목부터 진행하고, 재연결한 바퀴 모터선을 확인해 달라고 요청했다. §1-B의 AMCL 선택지나 §1-C의 미지시 고도화를 승인한 것으로 확대하지 않는다.
+
+1. **Pi 접속과 모터 확인.** Wi-Fi 변경 뒤 기존 주소 접속이 복구됐다. 베이스 드라이버가 꺼진 상태에서 UART를 읽어 좌우 읽기 오류 0건·CRC 오류 0건·워치독 정지 유지를 확인했다(§2-13). 펌웨어의 기대값은 좌측 ID 2·우측 ID 1(`LEFT_ID`·`RIGHT_ID`)이다. 이는 버스 응답 확인이며 실제 좌우 배치·회전 방향의 검증은 아니다. 현재 LiDAR USB 장치가 보이지 않아 구동 시험은 보류했다. 연결 복구 뒤 기존 실행 경로에서 신선한 스캔·odom과 실제 배선·회전 방향·최종 정지를 확인한다. 충전 중에는 구동하지 않는다. 로봇의 실제 위치는 확인 전이다.
+2. **차체·LiDAR 상태 반영.** 결합 완료와 LiDAR 위치 유지를 기록했다. 기존 하단 프레임 치수·라이다 TF는 유지한다. 결합 차체의 돌출부와 LiDAR 평면에 걸리는 기둥은 실측 후 필요한 제원과 자기 반사 필터에 반영한다. `$HOME/jdamr_rgbd_ws/src/jdamr_cube_ros/jdamr_cube_bringup/config/self_filter_hold_flow_model.yaml`은 `model_not_measured`이며 실측 설정으로 취급하지 않는다. 라이다 위치가 같아도 결합 뒤 반사·가림까지 같다고 가정하지 않는다.
+3. **접촉센서 배선과 입력 확인.** 5V·GND 연결은 운영자 보고로 기록했다. 모델과 신호선/핀 정보를 요청한 상태다. 핀·출력 형식이 확인되기 전에는 GPIO 번호를 추측해 펌웨어에 넣지 않는다. 입력 전환을 읽고 기존 정지 경로와 연동하는 확인은 그 뒤에 수행한다. 현재 소프트웨어 래치 비상정지와 접촉센서 연동은 별개다.
+4. **뎁스 설치 준비.** 약 1 m·하향 시야는 예정 배치이며, 미장착 상태다. 기존 0.215 m·수평 배치의 관측/보정 기록을 새 설치의 실측으로 쓰지 않는다. 설치 뒤 높이·피치·수평 위치를 측정하고 카메라 TF·보정 및 테이블 관측을 확인한다. Pi의 `$HOME/jdamr_deploy/camera_mount_confirmed_20260917.yaml`은 기존 카메라 배치용이며, 새 마스트 설치에 그대로 적용하지 않는다(10-12 Pi에서 파일 존재·내용 확인). USB에는 Astra S가 열거되지만 장착·보정 완료를 뜻하지 않는다. 상판 모서리 주차는 `20261006_TABLE_EDGE_DOCKING_PLAN.md`의 설계 후보이고 구현·실차 검증 완료 상태가 아니다.
+5. **실행기 수정 반영.** §1-A1의 `ace59b8` 배포·Pi 검증과 실행기 비구동 기동 확인을 마쳤다(§2-14). 처음 꺼져 있던 실행기는 확인 뒤 다시 종료했으며 베이스·내비게이션도 기동하지 않았다. 다음 주행에서의 첫 파라미터 읽기 응답 확인은 남아 있다. 도크 배치가 확인되기 전에는 이전 위치 기록만으로 `init`을 수행하지 않는다.
+
+### A. Pi 반영 상태와 다음 주행 준비 (사용자 요청 범위에서)
+
+1. **`ace59b8` 반영 완료, 실제 사이클 확인 대기.** 상주 실행기(`jdamr-box-executor`)가 `restaurant_service.py`를 불러오므로 기동할 때 설치된 수정본을 읽는다.
+   - 10-12 수행: Pi 백업 → 소스·관련 테스트·누락된 YAML 테스트 입력을 `rsync -cR`로 복사 → `colcon build --packages-select jdamr_cube_navigation`(복사 설치) → Pi 테스트 6건 통과 → 소스/설치본 SHA-256 대조 → 기존 `jdamr_depart.start_executor()`로 비구동 기동 확인 → 종료. 상세·백업·로그는 §2-14.
+   - 실행기는 초기 inactive였으며 확인 때 PID 2479로 `active/running`에 도달했다. 요청 파일이나 이동 명령을 추가하지 않았고 확인 뒤 inactive로 복원했다. 다음 사용은 기존 `session-start` 경로로 기동한다. 이를 Nav2 활성화나 실제 사이클 성공으로 기록하지 않는다.
+   - 남은 확인: 다음 `go`의 사이클이 이동 전 `request interrupted ...`로 끝나지 않는지. 재요청이 일어나면 실행기 저널에 `parameter read timeout: node=... attempt=1/2` 경고가 남는다(`journalctl -u jdamr-box-executor`).
 2. **로봇 도크 배치와 `init`.** 운영자가 로봇을 도크에 놓은 뒤 `python3 jdamr_depart.py init`.
    - 10-06 17:52에는 도크 주변의 지도에 없는 물체 때문에 스캔 일치율(inlier)이 0.34–0.43으로 기준 0.45 아래였다. 지역 매칭과 전역 탐색이 같은 자리를 가리키면 `init --local-only --min-inlier 0.30`(저장소의 운영자 재정의, 하한 0.25)으로 통과시켰고, AMCL 일치 검사(5 cm, 2°)는 그대로 둔다.
    - 복구 주행 전에는 AMCL 공분산을 먼저 본다(평소 방향 분산 약 0.009 rad²). 10-06 17:44에 이를 보지 않고 도크 복귀를 보내 방향 표준편차가 45°까지 무너졌다(§2-8).
@@ -54,7 +70,7 @@ Claude Code가 2026-10-06 오후부터 10-08까지 처리한 내용과 남은 �
 | MPPI 비교 구성의 도크 대기점 구간도 RPP로 끝내기 | 지시 없음. 경유 이동은 `37ec84c`로 MPPI가 사전 지점까지만 맡지만, `home_dock_approach`는 MPPI 구성에서 MPPI가 끝까지 맡아 18:12에 목표를 32 cm 지나쳤다 |
 | MPPI 비교 표본 추가 | 지시 없음. 유효 표본은 RPP 3회·MPPI 2회(§2-1) |
 | 바퀴 odom + 자이로 EKF 연결 | 질문에 답만 함(§2-11). 조건이던 "큰 회전 표본 추가"는 10-01 이후 주행마다 저장한 `onboard_bag`으로 Pi 없이 확인할 수 있다(`scripts/map_20260930_manual/imu_check.sh <run_dir>`) |
-| 근거리 센서(ToF)·범퍼 | 하드웨어. LiDAR는 차체 앞 0.205 m 안을 못 본다. README에 "물리 비상정지·범퍼는 아직 없다" |
+| 근거리 센서(ToF)·범퍼 | 10-12 접촉센서 5V·GND 연결 보고가 추가됨(§1-A0). 신호 입력·정지 연동은 미확인. ToF는 지시 없음. LiDAR는 차체 앞 0.205 m 안을 못 본다 |
 
 ### D. 문서·발행 (각자 세션)
 
@@ -147,6 +163,25 @@ MPPI 구성은 사전 지점까지만 맡고(전진만, 목표 방향 비용은 
 
 README 서빙 행과 두 인계 문서를 위 사실로 고쳤고, 별도 검증 에이전트가 원본 수치와 대조했다. `jdamr_depart.py --final-gap-m` 도움말은 0.01(계약값)로 고쳐 PC 실행본(`~/jdamr_data/map_20260930_manual/tools/`)에도 반영했다.
 
+### 2-13. 차체 결합 뒤 Pi 접속·모터 읽기 (2026-10-12)
+
+- 초기 SSH는 `No route to host`, mDNS 조회도 실패했다. 운영자가 Wi-Fi 변경을 알린 뒤 12:46에 `jdamr.local` → `192.168.0.159`, SSH·hostname `jdamr`·wlan0 같은 주소를 확인했다. 초기 실패의 원인을 단정하지 않는다.
+- 접속 때 베이스·내비게이션·실행기는 inactive였다. `Linger=yes`이며 `/dev/ttyS0`을 점유한 프로세스가 없었다. 베이스 드라이버를 기동하거나 속도 지령을 보내지 않고 기존 프로토콜 파서로 UART를 읽었다. 읽기가 끝난 뒤 시리얼 설정을 복원하고 포트를 닫았다.
+- 12:48:34부터 약 5 s 동안 상태 패킷 250개, CRC 오류 0건, 좌우 읽기 오류 각각 0건, 전 패킷 `flags=0x04`(워치독 정지)였다. 배터리 읽기는 12.488–12.528 V였으며, 충전 케이블 연결 여부를 이 전압으로 판정하지 않는다. 엔코더 누적값 범위는 좌 1 count·우 0 count였다.
+- 판정: 두 바퀴 서보의 통신·위치 읽기 응답과 워치독 상태는 확인했다. 실제 좌우 배치·전후진 방향·하중이 걸린 구동·구동 뒤 물리 정지는 검증하지 않았다.
+- 같은 시점 USB에는 Astra S가 열거됐지만 LiDAR 어댑터와 `/dev/ydlidar_g4`·`ttyUSB*`는 없었다. LiDAR 장착 위치가 같다는 운영자 보고와 USB 연결 상태는 구분한다. 구동 시험은 보류하고 케이블 연결 상태를 요청했다. 자기 반사 필터도 활성화하지 않았다.
+- 원본: PC `$HOME/jdamr_data/analysis_20261012_reassembly_124830/uart_stdout.json`(모든 상태 샘플), `capture_uart_readonly.py`(읽기 코드), `uart_stderr.txt`.
+
+### 2-14. `ace59b8` Pi 배포·검증 (2026-10-12)
+
+- 배포 전 Pi 소스와 설치본의 SHA-256 `14ff1d30…`이 `b1deb7a`의 `restaurant_service.py`와 같았다. 최신 PC 소스는 `ace59b8` 이후 변경되지 않았으며 SHA-256은 `c0dce4f2…`이다.
+- PC의 기존 `test_restaurant_service.py -k parameter_reader` 6건 통과 후 Pi에 소스와 테스트를 복사했다. 첫 Pi 빌드는 통과했으나 테스트 입력 `test/fixtures/restaurant_service_contract_gated.yaml`이 Pi에 없어 5건 실패·1건 통과였다. 수정 코드의 실패로 단정하지 않았으며, 소스·설치본을 백업으로 복원했다. §1-B의 AMCL Axis B 5건과 다른 실패다.
+- 누락된 YAML을 포함해 다시 백업·복사·빌드했다. Pi 빌드 통과와 같은 테스트 6건 통과(282건 deselected), 실제 import되는 설치 모듈·Pi 소스·PC 소스의 SHA-256 일치를 확인했다. 최종 SHA-256: `c0dce4f26e189a63b461f1448439f2fd0ee8e55b98e28acc56705d6da98265d0`.
+- 반영 파일은 Pi의 `$HOME/jdamr_ws/src/jdamr_cube_ros/` 기준으로 `jdamr_cube_navigation/jdamr_cube_navigation/restaurant_service.py`, `jdamr_cube_navigation/test/test_restaurant_service.py`, `jdamr_cube_navigation/test/fixtures/restaurant_service_contract_gated.yaml` 세 개다. 이전 Pi 수정과 무관한 `main` 전체를 덮어쓰지 않았다.
+- 실행기를 기존 기동 함수로 띄워 PID 2479·`active/running`을 확인하고 종료했다. 요청 파일 0개·이동 명령 0개이며 마지막 상태는 inactive다. 베이스·Nav2·카메라·표시 중계는 띄우지 않았다. 실제 `go`에서의 재요청·사이클 완료는 미검증이다.
+- Pi 최종 배포 전 백업: `$HOME/jdamr_data/deploy_backup_20261012_125249_ace59b8_retry/`. 첫 시도 백업도 `$HOME/jdamr_data/deploy_backup_20261012_125108_ace59b8/`에 보존했다.
+- PC 원본 로그: `$HOME/jdamr_data/analysis_20261012_reassembly_124830/`의 `deploy_build_verify.log`·`deploy_rollback.log`(첫 시도), `deploy_retry_build_verify.log`·`deployment_retry.json`(최종), `executor_smoke.json`·`executor_smoke_journal.log`(기동·종료). 전체 테스트 기준선과 AMCL 결정 대기 항목은 변경하지 않았다.
+
 ## 3. 커밋 (10-06 15:00 이후, 모두 `origin/main`)
 
 | 커밋 | 내용 |
@@ -161,7 +196,7 @@ README 서빙 행과 두 인계 문서를 위 사실로 고쳤고, 별도 검증
 | `e1ae88a` | 막힌 구간 재시도의 Lattice + MPPI 전환 제거 |
 | `37ec84c` | MPPI는 사전 지점까지·전진만·목표 방향 비용 마지막 0.1 m |
 | `b1deb7a` | `init` 활성화 대기에서 노드 전용 실행기 유지 |
-| `ace59b8` | 실행기 첫 파라미터 읽기 재요청 (**Pi 미배포**) |
+| `ace59b8` | 실행기 첫 파라미터 읽기 재요청 (10-12 Pi 배포·관련 테스트·비구동 기동 확인 완료, §2-14) |
 | `4518da3` | README·인계 문서 정정 |
 | `0c79182` | 봉인 평가 입력 스냅샷·린트 기준선 |
 
@@ -176,6 +211,7 @@ README 서빙 행과 두 인계 문서를 위 사실로 고쳤고, 별도 검증
 | 고리 경로 재현 | `$HOME/jdamr_data/analysis_20261006/loop_replay/results.json` |
 | 실패·수정 원 기록 | `jdamr_cube_navigation/evaluation/20260929_PARKING_FAILURES.md` |
 | 9/29 응답 유실 근거 | `jdamr_cube_navigation/evaluation/20260929_RUNTIME_ROOT_CAUSE.md` |
+| 10-12 결합 뒤 읽기·배포 근거 | PC `$HOME/jdamr_data/analysis_20261012_reassembly_124830/` (UART 전 샘플, 배포·복원·재검증·실행기 종료 로그, §2-13–14) |
 
 ## 5. 운영 규칙 (이 작업에 걸리는 것)
 
