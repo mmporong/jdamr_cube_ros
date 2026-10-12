@@ -129,6 +129,7 @@ ros2 launch jdamr_cube_gazebo gazebo.launch.py
 | [20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md](jdamr_cube_navigation/evaluation/20260930_DOCK_RETURN_PORTFOLIO_HANDOFF.md) | 충전소 후진 도킹 자료 묶음·그림·주장 범위·포트폴리오 문안 |
 | [20260930_MAP_BOX_LAYOUT_PLAN.md](jdamr_cube_navigation/evaluation/20260930_MAP_BOX_LAYOUT_PLAN.md) | 새 지도 작성·keepout 재설계·도크 등록·테이블 박스 배치 계획(승인 대기) |
 | [20260929_NAV2_PLATFORM_RESEARCH.md](jdamr_cube_navigation/evaluation/20260929_NAV2_PLATFORM_RESEARCH.md) | 파이 Nav2 부하·통신 구성 조사와 판단 한계 |
+| [20261012_STATE_AND_NEXT_FOR_CODEX.md](jdamr_cube_navigation/evaluation/20261012_STATE_AND_NEXT_FOR_CODEX.md) | 10-06–10-12 상태·미배포 커밋·결정 대기 항목·고도화 후보 인계(Codex용) |
 | [AGENTS.md](AGENTS.md) | 실차 출발·재개·주행 뒤 정리 운영 규칙 |
 | [PORTFOLIO_20260826.md](PORTFOLIO_20260826.md) | 캡스톤 시점의 Physical AI 적용안 |
 
