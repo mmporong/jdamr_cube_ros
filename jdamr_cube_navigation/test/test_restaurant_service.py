@@ -724,6 +724,8 @@ def test_search_uses_spin_and_observed_turn_not_xy_parking(
     node.spin_search.send_goal_async.return_value = done(handle(status, error))
     node.capture_stationary_pose = Mock(side_effect=[
         ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, observed_yaw), {})])
+    node._odom_pose = Mock(side_effect=[
+        (1.0, 2.0, 0.0), (1.0, 2.0, observed_yaw)])
     node._search_parameters_ready = Mock(return_value=True)
     node.navigate = Mock()
     node._verify_parking_stop = Mock()
@@ -735,6 +737,93 @@ def test_search_uses_spin_and_observed_turn_not_xy_parking(
     node._verify_parking_stop.assert_not_called()
     assert node.active_handle is None
     assert node.active_action_type is Spin
+
+
+def test_search_distinguishes_nav2_failure_from_observation_rejection():
+    node = route()
+    node.spin_search = Mock()
+    node._search_parameters_ready = Mock(return_value=True)
+
+    node.spin_search.send_goal_async.return_value = done(
+        handle(GoalStatus.STATUS_ABORTED, 0))
+    node.capture_stationary_pose = Mock(return_value=((1.0, 2.0, 0.0), {}))
+    node._odom_pose = Mock(return_value=(1.0, 2.0, 0.0))
+    assert not node.search_rotation(math.pi / 6)
+    assert node.last_search_failure_reason == 'nav2_spin_failed'
+
+    node.spin_search.send_goal_async.return_value = done(
+        handle(GoalStatus.STATUS_SUCCEEDED, 0))
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((1.0, 2.0, 0.0), {}),
+        ((1.135, 2.0, math.pi / 6), {}),
+    ])
+    node._odom_pose = Mock(side_effect=[
+        (1.0, 2.0, 0.0), (1.135, 2.0, math.pi / 6)])
+    assert not node.search_rotation(math.pi / 6)
+    assert node.last_search_failure_reason == 'rotation_observation_not_confirmed'
+
+
+def test_search_observes_motion_in_odom_when_map_to_odom_jumps():
+    """A localization correction must not look like Spin translation."""
+    node = route()
+    node.spin_search = Mock()
+    node.spin_search.send_goal_async.return_value = done(
+        handle(GoalStatus.STATUS_SUCCEEDED, 0))
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((0.0, 0.0, 0.0), {}),
+        ((0.135171, 0.0, 0.403295), {}),
+    ])
+    node._odom_pose = Mock(side_effect=[
+        ((0.0, 0.0, 0.0)),
+        ((0.000401, 0.0, 0.516950)),
+    ])
+    node._search_parameters_ready = Mock(return_value=True)
+
+    assert node.search_rotation(0.455108)
+    assert node._odom_pose.call_count == 2
+    observed = [json.loads(line) for line in node.result_stream.getvalue().splitlines()
+                if json.loads(line)['event'] == 'search_rotation_observed'][-1]
+    assert observed['observation_frame'] == 'odom'
+    assert observed['displacement_m'] == pytest.approx(0.000401)
+
+
+def test_successful_search_clears_stale_failure_reason():
+    node = route()
+    node.last_search_failure_reason = 'nav2_spin_failed'
+    node.spin_search = Mock()
+    node.spin_search.send_goal_async.return_value = done(
+        handle(GoalStatus.STATUS_SUCCEEDED, 0))
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, math.pi / 6), {})])
+    node._odom_pose = Mock(side_effect=[
+        (1.0, 2.0, 0.0), (1.0, 2.0, math.pi / 6)])
+    node._search_parameters_ready = Mock(return_value=True)
+
+    assert node.search_rotation(math.pi / 6)
+    assert node.last_search_failure_reason is None
+
+
+def test_search_terminal_operator_stop_is_not_reported_as_nav2_failure():
+    node = route()
+    node.spin_search = Mock()
+    terminal = Mock()
+    terminal.done.return_value = True
+    wrapped = SimpleNamespace(
+        status=GoalStatus.STATUS_SUCCEEDED, result=Spin.Result())
+
+    def stopped_result():
+        node.stop_requested = True
+        return wrapped
+
+    terminal.result.side_effect = stopped_result
+    node.spin_search.send_goal_async.return_value = done(handle(future=terminal))
+    node.capture_stationary_pose = Mock(return_value=((1.0, 2.0, 0.0), {}))
+    node._odom_pose = Mock(return_value=(1.0, 2.0, 0.0))
+    node._search_parameters_ready = Mock(return_value=True)
+    node.finish_navigation = Mock(return_value=True)
+
+    assert not node.search_rotation(math.pi / 6)
+    assert node.last_search_failure_reason == 'operator_stop'
 
 
 def test_spin_lost_acceptance_cancels_only_its_action_uuid(monkeypatch):
@@ -772,18 +861,21 @@ def test_search_checks_installed_spin_profile(
     assert node._search_parameters_ready() is ready
 
 
-@pytest.mark.parametrize('guard_failure,operator_stop,repositionable', [
-    (None, False, True), ('scan stale: age=1s', False, False),
-    (None, True, False),
+@pytest.mark.parametrize('guard_failure,operator_stop,repositionable,expected_reason', [
+    (None, False, True, 'operator_or_spin_timeout'),
+    ('scan stale: age=1s', False, False, 'scan stale: age=1s'),
+    (None, True, False, 'operator_stop'),
+    ('scan stale: age=1s', True, False, 'operator_stop'),
 ])
 def test_search_timeout_cancels_accepted_spin(
-        monkeypatch, guard_failure, operator_stop, repositionable):
+        monkeypatch, guard_failure, operator_stop, repositionable, expected_reason):
     node = route()
     node.spin_search = Mock()
     pending = Future()
     accepted = handle(future=pending)
     node.spin_search.send_goal_async.return_value = done(accepted)
     node.capture_stationary_pose = Mock(return_value=((0., 0., 0.), {}))
+    node._odom_pose = Mock(return_value=(0., 0., 0.))
     node._search_parameters_ready = lambda: True
     clock = {'now': 0.0}
     monkeypatch.setattr('jdamr_cube_navigation.restaurant_service.time.monotonic',
@@ -805,6 +897,7 @@ def test_search_timeout_cancels_accepted_spin(
     assert node.active_handle is None
     assert node.capture_stationary_pose.call_count == 1
     assert node.last_search_error_code == (Spin.Result.TIMEOUT if repositionable else None)
+    assert node.last_search_failure_reason == expected_reason
 
 
 def test_repeated_spin_profile_reads_do_not_accumulate_ros_clients(monkeypatch):
@@ -1145,6 +1238,9 @@ def test_action_boundary_marks_only_recoverable_input_gaps(entry, reason, stoppe
         result = node._execute_reverse_once(RosPath())
     assert not result
     assert node._retry_guard_reason == (reason if retry else None)
+    if entry == 'spin':
+        assert node.last_search_failure_reason == (
+            'operator_stop' if stopped else reason or 'operator_stop')
     for client in (node.navigate, node.spin_search, node.follow_reverse):
         client.send_goal_async.assert_not_called()
 
@@ -1257,9 +1353,11 @@ def test_search_input_recovery_uses_remaining_angle_not_another_full_turn():
     node = route()
     node._wait_for_input_recovery = Mock(return_value=True)
     node.capture_stationary_pose = Mock(return_value=((0, 0, math.radians(10)), {}))
+    node._odom_pose = Mock(return_value=(0, 0, math.radians(10)))
     angles = []
 
-    def attempt(angle):
+    def attempt(angle, *, measure_in_odom):
+        assert measure_in_odom is True
         angles.append(angle)
         node._search_target_yaw = math.radians(30)
         node._retry_guard_reason = 'scan stale: age=1s'
@@ -1268,6 +1366,27 @@ def test_search_input_recovery_uses_remaining_angle_not_another_full_turn():
     node._search_rotation_once = attempt
     assert node.search_rotation(math.radians(30))
     assert angles == pytest.approx([math.radians(30), math.radians(20)])
+
+
+def test_search_input_recovery_clears_failure_when_remaining_turn_is_complete():
+    node = route()
+    node._wait_for_input_recovery = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(return_value=((0, 0, 0), {}))
+    node._odom_pose = Mock(return_value=(0, 0, math.radians(28)))
+
+    def interrupted(angle, *, measure_in_odom):
+        assert angle == pytest.approx(math.radians(30))
+        assert measure_in_odom is True
+        node._search_target_yaw = math.radians(30)
+        node._retry_guard_reason = 'scan stale: age=1s'
+        node.last_search_failure_reason = 'scan stale: age=1s'
+        return False
+
+    node._search_rotation_once = Mock(side_effect=interrupted)
+
+    assert node.search_rotation(math.radians(30))
+    node._search_rotation_once.assert_called_once()
+    assert node.last_search_failure_reason is None
 
 
 def test_reverse_recovery_rebuilds_and_revalidates_remaining_path():
@@ -2014,6 +2133,8 @@ def test_t38_search_rotation_tolerates_spin_overshoot_but_not_a_missing_turn(
     node.spin_search.send_goal_async.return_value = done(handle(GoalStatus.STATUS_SUCCEEDED, 0))
     node.capture_stationary_pose = Mock(side_effect=[
         ((1.0, 2.0, 0.0), {}), ((1.0, 2.0, math.radians(observed_deg)), {})])
+    node._odom_pose = Mock(side_effect=[
+        (1.0, 2.0, 0.0), (1.0, 2.0, math.radians(observed_deg))])
     node._search_parameters_ready = Mock(return_value=True)
     assert node.search_rotation(math.pi / 6) is expected
 

@@ -342,6 +342,7 @@ class ServiceRoute(CorridorRoute):
         # Box search resume target; the staging turn shares the Spin helper and
         # ran in a process that never searched (2026-10-01 AttributeError).
         self._search_target_yaw = None
+        self.last_search_failure_reason = None
         self.service_contract = load_service_contract(
             package / 'config/restaurant_service_contract.yaml')
         self.minimum_battery_v = self.service_contract['minimum_running_battery_v']
@@ -1631,19 +1632,23 @@ class ServiceRoute(CorridorRoute):
     def search_rotation(self, delta_yaw_rad):
         """Resume only the remaining angle after a terminal input-gap stop."""
         self._search_target_yaw = None
+        self.last_search_failure_reason = None
 
         def attempt():
             remaining_rad = delta_yaw_rad
             if self._search_target_yaw is not None:
-                actual, _ = self.capture_stationary_pose()
+                self.capture_stationary_pose()
+                actual = self._odom_pose()
                 remaining_rad = math.atan2(
                     math.sin(self._search_target_yaw - actual[2]),
                     math.cos(self._search_target_yaw - actual[2]))
                 if abs(remaining_rad) <= math.radians(5):
+                    self.last_search_failure_reason = None
                     return True
                 if abs(remaining_rad) > math.pi / 6 + 1e-9:
+                    self.last_search_failure_reason = 'rotation_resume_target_invalid'
                     return False
-            return self._search_rotation_once(remaining_rad)
+            return self._search_rotation_once(remaining_rad, measure_in_odom=True)
 
         return self._run_with_input_recovery(attempt)
 
@@ -1651,21 +1656,25 @@ class ServiceRoute(CorridorRoute):
                               event='search_rotation', measure_in_odom=False):
         """Run one bounded Spin through the existing smoother/monitor chain."""
         self.last_search_error_code = None
+        self.last_search_failure_reason = None
         if (isinstance(delta_yaw_rad, bool)
                 or not isinstance(delta_yaw_rad, (int, float))
                 or not math.isfinite(delta_yaw_rad)
                 or not 0.0 < abs(delta_yaw_rad) <= limit_rad + 1e-9):
             raise ValueError(f'{event} must be finite and within its angle bound')
         if self.stop_requested or not self._navigation_ready(require_fresh_amcl=False):
-            reason = self._guard_failure(False)
+            reason = ('operator_stop' if self.stop_requested
+                      else self._guard_failure(False))
             if not self.stop_requested and self._input_gap_recoverable(reason):
                 self._retry_guard_reason = reason
-            self.emit(f'{event}_failed', reason=reason or 'operator_stop')
+            self.last_search_failure_reason = reason or 'operator_stop'
+            self.emit(f'{event}_failed', reason=self.last_search_failure_reason)
             return False
         if (not self._departure_ready()
                 or not self.spin_search.wait_for_server(timeout_sec=2.0)
                 or not self._search_parameters_ready()):
-            self.emit(f'{event}_failed', reason='spin_profile_or_navigation_unavailable')
+            self.last_search_failure_reason = 'spin_profile_or_navigation_unavailable'
+            self.emit(f'{event}_failed', reason=self.last_search_failure_reason)
             return False
         before, _ = self.capture_stationary_pose()
         if measure_in_odom:
@@ -1688,7 +1697,8 @@ class ServiceRoute(CorridorRoute):
             handle = self._wait(self.pending_goal, 5.0)
             self.pending_goal = None
             if not handle.accepted:
-                self.emit('search_rotation_failed', reason='spin_rejected')
+                self.last_search_failure_reason = 'nav2_spin_rejected'
+                self.emit('search_rotation_failed', reason=self.last_search_failure_reason)
                 return False
             self.active_handle = handle
             self.navigation_result = handle.get_result_async()
@@ -1700,10 +1710,12 @@ class ServiceRoute(CorridorRoute):
                 if (self.stop_requested or time.monotonic() >= deadline_s
                         or not self._navigation_ready(require_fresh_amcl=False)):
                     guard_failure = self._guard_failure(False)
-                    reason = guard_failure or 'operator_or_spin_timeout'
+                    reason = ('operator_stop' if self.stop_requested
+                              else guard_failure or 'operator_or_spin_timeout')
                     if (not self.stop_requested and not guard_failure
                             and time.monotonic() >= deadline_s):
                         self.last_search_error_code = Spin.Result.TIMEOUT
+                    self.last_search_failure_reason = reason
                     self.emit(f'{event}_failed', reason=reason)
                     if (not self.stop_requested and time.monotonic() < deadline_s
                             and self._input_gap_recoverable(reason)):
@@ -1713,8 +1725,12 @@ class ServiceRoute(CorridorRoute):
             self.last_search_error_code = int(wrapped.result.error_code)
             self.emit(f'{event}_result', terminal_status_code=int(wrapped.status),
                       nav2_error_code=int(wrapped.result.error_code))
-            if (self.stop_requested or wrapped.status != GoalStatus.STATUS_SUCCEEDED
+            if self.stop_requested:
+                self.last_search_failure_reason = 'operator_stop'
+                return False
+            if (wrapped.status != GoalStatus.STATUS_SUCCEEDED
                     or wrapped.result.error_code):
+                self.last_search_failure_reason = 'nav2_spin_failed'
                 return False
             after, _ = self.capture_stationary_pose()
             if measure_in_odom:
@@ -1732,7 +1748,10 @@ class ServiceRoute(CorridorRoute):
                          and displacement_m <= 0.05)
             self.emit(f'{event}_observed', confirmed=confirmed,
                       requested_yaw_rad=delta_yaw_rad, observed_yaw_rad=turned_rad,
-                      displacement_m=displacement_m)
+                      displacement_m=displacement_m,
+                      observation_frame=('odom' if measure_in_odom else 'map'))
+            if not confirmed:
+                self.last_search_failure_reason = 'rotation_observation_not_confirmed'
             return confirmed
         finally:
             if not self.finish_navigation():

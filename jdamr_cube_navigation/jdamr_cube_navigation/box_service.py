@@ -819,7 +819,8 @@ class BoxServiceRoute(ServiceRoute):
                     self.emit(
                         'failed', phase='box_search_rotation',
                         observation_phase=phase,
-                        reason='nav2_spin_failed',
+                        reason=(getattr(self, 'last_search_failure_reason', None)
+                                or 'rotation_observation_not_confirmed'),
                         search_step=search_budget.steps_used,
                         search_cumulative_yaw_rad=(
                             search_budget.cumulative_yaw_rad))

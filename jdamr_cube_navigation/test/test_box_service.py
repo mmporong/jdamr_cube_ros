@@ -200,10 +200,28 @@ def test_failed_search_rotation_stops_without_repeating(mission):
     mission.observe_target.side_effect = (
         box_service.BoxObservationUnavailable('no_stable_box', retryable=True))
     mission.search_rotation.return_value = False
+    mission.last_search_failure_reason = 'nav2_spin_failed'
     with pytest.raises(RuntimeError, match='search rotation failed'):
         invoke(mission, search=True)
     mission.search_rotation.assert_called_once_with(math.radians(30.0))
     assert mission.observe_target.call_count == 1
+    failure = [call for call in mission.emit.call_args_list
+               if call.args == ('failed',)][-1]
+    assert failure.kwargs['reason'] == 'nav2_spin_failed'
+
+
+def test_failed_search_rotation_reports_observation_reason(mission):
+    mission.observe_target.side_effect = (
+        box_service.BoxObservationUnavailable('no_stable_box', retryable=True))
+    mission.search_rotation.return_value = False
+    mission.last_search_failure_reason = 'rotation_observation_not_confirmed'
+
+    with pytest.raises(RuntimeError, match='search rotation failed'):
+        invoke(mission, search=True)
+
+    failure = [call for call in mission.emit.call_args_list
+               if call.args == ('failed',)][-1]
+    assert failure.kwargs['reason'] == 'rotation_observation_not_confirmed'
 
 
 def test_collision_blocked_search_can_reposition_once_and_continue(mission):
