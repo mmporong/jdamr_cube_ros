@@ -928,6 +928,10 @@ class CorridorRoute(Node):
             return False
         values = future.result().values
         if len(values) != len(expected):
+            self.get_logger().error(
+                'parking parameter response incomplete: '
+                f'expected={len(expected)} received={len(values)} '
+                f'requested={",".join(expected)}')
             return False
         for (name, wanted), value in zip(expected.items(), values):
             # GetParameters returns ParameterValue rather than Parameter.

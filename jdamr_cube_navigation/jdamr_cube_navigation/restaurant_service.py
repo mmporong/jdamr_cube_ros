@@ -619,35 +619,66 @@ class ServiceRoute(CorridorRoute):
         A new client's first response can be lost before the server matches its
         reply reader ("client will not receive response", 20260929_RUNTIME_ROOT_CAUSE).
         Every executor attempt starts with a new node, and this first map_server
-        read ended the 2026-10-06 10:26 and 17:09 cycles before any motion. An
-        unanswered first read is sent once more within the same 5 s, as
-        require_active() does for GetState.
+        read ended the 2026-10-06 10:26 and 17:09 cycles before any motion.
+        Unanswered reads are retried at one-second intervals within the same
+        five-second budget, so a reply reader matched after two seconds can
+        still receive a fresh request.
         """
         client = self._parameter_readers.get(remote_node)
         if client is None:
             client = self.create_client(GetParameters, f'{remote_node}/get_parameters')
             self._parameter_readers[remote_node] = client
+        if getattr(self, 'stop_requested', False):
+            raise RuntimeError(
+                f'{remote_node} parameter read interrupted before service wait')
         if not client.wait_for_service(timeout_sec=2.0):
             return None
-        request = GetParameters.Request()
-        request.names = list(names)
-        deadline_s = time.monotonic() + 5.0
-        for attempt in range(2):
-            remaining_s = deadline_s - time.monotonic()
-            future = client.call_async(request)
-            try:
-                return self._wait(future, min(2.0, remaining_s) if attempt == 0 else remaining_s)
-            except RuntimeError as error:
-                incomplete = not future.done()
-                if incomplete:
-                    client.remove_pending_request(future)
-                if (attempt == 0 and incomplete and not self.stop_requested
-                        and time.monotonic() < deadline_s):
-                    self.get_logger().warning(
-                        f'parameter read timeout: node={remote_node} attempt=1/2; '
-                        f'retrying GetParameters within the 5 s budget; error={error}')
+        requested_names = list(names)
+        total_budget_s = 5.0
+        resend_interval_s = 1.0
+        started_s = time.monotonic()
+        deadline_s = started_s + total_budget_s
+        next_send_s = started_s
+        attempt = 0
+        pending = []
+        try:
+            while True:
+                if getattr(self, 'stop_requested', False):
+                    raise RuntimeError(
+                        f'{remote_node} parameter read interrupted after attempts={attempt}')
+                for attempt_index, future in enumerate(pending, start=1):
+                    if not future.done():
+                        continue
+                    error = future.exception()
+                    if error is not None:
+                        raise RuntimeError(
+                            f'{remote_node} parameter read failed on '
+                            f'attempt={attempt_index}: {error!r}') from error
+                    return future.result()
+                now_s = time.monotonic()
+                if now_s >= deadline_s:
+                    raise RuntimeError(
+                        f'{remote_node} parameter read timed out: '
+                        f'total_budget={total_budget_s:.1f} s attempts={attempt} '
+                        f'resend_interval={resend_interval_s:.1f} s')
+                if now_s >= next_send_s:
+                    attempt += 1
+                    request = GetParameters.Request()
+                    request.names = requested_names
+                    pending.append(client.call_async(request))
+                    next_send_s = now_s + resend_interval_s
+                    if attempt > 1:
+                        self.get_logger().warning(
+                            f'parameter read retry: node={remote_node} attempt={attempt}; '
+                            f'total_budget={total_budget_s:.1f} s '
+                            f'resend_interval={resend_interval_s:.1f} s')
                     continue
-                raise RuntimeError(f'{remote_node} parameter read: {error}') from error
+                spin_node(
+                    self, timeout_sec=min(0.05, deadline_s - now_s, next_send_s - now_s))
+        finally:
+            for future in pending:
+                if not future.done():
+                    client.remove_pending_request(future)
 
     def verify_live_maps(self, require_command_path=True):
         """Require the running map servers to name the registered assets."""

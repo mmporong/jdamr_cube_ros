@@ -21,7 +21,7 @@ camera_mount:
       source: user_confirmation
     assembly_assumptions:
     - 렌즈가 뒤끝의 좌우 중앙
-    - 'yaw 0: 차체 전방을 보는 카메라'
+    - 'yaw 0: 차체 전방을 보는 카메라. 아래 후보값은 적용하지 않음'
     orientation_height_basis: 높이와 roll은 기존 정지 깊이 영상 바닥 후보 평면 3개 프레임의
       SVD 법선/거리에서 산출. pitch는 아래 임시 추정값을 사용함
     pitch_estimate:
@@ -37,6 +37,22 @@ camera_mount:
         recomputed_center_gap_range_m: [0.12711837187483258, 0.12779718787583155]
         evidence: $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_parking_20261013_110352/parking_20261013_120435/pitch_15deg_replay.json
         scope: 동일 정지 위치의 간격 대조이며 각도 실측이나 다른 거리의 정확도 검증이 아님
+    yaw_candidate:
+      value: 0.016516581318531814
+      unit: rad
+      estimated_at: '2026-10-13'
+      valid_for: 현재 카메라와 차체 장착 상태
+      source: user_front_corner_gaps_compared_with_stationary_depth
+      status: unvalidated_single_pose_candidate
+      applied: false
+      reference_left_gap_m: 0.057
+      reference_right_gap_m: 0.075
+      reference_width_m: 0.450
+      measured_heading_error_rad: 0.04001067435398891
+      depth_heading_error_rad: 0.023494093035457096
+      calculation: asin((right_gap-left_gap)/frame_width)에서 깊이 관측의 방향 오차를 뺀 값
+      evidence: $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_parking_20261013_110352/parking_20261013_123410/operator_arrival_measurement.json
+      scope: 한 정지 위치의 좌우 간격과 깊이 추정 차이. 카메라 yaw 외에 모서리 검출과 측정 오차가 섞일 수 있어 보정값으로 미적용
     evidence: $HOME/jdamr_data/predeparture_20261012_141234/camera_floor_samples.npz;
       floor_plane_fit.json; floor_candidate.png
     floor_inlier_ratio_range:
@@ -46,4 +62,4 @@ camera_mount:
     physical_parking_accuracy: NOT_MEASURED
     invalidate_when: 카메라·상판 위치 또는 방향 변경
     height_prior: 사용자 약 1 m는 바닥 후보 선택의 선행 추정치. z 값은 관측 평면 거리 평균에서 산출
-    unobserved_axes: y=0 중앙 설치와 yaw=0 전방 정렬은 설치 가정. 바닥 평면으로 수평 위치/yaw를 측정하지 않음
+    unobserved_axes: y=0 중앙 설치와 yaw=0 전방 정렬은 설치 가정. 좌우 간격 대조의 yaw 후보는 다른 자세에서 부호와 크기를 재확인해야 함

@@ -32,7 +32,13 @@ def _configure(context):
         'parking_contract', default=str(package / 'config/parking_contract.yaml'))
     contract = load_parking_contract(Path(contract_path.perform(context)))
     controller = parking_controller_overrides(document, contract)
-    if (registry.get('home') or {}).get('parking_direction') == 'reverse':
+    precision_parking = (
+        LaunchConfiguration('precision_parking', default='false').perform(context)
+        == 'true')
+    reverse_parking = (
+        (registry.get('home') or {}).get('parking_direction') == 'reverse'
+        or precision_parking)
+    if reverse_parking:
         controller = reverse_controller_overrides(controller)
         smoother = document['velocity_smoother']['ros__parameters']
         smoother['min_velocity'][0] = -contract['desired_linear_mps']
@@ -53,7 +59,7 @@ def _configure(context):
         'plugin': 'nav2_bt_navigator::NavigateThroughPosesNavigator'}
     navigator['default_nav_through_poses_bt_xml'] = str(
         package / 'behavior_trees/navigate_through_poses_transit.xml')
-    if LaunchConfiguration('precision_parking', default='false').perform(context) == 'true':
+    if precision_parking:
         geometry_path = (Path(get_package_share_directory('jdamr_cube_description'))
                          / 'config/new_base_geometry.yaml')
         document = apply_docking_stop_profile(

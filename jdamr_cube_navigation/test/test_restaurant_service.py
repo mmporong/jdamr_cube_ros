@@ -959,60 +959,143 @@ def test_parameter_reader_absent_service_never_sends_request():
     client.call_async.assert_not_called()
 
 
-def test_parameter_reader_discards_pending_request_on_interruption():
+def test_parameter_reader_discards_pending_request_on_interruption(monkeypatch):
     node = route()
-    node.stop_requested = True
+    node.stop_requested = False
     client = Mock()
     pending = Future()
     client.call_async.return_value = pending
     node.create_client = Mock(return_value=client)
-    node._wait = Mock(side_effect=RuntimeError('request interrupted, failed or timed out'))
-    with pytest.raises(RuntimeError, match='map_server parameter read: request interrupted'):
+    clock = {'now': 0.0}
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock['now'])
+
+    def interrupt(_node, timeout_sec):
+        clock['now'] += timeout_sec
+        node.stop_requested = True
+
+    monkeypatch.setattr(restaurant_service, 'spin_node', interrupt)
+    with pytest.raises(RuntimeError, match='map_server parameter read interrupted'):
         node._read_parameters('map_server', ['yaml_filename'])
     client.remove_pending_request.assert_called_once_with(pending)
     client.call_async.assert_called_once()
 
 
-def test_parameter_reader_resends_an_unanswered_first_read_once():
+def test_parameter_reader_stop_before_request_never_sends():
+    node = route()
+    node.stop_requested = True
+    client = Mock()
+    node.create_client = Mock(return_value=client)
+    with pytest.raises(RuntimeError, match='interrupted before service wait'):
+        node._read_parameters('map_server', ['yaml_filename'])
+    client.wait_for_service.assert_not_called()
+    client.call_async.assert_not_called()
+
+
+def test_parameter_reader_resends_two_lost_reads_then_uses_fresh_third(monkeypatch):
     """A new node's first map_server read went unanswered (2026-10-06 10:26, 17:09)."""
     node = route()
     node.stop_requested = False
     node.get_logger = Mock()
     client = Mock()
-    lost, answered = Future(), Future()
+    lost_first, lost_second, answered = Future(), Future(), Future()
     response = SimpleNamespace(values=['map.yaml'])
     answered.set_result(response)
-    client.call_async.side_effect = [lost, answered]
+    client.call_async.side_effect = [lost_first, lost_second, answered]
     node.create_client = Mock(return_value=client)
-    waits = []
+    clock = {'now': 0.0}
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock['now'])
 
-    def wait(future, timeout_s):
-        waits.append(timeout_s)
-        if not future.done():
-            raise RuntimeError('request interrupted, failed or timed out')
-        return future.result()
+    def spin(_node, timeout_sec):
+        clock['now'] += timeout_sec
 
-    node._wait = wait
+    monkeypatch.setattr(restaurant_service, 'spin_node', spin)
     assert node._read_parameters('map_server', ['yaml_filename']) is response
-    client.remove_pending_request.assert_called_once_with(lost)
-    # The second read takes what is left of the 5 s (all of it, as no time passes here).
-    assert waits[0] == 2.0 and 4.9 < waits[1] <= 5.0
-    assert 'node=map_server attempt=1/2' in node.get_logger().warning.call_args.args[0]
+    assert client.remove_pending_request.call_args_list == [
+        ((lost_first,),), ((lost_second,),)]
+    assert client.call_async.call_count == 3
+    assert len({id(call.args[0]) for call in client.call_async.call_args_list}) == 3
+    assert clock['now'] == pytest.approx(2.0)
+    assert 'node=map_server attempt=3' in node.get_logger().warning.call_args.args[0]
 
 
-def test_parameter_reader_names_the_node_after_two_unanswered_reads():
+def test_parameter_reader_accepts_first_response_after_second_request(monkeypatch):
+    node = route()
+    node.get_logger = Mock()
+    client = Mock()
+    first, second = Future(), Future()
+    response = SimpleNamespace(values=['map.yaml'])
+    client.call_async.side_effect = [first, second]
+    node.create_client = Mock(return_value=client)
+    clock = {'now': 0.0}
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock['now'])
+
+    def spin(_node, timeout_sec):
+        clock['now'] += timeout_sec
+        if clock['now'] >= 1.2 and not first.done():
+            first.set_result(response)
+
+    monkeypatch.setattr(restaurant_service, 'spin_node', spin)
+    assert node._read_parameters('map_server', ['yaml_filename']) is response
+    assert client.call_async.call_count == 2
+    client.remove_pending_request.assert_called_once_with(second)
+    assert clock['now'] == pytest.approx(1.2)
+
+
+def test_parameter_reader_timeout_stays_inside_five_second_budget(monkeypatch):
     node = route()
     node.stop_requested = False
     node.get_logger = Mock()
     client = Mock()
-    client.call_async.side_effect = [Future(), Future()]
+    client.call_async.side_effect = lambda _request: Future()
     node.create_client = Mock(return_value=client)
-    node._wait = Mock(side_effect=RuntimeError(
-        'request interrupted, failed or timed out (no response in 2.0 s)'))
-    with pytest.raises(RuntimeError, match='keepout_filter_mask_server parameter read'):
+    clock = {'now': 0.0}
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock['now'])
+
+    def spin(_node, timeout_sec):
+        clock['now'] += timeout_sec
+
+    monkeypatch.setattr(restaurant_service, 'spin_node', spin)
+    with pytest.raises(RuntimeError, match=(
+            r'keepout_filter_mask_server parameter read timed out: '
+            r'total_budget=5\.0 s attempts=5 resend_interval=1\.0 s')):
         node._read_parameters('keepout_filter_mask_server', ['yaml_filename'])
-    assert client.call_async.call_count == 2
-    assert client.remove_pending_request.call_count == 2
+    assert clock['now'] == 5.0
+    assert client.call_async.call_count == 5
+    assert client.remove_pending_request.call_count == 5
+
+
+def test_parameter_reader_never_sends_after_deadline(monkeypatch):
+    node = route()
+    node.get_logger = Mock()
+    client = Mock()
+    pending = Future()
+    client.call_async.return_value = pending
+    node.create_client = Mock(return_value=client)
+    clock = {'now': 0.0}
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock['now'])
+
+    def overrun(_node, timeout_sec):
+        assert timeout_sec <= 0.05
+        clock['now'] = 5.1
+
+    monkeypatch.setattr(restaurant_service, 'spin_node', overrun)
+    with pytest.raises(RuntimeError, match='total_budget=5.0 s attempts=1'):
+        node._read_parameters('map_server', ['yaml_filename'])
+    client.call_async.assert_called_once()
+    client.remove_pending_request.assert_called_once_with(pending)
+
+
+def test_parameter_reader_does_not_retry_completed_service_exception():
+    node = route()
+    client = Mock()
+    failed = Future()
+    failed.set_exception(RuntimeError('peer failed'))
+    client.call_async.return_value = failed
+    node.create_client = Mock(return_value=client)
+    with pytest.raises(RuntimeError, match='failed on attempt=1'):
+        node._read_parameters('map_server', ['yaml_filename'])
+    client.call_async.assert_called_once()
+    client.remove_pending_request.assert_not_called()
 
 
 def test_parameter_reader_uses_real_read_only_service_and_fresh_responses(monkeypatch):
@@ -1044,12 +1127,10 @@ def test_parameter_reader_uses_real_read_only_service_and_fresh_responses(monkey
     executor.add_node(server)
     executor.add_node(node)
 
-    def wait(future, timeout):
-        executor.spin_until_future_complete(future, timeout_sec=timeout)
-        assert future.done()
-        return future.result()
+    def spin(_node, timeout_sec):
+        executor.spin_once(timeout_sec=timeout_sec)
 
-    node._wait = wait
+    monkeypatch.setattr(restaurant_service, 'spin_node', spin)
     try:
         first = ServiceRoute._read_parameters(node, 'read_only_peer', ['revision'])
         second = ServiceRoute._read_parameters(node, 'read_only_peer', ['revision'])

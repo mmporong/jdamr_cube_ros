@@ -1,6 +1,7 @@
 """Exercise opt-in parking wiring without starting ROS or moving a robot."""
 
 import copy
+import importlib.util
 import math
 from pathlib import Path
 import sys
@@ -210,6 +211,58 @@ def test_runtime_parameter_check_rejects_missing_or_relaxed_configuration(
     monkeypatch.setattr('jdamr_cube_navigation.corridor_route.rclpy.spin_once', spin)
     assert route._parking_parameters_ready(reverse=reverse) is (
         mismatch is None and response_delay_s < 5)
+
+
+def test_precision_service_loads_reverse_escape_for_forward_home(monkeypatch):
+    """Table parking can back away even when the registered dock faces forward."""
+    from launch import LaunchContext
+
+    spec = importlib.util.spec_from_file_location(
+        'precision_reverse_launch',
+        PACKAGE_ROOT / 'launch/restaurant_service.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda name: str(
+        PACKAGE_ROOT if name == 'jdamr_cube_navigation'
+        else PACKAGE_ROOT.parent / name))
+    monkeypatch.setattr(module, 'load_registry', lambda _: {
+        'home': {'parking_direction': 'forward'},
+        'map': {'yaml_path': '/map.yaml'},
+        'keepout': {'yaml_path': '/mask.yaml'},
+    })
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'registry': '/registry.yaml',
+        'params_file': str(PACKAGE_ROOT / 'config/new_base_nav2_params.yaml'),
+        'precision_parking': 'true',
+    })
+    actions = module._configure(context)
+    generated = Path(dict(actions[1].launch_arguments)['params_file'])
+    try:
+        document = yaml.safe_load(generated.read_text())
+    finally:
+        generated.unlink()
+    controller = document['controller_server']['ros__parameters']
+    assert 'ParkingReverse' in controller['controller_plugins']
+    assert controller['ParkingReverse']['allow_reversing'] is True
+    assert document['velocity_smoother']['ros__parameters']['min_velocity'][0] == -0.08
+
+
+def test_parking_parameter_check_logs_missing_response_values():
+    """Name an incomplete service response instead of returning a silent false."""
+    route = _route()
+    logger = Mock()
+    route.get_logger = lambda: logger
+    route.parking_parameters = Mock()
+    route.parking_parameters.wait_for_services.return_value = True
+    route.parking_parameters.get_parameters.return_value = _completed_future(
+        SimpleNamespace(values=[]))
+
+    assert not route._parking_parameters_ready(reverse=True)
+    message = logger.error.call_args.args[0]
+    assert 'parking parameter response incomplete' in message
+    assert 'expected=' in message and 'received=0' in message
+    assert 'requested=controller_plugins,goal_checker_plugins' in message
 
 
 def test_quaternion_conversion_validates_input_and_preserves_yaw():
