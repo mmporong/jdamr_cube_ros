@@ -344,7 +344,15 @@ class DetectionStability:
         lateral_spread_m = max(laterals) - min(laterals)
         vertical_spread_m = (
             max(verticals) - min(verticals) if verticals else 0.0)
-        edge_angle_spread_rad = max(angles) - min(angles)
+        if all(item.surface_kind == 'table_edge' for item in self._history):
+            # SVD can reverse the endpoints of the same undirected table line.
+            angles_rad = np.asarray(angles)
+            differences_rad = angles_rad[:, None] - angles_rad[None, :]
+            line_differences_rad = (
+                differences_rad + math.pi / 2.0) % math.pi - math.pi / 2.0
+            edge_angle_spread_rad = float(np.max(np.abs(line_differences_rad)))
+        else:
+            edge_angle_spread_rad = max(angles) - min(angles)
         normal_angle_spread_rad = _maximum_normal_angle_rad(self._history)
         stable = all((
             distance_spread_m <= self.maximum_distance_spread_m,

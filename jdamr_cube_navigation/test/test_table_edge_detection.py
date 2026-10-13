@@ -3,7 +3,10 @@
 import math
 from dataclasses import replace
 
-from jdamr_cube_navigation.box_top_detection import CameraIntrinsics
+from jdamr_cube_navigation.box_top_detection import (
+    CameraIntrinsics,
+    DetectionStability,
+)
 from jdamr_cube_navigation.table_edge_detection import (
     TableEdgeConfig,
     _horizontal_plane_is_valid,
@@ -100,6 +103,45 @@ def _render_table(
 def _to_level(detection, configured):
     endpoints = np.asarray(detection.edge_endpoints_optical_m)
     return endpoints @ _optical_to_level_rotation(configured).T
+
+
+@pytest.mark.parametrize('angle_deg', [-0.7, 89.5, -89.5])
+def test_stability_accepts_reversed_table_edge_endpoints(angle_deg):
+    configured = config()
+    depth, _, _ = _render_table(configured, background_depth_m=1.8)
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+    assert detection is not None
+    angle_rad = math.radians(angle_deg)
+    reversed_angle_rad = math.atan2(
+        math.sin(angle_rad + math.pi), math.cos(angle_rad + math.pi))
+    observations = (
+        replace(detection, edge_angle_rad=angle_rad),
+        replace(detection, edge_angle_rad=reversed_angle_rad,
+                edge_endpoints_optical_m=tuple(
+                    reversed(detection.edge_endpoints_optical_m))),
+    )
+    tracker = DetectionStability(required_frames=8)
+
+    results = [tracker.update(observations[index % 2]) for index in range(8)]
+
+    assert results == [False] * 7 + [True]
+    assert tracker.frame_count == 8
+
+
+def test_stability_rejects_changed_table_edge_direction():
+    configured = config()
+    depth, _, _ = _render_table(configured, background_depth_m=1.8)
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+    assert detection is not None
+    changed = replace(
+        detection, edge_angle_rad=detection.edge_angle_rad + math.radians(6.0))
+    tracker = DetectionStability(required_frames=8)
+
+    results = [tracker.update((detection, changed)[index % 2])
+               for index in range(8)]
+
+    assert results == [False] * 8
+    assert tracker.frame_count == 1
 
 
 @pytest.mark.parametrize(

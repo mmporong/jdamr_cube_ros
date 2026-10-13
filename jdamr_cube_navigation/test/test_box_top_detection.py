@@ -218,6 +218,20 @@ def test_stability_rejects_full_plane_normal_angular_spread():
     assert tracker.frame_count == 1
 
 
+def test_front_stability_keeps_directed_edge_angle_contract():
+    detection = detect_box_front(_synthetic_box_front_depth(), INTRINSICS)
+    assert detection is not None
+    reversed_angle = replace(
+        detection, edge_angle_rad=detection.edge_angle_rad + math.pi)
+    tracker = DetectionStability(required_frames=8)
+
+    results = [tracker.update((detection, reversed_angle)[index % 2])
+               for index in range(8)]
+
+    assert results == [False] * 8
+    assert tracker.frame_count == 1
+
+
 def test_ros_observer_is_perception_only():
     """The first-stage observer must not own a velocity publisher."""
     source = (
