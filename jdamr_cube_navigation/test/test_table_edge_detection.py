@@ -144,6 +144,47 @@ def test_stability_rejects_changed_table_edge_direction():
     assert tracker.frame_count == 1
 
 
+def test_stability_uses_table_edge_geometry_when_fitted_plane_tilt_varies():
+    configured = config()
+    depth, _, _ = _render_table(configured, background_depth_m=1.8)
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+    assert detection is not None
+    rotation = _optical_to_level_rotation(configured)
+    normals = [tuple(np.array([math.sin(angle), 0.0, math.cos(angle)]) @ rotation)
+               for angle in (math.radians(-5.0), math.radians(5.0))]
+    tracker = DetectionStability(required_frames=8)
+
+    results = [tracker.update(replace(detection, plane_normal=normals[index % 2]))
+               for index in range(8)]
+
+    assert results == [False] * 7 + [True]
+
+
+@pytest.mark.parametrize('field', ['center_x_m', 'center_y_m', 'front_distance_m'])
+def test_stability_rejects_changed_table_edge_position(field):
+    configured = config()
+    depth, _, _ = _render_table(configured, background_depth_m=1.8)
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+    assert detection is not None
+    changed = replace(detection, **{field: getattr(detection, field) + 0.06})
+    tracker = DetectionStability(required_frames=8)
+
+    assert [tracker.update((detection, changed)[index % 2])
+            for index in range(8)] == [False] * 8
+
+
+@pytest.mark.parametrize('normal', [(0.0, 0.0, 0.0), (math.nan, 0.0, 1.0)])
+def test_stability_rejects_invalid_table_plane_normal(normal):
+    configured = config()
+    depth, _, _ = _render_table(configured, background_depth_m=1.8)
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+    assert detection is not None
+    tracker = DetectionStability(required_frames=8)
+
+    assert [tracker.update(replace(detection, plane_normal=normal))
+            for _ in range(8)] == [False] * 8
+
+
 @pytest.mark.parametrize(
     ('camera_height_m', 'pitch_deg', 'roll_deg', 'table_yaw_deg'),
     [

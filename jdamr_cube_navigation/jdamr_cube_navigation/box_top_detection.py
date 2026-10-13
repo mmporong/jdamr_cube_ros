@@ -337,14 +337,16 @@ class DetectionStability:
         laterals = [item.center_x_m for item in self._history]
         verticals = [
             item.center_y_m for item in self._history
-            if item.surface_kind == 'front'
+            if item.surface_kind in ('front', 'table_edge')
         ]
         angles = [item.edge_angle_rad for item in self._history]
         distance_spread_m = max(distances) - min(distances)
         lateral_spread_m = max(laterals) - min(laterals)
         vertical_spread_m = (
             max(verticals) - min(verticals) if verticals else 0.0)
-        if all(item.surface_kind == 'table_edge' for item in self._history):
+        table_edge_window = all(
+            item.surface_kind == 'table_edge' for item in self._history)
+        if table_edge_window:
             # SVD can reverse the endpoints of the same undirected table line.
             angles_rad = np.asarray(angles)
             differences_rad = angles_rad[:, None] - angles_rad[None, :]
@@ -354,12 +356,18 @@ class DetectionStability:
         else:
             edge_angle_spread_rad = max(angles) - min(angles)
         normal_angle_spread_rad = _maximum_normal_angle_rad(self._history)
+        # Table targets use the edge endpoints for position and heading. The
+        # detector and target validator still require an upward tabletop plane;
+        # variation of its fitted tilt does not change a stable edge target.
+        normal_stable = math.isfinite(normal_angle_spread_rad) and (
+            table_edge_window
+            or normal_angle_spread_rad <= self.maximum_angle_spread_rad)
         stable = all((
             distance_spread_m <= self.maximum_distance_spread_m,
             lateral_spread_m <= self.maximum_lateral_spread_m,
             vertical_spread_m <= self.maximum_lateral_spread_m,
             edge_angle_spread_rad <= self.maximum_angle_spread_rad,
-            normal_angle_spread_rad <= self.maximum_angle_spread_rad,
+            normal_stable,
         ))
         if not stable:
             self._history = [detection]
