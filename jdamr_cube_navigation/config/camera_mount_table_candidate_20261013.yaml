@@ -1,0 +1,60 @@
+camera_mount:
+  status: derived
+  parent_frame: base_link
+  child_frame: camera_link
+  transform:
+    x_m: -0.2826183596449993
+    y_m: 0.0
+    z_m: 0.9070543261338818
+    roll_rad: 0.011934068034722573
+    pitch_rad: 0.41246669799099545
+    yaw_rad: -0.0007507445375463481
+  provenance:
+    derived_at: '2026-10-13'
+    valid_for: 현재 4륜 조립체의 상판 뒤쪽 카메라와 같은 책상 주차. 카메라 위치/각도 변경 시 무효
+    scope: 주차 계산용 유효 변환. 각도 실측이나 전체 외부 보정 완료를 뜻하지 않음
+    nominal_camera_x_m: -0.275
+    front_to_wheel_axis:
+      value: 0.065
+      unit: m
+      measured_at: '2026-09-15'
+      valid_for: 앞끝/전륜축 기준점을 유지한 현재 하부 프레임
+      source: new_base_geometry.yaml
+    front_to_lens_horizontal_distance:
+      value: 0.34
+      unit: m
+      measured_at: '2026-10-13'
+      valid_for: 현재 차체 앞끝과 렌즈 중심의 수평 앞뒤 거리
+      source: operator_confirmation
+    pitch_estimate:
+      value: 23.63260098458119
+      unit: deg
+      measured_at: '2026-10-13'
+      valid_for: 동일 카메라/책상 배치의 정지 영상
+      source: 15cm 양쪽 간격과 수평 렌즈 오프셋으로 적합한 유효 pitch
+      status: single_pose_fit_not_angle_measurement
+    yaw_estimate:
+      value: -0.0007507445375463481
+      unit: rad
+      measured_at: '2026-10-13'
+      valid_for: 동일 카메라/책상 배치의 정지 영상
+      source: 양쪽 15cm 실측을 같은 전진축 좌표로 적합
+      status: single_pose_fit_not_independent_calibration
+    held_axes: z/roll은 기존 바닥 후보 평면 추정, y=0은 중앙 장착 가정. 새로 실측하지 않음
+    parking_range_bias_compensation:
+      value: -0.0076183596449993125
+      unit: m
+      measured_at: '2026-10-13'
+      valid_for: 현재 장착의 근거리 책상 주차 계산
+      source: 실측 좌35mm/우40mm와 보정 전 변환 추정의 평균 차이
+      applied_to: effective transform.x_m; physical URDF and nominal lens position
+        unchanged
+      samples_m:
+        measured_left: 0.035
+        measured_right: 0.04
+        estimated_left_before_bias: 0.04288345445522555
+        estimated_right_before_bias: 0.047353264834773076
+      independent_validation: 3cm 목표 후 양쪽 약3.5cm 보고. 다른 거리/장면 일반화 미검증
+    evidence: $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_4wd_parking_20261013_181124/
+    physical_parking_accuracy: 3CM_TARGET_APPROX_35MM_BOTH_REPORTED_1CM_TARGET_FINAL_15MM_REPORTED
+    invalidate_when: 카메라/상판 위치 또는 각도, 차체 기준점, 책상 관측 장면 변경

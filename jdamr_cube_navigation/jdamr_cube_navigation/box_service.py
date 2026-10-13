@@ -147,11 +147,17 @@ class BoxObservationUnavailable(RuntimeError):
     an input delay; it may be re-observed in place but never rotates.
     """
 
-    def __init__(self, reason, *, retryable, latency_limited=False):
+    def __init__(self, reason, *, retryable, latency_limited=False,
+                 fresh_frames=0, required_fresh_frames=None,
+                 fresh_rejection_reasons=(), latency_reasons=()):
         super().__init__(f'box observation unavailable: {reason}')
         self.reason = reason
         self.retryable = retryable
         self.latency_limited = latency_limited
+        self.fresh_frames = fresh_frames
+        self.required_fresh_frames = required_fresh_frames
+        self.fresh_rejection_reasons = frozenset(fresh_rejection_reasons)
+        self.latency_reasons = frozenset(latency_reasons)
 
 
 class BoxSearchBudget:
@@ -227,6 +233,26 @@ class BoxServiceRoute(ServiceRoute):
         super().__init__(*args, **kwargs)
         self.precision_parameters = AsyncParameterClient(
             self, 'collision_monitor')
+
+    def _observer_stable_frame_quorum(self):
+        """Read the observer's active stable-frame quorum once for this observation."""
+        client = getattr(self, 'observer_parameters', None)
+        if client is None:
+            client = AsyncParameterClient(self, 'jdamr_depth_box_parking')
+            self.observer_parameters = client
+        try:
+            if not client.wait_for_services(timeout_sec=1.0):
+                return None
+            response = self._wait(client.get_parameters(['stable_frames']), 2.0)
+            values = response.values
+            if len(values) != 1:
+                return None
+            value = parameter_value_to_python(values[0])
+        except (RuntimeError, AttributeError, TypeError, ValueError):
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None
+        return value
 
     def _camera(self, on):
         """
@@ -568,6 +594,10 @@ class BoxServiceRoute(ServiceRoute):
                 and (getattr(self, 'surface_mode', 'front') == 'table_edge'
                      or getattr(self, 'require_observer_configuration', False))):
             raise RuntimeError('observer surface and camera parameters unavailable')
+        runtime_stable_frames = self._observer_stable_frame_quorum()
+        latency_stable_frames = runtime_stable_frames
+        if latency_stable_frames is None:
+            latency_stable_frames = getattr(self, 'observer_stable_frames', None)
         revision = self.parking_motion_revision
         cutoff_s = self.get_clock().now().nanoseconds * 1e-9
         # A later cutoff advances by elapsed monotonic time, not another clock read.
@@ -579,13 +609,14 @@ class BoxServiceRoute(ServiceRoute):
         input_recovered = False
         latency_reasons = set()
         fresh_since_latency = 0
+        fresh_rejection_reasons = set()
         evaluated_stamps = set()
         counted_rejection_s = None
 
         def emit_evidence(reason, retryable):
-            stable_frames = getattr(self, 'observer_stable_frames', None)
             latency_limited = bool(latency_reasons) and (
-                stable_frames is None or fresh_since_latency < stable_frames)
+                latency_stable_frames is None
+                or fresh_since_latency < latency_stable_frames)
             self._emit_observation_unavailable_evidence(
                 reason=reason, retryable=retryable and not latency_limited,
                 latency_limited=latency_limited, latency_reasons=sorted(latency_reasons),
@@ -605,6 +636,7 @@ class BoxServiceRoute(ServiceRoute):
                     input_recovered = True
                     latency_reasons.add('input_gap')
                     fresh_since_latency = 0
+                    fresh_rejection_reasons.clear()
                     robot_pose, _ = self.capture_stationary_pose()
                     self._observation_pose_diagnostic(robot_pose, camera_mount, region_xy)
                     self._observer_camera_mount = camera_mount
@@ -635,11 +667,13 @@ class BoxServiceRoute(ServiceRoute):
                 counted_rejection_s = received_s
                 latency_reasons.add(observation['reason'])
                 fresh_since_latency = 0
+                fresh_rejection_reasons.clear()
             silent_since_s = (call_started_s if received_s is None
                               else max(call_started_s, received_s))
             if time.monotonic() - silent_since_s > OBSERVER_SILENT_S:
                 latency_reasons.add('observer_silent')
                 fresh_since_latency = 0
+                fresh_rejection_reasons.clear()
             if (not observation or observation.get('frame_id') != 'camera_color_optical_frame'
                     or not isinstance(observation.get('stamp_s'), (int, float))
                     or observation['stamp_s'] <= cutoff_s):
@@ -787,12 +821,19 @@ class BoxServiceRoute(ServiceRoute):
                 if last_failure in BOX_INPUT_LATENCY_FAILURES:
                     latency_reasons.add(last_failure)
                     fresh_since_latency = 0
+                    fresh_rejection_reasons.clear()
                 else:
                     fresh_since_latency += 1
+                    rejection_reason = observation.get('reason')
+                    if isinstance(rejection_reason, str):
+                        fresh_rejection_reasons.add(rejection_reason)
         latency_limited = emit_evidence(last_failure, last_failure_retryable)
         raise BoxObservationUnavailable(
             last_failure, retryable=last_failure_retryable and not latency_limited,
-            latency_limited=latency_limited)
+            latency_limited=latency_limited, fresh_frames=fresh_since_latency,
+            required_fresh_frames=runtime_stable_frames,
+            fresh_rejection_reasons=fresh_rejection_reasons,
+            latency_reasons=latency_reasons)
 
     def _reposition_search(self):
         """Try one planned nearby view after a collision or timeout Spin result."""
@@ -1068,10 +1109,12 @@ class BoxServiceRoute(ServiceRoute):
         fine_table = surface_mode == 'table_edge' and self._final_gap_m() <= 0.01
         corrections = 0
         previous_gap_m = None
+        frozen_target_odom = None
         if not fine_table:
             self.run_deadline_s = None
         while True:
             final_depth_measurement = False
+            confirmation_basis = 'pre_approach_surface'
             if surface_mode == 'table_edge':
                 try:
                     target = self.observe_target(
@@ -1079,14 +1122,26 @@ class BoxServiceRoute(ServiceRoute):
                         region_xy, region_radius_m)
                 except (BoxObservationUnavailable, RuntimeError, ValueError) as error:
                     reason = getattr(error, 'reason', None) or str(error) or type(error).__name__
-                    self.emit('failed', phase='final_depth_measurement', reason=reason,
-                              final_depth_measurement=False)
-                    return False
-                final_depth_measurement = True
-                self.last_box_face = {
-                    'face_center_map_xy_m': list(target['face_center_map_xy_m']),
-                    'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
-            actual, _ = self.capture_stationary_pose()
+                    if (not fine_table or straight_to_odom is None
+                            or not self._fresh_table_edge_occlusion(error)):
+                        self.emit('failed', phase='final_depth_measurement', reason=reason,
+                                  final_depth_measurement=False)
+                        return False
+                    confirmation_basis = 'frozen_table_edge_odom_stop'
+                    self.emit(
+                        'final_table_edge_occluded', reason=reason,
+                        fresh_frames=error.fresh_frames,
+                        confirmation_basis=confirmation_basis,
+                        physical_accuracy='NOT_EXTERNALLY_MEASURED')
+                else:
+                    final_depth_measurement = True
+                    frozen_target_odom = None
+                    confirmation_basis = 'fresh_depth_table_edge'
+                    self.last_box_face = {
+                        'face_center_map_xy_m': list(target['face_center_map_xy_m']),
+                        'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
+            parked, _ = self.capture_stationary_pose()
+            actual = parked
             outward = target['outward_normal_map_xy']
             face = target['face_center_map_xy_m']
             target_yaw = target['yaw_rad']
@@ -1098,6 +1153,12 @@ class BoxServiceRoute(ServiceRoute):
                 tip_x, tip_y, _ = straight_to_odom(face[0] + outward[0], face[1] + outward[1], 0.0)
                 face, outward = (face_x, face_y), (tip_x - face_x, tip_y - face_y)
                 target_yaw = straight_to_odom(0.0, 0.0, target_yaw)[2]
+                frozen_target_odom = {
+                    **target,
+                    'face_center_map_xy_m': face,
+                    'outward_normal_map_xy': outward,
+                    'yaw_rad': target_yaw,
+                }
                 actual = self._odom_pose()
             front = (actual[0] + front_extent_m * math.cos(actual[2]),
                      actual[1] + front_extent_m * math.sin(actual[2]))
@@ -1142,12 +1203,21 @@ class BoxServiceRoute(ServiceRoute):
                 # The dwell holds the confirmed stop where it is (map pose at rest).
                 self.selected_pose = {'id': 'final_approach', 'x_m': parked[0],
                                       'y_m': parked[1], 'yaw_rad': parked[2]}
+                if confirmation_basis == 'frozen_table_edge_odom_stop':
+                    self.last_box_face = {
+                        'reference_frame': 'odom',
+                        'face_center_xy_m': list(face),
+                        'outward_normal_xy': list(outward),
+                    }
             self.emit('box_approach_finished' if gap_confirmed else 'box_gap_not_confirmed',
                       estimated_front_gap_m=estimated_gap_m,
                       estimated_front_corner_gaps_m=corner_gaps,
                       estimated_nearest_front_gap_m=nearest_gap_m,
                       estimated_face_yaw_error_rad=yaw_error,
                       gap_confirmation_basis=gap_confirmation_basis,
+                      confirmation_basis=confirmation_basis,
+                      internal_estimate_only=(
+                          confirmation_basis == 'frozen_table_edge_odom_stop'),
                       allowed_face_yaw_error_rad=allowed_yaw_error_rad,
                       desired_front_gap_m=target_gap_m, confirmation=self.confirmation,
                       physical_accuracy='NOT_EXTERNALLY_MEASURED',
@@ -1177,11 +1247,28 @@ class BoxServiceRoute(ServiceRoute):
                       estimated_front_corner_gaps_m=corner_gaps,
                       target_front_gap_m=target_gap_m)
             self._final_failure_reported = False
-            approached, straight_to_odom = self._straight_final_approach(target, front_extent_m)
+            if confirmation_basis == 'frozen_table_edge_odom_stop':
+                approached, straight_to_odom = self._zero_turn_final_approach(
+                    frozen_target_odom, front_extent_m, allow_trim=False,
+                    frozen_to_odom=straight_to_odom)
+            else:
+                approached, straight_to_odom = self._straight_final_approach(
+                    target, front_extent_m)
             if not approached:
                 if not self._final_failure_reported:
                     self.emit('failed', phase='final_approach', reason='nav2_or_stop_confirmation')
                 return False
+
+    def _fresh_table_edge_occlusion(self, error):
+        """Recognize a healthy depth stream whose table edge is hidden at close range."""
+        return (isinstance(error, BoxObservationUnavailable)
+                and error.reason == 'stable detected table_edge surface is required'
+                and error.retryable and not error.latency_limited
+                and not error.latency_reasons
+                and isinstance(error.required_fresh_frames, int)
+                and error.required_fresh_frames >= 1
+                and error.fresh_frames >= error.required_fresh_frames
+                and error.fresh_rejection_reasons == {'no_table_edge_candidate'})
 
     def _final_gap_m(self):
         """Front gap the final approach closes to: --final-gap-m, else the contract."""
@@ -1199,10 +1286,10 @@ class BoxServiceRoute(ServiceRoute):
 
     def _straight_final_approach(self, target, front_extent_m):
         """Run the configured final approach: Parking along a held path, or zero turn."""
+        if (getattr(self, 'surface_mode', 'front') == 'table_edge'
+                and self._final_gap_m() <= 0.01):
+            return self._table_fine_approach(target, front_extent_m)
         if getattr(self, 'zero_turn_final', False):
-            if (getattr(self, 'surface_mode', 'front') == 'table_edge'
-                    and self._final_gap_m() <= 0.01):
-                return self._table_fine_approach(target, front_extent_m)
             return self._zero_turn_final_approach(target, front_extent_m)
         return self._parking_final_approach(target, front_extent_m)
 
@@ -1240,14 +1327,15 @@ class BoxServiceRoute(ServiceRoute):
             self._fail_final('final_trim_interrupted')
             return False, None
         reached, to_odom = self._zero_turn_final_approach(
-            target, front_extent_m, reobserve=reobserve)
+            target, front_extent_m, allow_trim=False)
         self.last_box_face = {
             'face_center_map_xy_m': list(target['face_center_map_xy_m']),
             'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
         return reached, to_odom
 
     def _zero_turn_final_approach(self, target, front_extent_m, *, gap_m=None,
-                                  reobserve=None, realign_attempt=0):
+                                  reobserve=None, realign_attempt=0, allow_trim=True,
+                                  frozen_to_odom=None):
         """
         Turn out the residual to the re-observed face in place, then close the gap straight.
 
@@ -1260,6 +1348,18 @@ class BoxServiceRoute(ServiceRoute):
         actual, _ = self.capture_stationary_pose()
         face = target['face_center_map_xy_m']
         outward = target['outward_normal_map_xy']
+        to_odom = None
+        if not allow_trim:
+            to_odom = frozen_to_odom
+            if to_odom is None:
+                anchor = RosPath()
+                _anchor_in_odom, to_odom = self._frozen_in_odom(anchor)
+                face_x, face_y, _ = to_odom(face[0], face[1], 0.0)
+                tip_x, tip_y, _ = to_odom(
+                    face[0] + outward[0], face[1] + outward[1], 0.0)
+                face = (face_x, face_y)
+                outward = (tip_x - face_x, tip_y - face_y)
+            actual = self._odom_pose()
         face_heading = math.atan2(-outward[1], -outward[0])
         residual = math.atan2(math.sin(face_heading - actual[2]),
                               math.cos(face_heading - actual[2]))
@@ -1269,7 +1369,7 @@ class BoxServiceRoute(ServiceRoute):
             return False, None
         turned = 0.0
         trimmed = False
-        if abs(residual) >= FINAL_TRIM_MIN_RAD:
+        if allow_trim and abs(residual) >= FINAL_TRIM_MIN_RAD:
             remaining_rad = residual
             trim_attempts = (3 if getattr(self, 'surface_mode', 'front') == 'table_edge'
                              and self._final_gap_m() <= 0.01 else 1)
@@ -1324,13 +1424,15 @@ class BoxServiceRoute(ServiceRoute):
                         return False, None
                     return self._zero_turn_final_approach(
                         target, front_extent_m, gap_m=gap_m, reobserve=reobserve,
-                        realign_attempt=realign_attempt + 1)
+                        realign_attempt=realign_attempt + 1, allow_trim=allow_trim,
+                        frozen_to_odom=frozen_to_odom)
                 if abs(observed_residual) > min(
                         self.parking_contract['yaw_tolerance_rad'], FINAL_HEADING_TRIM_RAD):
                     self._fail_final('table_alignment_not_converged',
                                      residual_deg=math.degrees(observed_residual))
                     return False, None
-        # Logged against the face in map; the trim itself was judged in odom.
+        # The last table leg is already frozen in odom; other trims are logged
+        # against the current map face after their odom-judged rotation.
         after = math.atan2(math.sin(face_heading - actual[2]),
                            math.cos(face_heading - actual[2]))
         # The trim was judged in odom; a map heading this far off means AMCL moved.
@@ -1353,15 +1455,18 @@ class BoxServiceRoute(ServiceRoute):
                 or not self._navigation_ready(require_fresh_amcl=False)):
             self._fail_final('final_trim_interrupted')
             return False, None
-        steps = int(math.ceil(travel_m / 0.05)) + 1
-        heading = actual[2]
-        path = RosPath()
-        path.poses = [self._pose(0, {'x': actual[0] + travel_m * k / steps * math.cos(heading),
-                                     'y': actual[1] + travel_m * k / steps * math.sin(heading),
-                                     'yaw': heading}) for k in range(steps + 1)]
-        path.header = path.poses[0].header
-        _odom_path, to_odom = self._frozen_in_odom(path)
-        self.emit('final_approach_straight', travel_m=travel_m, heading_basis='trimmed',
+        if to_odom is None:
+            steps = int(math.ceil(travel_m / 0.05)) + 1
+            heading = actual[2]
+            path = RosPath()
+            path.poses = [self._pose(
+                0, {'x': actual[0] + travel_m * k / steps * math.cos(heading),
+                    'y': actual[1] + travel_m * k / steps * math.sin(heading),
+                    'yaw': heading}) for k in range(steps + 1)]
+            path.header = path.poses[0].header
+            _odom_path, to_odom = self._frozen_in_odom(path)
+        self.emit('final_approach_straight', travel_m=travel_m,
+                  heading_basis='trimmed' if allow_trim else 'frozen_odom',
                   controller_id='zero_turn', target_front_gap_m=requested_gap_m)
         if getattr(self, 'surface_mode', 'front') == 'table_edge' and self._final_gap_m() <= 0.01:
             travelled_m = self._drive_zero_turn(travel_m, precision=True, hold_heading=True)
@@ -1469,9 +1574,26 @@ class BoxServiceRoute(ServiceRoute):
                 and self._reverse_smoother_ready()):
             self.emit('failed', phase='box_escape', reason='box_escape_unavailable')
             return False
-        center = face['face_center_map_xy_m']
-        outward = face['outward_normal_map_xy']
-        actual, _ = self.capture_stationary_pose()
+        reference_frame = face.get('reference_frame', 'map')
+        actual_map, _ = self.capture_stationary_pose()
+        if reference_frame == 'odom':
+            center = face.get('face_center_xy_m')
+            outward = face.get('outward_normal_xy')
+            actual = self._odom_pose()
+        elif reference_frame == 'map':
+            center = face.get('face_center_map_xy_m')
+            outward = face.get('outward_normal_map_xy')
+            actual = actual_map
+        else:
+            center = outward = None
+            actual = actual_map
+        if (not isinstance(center, (tuple, list)) or len(center) != 2
+                or not isinstance(outward, (tuple, list)) or len(outward) != 2
+                or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                           and math.isfinite(value) for value in (*center, *outward))):
+            self.emit('failed', phase='box_escape', reason='box_escape_unavailable',
+                      detail='face_reference_invalid')
+            return False
         distance_m = sum((actual[i] - center[i]) * outward[i] for i in (0, 1))
         clear_m = ESCAPE_CLEARANCE_M - ESCAPE_PATH_CONTRACT['xy_tolerance_m']
         if math.isfinite(distance_m) and distance_m >= clear_m:
@@ -1492,8 +1614,16 @@ class BoxServiceRoute(ServiceRoute):
                       face_heading_cos=self._json_scalar(facing))
             return False
         length_m = ESCAPE_CLEARANCE_M - distance_m
-        target = (actual[0] - length_m * math.cos(actual[2]),
-                  actual[1] - length_m * math.sin(actual[2]), actual[2])
+        target_reference = (actual[0] - length_m * math.cos(actual[2]),
+                            actual[1] - length_m * math.sin(actual[2]), actual[2])
+        if reference_frame == 'odom':
+            turn = actual_map[2] - actual[2]
+            dx, dy = target_reference[0] - actual[0], target_reference[1] - actual[1]
+            target = (actual_map[0] + math.cos(turn) * dx - math.sin(turn) * dy,
+                      actual_map[1] + math.sin(turn) * dx + math.cos(turn) * dy,
+                      actual_map[2])
+        else:
+            target = target_reference
         saved = (self.config, self.waypoints)
         self.config = {'frame_id': 'map', 'waypoints': [
             {'id': 'box_escape', 'x': target[0], 'y': target[1], 'yaw': target[2]}]}
@@ -1501,7 +1631,7 @@ class BoxServiceRoute(ServiceRoute):
         failure = 'box_escape_unavailable'
         try:
             path = self._make_reverse_path(
-                actual, target, path_contract=ESCAPE_PATH_CONTRACT)
+                actual_map, target, path_contract=ESCAPE_PATH_CONTRACT)
             if not self._reverse_path_valid(
                     path, validate_from_m=ESCAPE_VALIDATION_EXCLUDE_M):
                 self.emit('failed', phase='box_escape', reason='box_escape_blocked')
@@ -1529,9 +1659,14 @@ class BoxServiceRoute(ServiceRoute):
         position_error_m, yaw_error_rad = pose_errors(target, after)
         # The reverse ran in odom, so its clearance is judged there too: AMCL
         # read 0.5146 m after an odom-straight escape Nav2 completed (2026-09-30).
-        face_x, face_y, _ = to_odom(center[0], center[1], 0.0)
-        tip_x, tip_y, _ = to_odom(center[0] + outward[0], center[1] + outward[1], 0.0)
         odom_x, odom_y, _ = self._odom_pose()
+        if reference_frame == 'odom':
+            face_x, face_y = center
+            tip_x, tip_y = center[0] + outward[0], center[1] + outward[1]
+        else:
+            face_x, face_y, _ = to_odom(center[0], center[1], 0.0)
+            tip_x, tip_y, _ = to_odom(
+                center[0] + outward[0], center[1] + outward[1], 0.0)
         distance_m = ((odom_x - face_x) * (tip_x - face_x)
                       + (odom_y - face_y) * (tip_y - face_y))
         # The escape only has to give the next rotation room: confirm the face

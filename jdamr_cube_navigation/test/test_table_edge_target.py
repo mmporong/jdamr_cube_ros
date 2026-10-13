@@ -1,11 +1,11 @@
 """Tests for table-edge docking target geometry."""
 
-import math
 from copy import deepcopy
+import math
 
 from jdamr_cube_navigation.table_edge_target import (
-    PROVENANCE,
     compute_table_edge_docking_target,
+    PROVENANCE,
 )
 
 import pytest

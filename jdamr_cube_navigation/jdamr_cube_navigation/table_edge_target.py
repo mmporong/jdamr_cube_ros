@@ -3,13 +3,13 @@
 import math
 
 from .box_docking_target import (
-    MAXIMUM_OBSERVATION_AGE_S,
     _finite_fields,
     _finite_number,
     _normalize_angle,
     _rotate_rpy,
     _rotate_xy,
     _validated_mount,
+    MAXIMUM_OBSERVATION_AGE_S,
 )
 
 

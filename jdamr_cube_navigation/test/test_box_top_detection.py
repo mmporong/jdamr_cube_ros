@@ -5,12 +5,12 @@ import math
 from pathlib import Path
 
 from jdamr_cube_navigation.box_top_detection import (
+    _normal_is_valid,
     BoxTopConfig,
     CameraIntrinsics,
     detect_box_front,
     detect_box_top,
     DetectionStability,
-    _normal_is_valid,
 )
 import numpy as np
 import pytest

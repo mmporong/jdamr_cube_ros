@@ -17,6 +17,7 @@ from jdamr_cube_navigation.box_service import BoxServiceRoute, parse_args
 from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
 from nav2_msgs.action import ComputePathThroughPoses
+from nav_msgs.msg import Path as RosPath
 import pytest
 from rcl_interfaces.msg import SetParametersResult
 from rcl_interfaces.srv import SetParametersAtomically
@@ -175,6 +176,121 @@ def test_table_edge_final_depth_observation_failure_has_no_success(mission):
     assert not any(call.args == ('box_approach_finished',)
                    for call in mission.emit.call_args_list)
     assert mission.observe_target.call_count == 3
+
+
+def test_one_centimetre_table_uses_frozen_face_when_fresh_depth_is_occluded(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.observer_stable_frames = 8
+    target = _table_edge_final_target(1.0)
+    mission.observe_target.side_effect = [
+        target,
+        target,
+        box_service.BoxObservationUnavailable(
+            'stable detected table_edge surface is required', retryable=True,
+            fresh_frames=8, required_fresh_frames=8,
+            fresh_rejection_reasons={'no_table_edge_candidate'}),
+    ]
+    mission._straight_final_approach.return_value = (
+        True, lambda x, y, yaw: (x, y, yaw))
+    mission.capture_stationary_pose.side_effect = [
+        ((0.0, 0.0, 0.0), {}), ((0.925, 0.0, 0.0), {})]
+    mission._odom_pose = Mock(return_value=(0.925, 0.0, 0.0))
+
+    assert invoke(mission)
+
+    result = mission.emit.call_args
+    assert result.args == ('box_approach_finished',)
+    assert result.kwargs['confirmation_basis'] == 'frozen_table_edge_odom_stop'
+    assert result.kwargs['internal_estimate_only'] is True
+    assert result.kwargs['final_depth_measurement'] is False
+    assert result.kwargs['physical_accuracy'] == 'NOT_EXTERNALLY_MEASURED'
+    assert mission.last_box_face == {
+        'reference_frame': 'odom',
+        'face_center_xy_m': [1.0, 0.0],
+        'outward_normal_xy': [-1.0, 0.0],
+    }
+
+
+def test_occluded_five_millimetre_correction_reuses_original_odom_face(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(3.0)}
+    target = _table_edge_final_target(1.0)
+
+    def occluded():
+        return box_service.BoxObservationUnavailable(
+            'stable detected table_edge surface is required', retryable=True,
+            fresh_frames=8, required_fresh_frames=8,
+            fresh_rejection_reasons={'no_table_edge_candidate'})
+    mission.observe_target.side_effect = [target, target, occluded(), occluded()]
+    turn = math.radians(30.0)
+
+    def original_to_odom(x, y, yaw):
+        return (2.0 + math.cos(turn) * x - math.sin(turn) * y,
+                -1.0 + math.sin(turn) * x + math.cos(turn) * y,
+                yaw + turn)
+
+    mission._straight_final_approach.return_value = (True, original_to_odom)
+    mission.capture_stationary_pose.side_effect = [
+        ((0.0, 0.0, 0.0), {}),
+        ((20.0, -10.0, math.radians(25.0)), {}),
+        ((20.02, -10.01, math.radians(17.0)), {}),
+        ((19.98, -9.99, math.radians(12.0)), {}),
+    ]
+    face_x, face_y, _ = original_to_odom(1.0, 0.0, 0.0)
+    outward = (-math.cos(turn), -math.sin(turn))
+
+    def odom_pose(gap_m):
+        centre_distance_m = 0.065 + gap_m
+        return (face_x + outward[0] * centre_distance_m,
+                face_y + outward[1] * centre_distance_m, turn)
+
+    mission._odom_pose = Mock(side_effect=[
+        odom_pose(0.015), odom_pose(0.015), odom_pose(0.010)])
+    mission._drive_zero_turn = Mock(return_value=0.005)
+    mission._frozen_in_odom = Mock(
+        side_effect=AssertionError('correction re-froze the stale map face'))
+
+    assert invoke(mission)
+
+    mission._straight_final_approach.assert_called_once()
+    mission._frozen_in_odom.assert_not_called()
+    mission._drive_zero_turn.assert_called_once_with(
+        pytest.approx(0.005), precision=True, hold_heading=True)
+    result = mission.emit.call_args
+    assert result.args == ('box_approach_finished',)
+    assert result.kwargs['estimated_nearest_front_gap_m'] == pytest.approx(0.01)
+    assert result.kwargs['confirmation_basis'] == 'frozen_table_edge_odom_stop'
+
+
+@pytest.mark.parametrize(
+    'kwargs', [
+        {'latency_limited': True, 'fresh_frames': 8,
+         'fresh_rejection_reasons': {'no_table_edge_candidate'}},
+        {'fresh_frames': 7, 'fresh_rejection_reasons': {'no_table_edge_candidate'}},
+        {'fresh_frames': 8, 'fresh_rejection_reasons': {'no_table_edge_candidate'},
+         'latency_reasons': {'observer_silent'}},
+        {'fresh_frames': 8, 'fresh_rejection_reasons': {'stale_or_future_depth'}},
+    ])
+def test_one_centimetre_table_never_uses_odom_for_unhealthy_depth(mission, kwargs):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.observer_stable_frames = 8
+    target = _table_edge_final_target(1.0)
+    mission.observe_target.side_effect = [
+        target,
+        target,
+        box_service.BoxObservationUnavailable(
+            'stable detected table_edge surface is required', retryable=True,
+            required_fresh_frames=8, **kwargs),
+    ]
+    mission._straight_final_approach.return_value = (
+        True, lambda x, y, yaw: (x, y, yaw))
+
+    assert not invoke(mission)
+    assert mission.emit.call_args.args == ('failed',)
+    assert mission.emit.call_args.kwargs['phase'] == 'final_depth_measurement'
 
 
 def test_transit_failure_never_observes_or_dispatches_alignment(mission):
@@ -658,6 +774,7 @@ def _observer_node(monkeypatch, *, scan=True, observation_stamp=10.1):
     node._guard_failure = Mock(return_value=None)
     node.emit = Mock()
     node._configure_observer = Mock(return_value=True)
+    node._observer_stable_frame_quorum = Mock(return_value=8)
     node.box_geometry = yaml.safe_load(GEOMETRY.read_text())
     node.box_status = {
         'frame_id': 'camera_color_optical_frame',
@@ -834,6 +951,81 @@ def test_table_edge_target_succeeds_without_lidar_face(monkeypatch):
                 if call.args == ('box_target_observed',)]
     assert observed[-1].kwargs['target_basis'] == 'tabletop_front_edge'
     assert observed[-1].kwargs['lidar_face_fusion'] is False
+
+
+def test_table_edge_observer_reports_fresh_close_occlusion_frames(monkeypatch):
+    node = _observer_node(monkeypatch, scan=False)
+    node.surface_mode = 'table_edge'
+    node.observer_stable_frames = 8
+    node.box_status.update(
+        detected=False, stable=False, surface_kind=None,
+        reason='no_table_edge_candidate')
+    monkeypatch.setattr(
+        box_service, 'compute_table_edge_docking_target',
+        Mock(side_effect=ValueError(
+            'stable detected table_edge surface is required')))
+    frames = iter(range(8))
+
+    def spin(*_args, **_kwargs):
+        try:
+            frame = next(frames)
+        except StopIteration:
+            node.stop_requested = True
+            return
+        node.box_status['stamp_s'] = 10.1 + frame * 0.01
+
+    monkeypatch.setattr(box_service.rclpy, 'spin_once', spin)
+    clock_values = iter([10.0] + [10.2] * 8)
+    node.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=int(next(clock_values) * 1e9)))
+
+    with pytest.raises(box_service.BoxObservationUnavailable) as caught:
+        node.observe_target({}, 0.065, 0.01, (0.5, 0.0), 0.6)
+
+    error = caught.value
+    assert error.reason == 'stable detected table_edge surface is required'
+    assert error.fresh_frames == 8
+    assert error.required_fresh_frames == 8
+    assert error.fresh_rejection_reasons == {'no_table_edge_candidate'}
+    assert not error.latency_reasons
+
+
+@pytest.mark.parametrize(
+    'yaml_frames,runtime_frames,fresh_frames,accepted',
+    [(8, 4, 4, True), (4, 8, 4, False)])
+def test_close_occlusion_uses_runtime_observer_quorum(
+        monkeypatch, yaml_frames, runtime_frames, fresh_frames, accepted):
+    client = Mock()
+    client.wait_for_services.return_value = True
+    client.get_parameters.return_value = 'future'
+    node = object.__new__(BoxServiceRoute)
+    node.observer_stable_frames = yaml_frames
+    node.observer_parameters = client
+    node._wait = Mock(return_value=SimpleNamespace(values=[runtime_frames]))
+    monkeypatch.setattr(box_service, 'parameter_value_to_python', lambda value: value)
+
+    quorum = node._observer_stable_frame_quorum()
+    error = box_service.BoxObservationUnavailable(
+        'stable detected table_edge surface is required', retryable=True,
+        fresh_frames=fresh_frames, required_fresh_frames=quorum,
+        fresh_rejection_reasons={'no_table_edge_candidate'})
+
+    assert node._fresh_table_edge_occlusion(error) is accepted
+    client.get_parameters.assert_called_once_with(['stable_frames'])
+
+
+def test_close_occlusion_is_blocked_when_observer_parameter_service_is_down():
+    client = Mock()
+    client.wait_for_services.return_value = False
+    node = object.__new__(BoxServiceRoute)
+    node.observer_parameters = client
+    error = box_service.BoxObservationUnavailable(
+        'stable detected table_edge surface is required', retryable=True,
+        fresh_frames=8, required_fresh_frames=node._observer_stable_frame_quorum(),
+        fresh_rejection_reasons={'no_table_edge_candidate'})
+
+    assert not node._fresh_table_edge_occlusion(error)
+    client.get_parameters.assert_not_called()
 
 
 def test_table_edge_observer_parameter_failure_blocks_before_consuming_status(monkeypatch):
@@ -2082,7 +2274,93 @@ def test_table_fine_approach_reobserves_at_visible_stage_without_retreat(start_x
     assert node.observe_target.call_count == len(stages) - 1
     if len(stages) > 1:
         assert calls[-1][0]['face_center_map_xy_m'] == (1.01, 0.0)
-    assert all(callable(item[2]['reobserve']) for item in calls)
+        assert callable(calls[0][2]['reobserve'])
+    assert calls[-1][2] == {'allow_trim': False}
+
+
+def test_default_parking_routes_one_centimetre_table_to_precision_approach():
+    node = object.__new__(BoxServiceRoute)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.zero_turn_final = False
+    node._table_fine_approach = Mock(return_value=(True, 'odom'))
+    node._parking_final_approach = Mock()
+    target = _table_edge_final_target(1.0)
+
+    assert node._straight_final_approach(target, 0.065) == (True, 'odom')
+    node._table_fine_approach.assert_called_once_with(target, 0.065)
+    node._parking_final_approach.assert_not_called()
+
+
+def test_final_table_leg_freezes_face_before_computing_distance():
+    node = object.__new__(BoxServiceRoute)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.parking_contract = {'yaw_tolerance_rad': math.radians(3.0)}
+    node.box_front_half_width_m = 0.225
+    node.stop_requested = False
+    node._navigation_ready = Mock(return_value=True)
+    node._operator_link_ready = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(return_value=((10.0, 0.0, 0.0), {}))
+    node._odom_pose = Mock(return_value=(0.924, 0.0, 0.0))
+    node._pose = Mock(return_value=PoseStamped())
+    node._frozen_in_odom = Mock(return_value=(RosPath(), lambda x, y, yaw: (x - 10.0, y, yaw)))
+    node._drive_zero_turn = Mock(return_value=0.001)
+    node.emit = Mock()
+
+    reached, to_odom = node._zero_turn_final_approach(
+        _table_edge_final_target(11.0), 0.065, allow_trim=False)
+
+    assert reached
+    assert callable(to_odom)
+    node._frozen_in_odom.assert_called_once()
+    node._drive_zero_turn.assert_called_once_with(
+        pytest.approx(0.001), precision=True, hold_heading=True)
+
+
+def test_occluded_table_escape_keeps_frozen_odom_face_after_amcl_shift():
+    node = object.__new__(BoxServiceRoute)
+    node.last_box_face = {
+        'reference_frame': 'odom',
+        'face_center_xy_m': [1.0, 0.0],
+        'outward_normal_xy': [-1.0, 0.0],
+    }
+    node.stop_requested = False
+    node.config = {'frame_id': 'map', 'waypoints': []}
+    node.waypoints = node.config['waypoints']
+    node._parking_parameters_ready = Mock(return_value=True)
+    node._reverse_smoother_ready = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((0.980, 0.0, 0.0), {}),
+        ((0.555, 0.0, 0.0), {}),
+    ])
+    node._odom_pose = Mock(side_effect=[
+        (0.920, 0.0, 0.0),
+        (0.495, 0.0, 0.0),
+    ])
+    node._make_reverse_path = Mock(return_value=RosPath())
+    node._reverse_path_valid = Mock(return_value=True)
+
+    def stale_map_face_transform(*_args):
+        raise AssertionError('escape transformed the frozen odom face through current map')
+
+    node._frozen_in_odom = Mock(
+        return_value=(RosPath(), stale_map_face_transform))
+    node._execute_reverse_path = Mock(return_value=True)
+    node.emit = Mock()
+
+    assert not node._leave_parked_pose()
+
+    start, target = node._make_reverse_path.call_args.args
+    assert start == pytest.approx((0.980, 0.0, 0.0))
+    assert target == pytest.approx((0.495, 0.0, 0.0))
+    assert start[0] - target[0] == pytest.approx(0.485)
+    result = node.emit.call_args
+    assert result.args == ('failed',)
+    assert result.kwargs['reason'] == 'box_escape_not_confirmed'
+    assert result.kwargs['face_distance_m'] == pytest.approx(0.505)
+    assert result.kwargs['face_distance_m'] < 0.515
+    assert node.last_box_face['reference_frame'] == 'odom'
 
 
 def test_table_fine_approach_never_closes_final_leg_after_stage_observation_loss():

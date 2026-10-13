@@ -63,7 +63,7 @@ def env(tmp_path, monkeypatch):
 def go_args(**extra):
     base = dict(table_id='table_02', route=None, region=None, via_route=None, skip_via=False,
                 resume_at_observation=False, resume_parked_log=None, dock_only=False, graceful_final=False,
-                rpp_transit=False)
+                rpp_transit=False, record_diagnostics=False)
     base.update(extra)
     return SimpleNamespace(**base)
 
@@ -342,9 +342,36 @@ def test_go_hands_the_run_to_the_resident_executor(env, monkeypatch):
     argv = json.loads(request)['argv']
     assert argv[argv.index('--table-id') + 1] == 'table_02'
     assert not any('systemd-run --unit=jdamr-table-cycle' in c for c in pi.calls)
-    assert d.load_state()['last_unit'].startswith('executor:')
+    assert not any(name in command for command in pi.calls for name in (
+        'jdamr-onboard-bag-', 'jdamr-udp-drops-', 'jdamr-load-profile-'))
+    state = d.load_state()
+    assert state['last_unit'].startswith('executor:')
+    assert 'onboard_bag_unit' not in state and 'monitor_units' not in state
     d.cmd_stop(SimpleNamespace())
     assert f'sudo -n systemctl kill --signal=SIGINT {d.EXECUTOR_UNIT}' in pi.calls
+
+
+def test_default_run_interruption_does_not_stop_or_copy_unstarted_diagnostics(
+        env, monkeypatch):
+    pi = ExecutorPi()
+    copies = []
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'sh', lambda command, **_kwargs: copies.append(command) or
+                        SimpleNamespace(returncode=0, stdout=''))
+
+    def interrupted(_path):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(d, 'read_events', interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        d.run_cycle(go_args(), d.load_state(), 'table_02')
+
+    assert not any(name in command for command in pi.calls for name in (
+        'jdamr-onboard-bag-', 'jdamr-udp-drops-', 'jdamr-load-profile-',
+        'ros2 bag reindex'))
+    assert not any(command.startswith('rsync ') for command in copies)
+    state = d.load_state()
+    assert 'onboard_bag_unit' not in state and 'monitor_units' not in state
 
 
 def test_onboard_bag_brackets_the_run_and_is_copied(env, monkeypatch):
@@ -354,7 +381,7 @@ def test_onboard_bag_brackets_the_run_and_is_copied(env, monkeypatch):
     monkeypatch.setattr(d, 'sh', lambda command, **k: copies.append(command) or
                         SimpleNamespace(returncode=0, stdout=''))
     monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
-    d.run_cycle(go_args(), d.load_state(), 'table_02')
+    d.run_cycle(go_args(record_diagnostics=True), d.load_state(), 'table_02')
     start = next(i for i, c in enumerate(pi.calls) if 'systemd-run --unit=jdamr-onboard-bag-' in c)
     request = next(i for i, c in enumerate(pi.calls) if c.endswith('.request'))
     assert start < request
@@ -377,7 +404,7 @@ def test_onboard_bag_is_closed_when_the_run_is_interrupted(env, monkeypatch):
         raise KeyboardInterrupt
     monkeypatch.setattr(d, 'read_events', interrupted)
     with pytest.raises(KeyboardInterrupt):
-        d.run_cycle(go_args(), d.load_state(), 'table_02')
+        d.run_cycle(go_args(record_diagnostics=True), d.load_state(), 'table_02')
     assert any(c.startswith('sudo -n systemctl stop jdamr-onboard-bag-') for c in pi.calls)
     assert 'onboard_bag_unit' not in d.load_state()
 
@@ -629,7 +656,7 @@ def test_go_profiles_the_pi_load_and_stops_the_profiler_at_the_end(env, monkeypa
     pi = ExecutorPi()
     monkeypatch.setattr(d, 'pi', pi)
     monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
-    d.run_cycle(go_args(), d.load_state(), 'table_02')
+    d.run_cycle(go_args(record_diagnostics=True), d.load_state(), 'table_02')
     start = next(c for c in pi.calls if 'systemd-run --unit=jdamr-load-profile-' in c)
     assert 'RuntimeMaxSec=' in start and 'MemoryMax=' in start and 'load_profile.jsonl' in start
     unit = start.split('--unit=')[1].split()[0]
@@ -645,7 +672,7 @@ def test_monitor_units_are_stopped_when_the_run_is_interrupted(env, monkeypatch)
         raise KeyboardInterrupt
     monkeypatch.setattr(d, 'read_events', interrupted)
     with pytest.raises(KeyboardInterrupt):
-        d.run_cycle(go_args(), d.load_state(), 'table_02')
+        d.run_cycle(go_args(record_diagnostics=True), d.load_state(), 'table_02')
     stop = next(c for c in pi.calls if c.startswith('sudo -n systemctl stop jdamr-udp-drops-'))
     assert 'jdamr-load-profile-' in stop
     assert 'monitor_units' not in d.load_state()
@@ -686,7 +713,7 @@ def test_a_failing_monitor_start_does_not_end_run_tracking(env, monkeypatch):
     def broken(_run_dir, _run):
         raise OSError('script missing')
     monkeypatch.setattr(d, 'start_drop_monitor', broken)
-    events = d.run_cycle(go_args(), d.load_state(), 'table_02')
+    events = d.run_cycle(go_args(record_diagnostics=True), d.load_state(), 'table_02')
     assert events == [{'event': 'home_arrived'}]
     assert any(c.startswith('sudo -n systemctl stop jdamr-udp-drops-') for c in pi.calls)
 

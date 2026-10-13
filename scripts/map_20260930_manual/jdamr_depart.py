@@ -710,14 +710,16 @@ def run_cycle(args, state, table_id):
     run_dir = P2 / 'runs' / f'{table_id}_{run}'
     run_dir.mkdir(parents=True)
     pi(f'mkdir -p {shlex.quote(str(run_dir))}')
-    # Before the request: the executor needs ~10 s to move, so the bag holds a still
-    # stretch for the gyro bias and no departure time is spent waiting on it.
-    bag_unit = start_onboard_bag(run_dir, run)
-    early = load_state()
-    monitors = monitor_units(run)
-    early.update({'onboard_bag_unit': bag_unit, 'onboard_bag_run': str(run_dir),
-                  'monitor_units': monitors})
-    save_state(early)
+    record_diagnostics = getattr(args, 'record_diagnostics', False)
+    bag_unit, monitors = None, None
+    if record_diagnostics:
+        # Start before the request so the bag includes the still pre-departure stretch.
+        bag_unit = start_onboard_bag(run_dir, run)
+        monitors = monitor_units(run)
+        early = load_state()
+        early.update({'onboard_bag_unit': bag_unit, 'onboard_bag_run': str(run_dir),
+                      'monitor_units': monitors})
+        save_state(early)
     try:
         unit = f'jdamr-table-cycle-{run.replace("_", "-")}'
         route_suffix = '' if include_via else '_direct'
@@ -780,10 +782,11 @@ def run_cycle(args, state, table_id):
         fresh = load_state()
         fresh.update({'last_unit': unit, 'last_run': str(run_dir)})
         save_state(fresh)
-        try:
-            start_drop_monitor(run_dir, run)
-        except Exception as error:  # diagnostics must not end run tracking mid-drive
-            log(f'monitor start failed ({error}); the run continues without it')
+        if record_diagnostics:
+            try:
+                start_drop_monitor(run_dir, run)
+            except Exception as error:  # diagnostics must not end run tracking mid-drive
+                log(f'monitor start failed ({error}); the run continues without it')
         stops = ('dock only' if args.dock_only else
                  f'{VIA_ID} -> {table_id}' if include_via else f'{table_id}')
         alerts = 'on' if load_state().get('operator_alerts', True) is not False else 'off'
@@ -793,7 +796,8 @@ def run_cycle(args, state, table_id):
         while True:
             time.sleep(10)
             # The recorder needs ~13 s to subscribe on a loaded Pi (2026-10-01).
-            if not bag_checked and time.monotonic() - departed_s >= ONBOARD_BAG_CHECK_S:
+            if (record_diagnostics and not bag_checked
+                    and time.monotonic() - departed_s >= ONBOARD_BAG_CHECK_S):
                 bag_checked = True
                 log('onboard bag: ' + (onboard_bag_bytes(run_dir) or 'nothing written yet'))
             events = read_events(str(run_dir / 'cycle_events.jsonl'))
@@ -820,15 +824,17 @@ def run_cycle(args, state, table_id):
                 final = read_events(str(run_dir / 'cycle_events.jsonl'))
                 for event in final[seen:]:
                     show_event(event)
-                stop_monitors(monitors)
-                finish_onboard_bag(bag_unit, run_dir)
+                if record_diagnostics:
+                    stop_monitors(monitors)
+                    finish_onboard_bag(bag_unit, run_dir)
                 return final
     except BaseException:
         # Ctrl-C, ssh or request failures: close and copy what was recorded.
-        try:
-            stop_monitors(monitors)
-        finally:
-            finish_onboard_bag(bag_unit, run_dir)
+        if record_diagnostics:
+            try:
+                stop_monitors(monitors)
+            finally:
+                finish_onboard_bag(bag_unit, run_dir)
         raise
 
 
@@ -1211,6 +1217,8 @@ def main():
                          'box parking contract target)')
     go.add_argument('--dwell-s', type=float,
                     help='held stop at each box (default 2 s; longer to measure the gap)')
+    go.add_argument('--record-diagnostics', action='store_true',
+                    help='record the onboard bag, UDP drops and Pi load for this run')
     go.add_argument('--resume-at-observation', action='store_true',
                     help='robot already at an observation point: the table one skips the '
                          'water stop, the water one resumes there (--skip-via forces the table)')
