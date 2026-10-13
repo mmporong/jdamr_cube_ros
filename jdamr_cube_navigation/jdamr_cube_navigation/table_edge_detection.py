@@ -235,11 +235,14 @@ def _visible_front_edge(
     if edge_rms_m > config.maximum_edge_rms_m:
         return None
 
-    plane_height_relative_m = float(np.median(points_level[plane_mask, 2]))
-    endpoint_level_3d = np.column_stack((
-        endpoint_level,
-        np.full(2, plane_height_relative_m),
-    ))
+    # Reconstruct each endpoint on the fitted plane.  A single median z loses
+    # the plane's x/y slope and changes the optical geometry used downstream.
+    endpoint_z = (
+        -(plane_normal[0] * endpoint_level[:, 0]
+          + plane_normal[1] * endpoint_level[:, 1]
+          + plane_offset) / plane_normal[2]
+    )
+    endpoint_level_3d = np.column_stack((endpoint_level, endpoint_z))
     endpoint_optical = endpoint_level_3d @ rotation
     return endpoint_optical, line_mask, edge_rms_m
 
@@ -286,8 +289,8 @@ def detect_table_edge(
     edge_vector = endpoints_optical[1] - endpoints_optical[0]
     edge_length_m = float(np.linalg.norm(edge_vector))
     plane_rms_m = float(np.sqrt(np.mean(distances[plane_mask] ** 2)))
-    table_height_m = (
-        config.camera_height_m + float(np.median(refined[:, 2])))
+    edge_center_level = edge_center @ rotation.T
+    table_height_m = config.camera_height_m + float(edge_center_level[2])
     normal_optical = rotation.T @ refined_normal
     normal_optical /= np.linalg.norm(normal_optical)
     edge_angle_rad = math.atan2(float(edge_vector[2]), float(edge_vector[0]))

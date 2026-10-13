@@ -10,6 +10,7 @@ from jdamr_cube_navigation.box_top_detection import (
 from jdamr_cube_navigation.table_edge_detection import (
     _horizontal_plane_is_valid,
     _optical_to_level_rotation,
+    _visible_front_edge,
     detect_table_edge,
     TableEdgeConfig,
 )
@@ -103,6 +104,44 @@ def _render_table(
 def _to_level(detection, configured):
     endpoints = np.asarray(detection.edge_endpoints_optical_m)
     return endpoints @ _optical_to_level_rotation(configured).T
+
+
+def test_visible_edge_endpoints_remain_on_tilted_fitted_plane(monkeypatch):
+    """Edge endpoints preserve x/y plane slope instead of using median z."""
+    configured = config(pitch_deg=0.0)
+    rotation = _optical_to_level_rotation(configured)
+    plane_normal = np.array([-0.08, 0.12, 1.0])
+    plane_normal /= np.linalg.norm(plane_normal)
+    plane_offset = -0.72 * plane_normal[2]
+    level_xy = np.column_stack((
+        np.linspace(0.45, 1.05, 32),
+        np.linspace(-0.25, 0.25, 32),
+    ))
+    level_z = -(plane_normal[0] * level_xy[:, 0]
+                + plane_normal[1] * level_xy[:, 1]
+                + plane_offset) / plane_normal[2]
+    points_level = np.column_stack((level_xy, level_z))
+    points_optical = points_level @ rotation
+    columns = np.arange(32)
+    rows = np.full(32, 20)
+    plane_mask = np.ones(32, dtype=bool)
+    depth_mm = np.full((80, 32), 1000, dtype=np.uint16)
+    depth_mm[20, :] = np.rint(points_optical[:, 2] * 1000).astype(np.uint16)
+    monkeypatch.setattr(
+        'jdamr_cube_navigation.table_edge_detection.'
+        '_has_depth_discontinuity_below',
+        lambda *args: True,
+    )
+
+    result = _visible_front_edge(
+        depth_mm, points_optical, points_level, columns, rows, plane_mask,
+        configured, INTRINSICS, rotation, plane_normal, plane_offset)
+
+    assert result is not None
+    endpoints_optical, _, _ = result
+    endpoints_level = endpoints_optical @ rotation.T
+    residuals = endpoints_level @ plane_normal + plane_offset
+    assert residuals == pytest.approx([0.0, 0.0], abs=1e-12)
 
 
 @pytest.mark.parametrize('angle_deg', [-0.7, 89.5, -89.5])

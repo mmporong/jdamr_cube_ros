@@ -943,6 +943,7 @@ class BoxServiceRoute(ServiceRoute):
                 or not math.isfinite(frame_m) or not 0 < frame_m <= width_m):
             raise ValueError('invalid chassis frame width')
         self.box_front_half_width_m = frame_m / 2
+        self._table_observation_context = (camera_mount, region_xy, region_radius_m)
         for key, field in (('map', 'map_yaml'), ('keepout', 'keepout_mask_yaml')):
             verify_identity(self.registry[key], route[field])
         if route.get('frame_id') != 'map':
@@ -1199,10 +1200,54 @@ class BoxServiceRoute(ServiceRoute):
     def _straight_final_approach(self, target, front_extent_m):
         """Run the configured final approach: Parking along a held path, or zero turn."""
         if getattr(self, 'zero_turn_final', False):
+            if (getattr(self, 'surface_mode', 'front') == 'table_edge'
+                    and self._final_gap_m() <= 0.01):
+                return self._table_fine_approach(target, front_extent_m)
             return self._zero_turn_final_approach(target, front_extent_m)
         return self._parking_final_approach(target, front_extent_m)
 
-    def _zero_turn_final_approach(self, target, front_extent_m):
+    def _table_fine_approach(self, target, front_extent_m):
+        """Reobserve at the existing 5 cm approach point before the final short leg."""
+        camera_mount, region_xy, region_radius_m = self._table_observation_context
+
+        def reobserve():
+            return self.observe_target(
+                camera_mount, front_extent_m, self._final_gap_m(),
+                region_xy, region_radius_m)
+
+        actual, _ = self.capture_stationary_pose()
+        outward = target['outward_normal_map_xy']
+        face = target['face_center_map_xy_m']
+        face_heading = math.atan2(-outward[1], -outward[0])
+        residual = math.atan2(math.sin(face_heading - actual[2]),
+                              math.cos(face_heading - actual[2]))
+        nearest_gap_m = (sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
+                         - front_lead_m(front_extent_m, self.box_front_half_width_m, residual))
+        if nearest_gap_m > FINAL_PLAN_GAP_M + FINAL_STRAIGHT_TOLERANCE_M:
+            self.emit('table_visible_alignment_stage', target_front_gap_m=FINAL_PLAN_GAP_M,
+                      estimated_nearest_front_gap_m=nearest_gap_m)
+            reached, _ = self._zero_turn_final_approach(
+                target, front_extent_m, gap_m=FINAL_PLAN_GAP_M, reobserve=reobserve)
+            if not reached:
+                return False, None
+            try:
+                target.update(reobserve())
+            except (BoxObservationUnavailable, RuntimeError, ValueError) as error:
+                self._fail_final('table_alignment_observation_lost', detail=str(error))
+                return False, None
+        if (self.stop_requested or not self._operator_link_ready()
+                or not self._navigation_ready(require_fresh_amcl=False)):
+            self._fail_final('final_trim_interrupted')
+            return False, None
+        reached, to_odom = self._zero_turn_final_approach(
+            target, front_extent_m, reobserve=reobserve)
+        self.last_box_face = {
+            'face_center_map_xy_m': list(target['face_center_map_xy_m']),
+            'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
+        return reached, to_odom
+
+    def _zero_turn_final_approach(self, target, front_extent_m, *, gap_m=None,
+                                  reobserve=None, realign_attempt=0):
         """
         Turn out the residual to the re-observed face in place, then close the gap straight.
 
@@ -1210,7 +1255,7 @@ class BoxServiceRoute(ServiceRoute):
         10-02: mean 1.02 deg, max 2.69 deg; front corners up to 1.27 cm apart) and
         the Parking controller steers on the way in. Toward 1 cm (2026-10-05) the
         residual is measured against the face normal and turned out by odom, and the
-        straight runs at zero turn rate, so the heading stays where the trim left it.
+        table fine approach holds the trimmed odom heading with feedback.
         """
         actual, _ = self.capture_stationary_pose()
         face = target['face_center_map_xy_m']
@@ -1223,6 +1268,7 @@ class BoxServiceRoute(ServiceRoute):
                              residual_deg=round(math.degrees(residual), 2))
             return False, None
         turned = 0.0
+        trimmed = False
         if abs(residual) >= FINAL_TRIM_MIN_RAD:
             remaining_rad = residual
             trim_attempts = (3 if getattr(self, 'surface_mode', 'front') == 'table_edge'
@@ -1232,6 +1278,7 @@ class BoxServiceRoute(ServiceRoute):
                                 or not self._navigation_ready(require_fresh_amcl=False)):
                     self._fail_final('final_trim_interrupted')
                     return False, None
+                trimmed = True
                 correction_rad = self._rotate_in_place(remaining_rad)
                 if correction_rad is None or not math.isfinite(correction_rad):
                     self._fail_final('final_trim_missed',
@@ -1254,6 +1301,35 @@ class BoxServiceRoute(ServiceRoute):
                                      turned_deg=round(math.degrees(turned), 2))
                     return False, None
             actual, _ = self.capture_stationary_pose()
+        if reobserve is not None and trimmed:
+            try:
+                target.update(reobserve())
+            except (BoxObservationUnavailable, RuntimeError, ValueError) as error:
+                self._fail_final('table_post_trim_observation_lost', detail=str(error))
+                return False, None
+            actual, _ = self.capture_stationary_pose()
+            face = target['face_center_map_xy_m']
+            outward = target['outward_normal_map_xy']
+            face_heading = math.atan2(-outward[1], -outward[0])
+            observed_residual = math.atan2(math.sin(face_heading - actual[2]),
+                                           math.cos(face_heading - actual[2]))
+            self.emit('table_post_trim_observed',
+                      residual_deg=math.degrees(observed_residual),
+                      face_center_map_xy_m=list(face))
+            if abs(observed_residual) > FINAL_TRIM_TOLERANCE_RAD:
+                if realign_attempt < 2:
+                    if (self.stop_requested or not self._operator_link_ready()
+                            or not self._navigation_ready(require_fresh_amcl=False)):
+                        self._fail_final('final_trim_interrupted')
+                        return False, None
+                    return self._zero_turn_final_approach(
+                        target, front_extent_m, gap_m=gap_m, reobserve=reobserve,
+                        realign_attempt=realign_attempt + 1)
+                if abs(observed_residual) > min(
+                        self.parking_contract['yaw_tolerance_rad'], FINAL_HEADING_TRIM_RAD):
+                    self._fail_final('table_alignment_not_converged',
+                                     residual_deg=math.degrees(observed_residual))
+                    return False, None
         # Logged against the face in map; the trim itself was judged in odom.
         after = math.atan2(math.sin(face_heading - actual[2]),
                            math.cos(face_heading - actual[2]))
@@ -1267,9 +1343,15 @@ class BoxServiceRoute(ServiceRoute):
                   residual_after_deg=round(math.degrees(after), 3))
         distance_m = sum((actual[i] - face[i]) * outward[i] for i in (0, 1))
         lead_m = front_lead_m(front_extent_m, getattr(self, 'box_front_half_width_m', 0.0), after)
-        travel_m = (distance_m - lead_m - self._final_gap_m()) / math.cos(after)
+        requested_gap_m = self._final_gap_m() if gap_m is None else gap_m
+        travel_m = (distance_m - lead_m - requested_gap_m) / math.cos(after)
         if not math.isfinite(travel_m) or not 0.0 < travel_m <= 0.6:
             self._fail_final('final_approach_unavailable', travel_m=self._json_scalar(travel_m))
+            return False, None
+        if reobserve is not None and (
+                self.stop_requested or not self._operator_link_ready()
+                or not self._navigation_ready(require_fresh_amcl=False)):
+            self._fail_final('final_trim_interrupted')
             return False, None
         steps = int(math.ceil(travel_m / 0.05)) + 1
         heading = actual[2]
@@ -1280,9 +1362,9 @@ class BoxServiceRoute(ServiceRoute):
         path.header = path.poses[0].header
         _odom_path, to_odom = self._frozen_in_odom(path)
         self.emit('final_approach_straight', travel_m=travel_m, heading_basis='trimmed',
-                  controller_id='zero_turn')
+                  controller_id='zero_turn', target_front_gap_m=requested_gap_m)
         if getattr(self, 'surface_mode', 'front') == 'table_edge' and self._final_gap_m() <= 0.01:
-            travelled_m = self._drive_zero_turn(travel_m, precision=True)
+            travelled_m = self._drive_zero_turn(travel_m, precision=True, hold_heading=True)
         else:
             travelled_m = self._drive_zero_turn(travel_m)
         reached = (travelled_m is not None

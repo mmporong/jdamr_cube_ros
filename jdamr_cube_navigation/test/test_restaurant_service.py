@@ -2657,6 +2657,118 @@ def test_precision_zero_turn_fails_without_fresh_stopped_odometry(monkeypatch):
     assert stopped[-1]['reason'] == 'odometry did not confirm stop'
 
 
+@pytest.mark.parametrize('drift_rad, correction_sign', [
+    (0.01, -1.0),
+    (-0.01, 1.0),
+])
+def test_precision_heading_hold_corrects_both_drift_directions(
+        monkeypatch, drift_rad, correction_sign):
+    node = route()
+    clock = [0.0]
+    published = []
+    poses = iter([
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (0.001, 0.0, drift_rad),
+        (0.002, 0.0, drift_rad),
+        (0.003, 0.0, drift_rad),
+        (0.02, 0.0, drift_rad),
+    ] + [(0.02, 0.0, 0.0)] * 100)
+
+    def lookup(*_args, **_kwargs):
+        x_m, y_m, yaw = next(poses)
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x_m, y=y_m),
+            rotation=SimpleNamespace(
+                x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0))))
+
+    node.escape_velocity = SimpleNamespace(publish=lambda message: published.append(
+        (message.linear.x, message.angular.z)))
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once',
+                        lambda *a, **k: clock.__setitem__(0, clock[0] + 0.02))
+
+    node._drive_zero_turn(0.022, hold_heading=True)
+
+    corrections = [angular for linear, angular in published if linear and angular]
+    assert corrections
+    assert math.copysign(1.0, corrections[0]) == correction_sign
+    assert all(abs(value) <= restaurant_service.PRECISION_HEADING_MAX_RADPS
+               for value in corrections)
+
+
+def test_precision_heading_hold_wraps_error_across_pi(monkeypatch):
+    node = route()
+    clock = [0.0]
+    published = []
+    start_yaw = math.pi - 0.01
+    drifted_yaw = -math.pi + 0.01
+    poses = iter([
+        (0.0, 0.0, start_yaw),
+        (0.0, 0.0, start_yaw),
+        (0.001, 0.0, drifted_yaw),
+        (0.002, 0.0, drifted_yaw),
+        (0.003, 0.0, drifted_yaw),
+        (0.02, 0.0, drifted_yaw),
+    ] + [(0.02, 0.0, start_yaw)] * 100)
+
+    def lookup(*_args, **_kwargs):
+        x_m, y_m, yaw = next(poses)
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x_m, y=y_m),
+            rotation=SimpleNamespace(
+                x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0))))
+
+    node.escape_velocity = SimpleNamespace(publish=lambda message: published.append(
+        (message.linear.x, message.angular.z)))
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once',
+                        lambda *a, **k: clock.__setitem__(0, clock[0] + 0.02))
+
+    node._drive_zero_turn(0.022, hold_heading=True)
+
+    corrections = [angular for linear, angular in published if linear and angular]
+    assert corrections[0] == pytest.approx(-0.02)
+
+
+def test_heading_hold_drops_angular_command_when_tf_disappears(monkeypatch):
+    node = route()
+    clock = [1.0]
+    published = []
+    calls = [0]
+
+    def lookup(*_args, **_kwargs):
+        calls[0] += 1
+        if calls[0] >= 4:
+            raise restaurant_service.TransformException('TF unavailable')
+        yaw = 0.0 if calls[0] == 1 else 0.02
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=0.001 * calls[0], y=0.0),
+            rotation=SimpleNamespace(
+                x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0))))
+
+    node.escape_velocity = SimpleNamespace(publish=lambda message: published.append(
+        (message.linear.x, message.angular.z)))
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    # Raw odometry can remain fresh while only the odom->base TF lookup fails.
+    node._guard_failure = Mock(return_value=None)
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once',
+                        lambda *a, **k: clock.__setitem__(0, clock[0] + 0.02))
+
+    travelled = node._drive_zero_turn(0.022, hold_heading=True)
+
+    assert travelled is None
+    correction_index = next(
+        index for index, (_linear, angular) in enumerate(published) if angular < 0.0)
+    assert all(command == (0.0, 0.0) for command in published[correction_index + 1:])
+    assert published[-5:] == [(0.0, 0.0)] * 5
+    stopped = [e for e in _events(node) if e['event'] == 'straight_drive_stopped']
+    assert stopped[-1]['reason'] == 'odom TF unavailable during heading hold'
+
+
 def test_back_off_grows_with_each_hold_at_the_same_block():
     for wait, distance in ((1, 0.10), (2, 0.20), (3, 0.30)):
         node = route()

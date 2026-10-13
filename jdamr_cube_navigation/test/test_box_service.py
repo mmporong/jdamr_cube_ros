@@ -2014,7 +2014,7 @@ def test_fine_trim_corrects_small_overshoot_without_restarting_the_visit():
     assert reached
     assert node._rotate_in_place.call_count == 2
     assert node._rotate_in_place.call_args.args[0] == pytest.approx(-0.006)
-    assert node._drive_zero_turn.call_args.kwargs == {'precision': True}
+    assert node._drive_zero_turn.call_args.kwargs == {'precision': True, 'hold_heading': True}
 
 
 def test_one_centimetre_table_correction_requires_current_operator_link(mission):
@@ -2053,3 +2053,128 @@ def test_fine_trim_residual_is_judged_by_final_heading_contract(remaining_deg, r
     assert reached is reached_expected
     assert node._rotate_in_place.call_count == 3
     assert node._drive_zero_turn.call_count == int(reached_expected)
+
+
+@pytest.mark.parametrize('start_x, stages', [(0.50, [0.05, None]), (0.90, [None])])
+def test_table_fine_approach_reobserves_at_visible_stage_without_retreat(start_x, stages):
+    node = object.__new__(BoxServiceRoute)
+    node.stop_requested = False
+    node._operator_link_ready = Mock(return_value=True)
+    node._navigation_ready = Mock(return_value=True)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.box_front_half_width_m = 0.225
+    node._table_observation_context = ({}, (1.0, 0.0), 0.6)
+    node.capture_stationary_pose = Mock(return_value=((start_x, 0.0, 0.0), {}))
+    fresh = _table_edge_final_target(1.01)
+    node.observe_target = Mock(return_value=fresh)
+    calls = []
+
+    def approach(target, extent, **kwargs):
+        calls.append((dict(target), extent, kwargs))
+        return True, 'odom'
+
+    node._zero_turn_final_approach = Mock(side_effect=approach)
+    node.emit = Mock()
+    target = _table_edge_final_target(1.0)
+    assert node._table_fine_approach(target, 0.065) == (True, 'odom')
+    assert [item[2].get('gap_m') for item in calls] == stages
+    assert node.observe_target.call_count == len(stages) - 1
+    if len(stages) > 1:
+        assert calls[-1][0]['face_center_map_xy_m'] == (1.01, 0.0)
+    assert all(callable(item[2]['reobserve']) for item in calls)
+
+
+def test_table_fine_approach_never_closes_final_leg_after_stage_observation_loss():
+    node = object.__new__(BoxServiceRoute)
+    node.stop_requested = False
+    node._operator_link_ready = Mock(return_value=True)
+    node._navigation_ready = Mock(return_value=True)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.box_front_half_width_m = 0.225
+    node._table_observation_context = ({}, (1.0, 0.0), 0.6)
+    node.capture_stationary_pose = Mock(return_value=((0.5, 0.0, 0.0), {}))
+    node.observe_target = Mock(side_effect=RuntimeError('depth unavailable'))
+    node._zero_turn_final_approach = Mock(return_value=(True, 'odom'))
+    node.emit = Mock()
+    assert node._table_fine_approach(_table_edge_final_target(1.0), 0.065) == (False, None)
+    node._zero_turn_final_approach.assert_called_once()
+    assert node.emit.call_args.kwargs['reason'] == 'table_alignment_observation_lost'
+
+
+def test_zero_turn_remeasures_face_after_rotation_before_computing_final_distance():
+    node = object.__new__(BoxServiceRoute)
+    node.stop_requested = False
+    node._operator_link_ready = Mock(return_value=True)
+    node._navigation_ready = Mock(return_value=True)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.parking_contract = {'yaw_tolerance_rad': math.radians(3.0)}
+    node.box_front_half_width_m = 0.225
+    yaw = math.radians(2.0)
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((0.0, 0.0, 0.0), {}), ((0.0, 0.0, yaw), {}), ((0.0, 0.0, yaw), {})])
+    node._rotate_in_place = Mock(return_value=yaw)
+    node._pose = Mock(return_value=PoseStamped())
+    node._frozen_in_odom = Mock(return_value=(None, 'odom'))
+    node._drive_zero_turn = Mock(return_value=0.125)
+    node.emit = Mock()
+    outward = (-math.cos(yaw), -math.sin(yaw))
+    target = {'face_center_map_xy_m': (0.30 * math.cos(yaw), 0.30 * math.sin(yaw)),
+              'outward_normal_map_xy': outward}
+    fresh = {'face_center_map_xy_m': (0.20 * math.cos(yaw), 0.20 * math.sin(yaw)),
+             'outward_normal_map_xy': outward}
+    reobserve = Mock(return_value=fresh)
+    assert node._zero_turn_final_approach(target, 0.065, reobserve=reobserve) == (True, 'odom')
+    reobserve.assert_called_once()
+    assert target == fresh
+    node._drive_zero_turn.assert_called_once_with(
+        pytest.approx(0.125), precision=True, hold_heading=True)
+
+
+def test_zero_turn_never_advances_using_pre_turn_face_when_new_observation_fails():
+    node = object.__new__(BoxServiceRoute)
+    node.stop_requested = False
+    node._operator_link_ready = Mock(return_value=True)
+    node._navigation_ready = Mock(return_value=True)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.parking_contract = {'yaw_tolerance_rad': math.radians(3.0)}
+    node.box_front_half_width_m = 0.225
+    yaw = math.radians(2.0)
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((0.0, 0.0, 0.0), {}), ((0.0, 0.0, yaw), {})])
+    node._rotate_in_place = Mock(return_value=yaw)
+    node._drive_zero_turn = Mock()
+    node.emit = Mock()
+    target = {'face_center_map_xy_m': (0.3, 0.0),
+              'outward_normal_map_xy': (-math.cos(yaw), -math.sin(yaw))}
+    assert node._zero_turn_final_approach(
+        target, 0.065, reobserve=Mock(side_effect=RuntimeError('depth lost'))) == (False, None)
+    node._drive_zero_turn.assert_not_called()
+    assert node.emit.call_args.kwargs['reason'] == 'table_post_trim_observation_lost'
+
+
+def test_table_fine_approach_does_not_dispatch_final_leg_when_link_lost_during_observation():
+    node = object.__new__(BoxServiceRoute)
+    node.stop_requested = False
+    node._operator_link_ready = Mock(return_value=True)
+    node._navigation_ready = Mock(return_value=True)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.box_front_half_width_m = 0.225
+    node._table_observation_context = ({}, (1.0, 0.0), 0.6)
+    node.capture_stationary_pose = Mock(return_value=((0.5, 0.0, 0.0), {}))
+    target = _table_edge_final_target(1.0)
+
+    def observe(*_args):
+        node._operator_link_ready.return_value = False
+        return target
+
+    node.observe_target = Mock(side_effect=observe)
+    node._zero_turn_final_approach = Mock(return_value=(True, 'odom'))
+    node.emit = Mock()
+    assert node._table_fine_approach(target, 0.065) == (False, None)
+    node._zero_turn_final_approach.assert_called_once()
+    assert node.emit.call_args.kwargs['reason'] == 'final_trim_interrupted'

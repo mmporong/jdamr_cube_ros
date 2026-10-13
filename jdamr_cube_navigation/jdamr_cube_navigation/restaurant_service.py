@@ -123,6 +123,12 @@ PATH_BLOCKED_FORWARD_MAX_M = 0.35
 STRAIGHT_ESCAPE_SPEED_MPS = 0.05
 PRECISION_STRAIGHT_MIN_SPEED_MPS = 0.01
 PRECISION_STRAIGHT_TARGET_S = 2.0
+# A 1/s proportional correction removes a one-degree drift without snapping the
+# chassis. 0.02 rad/s is below the 0.08 rad/s in-place trim and, on the configured
+# 0.51 m wheel separation, keeps both wheels moving forward at the 0.01 m/s
+# precision minimum instead of turning the final approach into a pivot.
+PRECISION_HEADING_KP = 1.0
+PRECISION_HEADING_MAX_RADPS = 0.02
 STRAIGHT_ESCAPE_EXTRA_S = 5.0
 STRAIGHT_ESCAPE_TOLERANCE_M = 0.01
 # The velocity smoother's linear deceleration (max_decel) that ends a direct move.
@@ -1353,13 +1359,16 @@ class ServiceRoute(CorridorRoute):
             command, lambda turned: abs(turned) >= abs(delta_rad) - early_rad, measure,
             deadline_s, 'trim_rotation_stopped')
 
-    def _drive_zero_turn(self, distance_m, watch=None, precision=False):
+    def _drive_zero_turn(self, distance_m, watch=None, precision=False,
+                         hold_heading=False):
         """
         Command (+-STRAIGHT_ESCAPE_SPEED_MPS, 0) until odom shows distance_m.
 
         The stop is sent early by the smoother's deceleration and the stop latency.
         Precision moves lower their speed with the requested distance and update
         that early-stop point from fresh odometry speed and the observed loop delay.
+        Heading hold feeds odometry yaw back into a bounded angular command while
+        keeping the same velocity-smoother, Collision Monitor and guard path.
         It runs only between goals. Returns the signed travel along the start heading
         once the base is at rest, or None without odom.
         """
@@ -1375,15 +1384,27 @@ class ServiceRoute(CorridorRoute):
             start = odom_pose()
         except TransformException:
             return None
-        state = {'travelled': 0.0}
+        state = {'travelled': 0.0, 'tf_failure': None}
+        command = Twist()
 
         def measure():
             try:
-                x_m, y_m, _yaw = odom_pose()
+                x_m, y_m, yaw = odom_pose()
             except TransformException:
+                if hold_heading:
+                    state['tf_failure'] = 'odom TF unavailable during heading hold'
+                    command.linear.x = 0.0
+                    command.angular.z = 0.0
                 return state['travelled']
             state['travelled'] = ((x_m - start[0]) * math.cos(start[2])
                                   + (y_m - start[1]) * math.sin(start[2]))
+            if hold_heading:
+                error_rad = math.atan2(
+                    math.sin(start[2] - yaw), math.cos(start[2] - yaw))
+                command.angular.z = max(
+                    -PRECISION_HEADING_MAX_RADPS,
+                    min(PRECISION_HEADING_MAX_RADPS,
+                        PRECISION_HEADING_KP * error_rad))
             return state['travelled']
 
         speed_mps = STRAIGHT_ESCAPE_SPEED_MPS
@@ -1391,7 +1412,6 @@ class ServiceRoute(CorridorRoute):
             speed_mps = min(speed_mps, max(
                 PRECISION_STRAIGHT_MIN_SPEED_MPS,
                 abs(distance_m) / PRECISION_STRAIGHT_TARGET_S))
-        command = Twist()
         command.linear.x = math.copysign(speed_mps, distance_m)
         timing = {'checked_s': None, 'loop_s': 0.02}
 
@@ -1412,6 +1432,8 @@ class ServiceRoute(CorridorRoute):
                     + live_speed_mps * reaction_s)
 
         def reached_stop_point(travelled):
+            if state['tf_failure'] is not None:
+                return False
             if not precision:
                 early_m = min(
                     STRAIGHT_ESCAPE_SPEED_MPS ** 2 / (2.0 * STRAIGHT_DECEL_MPS2)
@@ -1421,11 +1443,17 @@ class ServiceRoute(CorridorRoute):
             early_m = min(stopping_distance_m(), abs(distance_m) / 2.0)
             return abs(travelled) >= abs(distance_m) - early_m
 
+        def motion_watch():
+            if state['tf_failure'] is not None:
+                return state['tf_failure']
+            return watch() if watch else None
+
         deadline_s = (time.monotonic() + abs(distance_m) / speed_mps
                       + STRAIGHT_ESCAPE_EXTRA_S)
-        return self._direct_motion(
+        travelled_m = self._direct_motion(
             command, reached_stop_point, measure, deadline_s, 'straight_drive_stopped',
-            watch=watch, confirm_stopped=precision)
+            watch=motion_watch if hold_heading else watch, confirm_stopped=precision)
+        return None if state['tf_failure'] is not None else travelled_m
 
     def _departure_ready(self):
         """Check, before every goal, the battery reserve and the operator link."""
