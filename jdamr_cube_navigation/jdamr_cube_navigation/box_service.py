@@ -55,6 +55,9 @@ FINAL_PLAN_GAP_M = 0.05
 FINAL_STOP_SHORT_M = 0.005
 # The nearest front point is judged within this of the target gap.
 FINAL_GAP_TOLERANCE_M = 0.01
+TABLE_FINE_GAP_TOLERANCE_M = 0.003
+TABLE_FINE_MAX_CORRECTIONS = 3
+TABLE_FINE_MIN_PROGRESS_M = 0.001
 # Before the straight the base is turned onto the face normal when it is off by more
 # than this: face alignment ended 2.9 deg off (inside its 3 deg), the straight added
 # 0.4 deg and the 3.28 deg stop failed the contract (2026-10-06 16:00, water station).
@@ -1061,88 +1064,123 @@ class BoxServiceRoute(ServiceRoute):
                                     face=phase == 'face_alignment'):
                     self.emit('failed', phase=phase, reason='nav2_or_stop_confirmation')
                     return False
-        # Motion is over; the deadline must not stop the final stationary capture.
-        self.run_deadline_s = None
-        final_depth_measurement = False
-        if surface_mode == 'table_edge':
-            try:
-                target = self.observe_target(
-                    camera_mount, front_extent_m, self._final_gap_m(),
-                    region_xy, region_radius_m)
-            except (BoxObservationUnavailable, RuntimeError, ValueError) as error:
-                reason = getattr(error, 'reason', None) or str(error) or type(error).__name__
-                self.emit('failed', phase='final_depth_measurement', reason=reason,
-                          final_depth_measurement=False)
+        fine_table = surface_mode == 'table_edge' and self._final_gap_m() <= 0.01
+        corrections = 0
+        previous_gap_m = None
+        if not fine_table:
+            self.run_deadline_s = None
+        while True:
+            final_depth_measurement = False
+            if surface_mode == 'table_edge':
+                try:
+                    target = self.observe_target(
+                        camera_mount, front_extent_m, self._final_gap_m(),
+                        region_xy, region_radius_m)
+                except (BoxObservationUnavailable, RuntimeError, ValueError) as error:
+                    reason = getattr(error, 'reason', None) or str(error) or type(error).__name__
+                    self.emit('failed', phase='final_depth_measurement', reason=reason,
+                              final_depth_measurement=False)
+                    return False
+                final_depth_measurement = True
+                self.last_box_face = {
+                    'face_center_map_xy_m': list(target['face_center_map_xy_m']),
+                    'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
+            actual, _ = self.capture_stationary_pose()
+            outward = target['outward_normal_map_xy']
+            face = target['face_center_map_xy_m']
+            target_yaw = target['yaw_rad']
+            parked = actual
+            if straight_to_odom is not None and not final_depth_measurement:
+                # The straight approach ran in odom from the aligned pose; judge the
+                # gap there too, against the face observed before it.
+                face_x, face_y, _ = straight_to_odom(face[0], face[1], 0.0)
+                tip_x, tip_y, _ = straight_to_odom(face[0] + outward[0], face[1] + outward[1], 0.0)
+                face, outward = (face_x, face_y), (tip_x - face_x, tip_y - face_y)
+                target_yaw = straight_to_odom(0.0, 0.0, target_yaw)[2]
+                actual = self._odom_pose()
+            front = (actual[0] + front_extent_m * math.cos(actual[2]),
+                     actual[1] + front_extent_m * math.sin(actual[2]))
+            estimated_gap_m = sum((front[i] - face[i]) * outward[i] for i in (0, 1))
+            half_width_m = self.box_front_half_width_m
+            corners = [
+                (front[0] - side * half_width_m * math.sin(actual[2]),
+                 front[1] + side * half_width_m * math.cos(actual[2]))
+                for side in (-1, 1)
+            ]
+            corner_gaps = [sum((corner[i] - face[i]) * outward[i] for i in (0, 1))
+                           for corner in corners]
+            yaw_error = abs(math.atan2(
+                math.sin(actual[2] - target_yaw),
+                math.cos(actual[2] - target_yaw)))
+            target_gap_m = self._final_gap_m()
+            nearest_gap_m = min(corner_gaps)
+            gap_tolerance_m = (TABLE_FINE_GAP_TOLERANCE_M if fine_table
+                               else FINAL_GAP_TOLERANCE_M)
+            if surface_mode == 'table_edge':
+                # A table edge represents the whole parked face. Confirm both front
+                # corners so a near corner cannot hide a visibly skewed far corner.
+                gap_confirmation_basis = 'both_front_corners'
+                gaps_confirmed = all(
+                    gap > 0.0 and abs(gap - target_gap_m) <= gap_tolerance_m
+                    for gap in corner_gaps)
+                allowed_yaw_error_rad = min(
+                    self.parking_contract['yaw_tolerance_rad'], FINAL_HEADING_TRIM_RAD)
+            else:
+                # Preserve the legacy box/front-face contract, where the leading
+                # (nearest) corner is the clearance reference.
+                gap_confirmation_basis = 'nearest_front_corner'
+                gaps_confirmed = (
+                    nearest_gap_m > 0.0
+                    and abs(nearest_gap_m - target_gap_m) <= FINAL_GAP_TOLERANCE_M)
+                allowed_yaw_error_rad = self.parking_contract['yaw_tolerance_rad']
+            gap_confirmed = (
+                math.isfinite(estimated_gap_m) and all(math.isfinite(gap) for gap in corner_gaps)
+                and gaps_confirmed
+                and yaw_error <= allowed_yaw_error_rad)
+            if gap_confirmed:
+                # The dwell holds the confirmed stop where it is (map pose at rest).
+                self.selected_pose = {'id': 'final_approach', 'x_m': parked[0],
+                                      'y_m': parked[1], 'yaw_rad': parked[2]}
+            self.emit('box_approach_finished' if gap_confirmed else 'box_gap_not_confirmed',
+                      estimated_front_gap_m=estimated_gap_m,
+                      estimated_front_corner_gaps_m=corner_gaps,
+                      estimated_nearest_front_gap_m=nearest_gap_m,
+                      estimated_face_yaw_error_rad=yaw_error,
+                      gap_confirmation_basis=gap_confirmation_basis,
+                      allowed_face_yaw_error_rad=allowed_yaw_error_rad,
+                      desired_front_gap_m=target_gap_m, confirmation=self.confirmation,
+                      physical_accuracy='NOT_EXTERNALLY_MEASURED',
+                      final_depth_measurement=final_depth_measurement)
+            if gap_confirmed:
+                self.run_deadline_s = None
+                return True
+            # Corrections consume fresh stopped observations within the same task
+            # budget; a lost face or an overshoot never dispatches another advance.
+            if (not fine_table or not all(math.isfinite(gap) for gap in corner_gaps)
+                    or nearest_gap_m <= target_gap_m + gap_tolerance_m):
                 return False
-            final_depth_measurement = True
-            self.last_box_face = {
-                'face_center_map_xy_m': list(target['face_center_map_xy_m']),
-                'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
-        actual, _ = self.capture_stationary_pose()
-        outward = target['outward_normal_map_xy']
-        face = target['face_center_map_xy_m']
-        target_yaw = target['yaw_rad']
-        parked = actual
-        if straight_to_odom is not None and not final_depth_measurement:
-            # The straight approach ran in odom from the aligned pose; judge the
-            # gap there too, against the face observed before it.
-            face_x, face_y, _ = straight_to_odom(face[0], face[1], 0.0)
-            tip_x, tip_y, _ = straight_to_odom(face[0] + outward[0], face[1] + outward[1], 0.0)
-            face, outward = (face_x, face_y), (tip_x - face_x, tip_y - face_y)
-            target_yaw = straight_to_odom(0.0, 0.0, target_yaw)[2]
-            actual = self._odom_pose()
-        front = (actual[0] + front_extent_m * math.cos(actual[2]),
-                 actual[1] + front_extent_m * math.sin(actual[2]))
-        estimated_gap_m = sum((front[i] - face[i]) * outward[i] for i in (0, 1))
-        half_width_m = self.box_front_half_width_m
-        corners = [
-            (front[0] - side * half_width_m * math.sin(actual[2]),
-             front[1] + side * half_width_m * math.cos(actual[2]))
-            for side in (-1, 1)
-        ]
-        corner_gaps = [sum((corner[i] - face[i]) * outward[i] for i in (0, 1))
-                       for corner in corners]
-        yaw_error = abs(math.atan2(
-            math.sin(actual[2] - target_yaw),
-            math.cos(actual[2] - target_yaw)))
-        target_gap_m = self._final_gap_m()
-        nearest_gap_m = min(corner_gaps)
-        if surface_mode == 'table_edge':
-            # A table edge represents the whole parked face. Confirm both front
-            # corners so a near corner cannot hide a visibly skewed far corner.
-            gap_confirmation_basis = 'both_front_corners'
-            gaps_confirmed = all(
-                gap > 0.0 and abs(gap - target_gap_m) <= FINAL_GAP_TOLERANCE_M
-                for gap in corner_gaps)
-            allowed_yaw_error_rad = min(
-                self.parking_contract['yaw_tolerance_rad'], FINAL_HEADING_TRIM_RAD)
-        else:
-            # Preserve the legacy box/front-face contract, where the leading
-            # (nearest) corner is the clearance reference.
-            gap_confirmation_basis = 'nearest_front_corner'
-            gaps_confirmed = (
-                nearest_gap_m > 0.0
-                and abs(nearest_gap_m - target_gap_m) <= FINAL_GAP_TOLERANCE_M)
-            allowed_yaw_error_rad = self.parking_contract['yaw_tolerance_rad']
-        gap_confirmed = (
-            math.isfinite(estimated_gap_m) and all(math.isfinite(gap) for gap in corner_gaps)
-            and gaps_confirmed
-            and yaw_error <= allowed_yaw_error_rad)
-        if gap_confirmed:
-            # The dwell holds the confirmed stop where it is (map pose at rest).
-            self.selected_pose = {'id': 'final_approach', 'x_m': parked[0],
-                                  'y_m': parked[1], 'yaw_rad': parked[2]}
-        self.emit('box_approach_finished' if gap_confirmed else 'box_gap_not_confirmed',
-                  estimated_front_gap_m=estimated_gap_m,
-                  estimated_front_corner_gaps_m=corner_gaps,
-                  estimated_nearest_front_gap_m=nearest_gap_m,
-                  estimated_face_yaw_error_rad=yaw_error,
-                  gap_confirmation_basis=gap_confirmation_basis,
-                  allowed_face_yaw_error_rad=allowed_yaw_error_rad,
-                  desired_front_gap_m=target_gap_m, confirmation=self.confirmation,
-                  physical_accuracy='NOT_EXTERNALLY_MEASURED',
-                  final_depth_measurement=final_depth_measurement)
-        return gap_confirmed
+            if (self.stop_requested or not self._operator_link_ready()
+                    or not self._navigation_ready(require_fresh_amcl=False)):
+                self.emit('failed', phase='final_approach', reason='navigation_not_ready')
+                return False
+            if (previous_gap_m is not None
+                    and previous_gap_m - nearest_gap_m < TABLE_FINE_MIN_PROGRESS_M):
+                self.emit('failed', phase='final_approach', reason='final_gap_no_progress')
+                return False
+            if corrections >= TABLE_FINE_MAX_CORRECTIONS:
+                self.emit('failed', phase='final_approach', reason='final_gap_correction_limit')
+                return False
+            previous_gap_m = nearest_gap_m
+            corrections += 1
+            self.emit('final_gap_correction', correction=corrections,
+                      estimated_front_corner_gaps_m=corner_gaps,
+                      target_front_gap_m=target_gap_m)
+            self._final_failure_reported = False
+            approached, straight_to_odom = self._straight_final_approach(target, front_extent_m)
+            if not approached:
+                if not self._final_failure_reported:
+                    self.emit('failed', phase='final_approach', reason='nav2_or_stop_confirmation')
+                return False
 
     def _final_gap_m(self):
         """Front gap the final approach closes to: --final-gap-m, else the contract."""
@@ -1186,12 +1224,28 @@ class BoxServiceRoute(ServiceRoute):
             return False, None
         turned = 0.0
         if abs(residual) >= FINAL_TRIM_MIN_RAD:
-            turned = self._rotate_in_place(residual)
-            if turned is None or abs(turned - residual) > FINAL_TRIM_TOLERANCE_RAD:
+            remaining_rad = residual
+            trim_attempts = (3 if getattr(self, 'surface_mode', 'front') == 'table_edge'
+                             and self._final_gap_m() <= 0.01 else 1)
+            for attempt in range(trim_attempts):
+                if attempt and (self.stop_requested or not self._operator_link_ready()
+                                or not self._navigation_ready(require_fresh_amcl=False)):
+                    self._fail_final('final_trim_interrupted')
+                    return False, None
+                correction_rad = self._rotate_in_place(remaining_rad)
+                if correction_rad is None or not math.isfinite(correction_rad):
+                    self._fail_final('final_trim_missed',
+                                     residual_deg=round(math.degrees(residual), 2),
+                                     turned_deg=None)
+                    return False, None
+                turned += correction_rad
+                remaining_rad = residual - turned
+                if abs(remaining_rad) <= FINAL_TRIM_TOLERANCE_RAD:
+                    break
+            else:
                 self._fail_final('final_trim_missed',
                                  residual_deg=round(math.degrees(residual), 2),
-                                 turned_deg=None if turned is None
-                                 else round(math.degrees(turned), 2))
+                                 turned_deg=round(math.degrees(turned), 2))
                 return False, None
             actual, _ = self.capture_stationary_pose()
         # Logged against the face in map; the trim itself was judged in odom.
@@ -1221,7 +1275,10 @@ class BoxServiceRoute(ServiceRoute):
         _odom_path, to_odom = self._frozen_in_odom(path)
         self.emit('final_approach_straight', travel_m=travel_m, heading_basis='trimmed',
                   controller_id='zero_turn')
-        travelled_m = self._drive_zero_turn(travel_m)
+        if getattr(self, 'surface_mode', 'front') == 'table_edge' and self._final_gap_m() <= 0.01:
+            travelled_m = self._drive_zero_turn(travel_m, precision=True)
+        else:
+            travelled_m = self._drive_zero_turn(travel_m)
         reached = (travelled_m is not None
                    and travelled_m >= travel_m - FINAL_STRAIGHT_TOLERANCE_M)
         if not reached:

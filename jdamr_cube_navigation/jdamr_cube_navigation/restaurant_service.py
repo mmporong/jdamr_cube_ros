@@ -121,6 +121,8 @@ PATH_BLOCKED_FORWARD_MAX_M = 0.35
 # StopZones; slow so its StopZone (5 mm beyond the body) still stops within one
 # 10 Hz cycle.
 STRAIGHT_ESCAPE_SPEED_MPS = 0.05
+PRECISION_STRAIGHT_MIN_SPEED_MPS = 0.01
+PRECISION_STRAIGHT_TARGET_S = 2.0
 STRAIGHT_ESCAPE_EXTRA_S = 5.0
 STRAIGHT_ESCAPE_TOLERANCE_M = 0.01
 # The velocity smoother's linear deceleration (max_decel) that ends a direct move.
@@ -137,6 +139,7 @@ TRIM_EXTRA_S = 4.0
 DIRECT_STOP_LATENCY_S = 0.05
 # After the stop, wait at most this long for odometry to show the base at rest.
 DIRECT_SETTLE_S = 0.5
+DIRECT_STOP_CONFIRM_S = 0.08
 # Direct moves re-check the fail-closed inputs (fresh scan and odom, no latched
 # emergency stop) at this period and stop on the first failure.
 DIRECT_GUARD_PERIOD_S = 0.1
@@ -1254,7 +1257,8 @@ class ServiceRoute(CorridorRoute):
             self.escape_velocity = publisher
         return publisher
 
-    def _direct_motion(self, command, done, measure, deadline_s, event, watch=None):
+    def _direct_motion(self, command, done, measure, deadline_s, event, watch=None,
+                       confirm_stopped=False):
         """
         Publish command until done(measure()) or a stop, then stop and let the base settle.
 
@@ -1287,12 +1291,26 @@ class ServiceRoute(CorridorRoute):
                 publisher.publish(Twist())
                 spin_node(self, timeout_sec=0.02)
         stopped_s = time.monotonic()
+        stationary_since_s = None
+        stopped_confirmed = not confirm_stopped
         while time.monotonic() - stopped_s < DIRECT_SETTLE_S:
             motion = getattr(self, 'latest_motion', None)
             if (motion is not None and motion[0] > stopped_s
                     and abs(motion[1]) < 0.01 and abs(motion[2]) < 0.01):
-                break
+                if not confirm_stopped:
+                    stopped_confirmed = True
+                    break
+                if stationary_since_s is None:
+                    stationary_since_s = motion[0]
+                elif motion[0] - stationary_since_s >= DIRECT_STOP_CONFIRM_S:
+                    stopped_confirmed = True
+                    break
+            elif motion is not None and motion[0] > stopped_s:
+                stationary_since_s = None
             spin_node(self, timeout_sec=0.02)
+        if not stopped_confirmed:
+            self.emit(event, reason='odometry did not confirm stop')
+            return None
         return measure()
 
     def _rotate_in_place(self, delta_rad):
@@ -1335,11 +1353,13 @@ class ServiceRoute(CorridorRoute):
             command, lambda turned: abs(turned) >= abs(delta_rad) - early_rad, measure,
             deadline_s, 'trim_rotation_stopped')
 
-    def _drive_zero_turn(self, distance_m, watch=None):
+    def _drive_zero_turn(self, distance_m, watch=None, precision=False):
         """
         Command (+-STRAIGHT_ESCAPE_SPEED_MPS, 0) until odom shows distance_m.
 
         The stop is sent early by the smoother's deceleration and the stop latency.
+        Precision moves lower their speed with the requested distance and update
+        that early-stop point from fresh odometry speed and the observed loop delay.
         It runs only between goals. Returns the signed travel along the start heading
         once the base is at rest, or None without odom.
         """
@@ -1366,15 +1386,46 @@ class ServiceRoute(CorridorRoute):
                                   + (y_m - start[1]) * math.sin(start[2]))
             return state['travelled']
 
+        speed_mps = STRAIGHT_ESCAPE_SPEED_MPS
+        if precision:
+            speed_mps = min(speed_mps, max(
+                PRECISION_STRAIGHT_MIN_SPEED_MPS,
+                abs(distance_m) / PRECISION_STRAIGHT_TARGET_S))
         command = Twist()
-        command.linear.x = math.copysign(STRAIGHT_ESCAPE_SPEED_MPS, distance_m)
-        early_m = min(STRAIGHT_ESCAPE_SPEED_MPS ** 2 / (2.0 * STRAIGHT_DECEL_MPS2)
-                      + STRAIGHT_ESCAPE_SPEED_MPS * DIRECT_STOP_LATENCY_S, abs(distance_m) / 2.0)
-        deadline_s = (time.monotonic() + abs(distance_m) / STRAIGHT_ESCAPE_SPEED_MPS
+        command.linear.x = math.copysign(speed_mps, distance_m)
+        timing = {'checked_s': None, 'loop_s': 0.02}
+
+        def stopping_distance_m():
+            now_s = time.monotonic()
+            if timing['checked_s'] is not None:
+                timing['loop_s'] = min(0.1, max(0.0, now_s - timing['checked_s']))
+            timing['checked_s'] = now_s
+            live_speed_mps = speed_mps
+            motion = getattr(self, 'latest_motion', None)
+            odom_age_s = 0.0
+            if motion is not None and all(math.isfinite(value) for value in motion):
+                odom_age_s = min(0.1, max(0.0, now_s - motion[0]))
+                if odom_age_s < 0.1 and abs(motion[1]) >= 0.002:
+                    live_speed_mps = abs(motion[1])
+            reaction_s = DIRECT_STOP_LATENCY_S + timing['loop_s'] + odom_age_s
+            return (live_speed_mps ** 2 / (2.0 * STRAIGHT_DECEL_MPS2)
+                    + live_speed_mps * reaction_s)
+
+        def reached_stop_point(travelled):
+            if not precision:
+                early_m = min(
+                    STRAIGHT_ESCAPE_SPEED_MPS ** 2 / (2.0 * STRAIGHT_DECEL_MPS2)
+                    + STRAIGHT_ESCAPE_SPEED_MPS * DIRECT_STOP_LATENCY_S,
+                    abs(distance_m) / 2.0)
+                return abs(travelled) >= abs(distance_m) - early_m
+            early_m = min(stopping_distance_m(), abs(distance_m) / 2.0)
+            return abs(travelled) >= abs(distance_m) - early_m
+
+        deadline_s = (time.monotonic() + abs(distance_m) / speed_mps
                       + STRAIGHT_ESCAPE_EXTRA_S)
         return self._direct_motion(
-            command, lambda travelled: abs(travelled) >= abs(distance_m) - early_m, measure,
-            deadline_s, 'straight_drive_stopped', watch=watch)
+            command, reached_stop_point, measure, deadline_s, 'straight_drive_stopped',
+            watch=watch, confirm_stopped=precision)
 
     def _departure_ready(self):
         """Check, before every goal, the battery reserve and the operator link."""

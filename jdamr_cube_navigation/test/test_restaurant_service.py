@@ -2588,6 +2588,75 @@ def test_zero_turn_drive_commands_no_rotation_and_stops_at_the_distance(monkeypa
     assert published[-5:] == [(0.0, 0.0)] * 5
 
 
+def test_precision_zero_turn_uses_live_motion_and_returns_settled_distance(monkeypatch):
+    node = route()
+    clock = [0.0]
+    position = [0.0]
+    velocity = [0.0]
+    requested = [0.0]
+    published = []
+    first_stop_position = []
+    node.latest_motion = (-1.0, 0.0, 0.0)
+
+    def publish(message):
+        requested[0] = message.linear.x
+        published.append((message.linear.x, message.angular.z))
+        if message.linear.x == 0.0 and not first_stop_position:
+            first_stop_position.append(position[0])
+
+    def spin(*_args, **_kwargs):
+        clock[0] += 0.02
+        change = restaurant_service.STRAIGHT_DECEL_MPS2 * 0.02
+        velocity[0] += max(-change, min(change, requested[0] - velocity[0]))
+        position[0] += velocity[0] * 0.02
+        node.latest_motion = (clock[0], abs(velocity[0]), 0.0)
+
+    def lookup(*_args, **_kwargs):
+        return SimpleNamespace(transform=SimpleNamespace(
+            translation=SimpleNamespace(x=position[0], y=0.0),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+
+    node.escape_velocity = SimpleNamespace(publish=publish)
+    node.parking_tf = SimpleNamespace(lookup_transform=lookup)
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', spin)
+
+    travelled = node._drive_zero_turn(0.022, precision=True)
+
+    expected_speed = 0.022 / restaurant_service.PRECISION_STRAIGHT_TARGET_S
+    assert {round(v, 6) for v, _w in published if v} == {round(expected_speed, 6)}
+    assert published[-5:] == [(0.0, 0.0)] * 5
+    assert velocity[0] == pytest.approx(0.0)
+    assert first_stop_position[0] < 0.022
+    assert position[0] > first_stop_position[0]
+    assert travelled == pytest.approx(position[0])
+    assert travelled <= 0.022 + 0.003
+
+
+def test_precision_zero_turn_fails_without_fresh_stopped_odometry(monkeypatch):
+    node = route()
+    clock = [0.0]
+    node.latest_motion = (-1.0, 0.0, 0.0)
+    node.escape_velocity = SimpleNamespace(publish=lambda _message: None)
+    node.parking_tf = SimpleNamespace(lookup_transform=lambda *_args, **_kwargs:
+                                      SimpleNamespace(transform=SimpleNamespace(
+                                          translation=SimpleNamespace(
+                                              x=clock[0] * 0.01, y=0.0),
+                                          rotation=SimpleNamespace(
+                                              x=0.0, y=0.0, z=0.0, w=1.0))))
+
+    def spin(*_args, **_kwargs):
+        clock[0] += 0.02
+        node.latest_motion = (clock[0], 0.02, 0.0)
+
+    monkeypatch.setattr(restaurant_service.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(restaurant_service.rclpy, 'spin_once', spin)
+
+    assert node._drive_zero_turn(0.022, precision=True) is None
+    stopped = [e for e in _events(node) if e['event'] == 'straight_drive_stopped']
+    assert stopped[-1]['reason'] == 'odometry did not confirm stop'
+
+
 def test_back_off_grows_with_each_hold_at_the_same_block():
     for wait, distance in ((1, 0.10), (2, 0.20), (3, 0.30)):
         node = route()

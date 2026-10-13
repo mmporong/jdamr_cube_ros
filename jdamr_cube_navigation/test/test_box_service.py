@@ -46,6 +46,7 @@ def mission(monkeypatch):
     node.registry = {'map': {}, 'keepout': {}}
     node.stop_requested = False
     node._navigation_ready = Mock(return_value=True)
+    node._operator_link_ready = Mock(return_value=True)
     for method in ('verify_live_maps', 'emit'):
         setattr(node, method, Mock())
     for method in ('wait_until_ready', '_parking_parameters_ready', 'preflight', 'execute'):
@@ -1911,3 +1912,117 @@ def test_transit_option_selects_the_planner_and_controller_trees():
     assert args.transit == 'navfn-mppi' and args.camera_always_on is False
     with pytest.raises(SystemExit):
         parse_args([*base, '--transit', 'dwb'])
+
+
+@pytest.mark.parametrize('final_gap_m', [0.010, 0.012])
+def test_one_centimetre_table_parking_closes_remaining_gap_in_same_visit(mission, final_gap_m):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 0), {}), ((0.905, 0, 0), {}),
+        ((1.0 - 0.065 - final_gap_m, 0, 0), {})]
+    deadlines = []
+
+    def approach(*_args):
+        deadlines.append(mission.run_deadline_s)
+        return True, None
+
+    mission._straight_final_approach.side_effect = approach
+    assert invoke(mission)
+    assert mission._straight_final_approach.call_count == 2
+    assert mission.observe_target.call_count == 4
+    assert all(deadline is not None for deadline in deadlines)
+    assert mission.run_deadline_s is None
+    assert mission.emit.call_args.args == ('box_approach_finished',)
+    assert mission.emit.call_args.kwargs['estimated_front_gap_m'] == pytest.approx(final_gap_m)
+
+
+def test_one_centimetre_table_parking_does_not_accept_two_centimetres(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 0), {}), ((0.915, 0, 0), {}), ((0.925, 0, 0), {})]
+    assert invoke(mission)
+    assert mission._straight_final_approach.call_count == 2
+
+
+def test_one_centimetre_table_correction_stops_when_gap_does_not_improve(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 0), {}), ((0.905, 0, 0), {}), ((0.905, 0, 0), {})]
+    assert not invoke(mission)
+    assert mission._straight_final_approach.call_count == 2
+    assert mission.observe_target.call_count == 4
+    assert any(call.kwargs.get('reason') == 'final_gap_no_progress'
+               for call in mission.emit.call_args_list)
+
+
+def test_one_centimetre_table_correction_never_reuses_face_after_observation_loss(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    target = _table_edge_final_target(1.0)
+    mission.observe_target.side_effect = [
+        target, target, target, RuntimeError('depth unavailable')]
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 0), {}), ((0.905, 0, 0), {})]
+    assert not invoke(mission)
+    assert mission._straight_final_approach.call_count == 2
+    assert mission.emit.call_args.kwargs['final_depth_measurement'] is False
+
+
+def test_one_centimetre_table_correction_never_advances_after_overshoot(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 0), {}), ((0.933, 0, 0), {})]
+    assert not invoke(mission)
+    mission._straight_final_approach.assert_called_once()
+    assert mission.emit.call_args.args == ('box_gap_not_confirmed',)
+
+
+def test_one_centimetre_table_correction_has_a_bounded_iteration_count(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 0), {}), *[((x, 0, 0), {}) for x in [0.855, 0.865, 0.875, 0.885]]]
+    assert not invoke(mission)
+    assert mission._straight_final_approach.call_count == 4
+    assert mission.emit.call_args.kwargs['reason'] == 'final_gap_correction_limit'
+
+
+def test_fine_trim_corrects_small_overshoot_without_restarting_the_visit():
+    node = object.__new__(BoxServiceRoute)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.parking_contract = {'yaw_tolerance_rad': math.radians(3.0)}
+    node.box_front_half_width_m = 0.225
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((0.7, 0.0, 0.0), {}), ((0.7, 0.0, 0.0249), {})])
+    node.stop_requested = False
+    node._navigation_ready = Mock(return_value=True)
+    node._operator_link_ready = Mock(return_value=True)
+    node._rotate_in_place = Mock(side_effect=[0.031, -0.0061])
+    node._pose = Mock(return_value=PoseStamped())
+    node._frozen_in_odom = Mock(return_value=(None, lambda x, y, yaw: (x, y, yaw)))
+    node._drive_zero_turn = Mock(return_value=0.3)
+    node.emit = Mock()
+    reached, _ = node._zero_turn_final_approach({
+        'face_center_map_xy_m': (1.0, 0.0),
+        'outward_normal_map_xy': (-math.cos(0.025), -math.sin(0.025)),
+    }, 0.065)
+    assert reached
+    assert node._rotate_in_place.call_count == 2
+    assert node._rotate_in_place.call_args.args[0] == pytest.approx(-0.006)
+    assert node._drive_zero_turn.call_args.kwargs == {'precision': True}
+
+
+def test_one_centimetre_table_correction_requires_current_operator_link(mission):
+    mission.surface_mode = 'table_edge'
+    mission.final_gap_override_m = 0.01
+    mission._operator_link_ready.return_value = False
+    mission.capture_stationary_pose.side_effect = [
+        ((0, 0, 0), {}), ((0.905, 0, 0), {})]
+    assert not invoke(mission)
+    mission._straight_final_approach.assert_called_once()
+    assert mission.emit.call_args.kwargs['reason'] == 'navigation_not_ready'
