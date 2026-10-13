@@ -10,6 +10,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 HERE = Path(__file__).resolve().parent
 if not (Path.home() / 'jdamr_data/map_20260930_manual/aligned/destinations.json').exists():
@@ -551,6 +552,55 @@ def test_table_edge_via_is_spooled_only_when_explicitly_requested(env, monkeypat
     argv = json.loads(next(s for s in pi.stdins if s))['argv']
     assert argv[argv.index('--via-id') + 1] == d.VIA_ID
     assert argv[argv.index('--surface-mode') + 1] == 'table_edge'
+
+
+@pytest.mark.parametrize('extra,route_name', [
+    ({}, 'table_02_direct_route.yaml'),
+    ({'surface_mode': 'table_edge', 'with_via': True}, 'table_02_route.yaml'),
+    ({'surface_mode': 'front'}, 'table_02_route.yaml'),
+    ({'surface_mode': 'front', 'skip_via': True}, 'table_02_direct_route.yaml'),
+    ({'route': '/operator/current_table_route.yaml'}, '/operator/current_table_route.yaml'),
+])
+def test_spooled_route_start_matches_the_selected_via_mode(
+        env, monkeypatch, extra, route_name):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    d.run_cycle(go_args(**extra), d.load_state(), 'table_02')
+    argv = json.loads(next(s for s in pi.stdins if s))['argv']
+    expected = Path(route_name) if Path(route_name).is_absolute() else env / route_name
+    assert argv[argv.index('--approach-route') + 1] == str(expected)
+
+
+def test_generated_table_routes_keep_distinct_dock_and_via_starts(env, monkeypatch):
+    mask = env / 'keepout.pgm'
+    mask.write_bytes(b'P5\n2 2\n255\n\x00\xff\xff\x00')
+    mask_yaml = env / 'keepout.yaml'
+    mask_yaml.write_text(yaml.safe_dump({'image': mask.name}))
+    monkeypatch.setattr(d, 'KEEPOUT_YAML', mask_yaml)
+    monkeypatch.setattr(d, 'MAP_YAML', env / 'map.yaml')
+    home = (0.1, 0.2, -0.3)
+    d.write_routes(home)
+    water_x, water_y, _ = d.along_normal(d.VIA_ID, d.ESCAPE_M)
+    for table_id in d.TABLES:
+        via = yaml.safe_load((env / f'{table_id}_route.yaml').read_text())
+        dock = yaml.safe_load((env / f'{table_id}_direct_route.yaml').read_text())
+        assert via['start_pose'] == {'x': round(water_x, 3), 'y': round(water_y, 3)}
+        assert dock['start_pose'] == {'x': home[0], 'y': home[1]}
+        assert dock['waypoints'][0]['id'] == 'home_exit'
+        assert dock['waypoints'][1:] == via['waypoints']
+        assert len({wp['id'] for wp in dock['waypoints']}) == len(dock['waypoints'])
+        for field in ('frame_id', 'map_yaml', 'keepout_mask_yaml',
+                      'expected_mask_sha256', 'max_route_start_distance_m'):
+            assert dock[field] == via[field]
+
+
+def test_departure_log_reports_the_spooled_stops(env, monkeypatch, capsys):
+    pi = ExecutorPi()
+    monkeypatch.setattr(d, 'pi', pi)
+    monkeypatch.setattr(d, 'read_events', lambda _path: [{'event': 'home_arrived'}])
+    d.run_cycle(go_args(), d.load_state(), 'table_02')
+    assert 'DEPARTED table_02 -> dock:' in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('extra', [

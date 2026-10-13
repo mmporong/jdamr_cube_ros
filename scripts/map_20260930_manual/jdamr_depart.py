@@ -227,7 +227,7 @@ def refuse_during_cycle(action):
 
 # ---------------------------------------------------------------- assets
 def write_routes(home):
-    """Water route from the dock; table routes from the water station's escape pose."""
+    """Generate table approaches from the dock and from the water stop's escape pose."""
     keepout_image = KEEPOUT_YAML.parent / yaml.safe_load(KEEPOUT_YAML.read_text())['image']
     hx, hy, hyaw = home
     exit_wp = {'id': 'home_exit', 'x': round(hx + HOME_EXIT_M * math.cos(hyaw), 3),
@@ -252,6 +252,15 @@ def write_routes(home):
         }
         path = P2 / f'{dest_id}_route.yaml'
         path.write_text(yaml.safe_dump(route, sort_keys=False, allow_unicode=True))
+        if dest_id in TABLES:
+            dock_route = {
+                **route,
+                'start_pose': {'x': round(hx, 3), 'y': round(hy, 3)},
+                'waypoints': [exit_wp, *waypoints],
+                'start_basis': 'registered dock pose; water stop omitted',
+            }
+            (P2 / f'{dest_id}_direct_route.yaml').write_text(
+                yaml.safe_dump(dock_route, sort_keys=False, allow_unicode=True))
     log(f'routes written: home ({hx:.3f}, {hy:.3f}, {math.degrees(hyaw):.1f} deg), '
         f'water escape ({escape[0]:.3f}, {escape[1]:.3f})')
 
@@ -608,8 +617,11 @@ def cmd_init(args):
     log(f'home_dock ({home["x_m"]:.3f}, {home["y_m"]:.3f}, '
         f'{math.degrees(home["yaw_rad"]):.1f} deg)')
     write_routes((home['x_m'], home['y_m'], home['yaw_rad']))
-    sh(f'rsync -a {P2}/water_station_route.yaml {P2}/table_01_route.yaml '
-       f'{P2}/table_02_route.yaml {HOST}:{P2}/')
+    route_paths = [P2 / f'{VIA_ID}_route.yaml']
+    route_paths.extend(P2 / f'{table_id}{suffix}_route.yaml'
+                       for table_id in TABLES for suffix in ('', '_direct'))
+    sh(f'rsync -a {" ".join(shlex.quote(str(path)) for path in route_paths)} '
+       f'{HOST}:{shlex.quote(str(P2))}/')
     # Box candidates: persistent unmapped LiDAR returns near each marker.
     raw, n_scans = dock_survey.raw_points_map(str(run_dir / 'scan.json'), pose)
     img, occ, _free, res, origin = scan_match.load_map(str(MAP_YAML))
@@ -636,7 +648,8 @@ def cmd_init(args):
                   'regions': regions, 'init_time': time.time(), 'localized': True,
                   'init_local_only': bool(args.local_only)})
     save_state(state)
-    log('init complete: robot localized at the dock, navigation active, no motion sent')
+    log('init complete: robot localized at the scan-matched placement, '
+        'navigation active, no motion sent')
 
 
 # ---------------------------------------------------------------- go
@@ -707,7 +720,9 @@ def run_cycle(args, state, table_id):
     save_state(early)
     try:
         unit = f'jdamr-table-cycle-{run.replace("_", "-")}'
-        route = Path(args.route) if args.route else P2 / f'{table_id}_route.yaml'
+        route_suffix = '' if include_via else '_direct'
+        route = (Path(args.route) if args.route
+                 else P2 / f'{table_id}{route_suffix}_route.yaml')
         # Refreshed by every poll below; the executor starts no further goal once it is
         # older than 30 s (the PC stop is the only remote stop without a physical one).
         heartbeat = f'{EXECUTOR_SPOOL}/{run}.heartbeat'
@@ -770,7 +785,7 @@ def run_cycle(args, state, table_id):
         except Exception as error:  # diagnostics must not end run tracking mid-drive
             log(f'monitor start failed ({error}); the run continues without it')
         stops = ('dock only' if args.dock_only else
-                 f'{table_id}' if args.skip_via else f'{VIA_ID} -> {table_id}')
+                 f'{VIA_ID} -> {table_id}' if include_via else f'{table_id}')
         alerts = 'on' if load_state().get('operator_alerts', True) is not False else 'off'
         log(f'DEPARTED {stops} -> dock: unit {unit}, log {run_dir}/cycle_events.jsonl, '
             f'operator alerts {alerts}')
@@ -1170,7 +1185,9 @@ def main():
                     help='one or more tables; several run as dock-to-dock cycles in order')
     go.add_argument('--dock-wait-s', type=float, default=DOCK_WAIT_S,
                     help='wait at the dock between cycles of a sequence (charging stop; default none)')
-    go.add_argument('--route', help='route file (default: <table_id>_route.yaml)')
+    go.add_argument('--route',
+                    help='route file (default: <table_id>_direct_route.yaml without a via; '
+                         '<table_id>_route.yaml after a via)')
     go.add_argument('--region', nargs=3, type=float, metavar=('X', 'Y', 'R'))
     go.add_argument('--via-route', help='water_station route (default: <P2>/water_station_route.yaml)')
     go.add_argument('--skip-via', action='store_true',
