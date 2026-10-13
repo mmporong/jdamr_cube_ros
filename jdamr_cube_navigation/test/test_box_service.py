@@ -93,6 +93,85 @@ def test_transit_alignment_final_sequence(mission):
     assert mission.emit.call_args.args == ('box_approach_finished',)
     assert mission.emit.call_args.kwargs['estimated_front_gap_m'] == pytest.approx(0.05)
     assert mission.emit.call_args.kwargs['physical_accuracy'] == 'NOT_EXTERNALLY_MEASURED'
+    assert mission.emit.call_args.kwargs['final_depth_measurement'] is False
+
+
+def _table_edge_final_target(face_x):
+    """Return a map-frame table edge used by final measurement tests."""
+    return {
+        'x_m': face_x - 0.115,
+        'y_m': 0.0,
+        'yaw_rad': 0.0,
+        'face_center_map_xy_m': (face_x, 0.0),
+        'outward_normal_map_xy': (-1.0, 0.0),
+    }
+
+
+def _run_table_edge_final_measurement(mission, fresh_target):
+    """Run table-edge parking with a distinct post-motion observation."""
+    mission.surface_mode = 'table_edge'
+    before = _table_edge_final_target(0.97)
+    mission.observe_target.side_effect = [before, before, fresh_target]
+
+    def stale_odom_transform(*_args):
+        raise AssertionError('post-motion table edge reused frozen odom transform')
+
+    mission._straight_final_approach.return_value = (True, stale_odom_transform)
+    return invoke(mission)
+
+
+def test_table_edge_final_depth_rejects_odom_success_at_eight_centimetres(mission):
+    assert not _run_table_edge_final_measurement(
+        mission, _table_edge_final_target(1.03))
+
+    result = mission.emit.call_args
+    assert result.args == ('box_gap_not_confirmed',)
+    assert result.kwargs['estimated_nearest_front_gap_m'] == pytest.approx(0.08)
+    assert result.kwargs['final_depth_measurement'] is True
+    assert result.kwargs['physical_accuracy'] == 'NOT_EXTERNALLY_MEASURED'
+    assert mission.observe_target.call_count == 3
+
+
+def test_table_edge_final_depth_confirms_fresh_five_centimetres_in_map(mission):
+    assert _run_table_edge_final_measurement(
+        mission, _table_edge_final_target(1.0))
+
+    result = mission.emit.call_args
+    assert result.args == ('box_approach_finished',)
+    assert result.kwargs['estimated_nearest_front_gap_m'] == pytest.approx(0.05)
+    assert result.kwargs['final_depth_measurement'] is True
+    assert mission.selected_pose == {
+        'id': 'final_approach', 'x_m': 0.885, 'y_m': 0.0, 'yaw_rad': 0.0}
+    assert mission.last_box_face == {
+        'face_center_map_xy_m': [1.0, 0.0],
+        'outward_normal_map_xy': [-1.0, 0.0],
+    }
+    assert [call.args[2] for call in mission.observe_target.call_args_list] == [
+        0.45, 0.05, 0.05]
+
+
+def test_table_edge_final_depth_observation_failure_has_no_success(mission):
+    mission.surface_mode = 'table_edge'
+    before = _table_edge_final_target(0.97)
+    mission.observe_target.side_effect = [
+        before,
+        before,
+        box_service.BoxObservationUnavailable(
+            'no_stable_table_edge', retryable=True),
+    ]
+
+    assert not invoke(mission)
+
+    result = mission.emit.call_args
+    assert result.args == ('failed',)
+    assert result.kwargs == {
+        'phase': 'final_depth_measurement',
+        'reason': 'no_stable_table_edge',
+        'final_depth_measurement': False,
+    }
+    assert not any(call.args == ('box_approach_finished',)
+                   for call in mission.emit.call_args_list)
+    assert mission.observe_target.call_count == 3
 
 
 def test_transit_failure_never_observes_or_dispatches_alignment(mission):

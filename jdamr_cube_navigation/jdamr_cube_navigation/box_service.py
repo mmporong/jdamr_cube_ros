@@ -1055,12 +1055,27 @@ class BoxServiceRoute(ServiceRoute):
                     return False
         # Motion is over; the deadline must not stop the final stationary capture.
         self.run_deadline_s = None
+        final_depth_measurement = False
+        if surface_mode == 'table_edge':
+            try:
+                target = self.observe_target(
+                    camera_mount, front_extent_m, self._final_gap_m(),
+                    region_xy, region_radius_m)
+            except (BoxObservationUnavailable, RuntimeError, ValueError) as error:
+                reason = getattr(error, 'reason', None) or str(error) or type(error).__name__
+                self.emit('failed', phase='final_depth_measurement', reason=reason,
+                          final_depth_measurement=False)
+                return False
+            final_depth_measurement = True
+            self.last_box_face = {
+                'face_center_map_xy_m': list(target['face_center_map_xy_m']),
+                'outward_normal_map_xy': list(target['outward_normal_map_xy'])}
         actual, _ = self.capture_stationary_pose()
         outward = target['outward_normal_map_xy']
         face = target['face_center_map_xy_m']
         target_yaw = target['yaw_rad']
         parked = actual
-        if straight_to_odom is not None:
+        if straight_to_odom is not None and not final_depth_measurement:
             # The straight approach ran in odom from the aligned pose; judge the
             # gap there too, against the face observed before it.
             face_x, face_y, _ = straight_to_odom(face[0], face[1], 0.0)
@@ -1104,7 +1119,7 @@ class BoxServiceRoute(ServiceRoute):
                   estimated_face_yaw_error_rad=yaw_error,
                   desired_front_gap_m=target_gap_m, confirmation=self.confirmation,
                   physical_accuracy='NOT_EXTERNALLY_MEASURED',
-                  final_depth_measurement=False)
+                  final_depth_measurement=final_depth_measurement)
         return gap_confirmed
 
     def _final_gap_m(self):
