@@ -199,6 +199,37 @@ def test_resume_observation_skips_transit_but_keeps_both_parking_phases(mission)
     mission._precision_collision_ready.assert_called_once()
 
 
+def test_resume_final_approach_skips_transit_and_face_alignment(mission):
+    mission.surface_mode = 'table_edge'
+    original = box_service.load_route('route')
+    original['waypoints'][-1].update(x=0, y=0)
+    before = _table_edge_final_target(0.97)
+    fresh = _table_edge_final_target(1.0)
+    mission.observe_target.side_effect = [before, fresh]
+
+    assert mission.visit_observed_box(
+        'route', {}, {'front_to_wheel_axis': {'value': 0.065},
+                      'wheel_outer_width': {'value': 0.540}},
+        'table_01', (1, 0), 0.6, execute=True, candidate_trial=True,
+        resume_at_observation=True, resume_at_final_approach=True)
+
+    mission.preflight.assert_not_called()
+    mission.execute.assert_not_called()
+    mission._straight_final_approach.assert_called_once_with(before, 0.065)
+    assert mission.observe_target.call_count == 2
+    assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.05, 0.05]
+    mission.plan_pose.assert_called_once_with(
+        {**before, 'id': 'final_approach', 'priority': 1, 'approach_offset_m': 0.5},
+        single=True, end_tolerance_m=box_service.FINAL_PLAN_END_TOLERANCE_M)
+
+
+def test_resume_final_approach_defaults_off(mission):
+    assert inspect.signature(BoxServiceRoute.visit_observed_box).parameters[
+        'resume_at_final_approach'].default is False
+    assert invoke(mission)
+    assert [call.args[2] for call in mission.observe_target.call_args_list] == [0.45, 0.05]
+
+
 def test_resume_observation_rejects_robot_outside_observation_region(mission):
     original = box_service.load_route('route')
     original['waypoints'][-1].update(x=1, y=0)
@@ -437,6 +468,25 @@ def test_search_and_resume_require_explicit_execution(flag):
         parse_args([*base, flag])
     args = parse_args([*base, '--execute', '--candidate-trial', flag])
     assert getattr(args, flag.removeprefix('--').replace('-', '_')) is True
+
+
+def test_final_approach_resume_requires_complete_table_edge_resume_flags():
+    base = [
+        '--registry', '/r', '--approach-route', '/a', '--camera-mount', '/c',
+        '--geometry', '/g', '--log', '/l', '--parking-contract', '/p',
+        '--table-id', 'table_01', '--region-xy', '1.896', '0.303',
+    ]
+    execute = [*base, '--execute', '--candidate-trial']
+    valid = parse_args([
+        *execute, '--resume-at-observation', '--resume-at-final-approach',
+        '--surface-mode', 'table_edge'])
+    assert valid.resume_at_final_approach is True
+    for invalid in (
+            [*base, '--resume-at-final-approach'],
+            [*execute, '--resume-at-final-approach'],
+            [*execute, '--resume-at-observation', '--resume-at-final-approach']):
+        with pytest.raises(SystemExit):
+            parse_args(invalid)
 
 
 def test_direct_execution_requires_candidate_before_runtime_or_motion(mission):
@@ -1567,13 +1617,20 @@ def test_final_gap_and_dwell_reach_the_attempt(monkeypatch, tmp_path):
     box_service.main([*argv, '--final-gap-m', '0.02', '--dwell-s', '30',
                       '--via-id', 'water_station', '--via-route', str(tmp_path / 'route.yaml'),
                       '--via-region-xy', '0.06', '-1.27', '--log', str(tmp_path / 'trial.jsonl')])
-    default, trial = created
+    box_service.main([*argv, '--resume-at-observation', '--resume-at-final-approach',
+                      '--surface-mode', 'table_edge',
+                      '--log', str(tmp_path / 'resume_final.jsonl')])
+    default, trial, resume_final = created
     assert default.final_gap_override_m is None
     assert default.dwell_and_return_home.call_args.args[0] == box_service.STOP_DWELL_S
     assert trial.final_gap_override_m == 0.02
     assert trial.dwell_and_return_home.call_args.args[0] == 30.0
     # The water stop holds as long as the table.
     assert trial.dwell_and_leave.call_args.args[0] == 30.0
+    assert resume_final.visit_observed_box.call_args.kwargs[
+        'resume_at_observation'] is True
+    assert resume_final.visit_observed_box.call_args.kwargs[
+        'resume_at_final_approach'] is True
 
 
 def _final_judged(mission, final_pose, frame_width_m=0.45):

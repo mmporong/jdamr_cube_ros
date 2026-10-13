@@ -7,19 +7,36 @@ camera_mount:
     y_m: 0.0
     z_m: 0.9070543261338818
     roll_rad: 0.011934068034722573
-    pitch_rad: 0.46681472099722787
+    pitch_rad: 0.2617993877991494
     yaw_rad: 0.0
   provenance:
     derived_at: '2026-10-12'
-    position_basis: 실차 new_base_real.urdf/new_base_geometry.yaml의 하부 뒤끝 0.065 - 0.340
-      = -0.275 m. 상판 340x450 mm CAD와 상·하판 외곽 정렬 가정, 사용자 상판 뒤끝 렌즈 설명을 결합한 추론이며 상판 실측
-      좌표가 아님
+    position_basis: 차체 앞끝 좌표와 사용자가 확인한 앞끝-렌즈 수평 거리로 x를 산출.
+      앞끝 좌표는 new_base_geometry.yaml의 front_to_wheel_axis를 사용함
+    front_to_lens_horizontal_distance:
+      value: 0.340
+      unit: m
+      measured_at: '2026-10-13'
+      valid_for: 현재 차체 앞끝과 깊이 렌즈 중심의 수평 앞뒤 거리
+      source: user_confirmation
     assembly_assumptions:
-    - 상판과 하판 전후 외곽 정렬
     - 렌즈가 뒤끝의 좌우 중앙
     - 'yaw 0: 차체 전방을 보는 카메라'
-    orientation_height_basis: 정지 깊이 영상의 바닥 후보 평면 3개 프레임 SVD 법선/거리 평균, 광학->camera_link
-      후 RzRyRx 회전
+    orientation_height_basis: 높이와 roll은 기존 정지 깊이 영상 바닥 후보 평면 3개 프레임의
+      SVD 법선/거리에서 산출. pitch는 아래 임시 추정값을 사용함
+    pitch_estimate:
+      value: 15.0
+      unit: deg
+      estimated_at: '2026-10-13'
+      valid_for: 현재 책상을 향한 카메라 장착 상태
+      source: user_approximate_downward_angle
+      status: provisional_not_angle_measured
+      stationary_check:
+        reference_gap_m: 0.13
+        reference_source: user_reported_left_and_right_front_corner_gaps
+        recomputed_center_gap_range_m: [0.12711837187483258, 0.12779718787583155]
+        evidence: $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_parking_20261013_110352/parking_20261013_120435/pitch_15deg_replay.json
+        scope: 동일 정지 위치의 간격 대조이며 각도 실측이나 다른 거리의 정확도 검증이 아님
     evidence: $HOME/jdamr_data/predeparture_20261012_141234/camera_floor_samples.npz;
       floor_plane_fit.json; floor_candidate.png
     floor_inlier_ratio_range:

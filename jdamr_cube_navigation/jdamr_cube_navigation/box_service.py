@@ -908,7 +908,8 @@ class BoxServiceRoute(ServiceRoute):
     def visit_observed_box(self, route_path, camera_mount, geometry,
                            table_id, region_xy, region_radius_m, execute=False,
                            candidate_trial=False, resume_at_observation=False,
-                           search=False, task_timeout_s=240.0):
+                           resume_at_final_approach=False, search=False,
+                           task_timeout_s=240.0):
         """Separate transit, face alignment and final approach in the result log."""
         if execute and candidate_trial is not True:
             raise RuntimeError(
@@ -918,6 +919,10 @@ class BoxServiceRoute(ServiceRoute):
         surface_mode = getattr(self, 'surface_mode', 'front')
         if surface_mode not in SURFACE_MODES:
             raise ValueError('surface mode must be front or table_edge')
+        if resume_at_final_approach and not (
+                execute and resume_at_observation and surface_mode == 'table_edge'):
+            raise RuntimeError(
+                'final approach resume requires executed table_edge observation resume')
         route = load_route(route_path)
         front_extent = geometry['front_to_wheel_axis']
         front_extent_m = front_extent['value']
@@ -993,7 +998,10 @@ class BoxServiceRoute(ServiceRoute):
         search_budget = BoxSearchBudget()
         # Face alignment happens while depth is still in its usable range.
         straight_to_odom = None
-        for phase, gap_m in (('face_alignment', 0.45), ('final_approach', FINAL_PLAN_GAP_M)):
+        phases = ((('final_approach', FINAL_PLAN_GAP_M),)
+                  if resume_at_final_approach else
+                  (('face_alignment', 0.45), ('final_approach', FINAL_PLAN_GAP_M)))
+        for phase, gap_m in phases:
             # Observation and face alignment are intermediate; the final approach,
             # its confirmation and the final capture keep the strict AMCL bounds.
             with self._localization_bound(phase == 'face_alignment'):
@@ -1447,6 +1455,10 @@ def parse_args(argv=None):
         '--resume-at-observation', action='store_true',
         help='Resume from the already reached observation waypoint')
     parser.add_argument(
+        '--resume-at-final-approach', action='store_true',
+        help='At a reached table_edge observation, skip 45 cm face alignment and '
+             'run the observed final approach only')
+    parser.add_argument(
         '--candidate-trial', action='store_true',
         help='Explicitly allow the nominal-camera candidate parking trial')
     parser.add_argument(
@@ -1518,6 +1530,12 @@ def parse_args(argv=None):
         parser.error('--search requires --execute')
     if args.resume_at_observation and not args.execute:
         parser.error('--resume-at-observation requires --execute')
+    if args.resume_at_final_approach and not args.execute:
+        parser.error('--resume-at-final-approach requires --execute')
+    if args.resume_at_final_approach and not args.resume_at_observation:
+        parser.error('--resume-at-final-approach requires --resume-at-observation')
+    if args.resume_at_final_approach and args.surface_mode != 'table_edge':
+        parser.error('--resume-at-final-approach requires --surface-mode table_edge')
     if not math.isfinite(args.task_timeout_s) or args.task_timeout_s <= 0.0:
         parser.error('--task-timeout-s must be finite and positive')
     if args.return_home and not args.execute:
@@ -1637,6 +1655,7 @@ def run_attempt(args, active=None):
                     args.via_region_xy, args.via_region_radius_m, execute=args.execute,
                     candidate_trial=args.candidate_trial,
                     resume_at_observation=args.resume_at_observation,
+                    resume_at_final_approach=args.resume_at_final_approach,
                     search=args.search, task_timeout_s=args.task_timeout_s)
                 ok = ok and node.dwell_and_leave(args.dwell_s)
                 if ok and node.battery_return_due():
@@ -1650,6 +1669,8 @@ def run_attempt(args, active=None):
                 candidate_trial=args.candidate_trial,
                 resume_at_observation=(args.resume_at_observation
                                        and (args.via_id is None or via_done)),
+                resume_at_final_approach=(args.resume_at_final_approach
+                                          and (args.via_id is None or via_done)),
                 search=args.search, task_timeout_s=args.task_timeout_s)
             # Exit 0 only when every requested stage, including the return, succeeded.
             if ok and args.return_home:
