@@ -1,0 +1,70 @@
+{
+  "source": "user ruler reports and final stationary depth observations",
+  "source_root": "$HOME/jdamr_data/map_20260930_manual/aligned/runs/table_parking_20261013_110352",
+  "frame_width_m": 0.45,
+  "physical_validation": "two reference samples used for provisional calibration; not independent validation",
+  "samples": [
+    {
+      "run": "parking_20261013_123410",
+      "measured_left_gap_m": 0.057,
+      "measured_right_gap_m": 0.075,
+      "observation": {
+        "stamp_s": 1791862487.9449675,
+        "detected": true,
+        "stable": true,
+        "surface_kind": "table_edge",
+        "edge_endpoints_optical_m": [
+          [
+            -0.19321652124901223,
+            0.060659997900918146,
+            0.42771649404363826
+          ],
+          [
+            0.18994553713055953,
+            0.05374644637112414,
+            0.43645130552596906
+          ]
+        ],
+        "plane_normal": [
+          -0.06852774154707844,
+          -0.8552592914088044,
+          -0.5136491926377057
+        ],
+        "table_height_m": 0.7399915013933352,
+        "edge_rms_m": 0.001214230168670808,
+        "confidence": 0.785807725525255
+      }
+    },
+    {
+      "run": "parking_20261013_134752",
+      "measured_left_gap_m": 0.05,
+      "measured_right_gap_m": 0.065,
+      "observation": {
+        "stamp_s": 1791866913.9574146,
+        "detected": true,
+        "stable": true,
+        "surface_kind": "table_edge",
+        "edge_endpoints_optical_m": [
+          [
+            -0.19194058577490838,
+            0.059319462762167006,
+            0.4237475750255899
+          ],
+          [
+            0.18909282557199672,
+            0.054167411566642405,
+            0.4260036504971428
+          ]
+        ],
+        "plane_normal": [
+          -0.07051242417361571,
+          -0.8497164274378057,
+          -0.5225035798724182
+        ],
+        "table_height_m": 0.7422987906275003,
+        "edge_rms_m": 0.001377075313388558,
+        "confidence": 0.7837341745030757
+      }
+    }
+  ]
+}

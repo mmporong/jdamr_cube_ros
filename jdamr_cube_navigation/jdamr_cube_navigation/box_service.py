@@ -16,7 +16,6 @@ from jdamr_cube_navigation.box_docking_target import (
     _validated_mount, compute_box_docking_target, MINIMUM_DISTANCE_M,
 )
 from jdamr_cube_navigation.box_lidar_witness import witness_box_face_with_lidar
-from jdamr_cube_navigation.table_edge_target import compute_table_edge_docking_target
 from jdamr_cube_navigation.corridor_route import (
     load_route, spin_node, TRANSIT_PLAN_END_TOLERANCE_M)
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
@@ -27,6 +26,7 @@ from jdamr_cube_navigation.parking import (
 from jdamr_cube_navigation.restaurant_service import (
     OPERATOR_LINK_TIMEOUT_S, SCAN_MEMORY_KEYFRAMES, ServiceRoute, TRANSIT_VARIANTS)
 from jdamr_cube_navigation.service_destinations import load_registry, verify_identity
+from jdamr_cube_navigation.table_edge_target import compute_table_edge_docking_target
 from nav2_msgs.action import Spin
 from nav_msgs.msg import Path as RosPath
 import rclpy
@@ -1105,17 +1105,29 @@ class BoxServiceRoute(ServiceRoute):
         yaw_error = abs(math.atan2(
             math.sin(actual[2] - target_yaw),
             math.cos(actual[2] - target_yaw)))
-        # The nearest front corner decides, with the contract heading: at a 1.5 cm
-        # target a 3 deg stop judged on the centre left a corner computed 0.8 cm inside
-        # the face (review 2026-10-06). At 5 cm the centre was judged (2026-09-30
-        # table_02: 2.74 deg, centre 5.7 cm, corners 4.4 and 7.0 cm).
         target_gap_m = self._final_gap_m()
         nearest_gap_m = min(corner_gaps)
+        if surface_mode == 'table_edge':
+            # A table edge represents the whole parked face. Confirm both front
+            # corners so a near corner cannot hide a visibly skewed far corner.
+            gap_confirmation_basis = 'both_front_corners'
+            gaps_confirmed = all(
+                gap > 0.0 and abs(gap - target_gap_m) <= FINAL_GAP_TOLERANCE_M
+                for gap in corner_gaps)
+            allowed_yaw_error_rad = min(
+                self.parking_contract['yaw_tolerance_rad'], FINAL_HEADING_TRIM_RAD)
+        else:
+            # Preserve the legacy box/front-face contract, where the leading
+            # (nearest) corner is the clearance reference.
+            gap_confirmation_basis = 'nearest_front_corner'
+            gaps_confirmed = (
+                nearest_gap_m > 0.0
+                and abs(nearest_gap_m - target_gap_m) <= FINAL_GAP_TOLERANCE_M)
+            allowed_yaw_error_rad = self.parking_contract['yaw_tolerance_rad']
         gap_confirmed = (
             math.isfinite(estimated_gap_m) and all(math.isfinite(gap) for gap in corner_gaps)
-            and nearest_gap_m > 0.0
-            and abs(nearest_gap_m - target_gap_m) <= FINAL_GAP_TOLERANCE_M
-            and yaw_error <= self.parking_contract['yaw_tolerance_rad'])
+            and gaps_confirmed
+            and yaw_error <= allowed_yaw_error_rad)
         if gap_confirmed:
             # The dwell holds the confirmed stop where it is (map pose at rest).
             self.selected_pose = {'id': 'final_approach', 'x_m': parked[0],
@@ -1125,6 +1137,8 @@ class BoxServiceRoute(ServiceRoute):
                   estimated_front_corner_gaps_m=corner_gaps,
                   estimated_nearest_front_gap_m=nearest_gap_m,
                   estimated_face_yaw_error_rad=yaw_error,
+                  gap_confirmation_basis=gap_confirmation_basis,
+                  allowed_face_yaw_error_rad=allowed_yaw_error_rad,
                   desired_front_gap_m=target_gap_m, confirmation=self.confirmation,
                   physical_accuracy='NOT_EXTERNALLY_MEASURED',
                   final_depth_measurement=final_depth_measurement)

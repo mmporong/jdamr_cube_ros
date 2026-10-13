@@ -30,6 +30,8 @@ PARAMS = ROOT / 'jdamr_cube_navigation/config/new_base_nav2_params.yaml'
 GEOMETRY = ROOT / 'jdamr_cube_description/config/new_base_geometry.yaml'
 BOX_CONTRACT = ROOT / 'jdamr_cube_navigation/config/box_parking_contract.yaml'
 CAMERA_MOUNT = ROOT / 'jdamr_cube_navigation/config/camera_mount_derived_20261012.yaml'
+TABLE_EDGE_ALIGNMENT_FIXTURE = (
+    ROOT / 'jdamr_cube_navigation/test/fixtures/table_edge_alignment_20261013.json')
 
 
 @pytest.fixture
@@ -393,6 +395,139 @@ def test_corner_gaps_inside_yaw_tolerance_are_logged_not_gated(mission):
     assert mission.emit.call_args.args == ('box_approach_finished',)
     assert result['estimated_front_gap_m'] == pytest.approx(0.057)
     assert max(result['estimated_front_corner_gaps_m']) > 0.06
+    assert result['gap_confirmation_basis'] == 'nearest_front_corner'
+    assert result['allowed_face_yaw_error_rad'] == pytest.approx(math.radians(3))
+
+
+def _table_edge_pose_for_corner_gaps(
+        left_gap_m, right_gap_m, front_extent_m=0.065, frame_width_m=0.45):
+    """Pose facing a face at x=1 with the requested two front-corner gaps."""
+    # box_service orders corners as robot-right, then robot-left.
+    yaw = -math.asin((right_gap_m - left_gap_m) / frame_width_m)
+    centre_gap_m = (left_gap_m + right_gap_m) / 2.0
+    return (1.0 - centre_gap_m - front_extent_m * math.cos(yaw), 0.0, yaw)
+
+
+def test_table_edge_rejects_synthetic_five_and_six_point_five_centimetre_tilt(mission):
+    mission.surface_mode = 'table_edge'
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(3)}
+
+    result = _final_judged(
+        mission, _table_edge_pose_for_corner_gaps(0.05, 0.065)).kwargs
+
+    assert mission.emit.call_args.args == ('box_gap_not_confirmed',)
+    assert result['estimated_front_corner_gaps_m'] == pytest.approx([0.065, 0.05])
+    assert result['estimated_face_yaw_error_rad'] == pytest.approx(math.radians(1.910213))
+    assert result['gap_confirmation_basis'] == 'both_front_corners'
+    assert result['allowed_face_yaw_error_rad'] == pytest.approx(math.radians(1))
+
+
+def test_table_edge_rejects_far_corner_over_six_centimetres_below_one_degree(mission):
+    mission.surface_mode = 'table_edge'
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(3)}
+
+    result = _final_judged(
+        mission, _table_edge_pose_for_corner_gaps(0.055, 0.061)).kwargs
+
+    assert mission.emit.call_args.args == ('box_gap_not_confirmed',)
+    assert result['estimated_face_yaw_error_rad'] < math.radians(1)
+    assert result['estimated_nearest_front_gap_m'] == pytest.approx(0.055)
+    assert max(result['estimated_front_corner_gaps_m']) == pytest.approx(0.061)
+
+
+def test_table_edge_rejects_yaw_over_one_degree_with_both_gaps_in_range(mission):
+    mission.surface_mode = 'table_edge'
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(3)}
+
+    result = _final_judged(
+        mission, _table_edge_pose_for_corner_gaps(0.045, 0.055)).kwargs
+
+    assert mission.emit.call_args.args == ('box_gap_not_confirmed',)
+    assert result['estimated_front_corner_gaps_m'] == pytest.approx([0.055, 0.045])
+    assert result['estimated_face_yaw_error_rad'] > math.radians(1)
+    assert result['allowed_face_yaw_error_rad'] == pytest.approx(math.radians(1))
+
+
+def test_table_edge_preserves_contract_yaw_tighter_than_one_degree(mission):
+    mission.surface_mode = 'table_edge'
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(0.5)}
+
+    result = _final_judged(
+        mission, _table_edge_pose_for_corner_gaps(0.047, 0.053)).kwargs
+
+    assert mission.emit.call_args.args == ('box_gap_not_confirmed',)
+    assert result['estimated_front_corner_gaps_m'] == pytest.approx([0.053, 0.047])
+    assert result['estimated_face_yaw_error_rad'] > math.radians(0.5)
+    assert result['allowed_face_yaw_error_rad'] == pytest.approx(math.radians(0.5))
+
+
+def test_table_edge_accepts_both_corners_within_gap_and_one_degree(mission):
+    mission.surface_mode = 'table_edge'
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(3)}
+
+    result = _final_judged(
+        mission, _table_edge_pose_for_corner_gaps(0.052, 0.058)).kwargs
+
+    assert mission.emit.call_args.args == ('box_approach_finished',)
+    assert result['estimated_front_corner_gaps_m'] == pytest.approx([0.058, 0.052])
+    assert result['estimated_face_yaw_error_rad'] < math.radians(1)
+
+
+def _replay_table_edge_arrival(mission, camera_mount, sample):
+    """Judge one saved observation at its stationary base-frame origin."""
+    observed = sample['observation']
+    target = box_service.compute_table_edge_docking_target(
+        observed,
+        camera_mount,
+        {'x_m': 0.0, 'y_m': 0.0, 'yaw_rad': 0.0},
+        requested_gap_m=0.05,
+        front_extent_m=0.065,
+        now_s=observed['stamp_s'],
+    )
+    mission.surface_mode = 'table_edge'
+    mission.parking_contract = {'yaw_tolerance_rad': math.radians(3)}
+    mission.observe_target.side_effect = None
+    mission.observe_target.return_value = target
+    return _final_judged(mission, (0.0, 0.0, 0.0))
+
+
+def test_saved_table_edges_with_provisional_yaw_do_not_confirm_arrival(mission):
+    with CAMERA_MOUNT.open(encoding='utf-8') as stream:
+        camera_mount = yaml.safe_load(stream)
+    with TABLE_EDGE_ALIGNMENT_FIXTURE.open(encoding='utf-8') as stream:
+        fixture = json.load(stream)
+
+    for sample in fixture['samples']:
+        event = _replay_table_edge_arrival(mission, camera_mount, sample)
+        result = event.kwargs
+        expected_gaps = [
+            sample['measured_right_gap_m'], sample['measured_left_gap_m']]
+        physical_heading_error_rad = math.asin(
+            (sample['measured_right_gap_m'] - sample['measured_left_gap_m'])
+            / fixture['frame_width_m'])
+
+        assert event.args == ('box_gap_not_confirmed',)
+        assert all(
+            abs(projected - measured) < 0.005
+            for projected, measured in zip(
+                result['estimated_front_corner_gaps_m'], expected_gaps))
+        assert abs(
+            result['estimated_face_yaw_error_rad'] - physical_heading_error_rad
+        ) < math.radians(0.32)
+
+
+def test_latest_saved_table_edge_with_zero_yaw_still_passes_new_gate(mission):
+    with CAMERA_MOUNT.open(encoding='utf-8') as stream:
+        camera_mount = yaml.safe_load(stream)
+    with TABLE_EDGE_ALIGNMENT_FIXTURE.open(encoding='utf-8') as stream:
+        sample = json.load(stream)['samples'][-1]
+    baseline_mount = deepcopy(camera_mount)
+    baseline_mount['camera_mount']['transform']['yaw_rad'] = 0.0
+
+    event = _replay_table_edge_arrival(mission, baseline_mount, sample)
+
+    assert event.args == ('box_approach_finished',)
+    assert event.kwargs['estimated_face_yaw_error_rad'] < math.radians(1)
 
 
 def test_wrong_start_never_dispatches_transit(mission):

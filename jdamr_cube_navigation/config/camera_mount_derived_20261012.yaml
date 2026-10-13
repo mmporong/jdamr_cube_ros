@@ -8,7 +8,7 @@ camera_mount:
     z_m: 0.9070543261338818
     roll_rad: 0.011934068034722573
     pitch_rad: 0.2617993877991494
-    yaw_rad: 0.0
+    yaw_rad: 0.0218139781399056
   provenance:
     derived_at: '2026-10-12'
     position_basis: 차체 앞끝 좌표와 사용자가 확인한 앞끝-렌즈 수평 거리로 x를 산출.
@@ -21,7 +21,6 @@ camera_mount:
       source: user_confirmation
     assembly_assumptions:
     - 렌즈가 뒤끝의 좌우 중앙
-    - 'yaw 0: 차체 전방을 보는 카메라. 아래 후보값은 적용하지 않음'
     orientation_height_basis: 높이와 roll은 기존 정지 깊이 영상 바닥 후보 평면 3개 프레임의
       SVD 법선/거리에서 산출. pitch는 아래 임시 추정값을 사용함
     pitch_estimate:
@@ -37,29 +36,38 @@ camera_mount:
         recomputed_center_gap_range_m: [0.12711837187483258, 0.12779718787583155]
         evidence: $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_parking_20261013_110352/parking_20261013_120435/pitch_15deg_replay.json
         scope: 동일 정지 위치의 간격 대조이며 각도 실측이나 다른 거리의 정확도 검증이 아님
-    yaw_candidate:
-      value: 0.016516581318531814
+    yaw_estimate:
+      value: 0.0218139781399056
       unit: rad
       estimated_at: '2026-10-13'
       valid_for: 현재 카메라와 차체 장착 상태
-      source: user_front_corner_gaps_compared_with_stationary_depth
-      status: unvalidated_single_pose_candidate
-      applied: false
-      reference_left_gap_m: 0.057
-      reference_right_gap_m: 0.075
+      source: user_front_corner_gaps_compared_with_raw_depth_edges
+      status: provisional_two_pose_fit_not_independently_validated
+      applied: true
       reference_width_m: 0.450
-      measured_heading_error_rad: 0.04001067435398891
-      depth_heading_error_rad: 0.023494093035457096
-      calculation: asin((right_gap-left_gap)/frame_width)에서 깊이 관측의 방향 오차를 뺀 값
-      evidence: $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_parking_20261013_110352/parking_20261013_123410/operator_arrival_measurement.json
-      scope: 한 정지 위치의 좌우 간격과 깊이 추정 차이. 카메라 yaw 외에 모서리 검출과 측정 오차가 섞일 수 있어 보정값으로 미적용
+      samples:
+      - run: parking_20261013_123410
+        left_gap_m: 0.057
+        right_gap_m: 0.075
+        measured_heading_error_rad: 0.04001067435398891
+        raw_depth_heading_rad: 0.02359304983530297
+      - run: parking_20261013_134752
+        left_gap_m: 0.050
+        right_gap_m: 0.065
+        measured_heading_error_rad: 0.03333950926130209
+        raw_depth_heading_rad: 0.00612917750017683
+      calculation: 각 실측의 asin((right_gap-left_gap)/frame_width)에서 원본 모서리를 차체 좌표로 변환한 각도를 뺀 뒤 두 차이의 평균을 구함
+      in_sample_max_angle_residual_deg: 0.30918828725603764
+      leave_one_out_max_angle_residual_deg: 0.6183765745120499
+      evidence: $HOME/jdamr_data/map_20260930_manual/aligned/runs/table_parking_20261013_110352/parking_20261013_134752/yaw_bias_offline_comparison.json
+      scope: 같은 책상·같은 장착의 근거리 두 자세에 맞춘 잠정값. 오차 수치는 저장 관측 재계산 결과이며 독립 실차 검증이 아님. 카메라 pitch와 모서리 검출 오차가 섞일 수 있어 재주차 실측 필요
     evidence: $HOME/jdamr_data/predeparture_20261012_141234/camera_floor_samples.npz;
       floor_plane_fit.json; floor_candidate.png
     floor_inlier_ratio_range:
     - 0.8222579903426075
     - 0.8258317929759704
     plane_rms_m_max: 0.007378300169265092
-    physical_parking_accuracy: NOT_MEASURED
+    physical_parking_accuracy: NOT_INDEPENDENTLY_VALIDATED_AFTER_YAW_FIT
     invalidate_when: 카메라·상판 위치 또는 방향 변경
     height_prior: 사용자 약 1 m는 바닥 후보 선택의 선행 추정치. z 값은 관측 평면 거리 평균에서 산출
-    unobserved_axes: y=0 중앙 설치와 yaw=0 전방 정렬은 설치 가정. 좌우 간격 대조의 yaw 후보는 다른 자세에서 부호와 크기를 재확인해야 함
+    unobserved_axes: y=0 중앙 설치는 가정. yaw는 근거리 두 자세의 실측으로 추정했으며 다른 거리·자세에서 재확인해야 함
