@@ -2026,3 +2026,30 @@ def test_one_centimetre_table_correction_requires_current_operator_link(mission)
     assert not invoke(mission)
     mission._straight_final_approach.assert_called_once()
     assert mission.emit.call_args.kwargs['reason'] == 'navigation_not_ready'
+
+
+@pytest.mark.parametrize('remaining_deg, reached_expected', [(0.5, True), (1.1, False)])
+def test_fine_trim_residual_is_judged_by_final_heading_contract(remaining_deg, reached_expected):
+    node = object.__new__(BoxServiceRoute)
+    node.surface_mode = 'table_edge'
+    node.final_gap_override_m = 0.01
+    node.parking_contract = {'yaw_tolerance_rad': math.radians(3.0)}
+    node.box_front_half_width_m = 0.225
+    node.stop_requested = False
+    node._navigation_ready = Mock(return_value=True)
+    node._operator_link_ready = Mock(return_value=True)
+    node.capture_stationary_pose = Mock(side_effect=[
+        ((0.7, 0.0, 0.0), {}), ((0.7, 0.0, math.radians(2.0 - remaining_deg)), {})])
+    node._rotate_in_place = Mock(side_effect=[math.radians(2.0 - remaining_deg), 0.0, 0.0])
+    node._pose = Mock(return_value=PoseStamped())
+    node._frozen_in_odom = Mock(return_value=(None, lambda x, y, yaw: (x, y, yaw)))
+    node._drive_zero_turn = Mock(return_value=0.3)
+    node.emit = Mock()
+    heading_rad = math.radians(2.0)
+    reached, _ = node._zero_turn_final_approach({
+        'face_center_map_xy_m': (1.0, 0.0),
+        'outward_normal_map_xy': (-math.cos(heading_rad), -math.sin(heading_rad)),
+    }, 0.065)
+    assert reached is reached_expected
+    assert node._rotate_in_place.call_count == 3
+    assert node._drive_zero_turn.call_count == int(reached_expected)

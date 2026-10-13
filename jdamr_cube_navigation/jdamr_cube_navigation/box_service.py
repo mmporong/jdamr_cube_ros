@@ -1243,10 +1243,16 @@ class BoxServiceRoute(ServiceRoute):
                 if abs(remaining_rad) <= FINAL_TRIM_TOLERANCE_RAD:
                     break
             else:
-                self._fail_final('final_trim_missed',
-                                 residual_deg=round(math.degrees(residual), 2),
-                                 turned_deg=round(math.degrees(turned), 2))
-                return False, None
+                # The trim target is finer than the final arrival contract. A
+                # bounded residual may proceed to fresh post-approach measurement.
+                allowed_trim_rad = (min(self.parking_contract['yaw_tolerance_rad'],
+                                        FINAL_HEADING_TRIM_RAD)
+                                    if trim_attempts > 1 else FINAL_TRIM_TOLERANCE_RAD)
+                if abs(remaining_rad) > allowed_trim_rad:
+                    self._fail_final('final_trim_missed',
+                                     residual_deg=round(math.degrees(residual), 2),
+                                     turned_deg=round(math.degrees(turned), 2))
+                    return False, None
             actual, _ = self.capture_stationary_pose()
         # Logged against the face in map; the trim itself was judged in odom.
         after = math.atan2(math.sin(face_heading - actual[2]),
