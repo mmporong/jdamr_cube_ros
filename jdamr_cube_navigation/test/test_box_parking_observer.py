@@ -318,7 +318,7 @@ def test_table_mode_requires_height_and_updates_geometry_as_one_configuration():
 
 
 def test_real_observer_keeps_table_bounds_when_switching_from_box_parameters():
-    """Legacy box defaults cannot weaken the stricter table detector bounds."""
+    """Table mode uses the sensor range and retains its horizontal-plane bound."""
     import rclpy
     from rclpy.parameter import Parameter
     rclpy.init(domain_id=91)
@@ -331,13 +331,40 @@ def test_real_observer_keeps_table_bounds_when_switching_from_box_parameters():
             Parameter('camera_pitch_rad', value=0.5),
         ])
         assert result.successful
-        assert node._table_config.minimum_depth_m == 0.40
+        assert node._table_config.minimum_depth_m == 0.35
         assert node._table_config.minimum_normal_y == 0.90
         assert node._config.minimum_depth_m == 0.35
         assert node._config.minimum_normal_y == 0.65
         assert not node.set_parameters_atomically([
-            Parameter('maximum_depth_m', value=0.39)]).successful
+            Parameter('maximum_depth_m', value=0.35)]).successful
         assert node._table_config.maximum_depth_m == 2.0
+        assert node.set_parameters_atomically([
+            Parameter('maximum_depth_m', value=0.39)]).successful
+        assert node._table_config.maximum_depth_m == 0.39
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize('minimum_depth_m', [0.30, 0.50])
+def test_table_mode_inherits_configured_sensor_minimum(minimum_depth_m):
+    """Switching surface modes must not impose another sensor range cutoff."""
+    import rclpy
+    from rclpy.parameter import Parameter
+    rclpy.init(
+        args=['--ros-args', '-p', f'minimum_depth_m:={minimum_depth_m}'],
+        domain_id=91)
+    node = None
+    try:
+        node = DepthBoxParkingNode()
+        assert node._table_config.minimum_depth_m == minimum_depth_m
+        assert node.set_parameters_atomically([
+            Parameter('surface_mode', value='table_edge'),
+            Parameter('camera_height_m', value=1.0)]).successful
+        assert node._table_config.minimum_depth_m == minimum_depth_m
+        assert not node.set_parameters_atomically([
+            Parameter('maximum_depth_m', value=minimum_depth_m)]).successful
     finally:
         if node is not None:
             node.destroy_node()

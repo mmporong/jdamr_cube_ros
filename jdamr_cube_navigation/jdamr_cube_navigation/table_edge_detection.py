@@ -1,16 +1,16 @@
 """Detect a table's visible front edge from its horizontal top surface."""
 
-import math
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
 from .box_top_detection import (
+    _fit_plane,
+    _plane_from_sample,
     BoxTopConfig,
     BoxTopDetection,
     CameraIntrinsics,
-    _fit_plane,
-    _plane_from_sample,
     depth_points,
 )
 
@@ -19,7 +19,6 @@ from .box_top_detection import (
 class TableEdgeConfig(BoxTopConfig):
     """Geometry and quality bounds for a visible table-front edge."""
 
-    minimum_depth_m: float = 0.40
     minimum_normal_y: float = 0.90
     maximum_background_depth_m: float = 2.0
     camera_height_m: float = 0.0

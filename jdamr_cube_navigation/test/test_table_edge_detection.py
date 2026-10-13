@@ -1,17 +1,17 @@
 """Synthetic projection tests for table-top front-edge detection."""
 
-import math
 from dataclasses import replace
+import math
 
 from jdamr_cube_navigation.box_top_detection import (
     CameraIntrinsics,
     DetectionStability,
 )
 from jdamr_cube_navigation.table_edge_detection import (
-    TableEdgeConfig,
     _horizontal_plane_is_valid,
     _optical_to_level_rotation,
     detect_table_edge,
+    TableEdgeConfig,
 )
 
 import numpy as np
@@ -302,6 +302,22 @@ def test_rejects_minimum_depth_clipping_as_an_edge():
     depth, _, _ = _render_table(
         configured, front_x_m=0.05, width_m=2.0, depth_m=2.0)
     assert detect_table_edge(depth, INTRINSICS, configured) is None
+
+
+@pytest.mark.parametrize('front_x_m', [0.35, 0.37])
+def test_default_near_range_preserves_a_measured_table_front(front_x_m):
+    """A visible edge near 1--3 cm chassis clearance survives the depth filter."""
+    configured = replace(
+        config(0.907, 15.0),
+        minimum_depth_m=TableEdgeConfig().minimum_depth_m,
+        plane_distance_m=0.025)
+    depth, _, _ = _render_table(
+        configured, front_x_m=front_x_m, background_depth_m=1.5)
+    detection = detect_table_edge(depth, INTRINSICS, configured)
+    assert detection is not None
+    assert 0.375 < detection.front_distance_m < 0.425
+    assert detect_table_edge(
+        depth, INTRINSICS, replace(configured, minimum_depth_m=0.40)) is None
 
 
 @pytest.mark.parametrize('stripe_row', [140, 160, 180, 200, 220])

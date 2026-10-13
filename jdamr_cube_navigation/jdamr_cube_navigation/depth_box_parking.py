@@ -14,7 +14,7 @@ from jdamr_cube_navigation.box_top_detection import (
 )
 from jdamr_cube_navigation.depth_obstacle_core import _depth_view
 from jdamr_cube_navigation.depth_obstacle_filter import camera_intrinsics
-from jdamr_cube_navigation.table_edge_detection import TableEdgeConfig, detect_table_edge
+from jdamr_cube_navigation.table_edge_detection import detect_table_edge, TableEdgeConfig
 import numpy as np
 from rcl_interfaces.msg import SetParametersResult
 import rclpy
@@ -118,8 +118,6 @@ class DepthBoxParkingNode(Node):
             name: self.get_parameter(name).value
             for name in TableEdgeConfig.__dataclass_fields__
         }
-        table_values['minimum_depth_m'] = max(
-            self._config.minimum_depth_m, table_defaults.minimum_depth_m)
         table_values['minimum_normal_y'] = max(
             self._config.minimum_normal_y, table_defaults.minimum_normal_y)
         self._table_config = TableEdgeConfig(**table_values)
@@ -199,8 +197,6 @@ class DepthBoxParkingNode(Node):
             table_values = {
                 name: getattr(self._config, name) for name in BoxTopConfig.__dataclass_fields__
             }
-            table_values['minimum_depth_m'] = max(
-                self._config.minimum_depth_m, TableEdgeConfig().minimum_depth_m)
             table_values['minimum_normal_y'] = max(
                 self._config.minimum_normal_y, TableEdgeConfig().minimum_normal_y)
             table_config = TableEdgeConfig(**table_values)
