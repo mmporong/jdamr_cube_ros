@@ -13,12 +13,15 @@
 현재 차체는 상·하부 결합을 마쳤고 LiDAR 장착 위치는 유지한다. 차체 후방 기둥의
 자기 반사는 스캔 반사점 기반 설정으로 걸러 낸다. RGB-D 카메라는 상판 뒤끝에서 아래를
 보도록 장착했으며, URDF/CAD와 바닥 후보 평면으로 구한 `derived` 외부 보정을 적용한다.
-y=0·yaw=0·상하판 정렬은 설치 가정이고, 변경한 차체의 1 cm 주차 정확도는 외부 실측 전이다.
+카메라 pitch·yaw는 잠정 보정값이다. 현재 전면 2륜 구동·후면 볼캐스터 구성에서
+실제 책상 1cm 주차를 시험하고 있으며, 좌우 간격 편차와 최종 관측 소실이 남아 있다.
+후면에도 같은 서보·바퀴를 추가하는 4륜 전환은 설계 단계다.
 접촉센서는 5V·GND 두 선만 연결되어 눌림 입력과 정지 연동을 사용할 수 없다.
 바퀴 모터선 재연결 뒤 좌우 서보 응답과 관측 지점 주행·제자리 회전 action을 확인했다.
 복귀점은 운영자가 지정한 시작 위치를 HOME으로 등록해 전진 복귀하며, 기존 실물 도크의
 후진 진입 기능도 유지한다. 현재 운영값·가정·남은 실차 확인은
-[상태와 이어서 할 일](jdamr_cube_navigation/evaluation/20261012_STATE_AND_NEXT_FOR_CODEX.md)에 있다.
+[책상 주차 결과와 4륜 전환 분석](jdamr_cube_navigation/evaluation/20261013_TABLE_PARKING_AND_4WD_TRANSITION.md)에 있다.
+앞선 운영 기록은 [10-12 상태](jdamr_cube_navigation/evaluation/20261012_STATE_AND_NEXT_FOR_CODEX.md)에 보존한다.
 
 ## 현재 상태
 
@@ -140,6 +143,7 @@ ros2 launch jdamr_cube_gazebo gazebo.launch.py
 | [20260930_MAP_BOX_LAYOUT_PLAN.md](jdamr_cube_navigation/evaluation/20260930_MAP_BOX_LAYOUT_PLAN.md) | 새 지도 작성·keepout 재설계·도크 등록·테이블 박스 배치 계획(승인 대기) |
 | [20260929_NAV2_PLATFORM_RESEARCH.md](jdamr_cube_navigation/evaluation/20260929_NAV2_PLATFORM_RESEARCH.md) | 파이 Nav2 부하·통신 구성 조사와 판단 한계 |
 | [20261012_STATE_AND_NEXT_FOR_CODEX.md](jdamr_cube_navigation/evaluation/20261012_STATE_AND_NEXT_FOR_CODEX.md) | 10-06–10-12 상태·미배포 커밋·결정 대기 항목·고도화 후보 인계(Codex용) |
+| [20261013_TABLE_PARKING_AND_4WD_TRANSITION.md](jdamr_cube_navigation/evaluation/20261013_TABLE_PARKING_AND_4WD_TRANSITION.md) | 실제 책상 주차 결과·엔코더/IMU 방향 차이·4륜 전환 조건과 작업 순서 |
 | [AGENTS.md](AGENTS.md) | 실차 출발·재개·주행 뒤 정리 운영 규칙 |
 | [PORTFOLIO_20260826.md](PORTFOLIO_20260826.md) | 캡스톤 시점의 Physical AI 적용안 |
 
