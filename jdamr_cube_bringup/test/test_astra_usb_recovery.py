@@ -246,3 +246,35 @@ def test_systemd_orders_recovery_before_camera_and_base():
     assert 'After=jdamr-astra-usb-recover.service' in base
     assert 'Wants=jdamr-astra-usb-recover.service' in camera
     assert 'Wants=jdamr-astra-usb-recover.service' in base
+
+
+def test_camera_service_propagates_one_failure_without_retrying():
+    """Expose a launch child crash and wait for an explicit next start."""
+    camera = CAMERA_UNIT.read_text(encoding='utf-8')
+
+    assert 'jdamr-launch-supervisor -- ros2 launch astra_camera' in camera
+    assert 'Restart=no' in camera
+    assert 'Restart=on-failure' not in camera
+    assert 'RestartSec=' not in camera
+    assert 'KillMode=mixed' in camera
+    assert 'TimeoutStopSec=10' in camera
+
+
+def test_camera_service_preserves_depth_only_runtime_arguments():
+    """Keep the measured low-load Astra stream configuration unchanged."""
+    camera = CAMERA_UNIT.read_text(encoding='utf-8')
+
+    expected_arguments = (
+        'enable_color:=false',
+        'enable_depth:=true',
+        'enable_ir:=false',
+        'enable_point_cloud:=false',
+        'enable_colored_point_cloud:=false',
+        'depth_registration:=true',
+        'color_depth_synchronization:=false',
+        'tf_publish_rate:=0.0',
+        'depth_width:=320',
+        'depth_height:=240',
+        'depth_fps:=30',
+    )
+    assert all(argument in camera for argument in expected_arguments)

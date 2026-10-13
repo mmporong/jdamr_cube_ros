@@ -16,12 +16,11 @@ WorkingDirectory=/home/lim/astra_ws
 # camera_info alone; colour at 640x480 30 fps cost 30 % of a core on the Pi (camera
 # 51 % -> 21 %). Depth stays registered to camera_color_optical_frame and the camera
 # publishes the same static frames. The executor starts this unit for the box stops.
-ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash; source /home/lim/astra_ws/install/setup.bash; exec ros2 launch astra_camera astra.launch.xml enable_color:=false enable_depth:=true enable_ir:=false enable_point_cloud:=false enable_colored_point_cloud:=false depth_registration:=true color_depth_synchronization:=false tf_publish_rate:=0.0 depth_width:=320 depth_height:=240 depth_fps:=30'
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash; source /home/lim/astra_ws/install/setup.bash; exec /home/lim/jdamr_ws/install/jdamr_cube_bringup/lib/jdamr_cube_bringup/jdamr-launch-supervisor -- ros2 launch astra_camera astra.launch.xml enable_color:=false enable_depth:=true enable_ir:=false enable_point_cloud:=false enable_colored_point_cloud:=false depth_registration:=true color_depth_synchronization:=false tf_publish_rate:=0.0 depth_width:=320 depth_height:=240 depth_fps:=30'
 KillMode=mixed
 KillSignal=SIGINT
 TimeoutStopSec=10
-Restart=on-failure
-RestartSec=3
+Restart=no
 
 [Install]
 WantedBy=multi-user.target

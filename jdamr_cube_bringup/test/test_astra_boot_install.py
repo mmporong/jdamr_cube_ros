@@ -38,6 +38,10 @@ def test_setup_packages_astra_install_assets(monkeypatch):
         for directory in ('scripts', 'systemd')
         for path in (PACKAGE / directory).rglob('*')
         if path.is_file()
+        and not any(
+            part.startswith('.') or part == '__pycache__'
+            for part in path.relative_to(PACKAGE / directory).parts
+        )
     }
 
     assert expected_sources <= installed_sources
