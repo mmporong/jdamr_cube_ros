@@ -529,7 +529,7 @@ class BoxServiceRoute(ServiceRoute):
                 Parameter('camera_height_m', value=height_m),
                 Parameter('camera_roll_rad', value=roll_rad),
                 Parameter('camera_pitch_rad', value=pitch_rad),
-            ]), 2.0)
+            ]), 2.0).result
             if response.successful is not True:
                 raise RuntimeError(response.reason or 'observer parameters rejected')
         except Exception as error:

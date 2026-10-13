@@ -18,6 +18,8 @@ from jdamr_cube_navigation.corridor_route import CorridorRoute
 from jdamr_cube_navigation.docking_stop_profile import apply_docking_stop_profile
 from nav2_msgs.action import ComputePathThroughPoses
 import pytest
+from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.srv import SetParametersAtomically
 from rclpy.task import Future
 from rclpy.time import Time
 import yaml
@@ -1358,8 +1360,8 @@ class _ParameterClientStub:
 
     def set_parameters_atomically(self, parameters):
         self.requests.append([(p.name, p.value) for p in parameters])
-        return SimpleNamespace(
-            successful=self.successful, reason='' if self.successful else 'rejected')
+        return SetParametersAtomically.Response(result=SetParametersResult(
+            successful=self.successful, reason='' if self.successful else 'rejected'))
 
 
 @pytest.mark.parametrize('distance_m, radius_m, expected_m', [
