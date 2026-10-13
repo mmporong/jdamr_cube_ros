@@ -171,6 +171,27 @@ bool STSServoDriver::setTargetVelocity(byte const &servoId, int const &velocity,
     return writeTwoBytesRegister(servoId, STSRegisters::RUNNING_SPEED, velocity, asynchronous);
 }
 
+bool STSServoDriver::setTargetVelocities(byte const &numberOfServos,
+                                         const byte servoIds[],
+                                         const int velocities[])
+{
+    int const dataLength = 2;
+    int const offset = dataLength + 1;
+    int const paramLength = numberOfServos * offset + 2;
+    byte payload[paramLength] = {0};
+    payload[0] = STSRegisters::RUNNING_SPEED;
+    payload[1] = dataLength;
+
+    for (int index = 0; index < numberOfServos; index++)
+    {
+        payload[2 + offset * index] = servoIds[index];
+        convertIntToBytes(
+            servoIds[index], velocities[index], &payload[2 + offset * index + 1]);
+    }
+    return sendMessage(0xFE, instruction::SYNCWRITE, paramLength, payload) ==
+           paramLength + 6;
+}
+
 bool STSServoDriver::setTargetAcceleration(byte const &servoId, byte const &acceleration, bool const &asynchronous)
 {
     return writeRegister(servoId, STSRegisters::TARGET_ACCELERATION, acceleration, asynchronous);
@@ -178,7 +199,14 @@ bool STSServoDriver::setTargetAcceleration(byte const &servoId, byte const &acce
 
 bool STSServoDriver::setMode(unsigned char const& servoId, STSMode const& mode)
 {
-    return writeRegister(servoId, STSRegisters::OPERATION_MODE, static_cast<unsigned char>(mode));
+    if (!writeRegister(servoId, STSRegisters::WRITE_LOCK, 0))
+        return false;
+    delay(5);
+    if (!writeRegister(
+            servoId, STSRegisters::OPERATION_MODE, static_cast<unsigned char>(mode)))
+        return false;
+    delay(5);
+    return writeRegister(servoId, STSRegisters::WRITE_LOCK, 1);
 }
 
 
@@ -258,10 +286,15 @@ bool STSServoDriver::writeTwoBytesRegister(byte const &servoId,
 byte STSServoDriver::readRegister(byte const &servoId, byte const &registerId)
 {
     byte result = 0;
-    int rc = readRegisters(servoId, registerId, 1, &result);
-    if (rc < 0)
-        return 0;
+    tryReadRegister(servoId, registerId, result);
     return result;
+}
+
+bool STSServoDriver::tryReadRegister(byte const &servoId,
+                                     byte const &registerId,
+                                     byte &value)
+{
+    return readRegisters(servoId, registerId, 1, &value) == 0;
 }
 
 int16_t STSServoDriver::readTwoBytesRegister(byte const &servoId, byte const &registerId)

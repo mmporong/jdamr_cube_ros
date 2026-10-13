@@ -168,6 +168,12 @@ public:
     /// \return True on success, false otherwise.
     bool setTargetVelocity(byte const &servoId, int const &velocity, bool const &asynchronous = false);
 
+    /// \brief Set target velocities for multiple servos in one broadcast packet.
+    /// \return True if the complete packet was written to the serial port.
+    bool setTargetVelocities(byte const &numberOfServos,
+                             const byte servoIds[],
+                             const int velocities[]);
+
     /// \brief Change the target acceleration of a servo.
     /// \param[in] servoId servo ID
     /// \param[in] acceleration target acceleration
@@ -211,6 +217,11 @@ public:
     /// \param[in] registerId Register id.
     /// \return Register value, 0 on failure.
     byte readRegister(byte const &servoId, byte const &registerId);
+
+    /// \brief Read a single register without conflating a valid zero with failure.
+    bool tryReadRegister(byte const &servoId,
+                         byte const &registerId,
+                         byte &value);
 
     /// \brief Read two bytes, interpret result as <LSB> <MSB>
     /// \param[in] servoId ID of the servo

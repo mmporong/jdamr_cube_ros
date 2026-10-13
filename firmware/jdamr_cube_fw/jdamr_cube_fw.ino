@@ -2,7 +2,7 @@
  * jdamr_cube_fw — JD-AMR Cube ESP32 펌웨어 (강사원본 ros_firmware.ino 대체)
  *
  * 보드: Waveshare General Driver for Robots (ESP32-WROOM-32)
- * 서보: Feetech STS3215 ×2 (좌 ID=1, 우 ID=2), 시리얼 버스 1,000,000 baud
+ * 서보: Feetech STS3215 ×4 (전좌2, 전우1, 후좌3, 후우4), 1,000,000 baud
  * 센서: QMI8658C(6축) + AK09918(지자기 3축), INA219(전압), SSD1306 128×32
  *
  * 이 판이 고치는 강사원본 결함 (번호 = ~/jdamr_cube_bringup/JDAMR_Cube_조사기록.md):
@@ -11,12 +11,12 @@
  *   A3  체크섬 항상 0x00                        → CRC-8/MAXIM 실제 계산
  *   A4  헤더 재동기화 없음                       → 바이트 단위 상태기계로 재동기
  *   A5  후진·회전 분기 부재                      → 부호 있는 바퀴별 속도라 방향 분기 자체가 없음
- *   A6  100ms마다 서보 위치 4회 조회             → 주기당 1회 읽어 재사용
+ *   A6  같은 서보 위치 반복 조회                  → 바퀴마다 주기당 1회 읽어 재사용
  *   A7  100ms마다 OLED 전체 프레임 전송(블로킹)   → 500ms 주기 + 내용 변한 때만
- *   A8  0~4095 랩어라운드 언랩 없음              → int32 누적 위치로 언랩
+ *   A8  0~4095 랩어라운드 언랩 없음              → int64 누적 후 int32 포화 전송
  *   A9  cmd 워치독 없음                         → 400ms 무명령 시 정지
  *   A10 INA219 0x42 하드코딩                    → 0x40~0x45 스캔
- *   A11 좌우 부호 규약 미문서화                  → "+ = 로봇 전진" 통일, 우측 반전은 여기서만
+ *   A11 좌우 부호 규약 미문서화                  → "+ = 로봇 전진" 통일, 좌측 반전은 여기서만
  *
  * ⚠ B1 주의: STSServoDriver 라이브러리가 두 판본으로 돈다.
  *   강사원본 ros_firmware.ino:  st.init(255, &ServoSerial, 1000000)
@@ -35,13 +35,13 @@
  *
  * MCU→Host PAYLOAD (LEN=30, 주기 20ms = 50Hz):
  *   uint8  seq          순번 (프레임 유실 감지)
- *   int32  left_pos     좌바퀴 누적 위치 [counts]  (언랩, + = 전진)
- *   int32  right_pos    우바퀴 누적 위치 [counts]  (언랩, + = 전진)
+ *   int32  left_pos     좌측 앞뒤 누적 위치 평균 [counts] (언랩, + = 전진)
+ *   int32  right_pos    우측 앞뒤 누적 위치 평균 [counts] (언랩, + = 전진)
  *   int16  accel[3]     가속도 [mg]        (raw g ×1000)
  *   int16  gyro[3]      각속도 [0.01 dps]  (raw dps ×100)
  *   int16  mag[3]       지자기 [0.1 uT]    (raw uT ×10)
  *   uint16 batt_mV      배터리 전압 [mV]
- *   uint8  flags        bit0 좌서보 읽기실패  bit1 우서보 읽기실패
+ *   uint8  flags        bit0 좌측 서보 중 하나 실패  bit1 우측 서보 중 하나 실패
  *                       bit2 워치독 정지중    bit3 INA219 미검출
  *                       bit4 QMI8658 읽기실패 bit5 AK09918 읽기실패
  *
@@ -55,6 +55,7 @@
 #include "IMU.h"
 #include "imu_packet_units.h"
 #include "STSServoDriver.h"
+#include "wheel_layout.h"
 
 // ── 핀·주소 (강사원본과 동일) ──
 #define S_SCL 33
@@ -64,10 +65,6 @@
 #define SCREEN_ADDRESS 0x3C
 
 // ── 규격 상수 ──
-// 2026-08-14 실기 확정 — 단일 바퀴 시험으로 판정: "ID1 전진" 지령에 로봇이
-// 좌회전 = ID1 이 실물 오른쪽. 가정(좌=1)이 뒤집혀 있었다.
-static const uint8_t  LEFT_ID  = 2;
-static const uint8_t  RIGHT_ID = 1;
 static const uint32_t STATE_PERIOD_MS = 20;    // 50Hz 상태 송신
 static const uint32_t OLED_PERIOD_MS  = 500;   // A7: OLED는 0.5s + 변경시만
 static const uint32_t CMD_TIMEOUT_MS  = 400;   // A9: 워치독
@@ -110,9 +107,7 @@ static uint8_t rx_len = 0, rx_idx = 0;
 static uint8_t rx_buf[40];
 
 // ── 언랩 상태 (A8) ──
-static int32_t pos_total[2] = {0, 0};
-static int16_t pos_last[2]  = {0, 0};
-static bool    pos_init[2]  = {false, false};
+static jdamr_fw::WheelUnwrapState wheel_position[jdamr_fw::WHEEL_COUNT] = {};
 
 // ── 런타임 상태 ──
 static uint32_t last_cmd_ms = 0;
@@ -120,38 +115,66 @@ static bool     watchdog_stopped = true;   // 부팅 직후는 정지 상태로 
 static uint8_t  seq = 0;
 static int16_t  cmd_left = 0, cmd_right = 0;
 static String   oled_prev = "";
-static String   oled_scan = "scan...";     // 부팅 ID 스캔 결과 (OLED 2행 고정)
 
-// 서보 생존·설정 상태.
-// 주의: 이 STS_servos 라이브러리는 읽기 타임아웃에 -1 이 아니라 0 을 돌려준다
-// (readTwoBytesRegister: rc<0 → return 0). 그래서 생존 판정은 ping() 으로만 하고,
-// 배터리가 ESP32 보다 늦게 연결되는 경우(부팅 때 setMode 유실)를 죽음→부활
-// 전이 감지로 잡아 모드를 재설정한다.
-static bool servo_ok[2] = {false, false};
-
-static void ensure_servo_config() {
-  const uint8_t ids[2] = {LEFT_ID, RIGHT_ID};
-  for (int i = 0; i < 2; i++) {
-    const bool alive = st.ping(ids[i]);
-    if (alive && !servo_ok[i]) {
-      st.setMode(ids[i], VELOCITY);        // 부활 시점에 모드 재주입
-    }
-    servo_ok[i] = alive;
-  }
-}
+static bool servo_ok[jdamr_fw::WHEEL_COUNT] = {false, false, false, false};
+static bool servo_fault_latched = true;
 
 // A11: 부호 규약의 유일한 반전 지점.
-// 2026-08-14 실기 확정 (관측 3건으로 유일해): ID1=실물 오른쪽(+ 가 전진),
-// ID2=실물 왼쪽(− 가 전진). 미러 반전은 왼쪽(ID2)에 있다 — 강사원본 규약
-// (LEFT +, RIGHT −)과 반대이므로 코드를 옮길 때 주의.
-static inline void set_wheel_velocity(int16_t left_fwd, int16_t right_fwd) {
-  st.setTargetVelocity(LEFT_ID,  constrain((int16_t)-left_fwd, -VEL_LIMIT, VEL_LIMIT));
-  st.setTargetVelocity(RIGHT_ID, constrain(right_fwd, -VEL_LIMIT, VEL_LIMIT));
+// ID2/3은 왼쪽(전진 부호 -), ID1/4는 오른쪽(전진 부호 +)이다.
+// 네 목표값은 한 SYNCWRITE 패킷에 담아 같은 쪽 앞뒤에 같은 명령을 적용한다.
+static bool set_wheel_velocity(int16_t left_fwd, int16_t right_fwd) {
+  int velocities[jdamr_fw::WHEEL_COUNT];
+  for (uint8_t i = 0; i < jdamr_fw::WHEEL_COUNT; i++) {
+    velocities[i] = jdamr_fw::servo_velocity(i, left_fwd, right_fwd, VEL_LIMIT);
+  }
+  return st.setTargetVelocities(
+    jdamr_fw::WHEEL_COUNT, jdamr_fw::WHEEL_IDS, velocities);
 }
 
 static void stop_motors() {
-  set_wheel_velocity(0, 0);
+  if (!set_wheel_velocity(0, 0)) {
+    servo_fault_latched = true;
+    for (uint8_t i = 0; i < jdamr_fw::WHEEL_COUNT; i++) servo_ok[i] = false;
+  }
   cmd_left = cmd_right = 0;
+}
+
+static bool configure_servo(uint8_t wheel_index) {
+  const uint8_t id = jdamr_fw::WHEEL_IDS[wheel_index];
+  byte mode = 0;
+  byte torque = 0;
+
+  // Disable torque while setting the mode. Clear the retained target before
+  // torque is enabled so an ESP32-only reset cannot restart an old command.
+  if (!st.writeRegister(id, STSRegisters::TORQUE_SWITCH, 0)) return false;
+  if (!st.setTargetVelocity(id, 0)) return false;
+  if (!st.setMode(id, VELOCITY)) return false;
+  if (!st.tryReadRegister(id, STSRegisters::OPERATION_MODE, mode) ||
+      mode != static_cast<byte>(VELOCITY)) return false;
+  if (!st.setTargetVelocity(id, 0)) return false;
+  if (!st.writeRegister(id, STSRegisters::TORQUE_SWITCH, 1)) return false;
+  if (!st.tryReadRegister(id, STSRegisters::TORQUE_SWITCH, torque) || torque != 1)
+    return false;
+  jdamr_fw::reset_unwrap(wheel_position[wheel_index]);
+  return true;
+}
+
+static void ensure_servo_config() {
+  bool all_ok = true;
+  for (uint8_t i = 0; i < jdamr_fw::WHEEL_COUNT; i++) {
+    const uint8_t id = jdamr_fw::WHEEL_IDS[i];
+    const bool alive = st.ping(id);
+    if (!alive) {
+      servo_ok[i] = false;
+    } else if (!servo_ok[i]) {
+      servo_ok[i] = configure_servo(i);
+    }
+    all_ok = all_ok && servo_ok[i];
+  }
+  if (!all_ok) {
+    servo_fault_latched = true;
+    stop_motors();
+  }
 }
 
 // ── 수신 명령 처리 ──
@@ -163,9 +186,18 @@ static void handle_cmd(const uint8_t *p, uint8_t len) {
   memcpy(&right, p + 3, 2);
 
   if (cmd == 0x01) {                       // 속도 지령
-    cmd_left = left; cmd_right = right;
-    set_wheel_velocity(cmd_left, cmd_right);
     last_cmd_ms = millis();
+    if ((left != 0 || right != 0) && servo_fault_latched) {
+      stop_motors();                        // 정상 회복 전 비영 속도 거부
+      return;
+    }
+    if (!set_wheel_velocity(left, right)) {
+      servo_fault_latched = true;
+      for (uint8_t i = 0; i < jdamr_fw::WHEEL_COUNT; i++) servo_ok[i] = false;
+      stop_motors();
+      return;
+    }
+    cmd_left = left; cmd_right = right;
     watchdog_stopped = false;
   } else if (cmd == 0x00) {                // 명시적 정지
     stop_motors();
@@ -201,28 +233,45 @@ static void send_state() {
   uint8_t flags = watchdog_stopped ? FLAG_WATCHDOG : 0x00;
   if (!ina219) flags |= FLAG_NO_INA219;
 
-  // A6: 서보 위치는 여기서 한 번만 읽는다 (OLED도 이 값을 재사용)
-  int16_t raw[2] = {0, 0};
-  const bool position_ok[2] = {
-    st.getCurrentPosition(LEFT_ID, raw[0]),
-    st.getCurrentPosition(RIGHT_ID, raw[1]),
-  };
-  for (int i = 0; i < 2; i++) {
+  // A6: 각 서보 위치는 여기서 주기당 한 번만 읽는다.
+  int16_t raw[jdamr_fw::WHEEL_COUNT] = {0, 0, 0, 0};
+  bool position_ok[jdamr_fw::WHEEL_COUNT] = {false, false, false, false};
+  bool all_positions_ok = true;
+  for (uint8_t i = 0; i < jdamr_fw::WHEEL_COUNT; i++) {
+    position_ok[i] = st.getCurrentPosition(jdamr_fw::WHEEL_IDS[i], raw[i]);
     if (!servo_ok[i] || !position_ok[i]) {
-      flags |= (1 << i);
+      flags |= jdamr_fw::WHEEL_SIDES[i] == jdamr_fw::SIDE_LEFT
+                 ? FLAG_SERVO_L_ERR : FLAG_SERVO_R_ERR;
+      servo_ok[i] = false;
+      jdamr_fw::reset_unwrap(wheel_position[i]);
+      all_positions_ok = false;
       continue;
     }
-    int16_t r = (int16_t)(raw[i] & 0x0FFF);
-    if (!pos_init[i]) { pos_last[i] = r; pos_init[i] = true; }
-    int16_t d = (int16_t)((r - pos_last[i]) & 0x0FFF); // A8: 12비트 차분
-    if (d > 2048) d -= 4096;                           //     부호 확장
     // 이 라이브러리는 읽기 타임아웃을 0 으로 돌려준다 — 20ms 에 물리적으로
     // 불가능한 점프(|d|>300, 상한 지령 68의 4배)는 글리치로 보고 버린다.
-    if (d > 300 || d < -300) { flags |= (1 << i); continue; }
-    pos_last[i] = r;
-    // 왼쪽(ID2)이 미러 — 축 + 가 로봇 후진. 전진 = + 로 통일해 누적
-    pos_total[i] += (i == 0) ? -d : d;
+    if (!jdamr_fw::update_unwrap(
+          wheel_position[i], raw[i], jdamr_fw::WHEEL_FORWARD_SIGNS[i], 300)) {
+      flags |= jdamr_fw::WHEEL_SIDES[i] == jdamr_fw::SIDE_LEFT
+                 ? FLAG_SERVO_L_ERR : FLAG_SERVO_R_ERR;
+      servo_ok[i] = false;
+      all_positions_ok = false;
+      continue;
+    }
   }
+
+  if (!all_positions_ok) {
+    servo_fault_latched = true;
+    stop_motors();
+  } else {
+    // A fault clears only after every servo is configured and has supplied a
+    // valid position sample. A recovered servo's first sample adds no delta.
+    servo_fault_latched = false;
+  }
+
+  const int32_t left_pos = jdamr_fw::average_clamped(
+    wheel_position[0].total, wheel_position[2].total);
+  const int32_t right_pos = jdamr_fw::average_clamped(
+    wheel_position[1].total, wheel_position[3].total);
 
   const uint8_t imu_health =
     imuDataGet(&stAngles, &stGyroRawData, &stAccelRawData, &stMagnRawData);
@@ -234,8 +283,8 @@ static void send_state() {
   f[0] = 0xA5; f[1] = 0x5A; f[2] = 30;
   uint8_t *p = f + 3;
   *p++ = seq++;
-  memcpy(p, &pos_total[0], 4); p += 4;
-  memcpy(p, &pos_total[1], 4); p += 4;
+  memcpy(p, &left_pos, 4); p += 4;
+  memcpy(p, &right_pos, 4); p += 4;
   int16_t v;
   v = jdamr_fw::pack_accel_mg(stAccelRawData.X); memcpy(p, &v, 2); p += 2;
   v = jdamr_fw::pack_accel_mg(stAccelRawData.Y); memcpy(p, &v, 2); p += 2;
@@ -258,15 +307,17 @@ static void update_oled(uint16_t mv) {
   // 128x32 3줄 배치. 현장에서 로봇 옆에 서서 보는 순서로 놓는다:
   //   1행 전압 + 무장상태  — 충전 시점과 "왜 안 움직이나"의 답
   //   2행 바퀴 지령        — 조종이 닿고 있는지
-  //   3행 서보 ID·건강     — 버스가 살아 있는지 (부팅 스캔 결과 상시 노출)
+  //   3행 서보 ID·건강     — 네 바퀴 버스 상태
   // 변경 없으면 그리지 않는다 — display() 는 I2C 전체 프레임이라 수십 ms 블로킹(A7).
   // 전압은 0.1V 로 양자화돼 있어 미세 변동으로 매번 다시 그리지 않는다.
-  String l1 = String(mv / 1000.0f, 2) + "V  " + (watchdog_stopped ? "IDLE" : "ARM");
+  String l1 = String(mv / 1000.0f, 2) + "V " +
+              (servo_fault_latched ? "FAULT" : (watchdog_stopped ? "IDLE" : "ARM"));
   String l2 = "L" + String(cmd_left) + "  R" + String(cmd_right);
-  String l3 = oled_scan + "  " +
-              (servo_ok[0] && servo_ok[1] ? "SRV ok"
-                                          : (String("SRV ") + (servo_ok[0] ? "" : "L")
-                                                            + (servo_ok[1] ? "" : "R") + "!"));
+  String l3 = "S ";
+  for (uint8_t i = 0; i < jdamr_fw::WHEEL_COUNT; i++) {
+    l3 += String(jdamr_fw::WHEEL_IDS[i]);
+    l3 += servo_ok[i] ? "+" : "!";
+  }
   String txt = l1 + "\n" + l2 + "\n" + l3;
   if (txt == oled_prev) return;
   oled_prev = txt;
@@ -324,15 +375,6 @@ void setup() {
       break;
     }
   }
-
-  // 부팅 ID 스캔 — 결과를 OLED 1행에 상시 표시 (실물에서 ID 논쟁 종결용).
-  // 배터리가 아직 없으면 "ID:none" 이 뜨고, 연결되면 ensure_servo_config 가
-  // 생존을 다시 잡으면서 모드도 재설정한다.
-  oled_scan = "ID:";
-  for (uint8_t id = 1; id <= 12; id++) {
-    if (st.ping(id)) { oled_scan += String(id) + " "; }
-  }
-  if (oled_scan == "ID:") { oled_scan = "ID:none"; }
 
   ensure_servo_config();                    // 센서 초기화 중 전원 투입된 서보도 재탐지
   stop_motors();                            // A9: 첫 유효 명령 전까지 정지
