@@ -118,12 +118,26 @@ def test_camera_forward_translation_shifts_goal_by_same_amount():
     assert translated['x_m'] - centered['x_m'] == pytest.approx(0.065)
 
 
-def test_repository_nominal_camera_mount_is_consumed_as_configuration():
+def test_repository_current_camera_mount_recovers_a_known_physical_face():
     configured_mount = yaml.safe_load((
         ROOT / 'jdamr_cube_vslam/config/camera_mount.yaml'
     ).read_text(encoding='utf-8'))
-    result = target(mounted=configured_mount)
-    assert result['x_m'] == pytest.approx(0.065 + 0.8 - 0.25 - 0.05)
+    transform = configured_mount['camera_mount']['transform']
+    face_base_m = (0.8, 0.0, 1.0)
+    angles = tuple(transform[key] for key in ('roll_rad', 'pitch_rad', 'yaw_rad'))
+    optical_point = _base_to_optical(tuple(
+        face_base_m[index] - transform[key]
+        for index, key in enumerate(('x_m', 'y_m', 'z_m'))), *angles)
+    observed = observation()
+    observed.update(front_distance_m=optical_point[2],
+                    lateral_error_m=optical_point[0],
+                    vertical_position_m=optical_point[1],
+                    plane_normal=list(_base_to_optical((-1.0, 0.0, 0.0), *angles)))
+    result = target(observed=observed, mounted=configured_mount)
+    assert result['face_center_map_xy_m'] == pytest.approx(face_base_m[:2])
+    assert result['x_m'] == pytest.approx(0.8 - 0.25 - 0.05)
+    assert result['y_m'] == pytest.approx(0.0)
+    assert result['yaw_rad'] == pytest.approx(0.0)
     assert result['provenance'] == 'NOMINAL_CAMERA_MOUNT_ESTIMATE'
 
 

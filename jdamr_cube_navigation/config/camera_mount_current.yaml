@@ -1,0 +1,51 @@
+camera_mount:
+  status: derived
+  parent_frame: base_link
+  child_frame: camera_link
+  transform:
+    x_m: -0.275
+    y_m: 0.0
+    z_m: 1.26
+    roll_rad: 0.011934068034722573
+    pitch_rad: 0.41246669799099545
+    yaw_rad: -0.0007507445375463481
+  provenance:
+    derived_at: '2026-10-14'
+    valid_for: 현재 4륜 차체의 상판 뒤쪽 깊이 카메라
+    camera_reference: 렌즈 중심. camera_link 원점과 광학 프레임 원점은 일치
+    lens_height_above_chassis_tabletop:
+      value: 0.54
+      unit: m
+      measured_at: '2026-10-14'
+      valid_for: 현재 카메라 렌즈 중심과 차체 상판 윗면
+      source: operator_report
+    chassis_tabletop_height:
+      value: 0.72
+      unit: m
+      valid_for: 현재 차체 상판 윗면과 바닥
+      source: operator_confirmation_72cm_unchanged
+      status: operator_confirmed
+      measured_at: '2026-10-14'
+    height_derivation: transform.z_m = chassis_tabletop_height.value + lens_height_above_chassis_tabletop.value
+    front_to_lens_horizontal_distance:
+      value: 0.34
+      unit: m
+      measured_at: '2026-10-13'
+      valid_for: 앞뒤 위치를 유지한 현재 카메라 장착
+      source: operator_confirmation
+    front_to_wheel_axis:
+      value: 0.065
+      unit: m
+      measured_at: '2026-09-15'
+      valid_for: 현재 차체 앞끝과 전륜축
+      source: jdamr_cube_description/config/new_base_geometry.yaml
+    orientation_status: 이전 설정의 roll/pitch/yaw를 초기 추정으로 유지. 높이 변경 후 독립 확인 전
+    orientation_source: camera_mount_table_candidate_20261013.yaml transform (prior
+      only)
+    parking_range_bias_compensation:
+      applied: false
+      superseded_value_m: -0.0076183596449993125
+      reason: 장착 높이 변경으로 이전 근거리 보정의 적용 범위가 달라짐
+    supersedes_active_mount: camera_mount_table_candidate_20261013.yaml
+    physical_parking_accuracy: NOT_VALIDATED_AFTER_HEIGHT_CHANGE
+    invalidate_when: 상판 높이, 렌즈 위치 또는 각도 변경

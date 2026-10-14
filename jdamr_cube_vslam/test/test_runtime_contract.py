@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+import pytest
 import yaml
 
 
@@ -81,21 +82,23 @@ def test_sensor_provenance_is_complete():
         'verified_at', 'valid_for', 'method', 'invalidate_when'}
 
 
-def test_measured_mount_allows_wheel_odometry_fusion():
+def test_current_mount_preserves_height_reference_without_claiming_full_calibration():
     config = yaml.safe_load(
         (PACKAGE_ROOT / 'config' / 'camera_mount.yaml').read_text(
             encoding='utf-8'))
-    assert config['camera_mount']['status'] == 'measured'
-    assert config['camera_mount']['transform'] == {
-        'x_m': 0.065,
-        'y_m': 0.0,
-        'z_m': 0.215,
-        'roll_rad': 0.0,
-        'pitch_rad': 0.0,
-        'yaw_rad': 0.0,
-    }
+    mount = config['camera_mount']
+    current = yaml.safe_load((PACKAGE_ROOT.parent / 'jdamr_cube_navigation' /
+                             'config' / 'camera_mount_current.yaml').read_text(
+                                 encoding='utf-8'))['camera_mount']
+    assert mount == current
+    assert mount['status'] == 'derived'
+    provenance = mount['provenance']
+    assert mount['transform']['z_m'] == pytest.approx(
+        provenance['chassis_tabletop_height']['value'] +
+        provenance['lens_height_above_chassis_tabletop']['value'])
     assert config['usage_gate']['camera_only_rgbd_slam'] == 'allowed'
-    assert config['usage_gate']['wheel_odom_fusion'] == 'allowed'
+    assert config['usage_gate']['wheel_odom_fusion'] == \
+        'blocked_until_current_mount_measurement'
     assert config['usage_gate']['lidar_rgbd_fusion'] \
         == 'blocked_until_cross_sensor_validation'
 
@@ -267,6 +270,16 @@ def test_wrapper_rejects_invalid_wheel_guess_threshold():
         temporary_path = Path(temporary_directory)
         bag_path = temporary_path / 'bag'
         bag_path.mkdir()
+        config_path = temporary_path / 'measured_mount.yaml'
+        config_path.write_text(yaml.safe_dump({
+            'camera_mount': {
+                'status': 'measured', 'parent_frame': 'base_link',
+                'child_frame': 'camera_link',
+                'transform': dict.fromkeys(
+                    ('x_m', 'y_m', 'z_m', 'roll_rad', 'pitch_rad', 'yaw_rad'), 0.0),
+            },
+            'usage_gate': {'wheel_odom_fusion': 'allowed'},
+        }))
         completed = subprocess.run(
             [
                 str(script),
@@ -274,6 +287,7 @@ def test_wrapper_rejects_invalid_wheel_guess_threshold():
                 str(temporary_path / 'output'),
                 '--odom-guess-frame',
                 'odom',
+                '--camera-mount', str(config_path),
                 '--odom-guess-min-translation',
                 '-0.001',
             ],

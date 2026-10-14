@@ -47,3 +47,21 @@ def test_new_base_footprint_lidar_and_wheels():
     assert 'caster_link_front' not in links
     assert {'rear_left_caster_contact_projection',
             'rear_right_caster_contact_projection'} <= links.keys()
+
+
+def test_camera_height_chain_matches_current_mount_without_duplicate_optical_tf():
+    mount = yaml.safe_load((ROOT.parent / 'jdamr_cube_navigation' / 'config' /
+                            'camera_mount_current.yaml').read_text())['camera_mount']
+    joints = {joint.attrib['name']: joint
+              for joint in ET.parse(MODEL).getroot().findall('joint')}
+    tabletop = joints['upper_tabletop_surface_joint']
+    camera = joints['camera_mount_joint']
+    assert camera.find('parent').attrib['link'] == 'upper_tabletop_surface_frame'
+    position = tuple(a + b for a, b in zip(_xyz(tabletop), _xyz(camera)))
+    assert position == tuple(mount['transform'][key] for key in ('x_m', 'y_m', 'z_m'))
+    assert _xyz(camera)[2] == mount['provenance'][
+        'lens_height_above_chassis_tabletop']['value']
+    assert tuple(map(float, camera.find('origin').attrib['rpy'].split())) == tuple(
+        mount['transform'][key] for key in ('roll_rad', 'pitch_rad', 'yaw_rad'))
+    assert 'camera_depth_optical_joint' not in joints
+    assert 'camera_color_optical_joint' not in joints

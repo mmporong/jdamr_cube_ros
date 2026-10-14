@@ -81,4 +81,18 @@
     <parent link="base_link"/><child link="imu_link"/>
     <origin xyz="0 0 0" rpy="3.141592653589793 0 1.5707963267948966"/>
   </joint>
+  <!-- 상판과 렌즈의 높이 근거: jdamr_cube_navigation/config/camera_mount_current.yaml -->
+  <link name="upper_tabletop_surface_frame"/>
+  <joint name="upper_tabletop_surface_joint" type="fixed">
+    <parent link="base_link"/><child link="upper_tabletop_surface_frame"/>
+    <origin xyz="0 0 0.720" rpy="0 0 0"/>
+  </joint>
+  <link name="camera_link">
+    <visual><geometry><box size="0.040 0.165 0.048"/></geometry></visual>
+  </link>
+  <joint name="camera_mount_joint" type="fixed">
+    <parent link="upper_tabletop_surface_frame"/><child link="camera_link"/>
+    <origin xyz="-0.275 0 0.540" rpy="0.011934068034722573 0.41246669799099545 -0.0007507445375463481"/>
+  </joint>
+  <!-- camera_link 하위 광학 프레임은 Astra 드라이버가 발행한다. -->
 </robot>

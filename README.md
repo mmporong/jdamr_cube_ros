@@ -9,6 +9,7 @@
 - 로봇: Raspberry Pi 4 + ESP32 제어보드 + YDLIDAR G4 2D LiDAR(2026-08-25 LD14P에서 교체) + Orbbec Astra S RGB-D
 - 차체: 2026-09-15부터 양팔 서빙 로봇 하단 프레임(340×450mm, 바퀴 외폭 540mm)으로 교체.
   제원 원본은 [`new_base_geometry.yaml`](jdamr_cube_description/config/new_base_geometry.yaml)
+- 깊이 카메라: 차체 상판 윗면에서 렌즈 중심까지 54cm. 바닥 기준 렌즈 높이는 사용자가 확인한 상판 높이 72cm를 더한 126cm다. 카메라 각도는 이전 설정의 추정값을 유지하며, 높이 변경 뒤 주차 정확도는 실차 확인 전이다. 현행 장착 설정은 `jdamr_cube_navigation/config/camera_mount_current.yaml`을 사용한다.
 
 현재 차체는 상·하부 결합을 마쳤고 LiDAR 장착 위치는 유지한다. 차체 후방 기둥의
 자기 반사는 스캔 반사점 기반 설정으로 걸러 낸다. RGB-D 카메라는 상판 뒤끝에서 아래를
